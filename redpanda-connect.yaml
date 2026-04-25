@@ -1,0 +1,15 @@
+input:
+  kafka:
+    addresses:
+      - redpanda-edge:9092
+    topics:
+      - raw-sensor-stream
+      - tactical-events
+    consumer_group: "bridge-group"
+
+output:
+  kafka:
+    addresses:
+      - toxiproxy:8474
+    topic: "${! meta(\"kafka_topic\") }"
+    max_retries: 0

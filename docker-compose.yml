@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  redpanda-edge:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '0'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:9093
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda-edge:9092,OUTSIDE://localhost:9093
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+      - "9644:9644"
+
+  redpanda-hq:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '1'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:19092,OUTSIDE://0.0.0.0:19093
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda-hq:19092,OUTSIDE://localhost:19093
+    ports:
+      - "19092:19092"
+      - "19093:19093"
+      - "19644:19644"
+
+  postgres-hq:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: openddil
+    ports:
+      - "5432:5432"
+
+  electric-sync:
+    image: electricsql/electric:latest
+    environment:
+      DATABASE_URL: postgresql://postgres:password@postgres-hq:5432/openddil
+      LOGICAL_PUBLISHER_HOST: electric-sync
+      AUTH_JWT_ALG: HS256
+      AUTH_JWT_KEY: "secret"
+    ports:
+      - "5133:5133"
+    depends_on:
+      - postgres-hq
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:latest
+    ports:
+      - "8474:8474" # Proxy port
+      - "8475:8475" # API port
+    command: -host 0.0.0.0
+
+  redpanda-connect:
+    image: docker.redpanda.com/redpandadata/benthos:latest
+    volumes:
+      - ./redpanda-connect.yaml:/benthos.yaml
+    command: -c /benthos.yaml
+    depends_on:
+      - redpanda-edge
+      - toxiproxy
