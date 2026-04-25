@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import Header from './components/Header';
 import LtamdsView from './components/LtamdsView';
 import BattleView from './components/BattleView';
 import TelemetryCharts from './components/TelemetryCharts';
-import AlertFeed, { Alert } from './components/AlertFeed';
+import AlertFeed, { type Alert } from './components/AlertFeed';
 import Inventory from './components/Inventory';
 
 function App() {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Settings, Activity, Wifi, Zap, ShieldAlert } from 'lucide-react';
 
 export default function ControllerApp() {

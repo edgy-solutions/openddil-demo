@@ -1,4 +1,3 @@
-import React from 'react';
 import { ClipboardList, Lock } from 'lucide-react';
 
 export interface WorkOrder {

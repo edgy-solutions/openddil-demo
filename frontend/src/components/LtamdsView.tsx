@@ -1,5 +1,5 @@
-import React, { useState, useMemo, useRef } from 'react';
-import { Canvas, useFrame, ThreeEvent } from '@react-three/fiber';
+import { useState, useMemo, useRef } from 'react';
+import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 
@@ -67,7 +67,7 @@ function LtamdsFace({ cols, rows, pos, rot, faceName, degraded, onSelect }: { co
             color={currentColor} 
             emissive={currentEmissive} 
             intensity={currentIntensity}
-            onClick={(e) => { e.stopPropagation(); onSelect(el); }}
+            onClick={(e: any) => { e.stopPropagation(); onSelect(el); }}
           />
         );
       })}

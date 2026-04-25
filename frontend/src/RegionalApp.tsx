@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import RegionalHeader from './components/regional/RegionalHeader';
 import RegionalBattleView from './components/regional/RegionalBattleView';
 import DigitalTwin from './components/regional/DigitalTwin';
-import WorkOrders, { WorkOrder } from './components/regional/WorkOrders';
+import WorkOrders, { type WorkOrder } from './components/regional/WorkOrders';
 
 const INITIAL_WORK_ORDERS: WorkOrder[] = [
   { id: 'WO-8810', sn: 'LTAMDS-04', part: 'Coolant Pump', status: 'COMPLETED' },

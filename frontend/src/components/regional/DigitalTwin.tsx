@@ -1,4 +1,3 @@
-import React from 'react';
 import { Network, ChevronRight, Radar } from 'lucide-react';
 
 export default function DigitalTwin({ degradedBravo }: { degradedBravo: boolean }) {

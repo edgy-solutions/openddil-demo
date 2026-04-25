@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import App from './App';
 import RegionalApp from './RegionalApp';
 import HqApp from './HqApp';

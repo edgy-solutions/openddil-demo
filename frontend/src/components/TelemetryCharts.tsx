@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Activity } from 'lucide-react';
 import { Chart, registerables } from 'chart.js';
 

@@ -1,4 +1,3 @@
-import React from 'react';
 import { Globe, ChevronRight } from 'lucide-react';
 
 export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {

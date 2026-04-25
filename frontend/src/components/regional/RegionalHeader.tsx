@@ -1,4 +1,3 @@
-import React from 'react';
 import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
 
 interface RegionalHeaderProps {

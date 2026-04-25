@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import HqHeader from './components/hq/HqHeader';
 import HqBattleView from './components/hq/HqBattleView';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
@@ -126,7 +126,7 @@ export default function HqApp() {
     <div className={`font-mono h-screen flex flex-col overflow-hidden transition-colors duration-500 ${!wanActive ? 'freeze-active' : ''}`}>
       <HqHeader 
         wanActive={wanActive} 
-        onWanToggle={toggleWan} 
+        setWanActive={toggleWan} 
         buffer={buffer} 
         bufferTrend={bufferTrend} 
       />

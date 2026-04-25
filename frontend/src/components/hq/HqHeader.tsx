@@ -1,13 +1,13 @@
-import React from 'react';
 import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
 
 interface HqHeaderProps {
   wanActive: boolean;
   setWanActive: (v: boolean) => void;
   buffer: number;
+  bufferTrend: 'up' | 'down' | 'none';
 }
 
-export default function HqHeader({ wanActive, setWanActive, buffer }: HqHeaderProps) {
+export default function HqHeader({ wanActive, setWanActive, buffer, bufferTrend }: HqHeaderProps) {
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700 transition-colors duration-500">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
@@ -51,7 +51,7 @@ export default function HqHeader({ wanActive, setWanActive, buffer }: HqHeaderPr
           <div className="flex items-baseline space-x-2">
             <span className="text-3xl font-bold text-slate-100">{buffer > 1000 ? (buffer/1000).toFixed(1) + 'K' : buffer}</span>
             <span className="text-xs text-slate-500">MSGS</span>
-            <TrendingUp className={`w-4 h-4 transition-all ${buffer === 0 ? 'opacity-0' : 'opacity-100'} ${(!wanActive) ? 'text-rose-500' : 'text-emerald-500 rotate-180'}`} />
+            <TrendingUp className={`w-4 h-4 transition-all ${bufferTrend === 'none' ? 'opacity-0' : 'opacity-100'} ${bufferTrend === 'up' ? 'text-rose-500' : 'text-emerald-500 rotate-180'}`} />
           </div>
         </div>
       </div>
