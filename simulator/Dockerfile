@@ -35,6 +35,6 @@ WORKDIR /app
 COPY ltamds_simulator.py .
 
 # Run as non-root user
-USER nobody:nogroup
+USER nonroot:nonroot
 
 ENTRYPOINT ["/opt/venv/bin/python", "ltamds_simulator.py"]
