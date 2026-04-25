@@ -1,8 +1,5 @@
 @import "tailwindcss";
 
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600;800&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap');
-
 @layer base {
   body {
     font-family: 'Inter', sans-serif;
@@ -11,45 +8,53 @@
   }
 }
 
-@layer components {
-  .panel {
-    @apply bg-zinc-900/40 border border-zinc-800 rounded-xl shadow-lg;
-  }
-  
-  .region-card {
-    @apply bg-zinc-900/40 border-2 border-zinc-800 rounded-2xl p-6 transition-all duration-500 relative;
-  }
+/* Panel component styles — written as explicit CSS for Tailwind v4 compatibility.
+   Using @apply inside @layer components can silently fail in v4's CSS-first approach. */
+.panel {
+  background-color: rgb(24 24 27 / 0.4);
+  border: 1px solid #27272a;
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+
+.region-card {
+  background-color: rgb(24 24 27 / 0.4);
+  border: 2px solid #27272a;
+  border-radius: 1rem;
+  padding: 1.5rem;
+  transition: all 500ms;
+  position: relative;
 }
 
 .mono {
-    font-family: 'JetBrains Mono', monospace;
+  font-family: 'JetBrains Mono', monospace;
 }
 
 .font-orbitron {
-    font-family: 'Orbitron', sans-serif;
+  font-family: 'Orbitron', sans-serif;
 }
 
 .font-rajdhani {
-    font-family: 'Rajdhani', sans-serif;
+  font-family: 'Rajdhani', sans-serif;
 }
 
 .glow-indigo {
-    box-shadow: 0 0 20px -5px rgba(99, 102, 241, 0.3);
+  box-shadow: 0 0 20px -5px rgba(99, 102, 241, 0.3);
 }
 
 .glow-red {
-    box-shadow: 0 0 20px -5px rgba(220, 38, 38, 0.4);
+  box-shadow: 0 0 20px -5px rgba(220, 38, 38, 0.4);
 }
 
 ::-webkit-scrollbar {
-    width: 4px;
+  width: 4px;
 }
 
 ::-webkit-scrollbar-track {
-    background: #09090b;
+  background: #09090b;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #27272a;
-    border-radius: 10px;
+  background: #27272a;
+  border-radius: 10px;
 }
