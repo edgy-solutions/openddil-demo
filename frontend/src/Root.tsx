@@ -2,10 +2,11 @@ import React, { useState } from 'react';
 import App from './App';
 import RegionalApp from './RegionalApp';
 import HqApp from './HqApp';
-import { Laptop, Server, Building2 } from 'lucide-react';
+import ControllerApp from './ControllerApp';
+import { Laptop, Server, Building2, SlidersHorizontal } from 'lucide-react';
 
 function Root() {
-  const [view, setView] = useState<'edge' | 'regional' | 'hq'>('edge');
+  const [view, setView] = useState<'edge' | 'regional' | 'hq' | 'controller'>('edge');
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-300 overflow-hidden font-mono">
@@ -33,6 +34,12 @@ function Root() {
           >
             <Building2 className="w-3 h-3" /> HQ
           </button>
+          <button 
+            onClick={() => setView('controller')}
+            className={`px-3 py-1 flex items-center gap-2 text-xs font-bold transition-colors ${view === 'controller' ? 'bg-slate-800 text-white border border-slate-600' : 'text-slate-500 hover:text-slate-300'}`}
+          >
+            <SlidersHorizontal className="w-3 h-3" /> DDIL CONTROLLER
+          </button>
         </div>
       </div>
 
@@ -41,6 +48,7 @@ function Root() {
         {view === 'edge' && <App />}
         {view === 'regional' && <RegionalApp />}
         {view === 'hq' && <HqApp />}
+        {view === 'controller' && <ControllerApp />}
       </div>
     </div>
   );
