@@ -1,0 +1,7 @@
+# Cursor Rules for OpenDDIL Demo
+
+- **Context**: Orchestration, simulation, and UI for the OpenDDIL "Hero" scenario.
+- **Frontend Stack**: React (Vite), Tailwind CSS, `@react-three/fiber`.
+- **Aesthetic**: Tier-1 military display. Slate/zinc backgrounds (`bg-slate-950`), neon accents (emerald, amber, rose). Sharp edges, no playful/rounded UI elements.
+- **Simulation**: Uses Toxiproxy to simulate DDIL environments (bandwidth, jitter, stutter).
+- **Backend Agents**: The data processing agents (Faust, Restate) are in `openddil-tactical-agents`. This repo only contains the simulator and UI.

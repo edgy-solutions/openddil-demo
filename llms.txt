@@ -1,0 +1,23 @@
+# OpenDDIL Demo - LLM Context
+
+This repository (`openddil-demo`) houses the orchestration and UI for the OpenDDIL "Hero" scenario.
+
+## Purpose
+1. Orchestrate the infrastructure via Docker Compose (Redpanda, Postgres, ElectricSQL, Toxiproxy).
+2. Simulate LTAMDS radar telemetry and anomalies.
+3. Provide React-based Command Center dashboards (Edge, Regional, HQ, and DDIL Controller) using a strict military aesthetic.
+
+## Key Files
+- `docker-compose.yml`: Infrastructure orchestration.
+- `simulator/ltamds_simulator.py`: Telemetry generator and anomaly trigger.
+- `frontend/src/`: React frontend codebase.
+  - `Root.tsx`: Navigation wrapper.
+  - `App.tsx`: Edge dashboard.
+  - `RegionalApp.tsx`: Regional Hub dashboard.
+  - `HqApp.tsx`: Strategic Central Command dashboard.
+  - `ControllerApp.tsx`: DDIL Degradation Simulator (Toxiproxy controller).
+
+## Rules
+- Frontend must use React, Tailwind (Dark Mode), and React Three Fiber.
+- Aesthetic must be strict Tier-1 military (slate/zinc backgrounds, neon accents, sharp edges).
+- Tactical agents (Faust/Restate) are located in `openddil-tactical-agents`.
