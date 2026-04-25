@@ -37,7 +37,7 @@ export default function HqApp() {
     try {
       if (!active) {
         // Sever the connection
-        await fetch('http://localhost:8475/proxies/hq-link/toxics', {
+        await fetch('/proxies/hq-link/toxics', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -50,7 +50,7 @@ export default function HqApp() {
         });
       } else {
         // Restore the connection
-        await fetch('http://localhost:8475/proxies/hq-link/toxics/hq_timeout', {
+        await fetch('/proxies/hq-link/toxics/hq_timeout', {
           method: 'DELETE'
         });
         

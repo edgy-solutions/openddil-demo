@@ -9,10 +9,10 @@ export default function ControllerApp() {
   const applyToxic = async (toxicName: string, type: string, attributes: any) => {
     try {
       // Always try to delete first to avoid conflicts
-      await fetch(`http://localhost:8475/proxies/hq-link/toxics/${toxicName}`, { method: 'DELETE' }).catch(() => {});
+      await fetch(`/proxies/hq-link/toxics/${toxicName}`, { method: 'DELETE' }).catch(() => {});
       
       if (attributes !== null) {
-        await fetch(`http://localhost:8475/proxies/hq-link/toxics`, {
+        await fetch(`/proxies/hq-link/toxics`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

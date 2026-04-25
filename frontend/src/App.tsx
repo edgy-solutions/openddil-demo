@@ -32,7 +32,7 @@ function App() {
     const handleToxiproxy = async (enabled: boolean) => {
       try {
         if (!enabled) {
-          await fetch('http://localhost:8475/proxies/hq-link/toxics', {
+          await fetch('/proxies/hq-link/toxics', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -44,7 +44,7 @@ function App() {
             })
           });
         } else {
-          await fetch('http://localhost:8475/proxies/hq-link/toxics/timeout_down', {
+          await fetch('/proxies/hq-link/toxics/timeout_down', {
             method: 'DELETE'
           });
         }
