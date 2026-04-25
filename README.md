@@ -20,45 +20,15 @@ It simulates a DDIL environment processing high-velocity sensor telemetry from a
 
 ## How to Run the Demo
 
-### 1. Start the Infrastructure
-Navigate to the root of the `openddil-demo` repository and start the core infrastructure (Redpanda, Postgres, Toxiproxy) using Docker Compose:
+### 1. Start the Complete Stack
+Navigate to the root of the `openddil-demo` repository and start the entire infrastructure (Redpanda, Postgres, Toxiproxy, Tactical Agents, Simulator, and Frontend Dashboards) using Docker Compose. This automatically pulls the pre-built images from the GitHub Container Registry:
 ```bash
 docker-compose up -d
 ```
+*(This will start pumping nominal 10Hz telemetry to the Edge Redpanda broker and spin up all agents and UI).*
 
-### 2. Start the Sensor Simulator
-In a separate terminal, navigate to the `simulator` directory, install dependencies, and run the LTAMDS simulator:
-```bash
-cd simulator
-uv venv
-source .venv/bin/activate
-uv pip install -r requirements.txt # or uv pip install . if pyproject.toml is used
-python ltamds_simulator.py
-```
-*(This will start pumping nominal 10Hz telemetry to the Edge Redpanda broker).*
-
-### 3. Start the Tactical Agents
-In a separate terminal, navigate to the `openddil-tactical-agents` repository and start the Faust and Restate agents:
-```bash
-# Start Faust Edge Agent
-cd openddil-tactical-agents/edge
-faust -A faust_edge worker -l info
-
-# Start Restate Hub Agent (ensure Restate server is running)
-cd openddil-tactical-agents/hub
-python restate_hub.py
-```
-
-### 4. Start the React Dashboards
-In a separate terminal, navigate to the `frontend` directory, install dependencies, and start the Vite development server:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### 5. Execute the "Hero" Scenario
-1. Open your browser to the local Vite URL (e.g., `http://localhost:5173`).
+### 2. Execute the "Hero" Scenario
+1. Open your browser to the local frontend URL (`http://localhost:5173`).
 2. Use the top navigation bar to open **EDGE**, **REGIONAL**, **HQ**, and **DDIL CONTROLLER** in separate browser windows.
 3. Observe the nominal data flowing across all dashboards.
 4. Go to the **DDIL CONTROLLER** and aggressively lower the bandwidth or toggle the `HQ WAN` switch off. Observe the HQ dashboard freeze while the Edge remains responsive.

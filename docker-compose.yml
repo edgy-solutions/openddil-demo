@@ -79,3 +79,46 @@ services:
     depends_on:
       - redpanda-edge
       - toxiproxy
+
+  simulator:
+    image: ghcr.io/edgy-solutions/openddil-demo-simulator:latest
+    container_name: openddil-demo-simulator
+    environment:
+      KAFKA_BROKER: "redpanda-edge:9092"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redpanda-edge
+
+  faust-edge:
+    image: ghcr.io/edgy-solutions/edge-faust-detector:latest
+    container_name: openddil-demo-faust
+    entrypoint: ["/opt/venv/bin/python", "/app/faust_edge.py", "worker", "-l", "info"]
+    volumes:
+      - ../openddil-tactical-agents/edge/faust_edge.py:/app/faust_edge.py
+    depends_on:
+      - redpanda-edge
+
+  restate-server:
+    image: restatedev/restate:1.1.2
+    container_name: openddil-demo-restate-server
+    ports:
+      - "8080:8080"
+      - "9070:9070"
+
+  restate-hub:
+    image: ghcr.io/edgy-solutions/hub-restate-projector:latest
+    container_name: openddil-demo-restate-hub
+    entrypoint: ["/opt/venv/bin/python", "/app/restate_hub.py"]
+    environment:
+      DB_PATH: "/tmp/edge_state.db"
+    volumes:
+      - ../openddil-tactical-agents/hub/restate_hub.py:/app/restate_hub.py
+    depends_on:
+      - restate-server
+
+  frontend:
+    image: ghcr.io/edgy-solutions/openddil-demo-frontend:latest
+    container_name: openddil-demo-frontend
+    ports:
+      - "5173:80"
