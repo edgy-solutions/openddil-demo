@@ -1,3 +1,4 @@
+import os
 import asyncio
 import json
 import time
@@ -10,7 +11,7 @@ from confluent_kafka import Producer
 app = FastAPI()
 
 # Configuration
-KAFKA_BROKER = "localhost:9093" # Use outside port if running locally outside docker
+KAFKA_BROKER = os.environ.get("KAFKA_BROKER", "localhost:9093") # Use outside port if running locally outside docker
 TOPIC = "raw-sensor-stream"
 
 # State
