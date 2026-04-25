@@ -17,7 +17,7 @@
     "react": "^19.2.5",
     "react-chartjs-2": "^5.3.1",
     "react-dom": "^19.2.5",
-    "three": "^0.184.0"
+    "three": "^0.182.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
