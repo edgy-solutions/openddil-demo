@@ -1,15 +1,36 @@
 @import "tailwindcss";
 
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap');
 
-body {
+@layer base {
+  body {
     font-family: 'Inter', sans-serif;
     background-color: #09090b;
     color: #f4f4f5;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply bg-zinc-900/40 border border-zinc-800 rounded-xl shadow-lg;
+  }
+  
+  .region-card {
+    @apply bg-zinc-900/40 border-2 border-zinc-800 rounded-2xl p-6 transition-all duration-500 relative;
+  }
 }
 
 .mono {
     font-family: 'JetBrains Mono', monospace;
+}
+
+.font-orbitron {
+    font-family: 'Orbitron', sans-serif;
+}
+
+.font-rajdhani {
+    font-family: 'Rajdhani', sans-serif;
 }
 
 .glow-indigo {
