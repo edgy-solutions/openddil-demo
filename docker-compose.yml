@@ -82,7 +82,8 @@ services:
 
   simulator:
     build: simulator
-    image: local/openddil-demo-simulator:latest
+    image: ghcr.io/edgy-solutions/openddil-demo-simulator:latest
+    pull_policy: build
     container_name: openddil-demo-simulator
     environment:
       KAFKA_BROKER: "redpanda-edge:9092"
@@ -95,7 +96,8 @@ services:
     build:
       context: ../openddil-tactical-agents
       dockerfile: edge/faust/Dockerfile
-    image: local/edge-faust-detector:latest
+    image: ghcr.io/edgy-solutions/edge-faust-detector:latest
+    pull_policy: build
     container_name: openddil-demo-faust
     entrypoint: ["/opt/venv/bin/python", "/app/faust_edge.py", "worker", "-l", "info"]
     volumes:
@@ -114,7 +116,8 @@ services:
     build:
       context: ../openddil-tactical-agents
       dockerfile: hub/projector/Dockerfile
-    image: local/hub-restate-projector:latest
+    image: ghcr.io/edgy-solutions/hub-restate-projector:latest
+    pull_policy: build
     container_name: openddil-demo-restate-hub
     entrypoint: ["/opt/venv/bin/python", "/app/restate_hub.py"]
     environment:
@@ -126,7 +129,8 @@ services:
 
   frontend:
     build: frontend
-    image: local/openddil-demo-frontend:latest
+    image: ghcr.io/edgy-solutions/openddil-demo-frontend:latest
+    pull_policy: build
     container_name: openddil-demo-frontend
     ports:
       - "5173:80"
