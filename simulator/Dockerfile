@@ -22,10 +22,14 @@ RUN uv pip compile pyproject.toml -o requirements.txt && \
     uv pip install --no-cache -r requirements.txt
 
 # Stage 2: Production
+FROM builder AS builder-production
+RUN rm /opt/venv/bin/python && ln -s /usr/bin/python3 /opt/venv/bin/python
+
+# Stage 3: Production
 FROM gcr.io/distroless/python3-debian12 AS production
 
 # Copy virtual environment
-COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder-production /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONPATH="/app"
 
