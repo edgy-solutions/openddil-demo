@@ -72,10 +72,10 @@ services:
     command: -host 0.0.0.0
 
   redpanda-connect:
-    image: docker.redpanda.com/redpandadata/benthos:latest
+    image: docker.redpanda.com/redpandadata/connect:latest
     volumes:
       - ./redpanda-connect.yaml:/benthos.yaml
-    command: -c /benthos.yaml
+    command: run /benthos.yaml
     depends_on:
       - redpanda-edge
       - toxiproxy
