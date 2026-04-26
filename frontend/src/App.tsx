@@ -15,6 +15,7 @@ function App() {
   const [pressure, setPressure] = useState(120.0);
   const [radarColor, setRadarColor] = useState('#10b981');
   const [clock, setClock] = useState('');
+  const [faustAlerts, setFaustAlerts] = useState<Alert[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([
     { id: 'init', msg: 'SYSTEM INITIALIZED. AWAITING TELEMETRY.', type: 'info', time: new Date().toLocaleTimeString('en-US', { hour12: false }) }
   ]);
@@ -74,16 +75,7 @@ function App() {
         const res = await fetch('/api/alerts');
         if (res.ok) {
           const data = await res.json();
-          if (data && data.length > 0) {
-            setAlerts(prev => {
-              const existingIds = new Set(prev.map(a => a.id));
-              const newAlerts = data.filter((a: Alert) => !existingIds.has(a.id));
-              if (newAlerts.length > 0) {
-                return [...newAlerts.reverse(), ...prev];
-              }
-              return prev;
-            });
-          }
+          setFaustAlerts(data || []);
         }
       } catch (e) {
         // Ignore fetch errors
@@ -163,7 +155,7 @@ function App() {
         {/* Right Column */}
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
           <TelemetryCharts thermal={thermal} pressure={pressure} degraded={degraded} />
-          <AlertFeed alerts={alerts} />
+          <AlertFeed alerts={[...faustAlerts, ...alerts]} />
           <Inventory />
         </div>
       </main>

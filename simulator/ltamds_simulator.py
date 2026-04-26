@@ -74,5 +74,10 @@ async def trigger_anomaly():
     simulation_state["anomaly_start_time"] = time.time()
     return {"status": "anomaly_triggered", "message": "Coolant pressure drop simulated"}
 
+@app.post("/clear-anomaly")
+async def clear_anomaly():
+    simulation_state["anomaly_active"] = False
+    return {"status": "anomaly_cleared", "message": "Anomaly cleared, returning to normal operations"}
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
