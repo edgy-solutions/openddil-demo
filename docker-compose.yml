@@ -45,6 +45,7 @@ services:
 
   postgres-hq:
     image: postgres:15
+    command: postgres -c wal_level=logical
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
@@ -59,6 +60,7 @@ services:
       LOGICAL_PUBLISHER_HOST: electric-sync
       AUTH_JWT_ALG: HS256
       AUTH_JWT_KEY: "secret"
+      ELECTRIC_INSECURE: "true"
     ports:
       - "5133:5133"
     depends_on:
@@ -101,6 +103,7 @@ services:
     image: ghcr.io/edgy-solutions/edge-faust-detector:latest
     pull_policy: build
     container_name: openddil-demo-faust
+    working_dir: /tmp
     entrypoint: ["/opt/venv/bin/python", "/app/faust_edge.py", "worker", "-l", "info"]
     volumes:
       - ../openddil-tactical-agents/edge/faust_edge.py:/app/faust_edge.py
@@ -135,4 +138,4 @@ services:
     pull_policy: build
     container_name: openddil-demo-frontend
     ports:
-      - "3001:80"
+      - "3003:80"
