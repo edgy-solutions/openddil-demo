@@ -1,10 +1,50 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Settings, Activity, Wifi, Zap, ShieldAlert } from 'lucide-react';
 
 export default function ControllerApp() {
   const [bandwidth, setBandwidth] = useState<number>(1250); // KB/s (1250 = 10 Mbps)
   const [jitter, setJitter] = useState<number>(0); // ms
   const [stutter, setStutter] = useState<boolean>(false);
+  const isInitialized = useRef(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchToxics = async () => {
+      try {
+        const response = await fetch('/proxies/hq-link/toxics');
+        if (response.ok) {
+          const toxics = await response.json();
+          if (mounted) {
+            for (const toxic of toxics) {
+              if (toxic.name === 'bw_limit' && toxic.attributes && toxic.attributes.rate) {
+                setBandwidth(toxic.attributes.rate);
+              }
+              if (toxic.name === 'latency_jitter' && toxic.attributes && toxic.attributes.latency) {
+                setJitter(toxic.attributes.latency);
+              }
+              if (toxic.name === 'stutter') {
+                setStutter(true);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to fetch toxics:', e);
+      } finally {
+        if (mounted) {
+          setTimeout(() => {
+            if (mounted) isInitialized.current = true;
+          }, 100);
+        }
+      }
+    };
+    
+    fetchToxics();
+    
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const applyToxic = async (toxicName: string, type: string, attributes: any) => {
     try {
@@ -31,6 +71,7 @@ export default function ControllerApp() {
 
   // Debounce API calls for sliders
   useEffect(() => {
+    if (!isInitialized.current) return;
     const timer = setTimeout(() => {
       if (bandwidth >= 1250) {
         applyToxic('bw_limit', 'bandwidth', null);
@@ -42,6 +83,7 @@ export default function ControllerApp() {
   }, [bandwidth]);
 
   useEffect(() => {
+    if (!isInitialized.current) return;
     const timer = setTimeout(() => {
       if (jitter === 0) {
         applyToxic('latency_jitter', 'latency', null);
@@ -53,6 +95,7 @@ export default function ControllerApp() {
   }, [jitter]);
 
   useEffect(() => {
+    if (!isInitialized.current) return;
     if (stutter) {
       applyToxic('stutter', 'slicer', { average_size: 1024, size_variation: 512, delay: 200000 });
     } else {
