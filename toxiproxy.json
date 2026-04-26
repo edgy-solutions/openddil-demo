@@ -1,6 +1,6 @@
 [
   {
-    "name": "hq-redpanda-proxy",
+    "name": "hq-link",
     "listen": "0.0.0.0:8474",
     "upstream": "redpanda-hq:19092",
     "enabled": true
