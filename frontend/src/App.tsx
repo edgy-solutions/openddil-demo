@@ -60,8 +60,6 @@ function App() {
       setDegraded(true);
       setRadarColor('#f59e0b');
       addAlert("UPLINK SEVERED. ISOLATED EDGE MODE ACTIVE.", "warn");
-      setTimeout(() => addAlert("CRITICAL: Thermal Runaway Predicted in Primary Array", "crit"), 2000);
-      setTimeout(() => addAlert("ACTION: Power Throttled via Restate Agent", "warn"), 3500);
     } else if (link1 && degraded) {
       setDegraded(false);
       setRadarColor('#10b981');
@@ -71,8 +69,46 @@ function App() {
   }, [link1, degraded]);
 
   useEffect(() => {
+    const fetchAlerts = async () => {
+      try {
+        const res = await fetch('/api/alerts');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.length > 0) {
+            setAlerts(prev => {
+              const existingIds = new Set(prev.map(a => a.id));
+              const newAlerts = data.filter((a: Alert) => !existingIds.has(a.id));
+              if (newAlerts.length > 0) {
+                return [...newAlerts.reverse(), ...prev];
+              }
+              return prev;
+            });
+          }
+        }
+      } catch (e) {
+        // Ignore fetch errors
+      }
+    };
+
+    const fetchTelemetry = async () => {
+      try {
+        const res = await fetch('/api/telemetry');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.thermal && data.pressure) {
+            setThermal(data.thermal);
+            setPressure(data.pressure);
+          }
+        }
+      } catch (e) {
+        // Ignore fetch errors
+      }
+    };
+
     const interval = setInterval(() => {
       setClock(new Date().toLocaleTimeString('en-US', { hour12: false }));
+      fetchAlerts();
+      fetchTelemetry();
       
       setBuffer(prev => {
         if (!link1 || !link2) {
@@ -81,26 +117,6 @@ function App() {
           return Math.max(0, prev - Math.floor(prev * 0.2) - 100);
         }
         return prev;
-      });
-
-      setThermal(prev => {
-        if (degraded) {
-          let next = prev + (Math.random() * 2);
-          if (next > 55) next = 50 + Math.random() * 5;
-          return next;
-        } else {
-          return prev * 0.9 + 32 * 0.1 + (Math.random() - 0.5);
-        }
-      });
-
-      setPressure(prev => {
-        if (degraded) {
-          let next = prev - (Math.random() * 5);
-          if (next < 40) next = 40 + Math.random() * 10;
-          return next;
-        } else {
-          return prev * 0.9 + 120 * 0.1 + (Math.random() * 2 - 1);
-        }
       });
     }, 500);
     return () => clearInterval(interval);

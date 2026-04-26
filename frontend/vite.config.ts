@@ -9,6 +9,11 @@ export default defineConfig({
       '/proxies': {
         target: 'http://localhost:8475',
         changeOrigin: true,
+      },
+      '/api': {
+        target: 'http://localhost:6066',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, '')
       }
     }
   }
