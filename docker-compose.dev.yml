@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  simulator:
+    build: simulator
+    pull_policy: build
+
+  faust-edge:
+    build:
+      context: ../openddil-tactical-agents
+      dockerfile: edge/faust/Dockerfile
+    pull_policy: build
+
+  restate-hub:
+    build:
+      context: ../openddil-tactical-agents
+      dockerfile: hub/projector/Dockerfile
+    pull_policy: build
+
+  frontend:
+    build: frontend
+    pull_policy: build
