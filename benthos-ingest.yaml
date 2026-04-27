@@ -1,0 +1,28 @@
+input:
+  broker:
+    inputs:
+      - amqp_0_9:
+          urls:
+            - amqp://guest:guest@localhost:5672/
+          queue: uav_telemetry
+      - mqtt:
+          urls:
+            - tcp://localhost:1883
+          topics:
+            - dds/mock
+
+pipeline:
+  processors:
+    - mapping: |
+        root = this
+        root.device_id = this.device_id | "UNKNOWN"
+        root.core_temp = this.core_temp | 0.0
+        root.coolant_pressure = this.coolant_pressure | 0.0
+        root.timestamp = this.timestamp | timestamp_unix_nano()
+
+output:
+  kafka:
+    addresses:
+      - redpanda-edge:9092
+    topic: raw-sensor-stream
+    max_retries: 3

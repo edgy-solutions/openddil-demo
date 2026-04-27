@@ -1,4 +1,4 @@
-import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
+import { Laptop, Server, Building2, TrendingUp, Settings } from 'lucide-react';
 
 interface RegionalHeaderProps {
   link1: boolean;
@@ -6,9 +6,10 @@ interface RegionalHeaderProps {
   link2: boolean;
   setLink2: (v: boolean) => void;
   buffer: number;
+  setIsRuleEditorOpen: (v: boolean) => void;
 }
 
-export default function RegionalHeader({ link1, setLink1, link2, setLink2, buffer }: RegionalHeaderProps) {
+export default function RegionalHeader({ link1, setLink1, link2, setLink2, buffer, setIsRuleEditorOpen }: RegionalHeaderProps) {
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
@@ -59,6 +60,15 @@ export default function RegionalHeader({ link1, setLink1, link2, setLink2, buffe
         <div className="flex flex-col items-center text-slate-400 mr-8">
           <Building2 className="w-6 h-6 mb-1 text-slate-200" />
           <span className="text-xs font-bold tracking-wider">CENTRAL HQ</span>
+        </div>
+        <div className="flex flex-col items-center justify-center mr-4">
+          <button 
+            onClick={() => setIsRuleEditorOpen(true)}
+            className="flex items-center gap-2 bg-cyan-900/40 hover:bg-cyan-800/60 border border-cyan-700/50 text-cyan-400 px-3 py-2 rounded transition-colors"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="text-[10px] font-bold tracking-widest">CONFIGURE HEURISTICS</span>
+          </button>
         </div>
         <div className="pl-6 border-l border-slate-700 min-w-[150px]">
           <div className="text-[10px] text-slate-400 tracking-wider">REDPANDA REGIONAL BUFFER</div>

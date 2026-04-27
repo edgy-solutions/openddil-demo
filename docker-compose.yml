@@ -103,6 +103,7 @@ services:
     entrypoint: ["/opt/venv/bin/python", "/app/faust_edge.py", "worker", "-l", "info"]
     volumes:
       - ../openddil-tactical-agents/edge/faust_edge.py:/app/faust_edge.py
+      - ../openddil-tactical-agents/edge/rules.yaml:/app/rules.yaml
     depends_on:
       - redpanda-edge
 
@@ -130,4 +131,4 @@ services:
     pull_policy: always
     container_name: openddil-demo-frontend
     ports:
-      - "3010:80"
+      - "3012:80"

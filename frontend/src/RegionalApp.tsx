@@ -3,6 +3,7 @@ import RegionalHeader from './components/regional/RegionalHeader';
 import RegionalBattleView from './components/regional/RegionalBattleView';
 import DigitalTwin from './components/regional/DigitalTwin';
 import WorkOrders, { type WorkOrder } from './components/regional/WorkOrders';
+import TacticalRuleBuilder from './components/regional/TacticalRuleBuilder';
 
 const INITIAL_WORK_ORDERS: WorkOrder[] = [
   { id: 'WO-8810', sn: 'LTAMDS-04', part: 'Coolant Pump', status: 'COMPLETED' },
@@ -17,6 +18,7 @@ export default function RegionalApp() {
   const [buffer, setBuffer] = useState(24);
   const [degradedBravo, setDegradedBravo] = useState(false);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>(INITIAL_WORK_ORDERS);
+  const [isRuleEditorOpen, setIsRuleEditorOpen] = useState(false);
 
   // Link 1 (Edge to Region) logic
   useEffect(() => {
@@ -74,6 +76,7 @@ export default function RegionalApp() {
         link2={link2} 
         setLink2={setLink2} 
         buffer={buffer} 
+        setIsRuleEditorOpen={setIsRuleEditorOpen}
       />
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
@@ -84,6 +87,8 @@ export default function RegionalApp() {
           <WorkOrders link2={link2} workOrders={workOrders} />
         </div>
       </main>
+
+      <TacticalRuleBuilder isOpen={isRuleEditorOpen} onClose={() => setIsRuleEditorOpen(false)} />
     </div>
   );
 }
