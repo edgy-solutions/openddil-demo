@@ -7,8 +7,8 @@ import AssetSpawner from '../AssetSpawner';
 const DISCOVERED_FLEET: { id: string, type: string, position: [number, number, number] }[] = [
   { id: 'LTAMDS-04', type: 'RADAR', position: [-40, 0, 20] },
   { id: 'STRYKER-DE-09', type: 'LASER_SHORAD', position: [30, 0, 40] },
-  { id: 'HIMARS-ALPHA', type: 'ARTILLERY', position: [-20, 0, -50] },
-  { id: 'GHOST-UGV-1', type: 'QUADRUPED', position: [60, 0, -20] }
+  { id: 'HIMARS-ALPHA', type: 'ARTILLERY', position: [10, 0, -20] },
+  { id: 'GHOST-UGV-1', type: 'QUADRUPED', position: [-80, 0, 70] }
 ];
 
 function Terrain() {

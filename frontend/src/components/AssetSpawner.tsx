@@ -56,7 +56,7 @@ function RadarShield({ isDegraded }: { isDegraded: boolean }) {
 
 function RadarFallback() {
     return (
-        <group>
+        <group scale={2.5}>
             <mesh position={[0, 0, 0]}>
                 <boxGeometry args={[6, 3, 8]} />
                 <meshStandardMaterial color={0x334155} />
@@ -71,7 +71,7 @@ function RadarFallback() {
 
 function LaserFallback() {
     return (
-        <group position={[0, 1, 0]}>
+        <group position={[0, 1, 0]} scale={2.5}>
             <mesh>
                 <boxGeometry args={[2, 2, 3]} />
                 <meshStandardMaterial color={0x22d3ee} emissive={0x22d3ee} emissiveIntensity={0.5} transparent opacity={0.8} />
@@ -86,7 +86,7 @@ function LaserFallback() {
 
 function ArtilleryFallback() {
     return (
-        <mesh position={[0, 1, 0]} rotation={[0.2, 0, 0]}>
+        <mesh position={[0, 1, 0]} rotation={[0.2, 0, 0]} scale={7.5}>
             <boxGeometry args={[2, 1.5, 4]} />
             <meshStandardMaterial color={0x22d3ee} emissive={0x22d3ee} emissiveIntensity={0.5} transparent opacity={0.8} />
         </mesh>
@@ -95,17 +95,17 @@ function ArtilleryFallback() {
 
 function QuadrupedFallback() {
     return (
-        <mesh position={[0, 0.5, 0]}>
+        <mesh position={[0, 0.5, 0]} scale={7.5}>
             <tetrahedronGeometry args={[1]} />
             <meshStandardMaterial color={0x22d3ee} emissive={0x22d3ee} emissiveIntensity={0.5} transparent opacity={0.8} />
         </mesh>
     );
 }
 
-function AssetModel({ url }: { url: string }) {
+function AssetModel({ url, scale = 2.5, yOffset = 0 }: { url: string, scale?: number, yOffset?: number }) {
     const { scene } = useGLTF(url);
     const clonedScene = useMemo(() => scene.clone(), [scene]);
-    return <primitive object={clonedScene} scale={0.5} position={[0, 0, 0]} />;
+    return <primitive object={clonedScene} scale={scale} position={[0, yOffset, 0]} />;
 }
 
 export default function AssetSpawner({ assets }: { assets: { id: string, type: string, position: [number, number, number] }[] }) {
@@ -114,16 +114,24 @@ export default function AssetSpawner({ assets }: { assets: { id: string, type: s
             {assets.map(asset => {
                 let Fallback = RadarFallback;
                 let url = '/models/ltamds.glb';
+                let scale = 2.5;
+                let yOffset = 0;
                 
                 if (asset.type === 'LASER_SHORAD') {
                     Fallback = LaserFallback;
                     url = '/models/stryker.glb';
+                    scale = 2.5;
+                    yOffset = 0;
                 } else if (asset.type === 'ARTILLERY') {
                     Fallback = ArtilleryFallback;
                     url = '/models/himars.glb';
+                    scale = 7.5;
+                    yOffset = 3;
                 } else if (asset.type === 'QUADRUPED') {
                     Fallback = QuadrupedFallback;
                     url = '/models/ugv.glb';
+                    scale = 7.5;
+                    yOffset = 2;
                 }
                 
                 return (
@@ -131,7 +139,7 @@ export default function AssetSpawner({ assets }: { assets: { id: string, type: s
                         {asset.type === 'RADAR' && <RadarShield isDegraded={asset.id === 'LTAMDS-04' && false} />}
                         <ErrorBoundary fallback={<Fallback />}>
                             <Suspense fallback={<Fallback />}>
-                                <AssetModel url={url} />
+                                <AssetModel url={url} scale={scale} yOffset={yOffset} />
                             </Suspense>
                         </ErrorBoundary>
                     </group>
