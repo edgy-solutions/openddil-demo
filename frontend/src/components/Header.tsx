@@ -6,16 +6,39 @@ interface HeaderProps {
   link2: boolean;
   setLink2: (v: boolean) => void;
   buffer: number;
+  assets: { id: string, type: string }[];
+  selectedAsset: string;
+  setSelectedAsset: (v: string) => void;
 }
 
-export default function Header({ link1, setLink1, link2, setLink2, buffer }: HeaderProps) {
+export default function Header({ link1, setLink1, link2, setLink2, buffer, assets, selectedAsset, setSelectedAsset }: HeaderProps) {
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
+        {/* Local Asset Context Switcher */}
+        <div className="flex flex-col">
+          <label className="text-[10px] text-slate-400 tracking-wider mb-1">LOCAL ASSET CONTEXT</label>
+          <div className="relative">
+            <select
+              value={selectedAsset}
+              onChange={(e) => setSelectedAsset(e.target.value)}
+              className="appearance-none w-48 bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 cursor-pointer"
+            >
+              {assets.map(a => (
+                <option key={a.id} value={a.id}>{a.id} ({a.type})</option>
+              ))}
+            </select>
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
+              <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+            </div>
+          </div>
+        </div>
+
         <div className="flex flex-col items-center text-slate-400">
           <Laptop className="w-6 h-6 mb-1 text-slate-200" />
           <span className="text-xs font-bold tracking-wider">TACTICAL EDGE</span>
         </div>
+
         <div className="flex-1 flex flex-col items-center relative">
           <div className={`absolute w-full h-[2px] top-3 -z-10 ${link1 ? 'bg-slate-700' : 'bg-rose-900'}`}></div>
           <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in mt-1">

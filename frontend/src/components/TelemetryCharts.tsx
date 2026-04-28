@@ -18,65 +18,80 @@ const commonOptions = {
 };
 
 interface TelemetryChartsProps {
-  thermal: number;
-  pressure: number;
+  assetType: string;
+  telemetry: any;
   degraded: boolean;
 }
 
-export default function TelemetryCharts({ thermal, pressure, degraded }: TelemetryChartsProps) {
-  const thermalRef = useRef<HTMLCanvasElement>(null);
-  const pressureRef = useRef<HTMLCanvasElement>(null);
-  const chartInstances = useRef<{ thermal?: Chart, pressure?: Chart }>({});
-  
-  const thermalData = useRef<number[]>(Array(30).fill(32));
-  const pressureData = useRef<number[]>(Array(30).fill(120));
+const CONFIG = {
+  'RADAR': [
+    { key: 'core_temp', label: 'Primary Array Thermal Matrix', unit: '°C', min: 20, max: 60, color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.5)', threshold: 45, isHighBad: true },
+    { key: 'coolant_pressure', label: 'Coolant Manifold Pressure', unit: ' PSI', min: 0, max: 150, color: '#10b981', bg: 'rgba(16, 185, 129, 0.5)', threshold: 80, isHighBad: false }
+  ],
+  'LASER_SHORAD': [
+    { key: 'cavity_temp', label: 'Laser Cavity Temperature', unit: '°C', min: 50, max: 150, color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.5)', threshold: 100, isHighBad: true },
+    { key: 'pump_rpm', label: 'Coolant Pump RPM', unit: ' RPM', min: 0, max: 6000, color: '#10b981', bg: 'rgba(16, 185, 129, 0.5)', threshold: 2000, isHighBad: false }
+  ],
+  'ARTILLERY': [
+    { key: 'hydraulic_pressure', label: 'Hydraulic Actuator Pressure', unit: ' PSI', min: 0, max: 4000, color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.5)', threshold: 1000, isHighBad: false },
+    { key: 'elevation_angle', label: 'Pod Elevation Angle', unit: '°', min: 0, max: 90, color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.5)', threshold: 90, isHighBad: true }
+  ],
+  'QUADRUPED': [
+    { key: 'joint_torque', label: 'Leg Joint Torque', unit: ' Nm', min: 0, max: 50, color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.5)', threshold: 30, isHighBad: true },
+    { key: 'battery_discharge', label: 'Battery Discharge Rate', unit: ' A', min: 0, max: 30, color: '#10b981', bg: 'rgba(16, 185, 129, 0.5)', threshold: 15, isHighBad: true }
+  ]
+};
+
+function ChartWidget({ config, value, degraded }: { config: any, value: number, degraded: boolean }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const chartRef = useRef<Chart | null>(null);
+  const dataRef = useRef<number[]>(Array(30).fill(value || (config.min + config.max)/2));
 
   useEffect(() => {
-    if (thermalRef.current && pressureRef.current) {
-      const ctxThermal = thermalRef.current.getContext('2d')!;
-      const gradThermal = ctxThermal.createLinearGradient(0, 0, 0, 100);
-      gradThermal.addColorStop(0, 'rgba(245, 158, 11, 0.5)');
-      gradThermal.addColorStop(1, 'rgba(245, 158, 11, 0.0)');
+    if (canvasRef.current) {
+      const ctx = canvasRef.current.getContext('2d')!;
+      const grad = ctx.createLinearGradient(0, 0, 0, 100);
+      grad.addColorStop(0, config.bg);
+      grad.addColorStop(1, config.bg.replace('0.5)', '0.0)'));
 
-      chartInstances.current.thermal = new Chart(ctxThermal, {
+      chartRef.current = new Chart(ctx, {
         type: 'line',
-        data: { labels: Array.from({length: 30}, (_, i) => i), datasets: [{ data: thermalData.current, borderColor: '#f59e0b', backgroundColor: gradThermal, borderWidth: 1.5, fill: true, pointRadius: 0, tension: 0.4 }] },
-        options: { ...commonOptions, scales: { y: { ...commonOptions.scales?.y, min: 20, max: 60 } } }
-      });
-
-      const ctxPressure = pressureRef.current.getContext('2d')!;
-      const gradPressure = ctxPressure.createLinearGradient(0, 0, 0, 100);
-      gradPressure.addColorStop(0, 'rgba(16, 185, 129, 0.5)');
-      gradPressure.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
-
-      chartInstances.current.pressure = new Chart(ctxPressure, {
-        type: 'line',
-        data: { labels: Array.from({length: 30}, (_, i) => i), datasets: [{ data: pressureData.current, borderColor: '#10b981', backgroundColor: gradPressure, borderWidth: 1.5, fill: true, pointRadius: 0, tension: 0.4 }] },
-        options: { ...commonOptions, scales: { y: { ...commonOptions.scales?.y, min: 0, max: 150 } } }
+        data: { labels: Array.from({length: 30}, (_, i) => i), datasets: [{ data: dataRef.current, borderColor: config.color, backgroundColor: grad, borderWidth: 1.5, fill: true, pointRadius: 0, tension: 0.4 }] },
+        options: { ...commonOptions, scales: { y: { ...commonOptions.scales?.y, min: config.min, max: config.max } } }
       });
     }
-
-    return () => {
-      chartInstances.current.thermal?.destroy();
-      chartInstances.current.pressure?.destroy();
-    };
-  }, []);
+    return () => chartRef.current?.destroy();
+  }, [config]);
 
   useEffect(() => {
-    thermalData.current.push(thermal);
-    thermalData.current.shift();
-    pressureData.current.push(pressure);
-    pressureData.current.shift();
+    if (value !== undefined) {
+      dataRef.current.push(value);
+      dataRef.current.shift();
+      if (chartRef.current) {
+        chartRef.current.data.datasets[0].borderColor = degraded ? '#f43f5e' : config.color;
+        chartRef.current.update();
+      }
+    }
+  }, [value, degraded, config]);
 
-    if (chartInstances.current.thermal) {
-      chartInstances.current.thermal.data.datasets[0].borderColor = degraded ? '#f43f5e' : '#f59e0b';
-      chartInstances.current.thermal.update();
-    }
-    if (chartInstances.current.pressure) {
-      chartInstances.current.pressure.data.datasets[0].borderColor = degraded ? '#f43f5e' : '#10b981';
-      chartInstances.current.pressure.update();
-    }
-  }, [thermal, pressure, degraded]);
+  const isAnomalous = config.isHighBad ? value > config.threshold : value < config.threshold;
+  const valColor = isAnomalous ? 'text-rose-400 glow-rose' : 'text-emerald-400';
+
+  return (
+      <div className="mb-4">
+          <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-300">{config.label}</span>
+              <span className={`font-bold ${valColor}`}>{(value || 0).toFixed(1)}{config.unit}</span>
+          </div>
+          <div className="h-24 w-full relative">
+              <canvas ref={canvasRef}></canvas>
+          </div>
+      </div>
+  );
+}
+
+export default function TelemetryCharts({ assetType, telemetry, degraded }: TelemetryChartsProps) {
+  const configs = CONFIG[assetType as keyof typeof CONFIG] || CONFIG['RADAR'];
 
   return (
     <div className="panel shrink-0 p-3">
@@ -84,25 +99,9 @@ export default function TelemetryCharts({ thermal, pressure, degraded }: Telemet
           <Activity className="w-4 h-4 mr-2" /> Prognostics &amp; Telemetry
       </h2>
       
-      <div className="mb-4">
-          <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-300">Primary Array Thermal Matrix</span>
-              <span className={`font-bold ${thermal > 45 ? 'text-rose-400 glow-rose' : 'text-amber-400'}`}>{thermal.toFixed(1)}°C</span>
-          </div>
-          <div className="h-24 w-full relative">
-              <canvas ref={thermalRef}></canvas>
-          </div>
-      </div>
-
-      <div>
-          <div className="flex justify-between text-xs mb-1">
-              <span className="text-slate-300">Coolant Manifold Pressure</span>
-              <span className={`font-bold ${pressure < 80 ? 'text-rose-400 glow-rose' : 'text-emerald-400'}`}>{pressure.toFixed(1)} PSI</span>
-          </div>
-          <div className="h-24 w-full relative">
-              <canvas ref={pressureRef}></canvas>
-          </div>
-      </div>
+      {configs.map(config => (
+        <ChartWidget key={config.key} config={config} value={telemetry[config.key]} degraded={degraded} />
+      ))}
     </div>
   );
 }

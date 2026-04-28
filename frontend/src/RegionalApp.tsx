@@ -80,7 +80,7 @@ export default function RegionalApp() {
       />
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
-        <RegionalBattleView degradedBravo={degradedBravo} />
+        <RegionalBattleView />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-hidden">
           <DigitalTwin degradedBravo={degradedBravo} />

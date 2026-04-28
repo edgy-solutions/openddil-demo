@@ -36,9 +36,9 @@ ENV PYTHONPATH="/app"
 WORKDIR /app
 
 # Copy application code
-COPY ltamds_simulator.py .
+COPY fleet_simulator.py .
 
 # Run as non-root user
 USER nonroot:nonroot
 
-ENTRYPOINT ["/opt/venv/bin/python", "ltamds_simulator.py"]
+ENTRYPOINT ["/opt/venv/bin/python", "fleet_simulator.py"]

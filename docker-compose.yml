@@ -97,6 +97,7 @@ services:
 
   faust-edge:
     image: ghcr.io/edgy-solutions/edge-faust-detector:latest
+    restart: always
     pull_policy: always
     container_name: openddil-demo-faust
     working_dir: /tmp
@@ -131,4 +132,4 @@ services:
     pull_policy: always
     container_name: openddil-demo-frontend
     ports:
-      - "3012:80"
+      - "3013:80"

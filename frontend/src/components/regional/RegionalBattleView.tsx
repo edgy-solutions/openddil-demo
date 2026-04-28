@@ -2,12 +2,13 @@ import React, { useRef, useMemo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
+import AssetSpawner from '../AssetSpawner';
 
-const BATTERY_DATA = [
-  { id: 'Bravo', x: -40, z: 20, color: 0x10b981 },
-  { id: 'Foxtrot', x: 30, z: 40, color: 0x10b981 },
-  { id: 'Uniform', x: -20, z: -50, color: 0x10b981 },
-  { id: 'Echo', x: 60, z: -20, color: 0x10b981 }
+const DISCOVERED_FLEET: { id: string, type: string, position: [number, number, number] }[] = [
+  { id: 'LTAMDS-04', type: 'RADAR', position: [-40, 0, 20] },
+  { id: 'STRYKER-DE-09', type: 'LASER_SHORAD', position: [30, 0, 40] },
+  { id: 'HIMARS-ALPHA', type: 'ARTILLERY', position: [-20, 0, -50] },
+  { id: 'GHOST-UGV-1', type: 'QUADRUPED', position: [60, 0, -20] }
 ];
 
 function Terrain() {
@@ -34,48 +35,6 @@ function Terrain() {
   );
 }
 
-function RadarBattery({ data, degradedBravo }: { data: any, degradedBravo: boolean }) {
-  const shieldRef = useRef<THREE.Mesh>(null);
-  const isBravo = data.id === 'Bravo';
-  const isDegraded = isBravo && degradedBravo;
-  const currentColor = isDegraded ? 0xf43f5e : data.color;
-
-  useFrame((state) => {
-    const time = state.clock.getElapsedTime();
-    if (shieldRef.current) {
-      const pulseSpeed = isDegraded ? 4 : 1.5;
-      const baseOpacity = isDegraded ? 0.05 : 0.15;
-      (shieldRef.current.material as THREE.MeshBasicMaterial).opacity = baseOpacity + Math.sin(time * pulseSpeed) * 0.05;
-      (shieldRef.current.material as THREE.MeshBasicMaterial).wireframeLinewidth = isDegraded ? 1 : 2;
-    }
-  });
-
-  return (
-    <group position={[data.x, 0, data.z]}>
-      <mesh position={[0, 0, 0]}>
-        <boxGeometry args={[6, 3, 8]} />
-        <meshStandardMaterial color={0x334155} />
-      </mesh>
-      <mesh position={[0, 3.5, 2]} rotation={[-Math.PI / 6, 0, 0]}>
-        <boxGeometry args={[6, 7, 1.5]} />
-        <meshStandardMaterial color={0x1e293b} metalness={0.8} />
-      </mesh>
-      <mesh ref={shieldRef} position={[0, -1, 0]}>
-        <sphereGeometry args={[45, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshBasicMaterial color={currentColor} transparent opacity={0.15} wireframe blending={THREE.AdditiveBlending} depthWrite={false} />
-      </mesh>
-      <mesh position={[0, -1, 0]}>
-        <sphereGeometry args={[44.5, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshBasicMaterial color={currentColor} transparent opacity={0.08} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} />
-      </mesh>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
-        <ringGeometry args={[45, 46, 64]} />
-        <meshBasicMaterial color={currentColor} transparent opacity={0.3} side={THREE.DoubleSide} />
-      </mesh>
-    </group>
-  );
-}
-
 function Threat({ target }: { target: THREE.Vector3 }) {
   const meshRef = useRef<THREE.Mesh>(null);
   const [speed] = React.useState(0.2 + Math.random() * 0.3);
@@ -99,8 +58,8 @@ function Threat({ target }: { target: THREE.Vector3 }) {
         const angle = Math.random() * Math.PI * 2;
         const dist = 200 + Math.random() * 50;
         meshRef.current.position.set(Math.cos(angle) * dist, 40 + Math.random() * 20, Math.sin(angle) * dist);
-        const nextTargetData = BATTERY_DATA[Math.floor(Math.random() * BATTERY_DATA.length)];
-        setCurrentTarget(new THREE.Vector3(nextTargetData.x, 0, nextTargetData.z));
+        const nextTargetData = DISCOVERED_FLEET[Math.floor(Math.random() * DISCOVERED_FLEET.length)];
+        setCurrentTarget(new THREE.Vector3(nextTargetData.position[0], 0, nextTargetData.position[2]));
       }
     }
   });
@@ -113,11 +72,11 @@ function Threat({ target }: { target: THREE.Vector3 }) {
   );
 }
 
-export default function RegionalBattleView({ degradedBravo }: { degradedBravo: boolean }) {
+export default function RegionalBattleView() {
   const initialTargets = useMemo(() => {
     return Array.from({ length: 4 }).map(() => {
-      const b = BATTERY_DATA[Math.floor(Math.random() * BATTERY_DATA.length)];
-      return new THREE.Vector3(b.x, 0, b.z);
+      const b = DISCOVERED_FLEET[Math.floor(Math.random() * DISCOVERED_FLEET.length)];
+      return new THREE.Vector3(b.position[0], 0, b.position[2]);
     });
   }, []);
 
@@ -164,9 +123,7 @@ export default function RegionalBattleView({ degradedBravo }: { degradedBravo: b
           <gridHelper args={[400, 100, 0x1e293b, 0x0f172a]} position={[0, -2, 0]} />
           <Terrain />
 
-          {BATTERY_DATA.map(data => (
-            <RadarBattery key={data.id} data={data} degradedBravo={degradedBravo} />
-          ))}
+          <AssetSpawner assets={DISCOVERED_FLEET} />
 
           {initialTargets.map((target, i) => (
             <Threat key={i} target={target} />
