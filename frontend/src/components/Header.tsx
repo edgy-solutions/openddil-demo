@@ -9,15 +9,36 @@ interface HeaderProps {
   assets: { id: string, type: string }[];
   selectedAsset: string;
   setSelectedAsset: (v: string) => void;
+  activeNode: string;
+  setActiveNode: (v: string) => void;
 }
 
-export default function Header({ link1, setLink1, link2, setLink2, buffer, assets, selectedAsset, setSelectedAsset }: HeaderProps) {
+export default function Header({ link1, setLink1, link2, setLink2, buffer, assets, selectedAsset, setSelectedAsset, activeNode, setActiveNode }: HeaderProps) {
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
+        {/* Node Context Switcher */}
+        <div className="flex flex-col mr-2">
+          <label className="text-[10px] text-slate-400 tracking-wider mb-1">NODE</label>
+          <div className="relative">
+            <select
+              value={activeNode}
+              onChange={(e) => setActiveNode(e.target.value)}
+              className="appearance-none w-40 bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 cursor-pointer"
+            >
+              <option value="FOB-ALPHA">FOB ALPHA</option>
+              <option value="OUTPOST-ECHO">OUTPOST ECHO</option>
+              <option value="MOBILE-CONVOY-7">MOBILE CONVOY 7</option>
+            </select>
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
+              <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+            </div>
+          </div>
+        </div>
+
         {/* Local Asset Context Switcher */}
-        <div className="flex flex-col">
-          <label className="text-[10px] text-slate-400 tracking-wider mb-1">LOCAL ASSET CONTEXT</label>
+        <div className="flex flex-col pr-6 border-r border-slate-700">
+          <label className="text-[10px] text-slate-400 tracking-wider mb-1">ASSET</label>
           <div className="relative">
             <select
               value={selectedAsset}

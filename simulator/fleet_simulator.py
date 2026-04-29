@@ -16,10 +16,10 @@ SENSOR_TOPIC = "raw-sensor-stream"
 REGISTRY_TOPIC = "asset-registry"
 
 ASSETS = {
-    "LTAMDS-04": {"type": "RADAR", "base_telemetry": {"core_temp": 42.1, "coolant_pressure": 118.5}},
-    "STRYKER-DE-09": {"type": "LASER_SHORAD", "base_telemetry": {"cavity_temp": 85.0, "pump_rpm": 4500}},
-    "HIMARS-ALPHA": {"type": "ARTILLERY", "base_telemetry": {"hydraulic_pressure": 3000, "elevation_angle": 45.0}},
-    "GHOST-UGV-1": {"type": "QUADRUPED", "base_telemetry": {"joint_torque": 12.5, "battery_discharge": 5.2}}
+    "LTAMDS-04": {"type": "RADAR", "node_id": "FOB-ALPHA", "base_telemetry": {"core_temp": 42.1, "coolant_pressure": 118.5}},
+    "STRYKER-DE-09": {"type": "LASER_SHORAD", "node_id": "FOB-ALPHA", "base_telemetry": {"cavity_temp": 85.0, "pump_rpm": 4500}},
+    "HIMARS-ALPHA": {"type": "ARTILLERY", "node_id": "OUTPOST-ECHO", "base_telemetry": {"hydraulic_pressure": 3000, "elevation_angle": 45.0}},
+    "GHOST-UGV-1": {"type": "QUADRUPED", "node_id": "MOBILE-CONVOY-7", "base_telemetry": {"joint_torque": 12.5, "battery_discharge": 5.2}}
 }
 
 # State
@@ -94,6 +94,7 @@ async def registry_loop():
             payload = {
                 "asset_id": asset_id,
                 "type": asset["type"],
+                "node_id": asset["node_id"],
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             try:
@@ -124,6 +125,7 @@ async def simulation_loop():
                 "asset_id": asset_id,
                 "device_id": asset_id,
                 "type": asset["type"],
+                "node_id": asset["node_id"],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 **telemetry
             }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Header from './components/Header';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
 import BattleView from './components/BattleView';
@@ -7,11 +7,17 @@ import AlertFeed, { type Alert } from './components/AlertFeed';
 import Inventory from './components/Inventory';
 
 const DISCOVERED_FLEET = [
-  { id: 'LTAMDS-04', type: 'RADAR' },
-  { id: 'STRYKER-DE-09', type: 'LASER_SHORAD' },
-  { id: 'HIMARS-ALPHA', type: 'ARTILLERY' },
-  { id: 'GHOST-UGV-1', type: 'QUADRUPED' }
+  { id: 'LTAMDS-04', type: 'RADAR', node_id: 'FOB-ALPHA' },
+  { id: 'STRYKER-DE-09', type: 'LASER_SHORAD', node_id: 'FOB-ALPHA' },
+  { id: 'HIMARS-ALPHA', type: 'ARTILLERY', node_id: 'OUTPOST-ECHO' },
+  { id: 'GHOST-UGV-1', type: 'QUADRUPED', node_id: 'MOBILE-CONVOY-7' }
 ];
+
+interface Asset {
+  id: string;
+  type: string;
+  node_id: string;
+}
 
 function App() {
   const [link1, setLink1] = useState(true);
@@ -21,6 +27,7 @@ function App() {
   const [telemetry, setTelemetry] = useState<any>({});
   const [radarColor, setRadarColor] = useState('#10b981');
   const [clock, setClock] = useState('');
+  const [activeNode, setActiveNode] = useState('FOB-ALPHA');
   const [selectedAssetId, setSelectedAssetId] = useState('LTAMDS-04');
   const [faustAlerts, setFaustAlerts] = useState<Alert[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([
@@ -120,6 +127,14 @@ function App() {
     return () => clearInterval(interval);
   }, [link1, link2, degraded]);
 
+  const localAssets = useMemo(() => DISCOVERED_FLEET.filter(asset => asset.node_id === activeNode), [activeNode]);
+
+  useEffect(() => {
+    if (localAssets.length > 0 && !localAssets.find((a: Asset) => a.id === selectedAssetId)) {
+      setSelectedAssetId(localAssets[0].id);
+    }
+  }, [activeNode, localAssets, selectedAssetId]);
+
   const selectedAsset = DISCOVERED_FLEET.find(a => a.id === selectedAssetId) || DISCOVERED_FLEET[0];
   const selectedAssetTelemetry = telemetry[selectedAssetId] || {};
 
@@ -129,9 +144,11 @@ function App() {
         link1={link1} setLink1={setLink1} 
         link2={link2} setLink2={setLink2} 
         buffer={buffer} 
-        assets={DISCOVERED_FLEET}
+        assets={localAssets}
         selectedAsset={selectedAssetId}
         setSelectedAsset={setSelectedAssetId}
+        activeNode={activeNode}
+        setActiveNode={setActiveNode}
       />
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
