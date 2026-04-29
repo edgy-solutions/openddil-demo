@@ -82,8 +82,9 @@ export default function HqBattleView({ wanActive, linksUp, linksDown }: { wanAct
         <Canvas camera={{ position: [0, 500, 600], fov: 45 }}>
           <color attach="background" args={[0x020617]} />
           <fogExp2 attach="fog" args={[0x020617, 0.0015]} />
-          <ambientLight intensity={0.4} />
-          <directionalLight position={[200, 500, 200]} intensity={0.6} color={0x22d3ee} />
+          <ambientLight intensity={0.8} />
+          <directionalLight position={[200, 500, 200]} intensity={1.5} color={0x22d3ee} />
+          <hemisphereLight groundColor={0x020617} intensity={0.5} />
           
           <OrbitControls enableDamping dampingFactor={0.05} maxDistance={1200} minDistance={200} maxPolarAngle={Math.PI / 2 - 0.1} />
           

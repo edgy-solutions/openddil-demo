@@ -3,8 +3,8 @@ import type { ReactNode } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { LaserShorad, Artillery, Quadruped } from './DiagnosticCanvas';
-import LtamdsView from './LtamdsView';
+import { LaserShorad, Artillery, Quadruped, RadarXRay } from './DiagnosticCanvas';
+import AssetCallout from './AssetCallout';
 
 class ErrorBoundary extends Component<{ fallback: ReactNode, children: ReactNode }, { hasError: boolean }> {
     constructor(props: { fallback: ReactNode, children: ReactNode }) {
@@ -88,7 +88,7 @@ function LaserFallback() {
 
 function ArtilleryFallback() {
     return (
-        <mesh position={[0, 1, 0]} rotation={[0.2, 0, 0]} scale={7.5}>
+        <mesh position={[0, 1, 0]} rotation={[0.2, 0, 0]} scale={15}>
             <boxGeometry args={[2, 1.5, 4]} />
             <meshStandardMaterial color={0x22d3ee} emissive={0x22d3ee} emissiveIntensity={0.5} transparent opacity={0.8} />
         </mesh>
@@ -110,7 +110,7 @@ function AssetModel({ url, scale = 2.5, yOffset = 0 }: { url: string, scale?: nu
     return <primitive object={clonedScene} scale={scale} position={[0, yOffset, 0]} />;
 }
 
-export default function AssetSpawner({ assets, onAssetClick, selectedAssetId }: { assets: { id: string, type: string, position: [number, number, number] }[], onAssetClick?: (id: string, type: string) => void, selectedAssetId?: string | null }) {
+export default function AssetSpawner({ assets, onAssetClick, selectedAssetId }: { assets: { id: string, type: string, position: [number, number, number], status?: 'NOMINAL' | 'DEGRADED' | 'CRITICAL' | 'COMM_LOST' }[], onAssetClick?: (id: string, type: string) => void, selectedAssetId?: string | null }) {
     return (
         <group>
             {assets.map(asset => {
@@ -127,8 +127,8 @@ export default function AssetSpawner({ assets, onAssetClick, selectedAssetId }: 
                 } else if (asset.type === 'ARTILLERY') {
                     Fallback = ArtilleryFallback;
                     url = '/models/himars.glb';
-                    scale = 7.5;
-                    yOffset = 3;
+                    scale = 15;
+                    yOffset = 6;
                 } else if (asset.type === 'QUADRUPED') {
                     Fallback = QuadrupedFallback;
                     url = '/models/ugv.glb';
@@ -156,21 +156,26 @@ export default function AssetSpawner({ assets, onAssetClick, selectedAssetId }: 
                         {asset.type === 'RADAR' && !selectedAssetId && <RadarShield isDegraded={asset.id === 'LTAMDS-04' && false} />}
                         
                         {selectedAssetId === asset.id ? (
-                            asset.type === 'RADAR' ? (
-                                <LtamdsView degraded={false} coreTemp={32} />
-                            ) : asset.type === 'LASER_SHORAD' ? (
-                                <LaserShorad degraded={false} />
-                            ) : asset.type === 'ARTILLERY' ? (
-                                <Artillery degraded={false} />
-                            ) : asset.type === 'QUADRUPED' ? (
-                                <Quadruped degraded={false} />
-                            ) : null
+                            <group position={[0, asset.type === 'RADAR' ? 0 : asset.type === 'LASER_SHORAD' ? 4 : asset.type === 'ARTILLERY' ? 6 : 0.5, 0]}>
+                                {asset.type === 'RADAR' ? (
+                                    <RadarXRay degraded={false} />
+                                ) : asset.type === 'LASER_SHORAD' ? (
+                                    <LaserShorad degraded={false} />
+                                ) : asset.type === 'ARTILLERY' ? (
+                                    <Artillery degraded={false} />
+                                ) : asset.type === 'QUADRUPED' ? (
+                                    <Quadruped degraded={false} />
+                                ) : null}
+                            </group>
                         ) : (
                             <ErrorBoundary fallback={<Fallback />}>
                                 <Suspense fallback={<Fallback />}>
                                     <AssetModel url={url} scale={scale} yOffset={yOffset} />
                                 </Suspense>
                             </ErrorBoundary>
+                        )}
+                        {!selectedAssetId && asset.status && (
+                            <AssetCallout asset_id={asset.id} status={asset.status} heightOffset={asset.type === 'ARTILLERY' ? 12 : asset.type === 'QUADRUPED' ? 6 : 5} />
                         )}
                     </group>
                 );

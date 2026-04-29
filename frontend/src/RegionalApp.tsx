@@ -85,7 +85,13 @@ export default function RegionalApp() {
         <RegionalBattleView 
           link1={link1} 
           selectedAssetId={selectedAsset?.id || null} 
-          onAssetSelect={(id, type) => setSelectedAsset({id, type})} 
+          onAssetSelect={(id, type) => {
+            if (id && type) {
+              setSelectedAsset({id, type});
+            } else {
+              setSelectedAsset(null);
+            }
+          }} 
         />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-hidden">

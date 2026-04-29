@@ -4,6 +4,42 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import LtamdsView from './LtamdsView';
 
+export function RadarXRay({ degraded }: { degraded: boolean }) {
+    return (
+        <group scale={2.5} position={[0, 1.5, 0]}>
+            <mesh position={[0, 0, 0]}>
+                <boxGeometry args={[6, 3, 8]} />
+                <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
+                <lineSegments>
+                    <edgesGeometry args={[new THREE.BoxGeometry(6, 3, 8)]} />
+                    <lineBasicMaterial color={0x22d3ee} transparent opacity={0.3} />
+                </lineSegments>
+            </mesh>
+            <mesh position={[0, 3.5, 2]} rotation={[-Math.PI / 6, 0, 0]}>
+                <boxGeometry args={[6, 7, 1.5]} />
+                <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
+                <lineSegments>
+                    <edgesGeometry args={[new THREE.BoxGeometry(6, 7, 1.5)]} />
+                    <lineBasicMaterial color={0x22d3ee} transparent opacity={0.3} />
+                </lineSegments>
+            </mesh>
+            {/* Glowing dots on the face */}
+            <group position={[0, 3.5, 2]} rotation={[-Math.PI / 6, 0, 0]}>
+                <group position={[0, 0, 0.76]}>
+                    {Array.from({ length: 4 }).map((_, row) => (
+                        Array.from({ length: 4 }).map((_, col) => (
+                            <mesh key={`${row}-${col}`} position={[-1.5 + col * 1, -2 + row * 1.33, 0]}>
+                                <boxGeometry args={[0.4, 0.4, 0.05]} />
+                                <meshBasicMaterial color={degraded && row === 2 ? 0xef4444 : 0x10b981} transparent opacity={0.8} />
+                            </mesh>
+                        ))
+                    ))}
+                </group>
+            </group>
+        </group>
+    );
+}
+
 export function LaserShorad({ degraded }: { degraded: boolean }) {
     const coreRef = useRef<THREE.Group>(null);
     const indicatorRefs = useRef<THREE.Mesh[]>([]);

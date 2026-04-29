@@ -6,11 +6,11 @@ import AssetSpawner from '../AssetSpawner';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsArc from '../LogisticsArc';
 
-const DISCOVERED_FLEET: { id: string, type: string, position: [number, number, number] }[] = [
-  { id: 'LTAMDS-04', type: 'RADAR', position: [-40, 0, 20] },
-  { id: 'STRYKER-DE-09', type: 'LASER_SHORAD', position: [30, 0, 40] },
-  { id: 'HIMARS-ALPHA', type: 'ARTILLERY', position: [10, 0, -20] },
-  { id: 'GHOST-UGV-1', type: 'QUADRUPED', position: [-80, 0, 70] }
+const DISCOVERED_FLEET: { id: string, type: string, position: [number, number, number], status: 'NOMINAL' | 'DEGRADED' | 'CRITICAL' | 'COMM_LOST' }[] = [
+  { id: 'LTAMDS-04', type: 'RADAR', position: [-40, 0, 20], status: 'NOMINAL' },
+  { id: 'STRYKER-DE-09', type: 'LASER_SHORAD', position: [30, 0, 40], status: 'DEGRADED' },
+  { id: 'HIMARS-ALPHA', type: 'ARTILLERY', position: [10, 0, -20], status: 'NOMINAL' },
+  { id: 'GHOST-UGV-1', type: 'QUADRUPED', position: [-80, 0, 70], status: 'COMM_LOST' }
 ];
 
 function Terrain() {
@@ -43,7 +43,7 @@ function CameraRig({ targetPos, isZoomed }: { targetPos: THREE.Vector3 | null, i
     if (isZoomed && targetPos) {
       camera.position.lerp(new THREE.Vector3(targetPos.x + 15, targetPos.y + 10, targetPos.z + 15), 0.05);
       if (controls) {
-        (controls as any).target.lerp(targetPos, 0.05);
+        (controls as any).target.lerp(new THREE.Vector3(targetPos.x, targetPos.y + 4, targetPos.z), 0.05);
       }
     } else {
       camera.position.lerp(new THREE.Vector3(0, 150, 180), 0.05);
@@ -65,7 +65,7 @@ function FogController({ isZoomed }: { isZoomed: boolean }) {
   return null;
 }
 
-export default function RegionalBattleView({ link1, selectedAssetId, onAssetSelect }: { link1: boolean, selectedAssetId: string | null, onAssetSelect: (id: string, type: string) => void }) {
+export default function RegionalBattleView({ link1, selectedAssetId, onAssetSelect }: { link1: boolean, selectedAssetId: string | null, onAssetSelect: (id: string | null, type: string | null) => void }) {
   const targetAsset = useMemo(() => DISCOVERED_FLEET.find(a => a.id === selectedAssetId), [selectedAssetId]);
   const targetPos = targetAsset ? new THREE.Vector3(...targetAsset.position) : null;
 
@@ -97,11 +97,12 @@ export default function RegionalBattleView({ link1, selectedAssetId, onAssetSele
       </div>
 
       <div className="absolute inset-0 cursor-move">
-        <Canvas camera={{ position: [0, 150, 180], fov: 40 }}>
+        <Canvas camera={{ position: [0, 150, 180], fov: 40 }} onPointerMissed={() => onAssetSelect(null, null)}>
           <color attach="background" args={[0x020617]} />
           <fogExp2 attach="fog" args={[0x020617, 0.005]} />
-          <ambientLight intensity={0.3} />
-          <directionalLight position={[50, 100, 50]} intensity={0.8} />
+          <ambientLight intensity={0.8} />
+          <directionalLight position={[50, 100, 50]} intensity={1.5} />
+          <hemisphereLight groundColor={0x020617} intensity={0.5} />
           
           <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={10} maxPolarAngle={Math.PI / 2 - 0.1} />
           
