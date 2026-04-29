@@ -1,0 +1,14 @@
+[96msrc/components/TacticalMapUnderlay.tsx[0m:[93m2[0m:[93m1[0m - [91merror[0m[90m TS6133: [0m'THREE' is declared but its value is never read.
+
+[7m2[0m import * as THREE from 'three';
+[7m [0m [91m~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+
+[96msrc/components/hq/HqBattleView.tsx[0m:[93m144[0m:[93m27[0m - [91merror[0m[90m TS2322: [0mType '{ children: Element; disableNormalPass: true; }' is not assignable to type 'IntrinsicAttributes & EffectComposerProps & RefAttributes<EffectComposer>'.
+  Property 'disableNormalPass' does not exist on type 'IntrinsicAttributes & EffectComposerProps & RefAttributes<EffectComposer>'. Did you mean 'enableNormalPass'?
+
+[7m144[0m           <EffectComposer disableNormalPass>
+[7m   [0m [91m                          ~~~~~~~~~~~~~~~~~[0m
+
+
+Found 2 errors.
+

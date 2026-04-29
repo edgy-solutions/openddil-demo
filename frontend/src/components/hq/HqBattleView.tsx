@@ -1,8 +1,11 @@
-import { useRef, useMemo } from 'react';
+import React, { useRef, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { OrbitControls, Grid } from '@react-three/drei';
 import * as THREE from 'three';
+import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import DdilNetworkLink from '../DdilNetworkLink';
+import LogisticsHubNode from '../LogisticsHubNode';
+import TacticalMapUnderlay from '../TacticalMapUnderlay';
 
 const REGIONS = [
   { id: 'West', x: -300, z: 100, count: 4, color: 0x10b981 },
@@ -30,9 +33,14 @@ function AbstractContinents() {
   }, []);
 
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]}>
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -5, 0]}>
       <planeGeometry ref={geoRef} args={[2000, 2000, 60, 60]} />
-      <meshBasicMaterial color={0x334155} wireframe transparent opacity={0.15} />
+      <meshStandardMaterial 
+        color={0x020617} 
+        metalness={0.6} 
+        roughness={0.4} 
+        flatShading={true} 
+      />
     </mesh>
   );
 }
@@ -79,25 +87,45 @@ export default function HqBattleView({ wanActive, linksUp, linksDown }: { wanAct
       </div>
 
       <div className="absolute inset-0 cursor-move">
-        <Canvas camera={{ position: [0, 500, 600], fov: 45 }}>
+        <Canvas camera={{ position: [0, 150, 600], fov: 45 }}>
           <color attach="background" args={[0x020617]} />
-          <fogExp2 attach="fog" args={[0x020617, 0.0015]} />
+          <fog attach="fog" args={[0x020617, 200, 1500]} />
           <ambientLight intensity={0.8} />
           <directionalLight position={[200, 500, 200]} intensity={1.5} color={0x22d3ee} />
           <hemisphereLight groundColor={0x020617} intensity={0.5} />
           
-          <OrbitControls enableDamping dampingFactor={0.05} maxDistance={1200} minDistance={200} maxPolarAngle={Math.PI / 2 - 0.1} />
+          <OrbitControls enableDamping dampingFactor={0.05} maxDistance={1200} minDistance={200} maxPolarAngle={Math.PI / 2 - 0.1} target={[0, 0, -100]} />
           
-          <gridHelper args={[2000, 100, 0x1e293b, 0x0f172a]} position={[0, -2, 0]} />
+          <Grid 
+            position={[0, -2, 0]} 
+            args={[2000, 2000]} 
+            cellSize={20} 
+            cellThickness={0.5} 
+            sectionSize={100} 
+            sectionThickness={1.5} 
+            cellColor="#22d3ee" 
+            sectionColor="#10b981" 
+            fadeDistance={1500} 
+          />
+          
+          {/* Concentric Rings */}
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+            <ringGeometry args={[200, 202, 64]} />
+            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.15} side={THREE.DoubleSide} />
+          </mesh>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+            <ringGeometry args={[400, 404, 64]} />
+            <meshBasicMaterial color={0x10b981} transparent opacity={0.1} side={THREE.DoubleSide} />
+          </mesh>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+            <ringGeometry args={[600, 606, 64]} />
+            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.05} side={THREE.DoubleSide} />
+          </mesh>
+
           <AbstractContinents />
 
           {radars.map((r, i) => (
-            <group key={`node-${i}`} position={[r.x, 0, r.z]}>
-              <mesh position={[0, 2, 0]}>
-                <octahedronGeometry args={[4, 0]} />
-                <meshBasicMaterial color={0xffffff} />
-              </mesh>
-            </group>
+            <LogisticsHubNode key={`node-${i}`} position={[r.x, 0, r.z]} />
           ))}
 
           {radars.map((r, i) => (
@@ -108,6 +136,14 @@ export default function HqBattleView({ wanActive, linksUp, linksDown }: { wanAct
               status={wanActive ? 'NOMINAL' : 'SEVERED'}
             />
           ))}
+
+          <React.Suspense fallback={null}>
+            <TacticalMapUnderlay />
+          </React.Suspense>
+
+          <EffectComposer>
+            <Bloom luminanceThreshold={0.2} mipmapBlur intensity={1.2} luminanceSmoothing={0.9} />
+          </EffectComposer>
         </Canvas>
       </div>
 

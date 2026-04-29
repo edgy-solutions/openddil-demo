@@ -13,6 +13,7 @@
     "@heroicons/react": "^2.2.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.0",
+    "@react-three/postprocessing": "^3.0.4",
     "@remixicon/react": "^4.9.0",
     "@tremor/react": "^3.18.7",
     "@tweenjs/tween.js": "^25.0.0",
