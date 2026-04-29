@@ -1,8 +1,10 @@
-import React, { useRef, useMemo } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { useRef, useMemo } from 'react';
+import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import AssetSpawner from '../AssetSpawner';
+import DdilNetworkLink from '../DdilNetworkLink';
+import LogisticsArc from '../LogisticsArc';
 
 const DISCOVERED_FLEET: { id: string, type: string, position: [number, number, number] }[] = [
   { id: 'LTAMDS-04', type: 'RADAR', position: [-40, 0, 20] },
@@ -35,51 +37,7 @@ function Terrain() {
   );
 }
 
-function Threat({ target }: { target: THREE.Vector3 }) {
-  const meshRef = useRef<THREE.Mesh>(null);
-  const [speed] = React.useState(0.2 + Math.random() * 0.3);
-  const [currentTarget, setCurrentTarget] = React.useState(target);
-
-  React.useEffect(() => {
-    if (meshRef.current) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 200 + Math.random() * 50;
-      meshRef.current.position.set(Math.cos(angle) * dist, 40 + Math.random() * 20, Math.sin(angle) * dist);
-    }
-  }, []);
-
-  useFrame(() => {
-    if (meshRef.current) {
-      const dir = new THREE.Vector3().subVectors(currentTarget, meshRef.current.position).normalize();
-      meshRef.current.position.add(dir.multiplyScalar(speed));
-      meshRef.current.lookAt(currentTarget);
-
-      if (meshRef.current.position.distanceTo(currentTarget) < 10) {
-        const angle = Math.random() * Math.PI * 2;
-        const dist = 200 + Math.random() * 50;
-        meshRef.current.position.set(Math.cos(angle) * dist, 40 + Math.random() * 20, Math.sin(angle) * dist);
-        const nextTargetData = DISCOVERED_FLEET[Math.floor(Math.random() * DISCOVERED_FLEET.length)];
-        setCurrentTarget(new THREE.Vector3(nextTargetData.position[0], 0, nextTargetData.position[2]));
-      }
-    }
-  });
-
-  return (
-    <mesh ref={meshRef} rotation={[Math.PI / 2, 0, 0]}>
-      <coneGeometry args={[2, 6, 4]} />
-      <meshBasicMaterial color={0xf43f5e} wireframe />
-    </mesh>
-  );
-}
-
-export default function RegionalBattleView() {
-  const initialTargets = useMemo(() => {
-    return Array.from({ length: 4 }).map(() => {
-      const b = DISCOVERED_FLEET[Math.floor(Math.random() * DISCOVERED_FLEET.length)];
-      return new THREE.Vector3(b.position[0], 0, b.position[2]);
-    });
-  }, []);
-
+export default function RegionalBattleView({ link1 }: { link1: boolean }) {
   return (
     <div className="col-span-2 panel flex flex-col relative overflow-hidden">
       <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
@@ -88,26 +46,22 @@ export default function RegionalBattleView() {
           <p className="text-[10px] font-mono tracking-widest text-slate-400">THEATER SUB-SECTOR: MEDITERRANEAN EAST</p>
         </div>
         <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
-          <div className="text-[10px] text-slate-500 mb-1">THEATER THREAT DETECTIONS</div>
-          <div className="text-xl font-bold text-rose-400 flex items-center justify-end">
-            <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse mr-2"></span>
-            4 ACTIVE
+          <div className="text-[10px] text-slate-500 mb-1">THEATER LINK STATUS</div>
+          <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
+            <span className="text-emerald-400 mr-4">{link1 ? 4 : 0} UP</span>
+            <span className="text-rose-400">{link1 ? 0 : 4} DOWN</span>
           </div>
         </div>
       </div>
 
       <div className="absolute bottom-4 right-4 z-10 bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
         <div className="flex items-center gap-2 mb-2">
-          <div className="w-3 h-3 rounded-full bg-emerald-500/20 border border-emerald-500"></div>
-          <span className="text-slate-300">NOMINAL COVERAGE</span>
-        </div>
-        <div className="flex items-center gap-2 mb-2">
-          <div className="w-3 h-3 rounded-full bg-amber-500/20 border border-amber-500"></div>
-          <span className="text-slate-300">DEGRADED SECTOR</span>
+          <div className="w-3 h-3 bg-emerald-500"></div>
+          <span className="text-slate-300">NOMINAL LINK</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-3 h-3 border border-rose-500 bg-rose-500/20"></div>
-          <span className="text-slate-300">INBOUND THREAT</span>
+          <div className="w-3 h-3 bg-rose-500"></div>
+          <span className="text-slate-300">SEVERED LINK</span>
         </div>
       </div>
 
@@ -125,9 +79,20 @@ export default function RegionalBattleView() {
 
           <AssetSpawner assets={DISCOVERED_FLEET} />
 
-          {initialTargets.map((target, i) => (
-            <Threat key={i} target={target} />
+          {DISCOVERED_FLEET.map((asset, i) => (
+            <DdilNetworkLink 
+              key={`link-${i}`} 
+              start={new THREE.Vector3(0, 0, -80)} 
+              end={new THREE.Vector3(...asset.position)} 
+              status={link1 ? 'NOMINAL' : 'SEVERED'} 
+            />
           ))}
+
+          <LogisticsArc 
+            start={new THREE.Vector3(50, 0, -50)} 
+            end={new THREE.Vector3(...DISCOVERED_FLEET[1].position)} 
+            item="Rear Actuator" 
+          />
         </Canvas>
       </div>
 

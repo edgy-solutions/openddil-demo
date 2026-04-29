@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import Header from './components/Header';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
-import BattleView from './components/BattleView';
+import LocalFleetRadar from './components/LocalFleetRadar';
 import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed, { type Alert } from './components/AlertFeed';
 import Inventory from './components/Inventory';
@@ -19,7 +19,6 @@ function App() {
   const [buffer, setBuffer] = useState(0);
   const [degraded, setDegraded] = useState(false);
   const [telemetry, setTelemetry] = useState<any>({});
-  const [radarColor, setRadarColor] = useState('#10b981');
   const [clock, setClock] = useState('');
   const [activeNode, setActiveNode] = useState('FOB-ALPHA');
   const [selectedAssetId, setSelectedAssetId] = useState('');
@@ -90,11 +89,9 @@ function App() {
   useEffect(() => {
     if (!link1 && !degraded) {
       setDegraded(true);
-      setRadarColor('#f59e0b');
       addAlert("UPLINK SEVERED. ISOLATED EDGE MODE ACTIVE.", "warn");
     } else if (link1 && degraded) {
       setDegraded(false);
-      setRadarColor('#10b981');
       addAlert("UPLINK RESTORED. FLUSHING BUFFER TO HQ.", "info");
       setTimeout(() => addAlert("SYSTEM NOMINAL. FULL POWER RESTORED.", "info"), 1500);
     }
@@ -198,7 +195,7 @@ function App() {
 
           <div className="panel flex-1 relative overflow-hidden font-rajdhani font-semibold">
             <DiagnosticCanvas assetType={selectedAsset.type} degraded={degraded} coreTemp={selectedAssetTelemetry.core_temp || 32.0} />
-            <BattleView degraded={degraded} radarColor={radarColor} />
+            <LocalFleetRadar degraded={degraded} localAssets={localAssets} />
           </div>
         </div>
 

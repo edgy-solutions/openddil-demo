@@ -24,7 +24,6 @@ export default function HqApp() {
   const [wanActive, setWanActive] = useState(true);
   const [buffer, setBuffer] = useState(0);
   const [bufferTrend, setBufferTrend] = useState<'up' | 'down' | 'none'>('none');
-  const [threatCount, setThreatCount] = useState(42);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>(INITIAL_WORK_ORDERS);
   
   const bufferRef = useRef(buffer);
@@ -86,9 +85,6 @@ export default function HqApp() {
         wo.id === 'WO-9942' ? { ...wo, isNew: false } : wo
       ));
     }, 3000);
-    
-    // Jump threat count
-    setThreatCount(prev => prev + Math.floor(Math.random() * 15));
   };
 
   // Buffer & Data Loop
@@ -108,11 +104,6 @@ export default function HqApp() {
             return newBuffer;
           } else {
             setBufferTrend('none');
-            
-            // Normal threat fluctuation
-            if (Math.random() > 0.7) {
-              setThreatCount(curr => curr + (Math.random() > 0.5 ? 1 : -1));
-            }
             return 0;
           }
         }
@@ -146,7 +137,8 @@ export default function HqApp() {
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden relative z-0">
         <HqBattleView 
           wanActive={wanActive} 
-          threatCount={threatCount} 
+          linksUp={wanActive ? 17 : 0}
+          linksDown={wanActive ? 0 : 17}
         />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-hidden">
