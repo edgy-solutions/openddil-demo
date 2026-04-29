@@ -3,10 +3,11 @@ import App from './App';
 import RegionalApp from './RegionalApp';
 import HqApp from './HqApp';
 import ControllerApp from './ControllerApp';
-import { Laptop, Server, Building2, SlidersHorizontal } from 'lucide-react';
+import SimulatorApp from './SimulatorApp';
+import { Laptop, Server, Building2, SlidersHorizontal, Settings2 } from 'lucide-react';
 
 function Root() {
-  const [view, setView] = useState<'edge' | 'regional' | 'hq' | 'controller'>('edge');
+  const [view, setView] = useState<'edge' | 'regional' | 'hq' | 'controller' | 'simulator'>('edge');
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-300 overflow-hidden font-mono">
@@ -40,6 +41,13 @@ function Root() {
           >
             <SlidersHorizontal className="w-3 h-3" /> DDIL CONTROLLER
           </button>
+          <div className="w-px h-4 bg-slate-700 mx-1 self-center" />
+          <button 
+            onClick={() => setView('simulator')}
+            className={`px-3 py-1 flex items-center gap-2 text-xs font-bold transition-colors ${view === 'simulator' ? 'bg-slate-800 text-cyan-400 border border-slate-600' : 'text-slate-500 hover:text-cyan-500'}`}
+          >
+            <Settings2 className="w-3 h-3" /> SIMULATOR
+          </button>
         </div>
       </div>
 
@@ -49,6 +57,7 @@ function Root() {
         {view === 'regional' && <RegionalApp />}
         {view === 'hq' && <HqApp />}
         {view === 'controller' && <ControllerApp />}
+        {view === 'simulator' && <SimulatorApp />}
       </div>
     </div>
   );

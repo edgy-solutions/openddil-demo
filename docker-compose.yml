@@ -132,4 +132,4 @@ services:
     pull_policy: always
     container_name: openddil-demo-frontend
     ports:
-      - "3014:80"
+      - "3015:80"

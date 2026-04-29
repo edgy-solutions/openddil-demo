@@ -6,14 +6,21 @@ interface HeaderProps {
   link2: boolean;
   setLink2: (v: boolean) => void;
   buffer: number;
-  assets: { id: string, type: string }[];
+  discoveredFleet: { id: string, type: string, node_id: string }[];
   selectedAsset: string;
   setSelectedAsset: (v: string) => void;
   activeNode: string;
   setActiveNode: (v: string) => void;
 }
 
-export default function Header({ link1, setLink1, link2, setLink2, buffer, assets, selectedAsset, setSelectedAsset, activeNode, setActiveNode }: HeaderProps) {
+export default function Header({ link1, setLink1, link2, setLink2, buffer, discoveredFleet, selectedAsset, setSelectedAsset, activeNode, setActiveNode }: HeaderProps) {
+  const uniqueNodes = Array.from(new Set(discoveredFleet.map(a => a.node_id)));
+  if (uniqueNodes.length === 0) {
+    uniqueNodes.push('FOB-ALPHA');
+  }
+  
+  const localAssets = discoveredFleet.filter(a => a.node_id === activeNode);
+
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
@@ -26,9 +33,9 @@ export default function Header({ link1, setLink1, link2, setLink2, buffer, asset
               onChange={(e) => setActiveNode(e.target.value)}
               className="appearance-none w-40 bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 cursor-pointer"
             >
-              <option value="FOB-ALPHA">FOB ALPHA</option>
-              <option value="OUTPOST-ECHO">OUTPOST ECHO</option>
-              <option value="MOBILE-CONVOY-7">MOBILE CONVOY 7</option>
+              {uniqueNodes.map(node => (
+                <option key={node} value={node}>{node.replace(/-/g, ' ')}</option>
+              ))}
             </select>
             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
               <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
@@ -45,7 +52,7 @@ export default function Header({ link1, setLink1, link2, setLink2, buffer, asset
               onChange={(e) => setSelectedAsset(e.target.value)}
               className="appearance-none w-48 bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 cursor-pointer"
             >
-              {assets.map(a => (
+              {localAssets.map(a => (
                 <option key={a.id} value={a.id}>{a.id} ({a.type})</option>
               ))}
             </select>

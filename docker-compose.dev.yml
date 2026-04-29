@@ -4,6 +4,8 @@ services:
   simulator:
     build: simulator
     pull_policy: build
+    volumes:
+      - ./simulator:/app
 
   faust-edge:
     build:

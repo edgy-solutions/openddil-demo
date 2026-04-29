@@ -6,20 +6,14 @@ import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed, { type Alert } from './components/AlertFeed';
 import Inventory from './components/Inventory';
 
-const DISCOVERED_FLEET = [
-  { id: 'LTAMDS-04', type: 'RADAR', node_id: 'FOB-ALPHA' },
-  { id: 'STRYKER-DE-09', type: 'LASER_SHORAD', node_id: 'FOB-ALPHA' },
-  { id: 'HIMARS-ALPHA', type: 'ARTILLERY', node_id: 'OUTPOST-ECHO' },
-  { id: 'GHOST-UGV-1', type: 'QUADRUPED', node_id: 'MOBILE-CONVOY-7' }
-];
-
-interface Asset {
+export interface Asset {
   id: string;
   type: string;
   node_id: string;
 }
 
 function App() {
+  const [discoveredFleet, setDiscoveredFleet] = useState<Asset[]>([]);
   const [link1, setLink1] = useState(true);
   const [link2, setLink2] = useState(true);
   const [buffer, setBuffer] = useState(0);
@@ -28,7 +22,7 @@ function App() {
   const [radarColor, setRadarColor] = useState('#10b981');
   const [clock, setClock] = useState('');
   const [activeNode, setActiveNode] = useState('FOB-ALPHA');
-  const [selectedAssetId, setSelectedAssetId] = useState('LTAMDS-04');
+  const [selectedAssetId, setSelectedAssetId] = useState('');
   const [faustAlerts, setFaustAlerts] = useState<Alert[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([
     { id: 'init', msg: 'SYSTEM INITIALIZED. AWAITING TELEMETRY.', type: 'info', time: new Date().toLocaleTimeString('en-US', { hour12: false }) }
@@ -42,6 +36,29 @@ function App() {
       time: new Date().toLocaleTimeString('en-US', { hour12: false })
     }, ...prev]);
   };
+
+  useEffect(() => {
+    const fetchAssets = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/assets');
+        if (response.ok) {
+          const data = await response.json();
+          const mappedData = data.map((a: any) => ({
+            id: a.asset_id,
+            type: a.type,
+            node_id: a.node_id
+          }));
+          setDiscoveredFleet(mappedData);
+        }
+      } catch (error) {
+        console.error('Failed to fetch assets:', error);
+      }
+    };
+    
+    fetchAssets();
+    const interval = setInterval(fetchAssets, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     const handleToxiproxy = async (enabled: boolean) => {
@@ -127,7 +144,7 @@ function App() {
     return () => clearInterval(interval);
   }, [link1, link2, degraded]);
 
-  const localAssets = useMemo(() => DISCOVERED_FLEET.filter(asset => asset.node_id === activeNode), [activeNode]);
+  const localAssets = useMemo(() => discoveredFleet.filter(asset => asset.node_id === activeNode), [activeNode, discoveredFleet]);
 
   useEffect(() => {
     if (localAssets.length > 0 && !localAssets.find((a: Asset) => a.id === selectedAssetId)) {
@@ -135,7 +152,7 @@ function App() {
     }
   }, [activeNode, localAssets, selectedAssetId]);
 
-  const selectedAsset = DISCOVERED_FLEET.find(a => a.id === selectedAssetId) || DISCOVERED_FLEET[0];
+  const selectedAsset = discoveredFleet.find(a => a.id === selectedAssetId) || localAssets[0] || { id: 'UNKNOWN', type: 'RADAR', node_id: activeNode };
   const selectedAssetTelemetry = telemetry[selectedAssetId] || {};
 
   return (
@@ -144,7 +161,7 @@ function App() {
         link1={link1} setLink1={setLink1} 
         link2={link2} setLink2={setLink2} 
         buffer={buffer} 
-        assets={localAssets}
+        discoveredFleet={discoveredFleet}
         selectedAsset={selectedAssetId}
         setSelectedAsset={setSelectedAssetId}
         activeNode={activeNode}
