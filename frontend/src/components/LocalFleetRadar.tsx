@@ -50,7 +50,6 @@ export default function LocalFleetRadar({ degraded, localAssets = [] }: { degrad
           
           {/* Center Edge Server */}
           <circle cx="0" cy="0" r="8" fill="#10b981" />
-          <circle cx="0" cy="0" r="12" fill="none" stroke="#10b981" strokeWidth="2" className="animate-ping" style={{ transformOrigin: 'center' }} />
         </svg>
       </div>
     </div>

@@ -4,7 +4,7 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import LtamdsView from './LtamdsView';
 
-function LaserShorad({ degraded }: { degraded: boolean }) {
+export function LaserShorad({ degraded }: { degraded: boolean }) {
     const coreRef = useRef<THREE.Group>(null);
     const indicatorRefs = useRef<THREE.Mesh[]>([]);
     indicatorRefs.current = [];
@@ -65,7 +65,7 @@ function LaserShorad({ degraded }: { degraded: boolean }) {
     );
 }
 
-function Artillery({ degraded }: { degraded: boolean }) {
+export function Artillery({ degraded }: { degraded: boolean }) {
     const hingeRef = useRef<THREE.Mesh>(null);
     const podRef = useRef<THREE.Group>(null);
     const indicatorRefs = useRef<THREE.Mesh[]>([]);
@@ -155,7 +155,7 @@ function Artillery({ degraded }: { degraded: boolean }) {
     );
 }
 
-function Quadruped({ degraded }: { degraded: boolean }) {
+export function Quadruped({ degraded }: { degraded: boolean }) {
     const anomalyCoreRef = useRef<THREE.Mesh>(null);
     const indicatorRefs = useRef<THREE.Mesh[]>([]);
     indicatorRefs.current = [];

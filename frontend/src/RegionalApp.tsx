@@ -4,6 +4,7 @@ import RegionalBattleView from './components/regional/RegionalBattleView';
 import DigitalTwin from './components/regional/DigitalTwin';
 import WorkOrders, { type WorkOrder } from './components/regional/WorkOrders';
 import TacticalRuleBuilder from './components/regional/TacticalRuleBuilder';
+import AssetDeepDive from './components/regional/AssetDeepDive';
 
 const INITIAL_WORK_ORDERS: WorkOrder[] = [
   { id: 'WO-8810', sn: 'LTAMDS-04', part: 'Coolant Pump', status: 'COMPLETED' },
@@ -19,6 +20,7 @@ export default function RegionalApp() {
   const [degradedBravo, setDegradedBravo] = useState(false);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>(INITIAL_WORK_ORDERS);
   const [isRuleEditorOpen, setIsRuleEditorOpen] = useState(false);
+  const [selectedAsset, setSelectedAsset] = useState<{id: string, type: string} | null>(null);
 
   // Link 1 (Edge to Region) logic
   useEffect(() => {
@@ -80,11 +82,25 @@ export default function RegionalApp() {
       />
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
-        <RegionalBattleView link1={link1} />
+        <RegionalBattleView 
+          link1={link1} 
+          selectedAssetId={selectedAsset?.id || null} 
+          onAssetSelect={(id, type) => setSelectedAsset({id, type})} 
+        />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-hidden">
-          <DigitalTwin degradedBravo={degradedBravo} />
-          <WorkOrders link2={link2} workOrders={workOrders} />
+          {selectedAsset ? (
+            <AssetDeepDive 
+              assetId={selectedAsset.id} 
+              assetType={selectedAsset.type} 
+              onClose={() => setSelectedAsset(null)} 
+            />
+          ) : (
+            <>
+              <DigitalTwin degradedBravo={degradedBravo} />
+              <WorkOrders link2={link2} workOrders={workOrders} />
+            </>
+          )}
         </div>
       </main>
 

@@ -1,5 +1,5 @@
 import { useRef, useMemo } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import AssetSpawner from '../AssetSpawner';
@@ -37,7 +37,38 @@ function Terrain() {
   );
 }
 
-export default function RegionalBattleView({ link1 }: { link1: boolean }) {
+function CameraRig({ targetPos, isZoomed }: { targetPos: THREE.Vector3 | null, isZoomed: boolean }) {
+  const { camera, controls } = useThree();
+  useFrame(() => {
+    if (isZoomed && targetPos) {
+      camera.position.lerp(new THREE.Vector3(targetPos.x + 15, targetPos.y + 10, targetPos.z + 15), 0.05);
+      if (controls) {
+        (controls as any).target.lerp(targetPos, 0.05);
+      }
+    } else {
+      camera.position.lerp(new THREE.Vector3(0, 150, 180), 0.05);
+      if (controls) {
+        (controls as any).target.lerp(new THREE.Vector3(0, 0, 0), 0.05);
+      }
+    }
+  });
+  return null;
+}
+
+function FogController({ isZoomed }: { isZoomed: boolean }) {
+  const { scene } = useThree();
+  useFrame(() => {
+    if (scene.fog instanceof THREE.FogExp2) {
+      scene.fog.density = THREE.MathUtils.lerp(scene.fog.density, isZoomed ? 0.08 : 0.005, 0.05);
+    }
+  });
+  return null;
+}
+
+export default function RegionalBattleView({ link1, selectedAssetId, onAssetSelect }: { link1: boolean, selectedAssetId: string | null, onAssetSelect: (id: string, type: string) => void }) {
+  const targetAsset = useMemo(() => DISCOVERED_FLEET.find(a => a.id === selectedAssetId), [selectedAssetId]);
+  const targetPos = targetAsset ? new THREE.Vector3(...targetAsset.position) : null;
+
   return (
     <div className="col-span-2 panel flex flex-col relative overflow-hidden">
       <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
@@ -72,12 +103,15 @@ export default function RegionalBattleView({ link1 }: { link1: boolean }) {
           <ambientLight intensity={0.3} />
           <directionalLight position={[50, 100, 50]} intensity={0.8} />
           
-          <OrbitControls enableDamping dampingFactor={0.05} maxDistance={300} minDistance={50} maxPolarAngle={Math.PI / 2 - 0.1} />
+          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={10} maxPolarAngle={Math.PI / 2 - 0.1} />
           
+          <CameraRig targetPos={targetPos} isZoomed={!!selectedAssetId} />
+          <FogController isZoomed={!!selectedAssetId} />
+
           <gridHelper args={[400, 100, 0x1e293b, 0x0f172a]} position={[0, -2, 0]} />
           <Terrain />
 
-          <AssetSpawner assets={DISCOVERED_FLEET} />
+          <AssetSpawner assets={DISCOVERED_FLEET} onAssetClick={onAssetSelect} selectedAssetId={selectedAssetId} />
 
           {DISCOVERED_FLEET.map((asset, i) => (
             <DdilNetworkLink 

@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 import { useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { LaserShorad, Artillery, Quadruped } from './DiagnosticCanvas';
+import LtamdsView from './LtamdsView';
 
 class ErrorBoundary extends Component<{ fallback: ReactNode, children: ReactNode }, { hasError: boolean }> {
     constructor(props: { fallback: ReactNode, children: ReactNode }) {
@@ -108,7 +110,7 @@ function AssetModel({ url, scale = 2.5, yOffset = 0 }: { url: string, scale?: nu
     return <primitive object={clonedScene} scale={scale} position={[0, yOffset, 0]} />;
 }
 
-export default function AssetSpawner({ assets }: { assets: { id: string, type: string, position: [number, number, number] }[] }) {
+export default function AssetSpawner({ assets, onAssetClick, selectedAssetId }: { assets: { id: string, type: string, position: [number, number, number] }[], onAssetClick?: (id: string, type: string) => void, selectedAssetId?: string | null }) {
     return (
         <group>
             {assets.map(asset => {
@@ -135,13 +137,41 @@ export default function AssetSpawner({ assets }: { assets: { id: string, type: s
                 }
                 
                 return (
-                    <group key={asset.id} position={asset.position}>
-                        {asset.type === 'RADAR' && <RadarShield isDegraded={asset.id === 'LTAMDS-04' && false} />}
-                        <ErrorBoundary fallback={<Fallback />}>
-                            <Suspense fallback={<Fallback />}>
-                                <AssetModel url={url} scale={scale} yOffset={yOffset} />
-                            </Suspense>
-                        </ErrorBoundary>
+                    <group 
+                        key={asset.id} 
+                        position={asset.position} 
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            onAssetClick?.(asset.id, asset.type);
+                        }}
+                        onPointerOver={(e) => {
+                            e.stopPropagation();
+                            document.body.style.cursor = 'pointer';
+                        }}
+                        onPointerOut={(e) => {
+                            e.stopPropagation();
+                            document.body.style.cursor = 'auto';
+                        }}
+                    >
+                        {asset.type === 'RADAR' && !selectedAssetId && <RadarShield isDegraded={asset.id === 'LTAMDS-04' && false} />}
+                        
+                        {selectedAssetId === asset.id ? (
+                            asset.type === 'RADAR' ? (
+                                <LtamdsView degraded={false} coreTemp={32} />
+                            ) : asset.type === 'LASER_SHORAD' ? (
+                                <LaserShorad degraded={false} />
+                            ) : asset.type === 'ARTILLERY' ? (
+                                <Artillery degraded={false} />
+                            ) : asset.type === 'QUADRUPED' ? (
+                                <Quadruped degraded={false} />
+                            ) : null
+                        ) : (
+                            <ErrorBoundary fallback={<Fallback />}>
+                                <Suspense fallback={<Fallback />}>
+                                    <AssetModel url={url} scale={scale} yOffset={yOffset} />
+                                </Suspense>
+                            </ErrorBoundary>
+                        )}
                     </group>
                 );
             })}
