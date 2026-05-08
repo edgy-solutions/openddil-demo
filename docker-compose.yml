@@ -85,9 +85,8 @@ services:
       - toxiproxy
 
   simulator:
-    build: ./simulator
-    image: openddil-demo-simulator:latest
-    pull_policy: build
+    image: ghcr.io/edgy-solutions/openddil-demo-simulator:latest
+    pull_policy: always
     container_name: openddil-demo-simulator
     environment:
       KAFKA_BROKER: "redpanda-edge:9092"
