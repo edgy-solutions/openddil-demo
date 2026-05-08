@@ -129,9 +129,8 @@ services:
       - restate-server
 
   frontend:
-    build: ./frontend
-    image: openddil-demo-frontend:latest
-    pull_policy: build
+    image: ghcr.io/edgy-solutions/openddil-demo-frontend:latest
+    pull_policy: always
     container_name: openddil-demo-frontend
     ports:
       - "3017:80"
