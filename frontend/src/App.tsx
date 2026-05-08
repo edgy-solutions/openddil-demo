@@ -39,7 +39,7 @@ function App() {
   useEffect(() => {
     const fetchAssets = async () => {
       try {
-        const response = await fetch('http://localhost:8000/assets');
+        const response = await fetch('/simulator/assets');
         if (response.ok) {
           const data = await response.json();
           const mappedData = data.map((a: any) => ({

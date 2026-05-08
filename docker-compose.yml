@@ -85,13 +85,15 @@ services:
       - toxiproxy
 
   simulator:
-    image: ghcr.io/edgy-solutions/openddil-demo-simulator:latest
-    pull_policy: always
+    build: ./simulator
+    image: openddil-demo-simulator:latest
+    pull_policy: build
     container_name: openddil-demo-simulator
     environment:
       KAFKA_BROKER: "redpanda-edge:9092"
-    ports:
-      - "8000:8000"
+    # Ports 8000 removed to avoid corporate machine conflicts; now proxied via Nginx
+    # ports:
+    #   - "8000:8000"
     depends_on:
       - redpanda-edge
 
@@ -128,8 +130,9 @@ services:
       - restate-server
 
   frontend:
-    image: ghcr.io/edgy-solutions/openddil-demo-frontend:latest
-    pull_policy: always
+    build: ./frontend
+    image: openddil-demo-frontend:latest
+    pull_policy: build
     container_name: openddil-demo-frontend
     ports:
-      - "3016:80"
+      - "3017:80"

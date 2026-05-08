@@ -21,7 +21,7 @@ export default function SimulatorApp() {
 
   const fetchAssets = async () => {
     try {
-      const response = await fetch('http://localhost:8000/assets');
+      const response = await fetch('/simulator/assets');
       const data = await response.json();
       setAssets(data);
     } catch (error) {
@@ -38,7 +38,7 @@ export default function SimulatorApp() {
   const addAsset = async () => {
     if (!newAssetId || !newNodeId) return;
     try {
-      await fetch('http://localhost:8000/assets', {
+      await fetch('/simulator/assets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -58,7 +58,7 @@ export default function SimulatorApp() {
 
   const removeAsset = async (assetId: string) => {
     try {
-      await fetch(`http://localhost:8000/assets/${assetId}`, { method: 'DELETE' });
+      await fetch(`/simulator/assets/${assetId}`, { method: 'DELETE' });
       fetchAssets();
       showStatus(`Removed ${assetId}`);
     } catch (error) {
@@ -69,7 +69,7 @@ export default function SimulatorApp() {
 
   const triggerAnomaly = async (assetId: string) => {
     try {
-      await fetch(`http://localhost:8000/trigger-anomaly/${assetId}`, { method: 'POST' });
+      await fetch(`/simulator/trigger-anomaly/${assetId}`, { method: 'POST' });
       showStatus(`Anomaly injected for ${assetId}`);
     } catch (error) {
       console.error('Failed to trigger anomaly:', error);
@@ -79,7 +79,7 @@ export default function SimulatorApp() {
 
   const clearAnomaly = async (assetId: string) => {
     try {
-      await fetch(`http://localhost:8000/clear-anomaly/${assetId}`, { method: 'POST' });
+      await fetch(`/simulator/clear-anomaly/${assetId}`, { method: 'POST' });
       showStatus(`Restored ${assetId} to normal`);
     } catch (error) {
       console.error('Failed to clear anomaly:', error);
