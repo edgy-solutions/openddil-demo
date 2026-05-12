@@ -1,0 +1,63 @@
+logger:
+  level: INFO
+  format: logfmt
+  add_timestamp: true
+
+http:
+  enabled: true
+  address: 0.0.0.0:4196
+
+input:
+  broker:
+    inputs:
+      # DIS-Compatible UDP Ingress (Port 62040)
+      - socket_server:
+          network: tcp
+          address: 0.0.0.0:9998
+          codec: lines
+      # Diagnostic HTTP Ingress (Port 9999)
+      - http_server:
+          address: 0.0.0.0:9999
+          path: /
+          allowed_verbs: [ POST ]
+
+pipeline:
+  threads: 4
+  processors:
+    # Try block handles the main path
+    - try:
+      - mapping: root = this
+      - resource: "sim_dis_mapping"
+      - mapping: |
+          meta asset_id = this.asset.asset_id
+      - protobuf:
+          operator: from_json
+          message: openddil.telemetry.v1.EntityTelemetryEvent
+          import_paths: [ "/proto" ]
+
+    # Catch block handles malformed data or schema errors
+    - catch:
+      - log:
+          level: WARN
+          message: "Ingress Failure: ${! error() }"
+      - mapping: |
+          meta dlq_reason = error()
+          meta dlq_stage = "schema_mapping_or_protobuf_encode"
+          meta is_dlq = "true"
+
+output:
+  switch:
+    cases:
+      - check: meta("is_dlq") == "true"
+        output:
+          kafka_franz:
+            topic: "ingress-dlq"
+            seed_brokers: [ "redpanda-edge:9092" ]
+      - output:
+          kafka_franz:
+            seed_brokers: [ "redpanda-edge:9092" ]
+            topic: "raw-sensor-stream"
+            key: '${! meta("asset_id") }'
+            metadata:
+              include_patterns: [ "ce_.*", "schema_.*" ]
+            max_in_flight: 64

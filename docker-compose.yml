@@ -21,6 +21,11 @@ services:
       - "9092:9092"
       - "9093:9093"
       - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   redpanda-hq:
     image: docker.redpanda.com/redpandadata/redpanda:latest
@@ -42,6 +47,37 @@ services:
       - "19092:19092"
       - "19093:19093"
       - "19644:19644"
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    depends_on:
+      redpanda-edge:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        rpk -X brokers=redpanda-edge:9092 topic create raw-sensor-stream \
+            -p 8 -r 1 \
+            -c retention.ms=86400000 \
+            || true
+        rpk -X brokers=redpanda-edge:9092 topic create ingress-dlq \
+            -p 1 -r 1 \
+            -c retention.ms=604800000 \
+            || true
+        rpk -X brokers=redpanda-edge:9092 topic create telemetry-latest-state \
+            -p 8 -r 1 \
+            -c cleanup.policy=compact \
+            -c min.cleanable.dirty.ratio=0.1 \
+            -c segment.ms=60000 \
+            || true
+        rpk -X brokers=redpanda-edge:9092 topic create tactical-events \
+            -p 4 -r 1 \
+            -c retention.ms=2592000000 \
+            || true
+        echo "Topics initialized."
 
   postgres-hq:
     image: postgres:15
@@ -73,19 +109,35 @@ services:
       - "8475:8475" # API port
     volumes:
       - ./toxiproxy.json:/etc/toxiproxy.json
-    command: -host 0.0.0.0 -port 8475 -config /etc/toxiproxy.json
+    command: -host 0.0.0.0 -port 8475
+
+  socat-bridge:
+    image: alpine/socat
+    command: -d -d UDP4-RECVFROM:62040,fork,reuseaddr TCP4:redpanda-connect:9998
+    ports:
+      - "62040:62040/udp"
+    depends_on:
+      - redpanda-connect
 
   redpanda-connect:
+    container_name: openddil-demo-redpanda-connect-1
     image: docker.redpanda.com/redpandadata/connect:latest
+    ports:
+      - "9999:9999"
+      - "9998:9998"
     volumes:
-      - ./redpanda-connect.yaml:/benthos.yaml
-    command: run /benthos.yaml
+      - ./openddil-base-connect.yaml:/connect.yaml
+      - ./dynamic-mappings:/mappings
+      - ../openddil-contracts/proto:/proto
+    command: ["--chilled", "run", "-r", "/mappings/*.yaml", "/connect.yaml"]
     depends_on:
       - redpanda-edge
       - toxiproxy
 
   simulator:
     image: ghcr.io/edgy-solutions/openddil-demo-simulator:latest
+    profiles:
+      - "disabled"
     pull_policy: always
     container_name: openddil-demo-simulator
     environment:
@@ -97,15 +149,12 @@ services:
       - redpanda-edge
 
   faust-edge:
-    image: ghcr.io/edgy-solutions/edge-faust-detector:latest
+    image: ghcr.io/openddil/faust-edge:latest
     restart: always
-    pull_policy: always
     container_name: openddil-demo-faust
     working_dir: /tmp
-    entrypoint: ["/opt/venv/bin/python", "/app/faust_edge.py", "worker", "-l", "info"]
-    volumes:
-      - ../openddil-tactical-agents/edge/faust_edge.py:/app/faust_edge.py
-      - ../openddil-tactical-agents/edge/rules.yaml:/app/rules.yaml
+    environment:
+      - PYTHONPATH=/app
     depends_on:
       - redpanda-edge
 

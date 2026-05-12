@@ -1,0 +1,17 @@
+services:
+  # Development Overrides
+  # This file enables local builds and hot-reloading for developers.
+  # Usage: docker compose up (Docker automatically merges this with docker-compose.yml)
+
+  faust-edge:
+    build:
+      context: ../openddil-tactical-agents/edge
+      dockerfile: Dockerfile
+    pull_policy: build
+    volumes:
+      # Local code mounts for hot-reloading during development
+      - ../openddil-tactical-agents/edge/faust_edge.py:/app/faust_edge.py
+      - ../openddil-tactical-agents/edge/detection:/app/detection
+      - ../openddil-contracts/gen/python/openddil:/app/openddil
+      - ../openddil-contracts/gen/python/google:/app/google
+      - ../openddil-tactical-agents/edge/rules.yaml:/app/rules.yaml

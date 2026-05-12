@@ -1,0 +1,68 @@
+processor_resources:
+  - label: sim_dis_mapping
+    mapping: |
+      # =========================================================================
+      # PURE RESHAPING. No math beyond field selection and label attachment.
+      # If you find yourself adding arithmetic here, STOP — that belongs in the
+      # algorithm layer or in a typed conversion library, not in YAML.
+      # =========================================================================
+
+      let src = this
+
+      root.event_id = uuid_v4()
+      root.schema_revision = 1
+
+      root.asset.asset_id = $src.entity_id
+      root.asset.callsign = $src.marking.or("")
+      root.asset.platform_type = $src.entity_type_label.or("")
+      root.asset.force = match $src.force_id {
+        1 => "FORCE_FRIENDLY"
+        2 => "FORCE_OPPOSING"
+        3 => "FORCE_NEUTRAL"
+        _ => "FORCE_UNKNOWN"
+      }
+      root.asset.dis_entity_id.site        = $src.dis_entity_id.site
+      root.asset.dis_entity_id.application = $src.dis_entity_id.application
+      root.asset.dis_entity_id.entity      = $src.dis_entity_id.entity
+
+      # Position: source emits ECEF natively. Pass through. No conversion.
+      root.kinematics.position.ecef.x_m = $src.location.x
+      root.kinematics.position.ecef.y_m = $src.location.y
+      root.kinematics.position.ecef.z_m = $src.location.z
+      root.kinematics.position.valid_at = $src.timestamp
+      root.kinematics.position.quality.source = "POS_SRC_SIMULATED"
+
+      # Velocity: ECEF m/s, native from DIS. Pass through.
+      root.kinematics.velocity.ecef.x = $src.linear_velocity.x
+      root.kinematics.velocity.ecef.y = $src.linear_velocity.y
+      root.kinematics.velocity.ecef.z = $src.linear_velocity.z
+      root.kinematics.velocity.ecef.unit = "m/s"
+
+      # Attitude: source emits Euler degrees. Pass through.
+      root.kinematics.attitude.euler.yaw_deg   = $src.orientation.psi
+      root.kinematics.attitude.euler.pitch_deg = $src.orientation.theta
+      root.kinematics.attitude.euler.roll_deg  = $src.orientation.phi
+      root.kinematics.attitude.reference = "ATT_REF_BODY_TO_ECEF"
+
+      # Sustainment: hardcode units to match the simulator's known output.
+      root.sustainment.thermal.component_temperature.value = $src.thermal.engine_temp
+      root.sustainment.thermal.component_temperature.unit  = "[degF]"
+      root.sustainment.thermal.ambient_temperature.value   = $src.thermal.ambient_temp
+      root.sustainment.thermal.ambient_temperature.unit    = "[degF]"
+      root.sustainment.thermal.coolant_temperature.value   = $src.thermal.coolant_temp
+      root.sustainment.thermal.coolant_temperature.unit    = "[degF]"
+
+      root.sustainment.power.bus_voltage.value = $src.power.voltage
+      root.sustainment.power.bus_voltage.unit  = "V"
+      root.sustainment.power.battery_state_of_charge.value = $src.power.soc_pct
+      root.sustainment.power.battery_state_of_charge.unit  = "%"
+
+      root.sustainment.fluids.fuel_remaining.value = $src.fluids.fuel
+      root.sustainment.fluids.fuel_remaining.unit  = "gal_us"
+
+      root.provenance.producer_id     = "vrforces-bridge"
+      root.provenance.source_protocol = "DIS/IEEE-1278.1"
+      root.provenance.source_sequence = $src.pdu_sequence.or(0)
+      root.provenance.sample_time     = $src.timestamp
+      root.provenance.ingest_time     = now()
+      root.provenance.classification  = "U"
