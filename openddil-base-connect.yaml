@@ -10,12 +10,15 @@ http:
 input:
   broker:
     inputs:
-      # DIS-Compatible UDP Ingress (Port 62040)
-      - socket_server:
-          network: tcp
-          address: 0.0.0.0:9998
-          codec: lines
+      # Production DIS Ingress (via binary sidecar → Kafka)
+      - kafka_franz:
+          seed_brokers: [ "redpanda-edge:9092" ]
+          topics: [ "ingress-dis-raw" ]
+          consumer_group: "connect-dis-mapper"
+          start_from_oldest: true
+
       # Diagnostic HTTP Ingress (Port 9999)
+      # Production DIS arrives via Kafka; HTTP is for diagnostic testing only.
       - http_server:
           address: 0.0.0.0:9999
           path: /
@@ -26,7 +29,14 @@ pipeline:
   processors:
     # Try block handles the main path
     - try:
-      - mapping: root = this
+      # The Kafka input delivers raw bytes; HTTP auto-parses JSON. Coerce both
+      # to a parsed object before the resource mapping runs.
+      - mapping: |
+          root = if this.type() == "string" || this.type() == "bytes" {
+            this.parse_json()
+          } else {
+            this
+          }
       - resource: "sim_dis_mapping"
       - mapping: |
           meta asset_id = this.asset.asset_id

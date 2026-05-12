@@ -155,24 +155,34 @@ services:
       - ./toxiproxy.json:/etc/toxiproxy.json
     command: -host 0.0.0.0 -port 8475
 
-  socat-bridge:
-    image: alpine/socat
-    command: -d -d UDP4-RECVFROM:62040,fork,reuseaddr TCP4:redpanda-connect:9998
+  openddil-sensor-ingest:
+    build:
+      context: ../openddil-sensor-ingest
+    command: python dis_ingestor.py
     ports:
       - "62040:62040/udp"
+      - "8081:8080" # Prometheus metrics (mapped to 8081 to avoid conflict with Restate)
+    environment:
+      KAFKA_BROKERS: redpanda-edge:9092
+      KAFKA_TOPIC: ingress-dis-raw
+      LOG_LEVEL: INFO
     depends_on:
-      - redpanda-connect
+      redpanda-edge:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   redpanda-connect:
     container_name: openddil-demo-redpanda-connect-1
     image: docker.redpanda.com/redpandadata/connect:latest
     ports:
       - "9999:9999"
-      - "9998:9998"
     volumes:
       - ./openddil-base-connect.yaml:/connect.yaml
       - ./dynamic-mappings:/mappings
       - ../openddil-contracts/proto:/proto
+      - ../openddil-contracts/ontology:/ontology:ro
     command: ["--chilled", "run", "-r", "/mappings/*.yaml", "/connect.yaml"]
     depends_on:
       - redpanda-edge

@@ -5,6 +5,20 @@ processor_resources:
       # PURE RESHAPING. No math beyond field selection and label attachment.
       # If you find yourself adding arithmetic here, STOP — that belongs in the
       # algorithm layer or in a typed conversion library, not in YAML.
+      #
+      # INPUT CONTRACT (from dis_ingestor.py → ingress-dis-raw):
+      #   dis_entity_id:   {site, application, entity}
+      #   entity_id_urn:   "dis:{site}:{application}:{entity}"
+      #   dis_entity_type: {kind, domain, country, category, subcategory, specific, extra}
+      #   marking:         string
+      #   force_id:        int (1=friendly, 2=opposing, 3=neutral)
+      #   location_ecef:   {x, y, z}  — metres
+      #   linear_velocity_ecef: {x, y, z}  — m/s
+      #   orientation_euler:    {psi, theta, phi}  — radians
+      #
+      # SUSTAINMENT NOTE: DIS Entity State PDUs carry NO sustainment data.
+      # Do not map thermal/fuel/power fields from DIS input — they are
+      # legitimately absent. The Protobuf schema makes them optional.
       # =========================================================================
 
       let src = this
@@ -12,87 +26,115 @@ processor_resources:
       root.event_id = uuid_v4()
       root.schema_revision = 1
 
-      root.asset.asset_id = $src.entity_id
-      root.asset.callsign = $src.marking.or("")
-      root.asset.platform_type = $src.entity_type_label.or("")
+      # Asset identity — URN from DIS is canonical until identity resolver overwrites it
+      root.asset.asset_id   = $src.entity_id_urn
+      root.asset.callsign   = $src.marking.or("")
       root.asset.force = match $src.force_id {
         1 => "FORCE_FRIENDLY"
         2 => "FORCE_OPPOSING"
         3 => "FORCE_NEUTRAL"
         _ => "FORCE_UNKNOWN"
       }
+
+      # Structured DIS entity ID (site/application/entity triplet)
       root.asset.dis_entity_id.site        = $src.dis_entity_id.site
       root.asset.dis_entity_id.application = $src.dis_entity_id.application
       root.asset.dis_entity_id.entity      = $src.dis_entity_id.entity
 
       # -------------------------------------------------------------------------
-      # DIS EntityType Triple → OpenDDIL Platform Ontology
+      # DIS EntityType 7-tuple → OpenDDIL Platform Ontology
       #
-      # Build the 7-tuple key from the incoming DIS entity_type fields and look
-      # it up in the curated ontology YAML. Falls back to the _default entry
-      # if the triple is unknown. The YAML file is read once per worker and
-      # cached by the runtime.
+      # The sidecar (dis_ingestor.py) has already decoded the 7-tuple from the
+      # binary PDU. Here we only format the lookup key and resolve it.
+      # Falls back to _default if the triple is not in the ontology.
       #
-      # ADR-0007: No math here. ADR-0010: No protocol quirks leak past this line.
+      # ADR-0007: No math here.
+      # ADR-0010: No protocol quirks leak past this line.
       # -------------------------------------------------------------------------
-      let et = $src.entity_type
-      let triple = "%d.%d.%d.%d.%d.%d.%d".format(
-        $et.kind.or(0),
-        $et.domain.or(0),
-        $et.country.or(0),
-        $et.category.or(0),
-        $et.subcategory.or(0),
-        $et.specific.or(0),
-        $et.extra.or(0)
+      let et = $src.dis_entity_type
+      # Ontology keys use underscore delimiters (not dots) because Bloblang's
+      # .get("a.b.c") treats dots as path separators and cannot reach a flat
+      # key like "1.1.225.1.3.1.0".
+      #
+      # parse_json() represents integers as `json.Number` rather than Go int —
+      # `%d` cannot format that and would emit literal "%!d(json.Number=1)"
+      # garbage. The explicit .int64() coerces to a plain integer first.
+      let triple = "%d_%d_%d_%d_%d_%d_%d".format(
+        $et.kind.or(0).int64(),
+        $et.domain.or(0).int64(),
+        $et.country.or(0).int64(),
+        $et.category.or(0).int64(),
+        $et.subcategory.or(0).int64(),
+        $et.specific.or(0).int64(),
+        $et.extra.or(0).int64()
       )
-      let ontology_doc = file("/ontology/dis_entity_types.yaml").parse_yaml()
+      # `no_cache: true` makes edits to dis_entity_types.yaml take effect
+      # immediately without restarting redpanda-connect (the file is mounted
+      # read-only into the container — see docker-compose volumes).
+      let ontology_doc = file(path: "/ontology/dis_entity_types.yaml", no_cache: true).parse_yaml()
       let ont = $ontology_doc.mappings.get($triple).or($ontology_doc.mappings._default)
 
-      root.asset.dis_entity_type_triple   = $triple
+      # NOTE: Only fields that exist on AssetIdentity in
+      # openddil.telemetry.v1.EntityTelemetryEvent are populated here. The
+      # ontology row also carries `platform_family`, `nomenclature` triple,
+      # and `siso_ref`, but those have no destination in the current proto.
+      # Surface them later by adding new fields with NEW numbers (see ADR
+      # rule: never renumber).
+      root.asset.platform_type            = $ont.nomenclature.or("")
       root.asset.platform_variant         = $ont.platform_variant
-      root.asset.platform_family          = $ont.platform_family
       root.asset.configuration_baseline   = $ont.default_baseline.or("")
       root.asset.cbm_schema               = $ont.cbm_schema.or("")
       root.asset.domain_authority         = $ont.domain_authority.or("")
 
-      # Position: source emits ECEF natively. Pass through. No conversion.
-      root.kinematics.position.ecef.x_m = $src.location.x
-      root.kinematics.position.ecef.y_m = $src.location.y
-      root.kinematics.position.ecef.z_m = $src.location.z
-      root.kinematics.position.valid_at = $src.timestamp
+      # Structured 7-tuple through to Silver for downstream CM matching
+      root.asset.dis_entity_type.kind        = $et.kind.or(0)
+      root.asset.dis_entity_type.domain      = $et.domain.or(0)
+      root.asset.dis_entity_type.country     = $et.country.or(0)
+      root.asset.dis_entity_type.category    = $et.category.or(0)
+      root.asset.dis_entity_type.subcategory = $et.subcategory.or(0)
+      root.asset.dis_entity_type.specific    = $et.specific.or(0)
+      root.asset.dis_entity_type.extra       = $et.extra.or(0)
+
+      # Position: DIS ECEF is metres. Per ADR-0013, each component is a
+      # Quantity with the source unit tagged. No math here.
+      root.kinematics.position.ecef.x.value = $src.location_ecef.x
+      root.kinematics.position.ecef.x.unit  = "m"
+      root.kinematics.position.ecef.y.value = $src.location_ecef.y
+      root.kinematics.position.ecef.y.unit  = "m"
+      root.kinematics.position.ecef.z.value = $src.location_ecef.z
+      root.kinematics.position.ecef.z.unit  = "m"
+      root.kinematics.position.valid_at     = $src.ingest_timestamp
+      # PositionSource enum has no "DIS_BINARY" — DIS feeds are simulator
+      # output, so SIMULATED is the closest valid value. Add a dedicated
+      # POS_SRC_DIS_* constant in a future proto revision if we want to
+      # distinguish DIS-sourced positions from other simulators.
       root.kinematics.position.quality.source = "POS_SRC_SIMULATED"
 
-      # Velocity: ECEF m/s, native from DIS. Pass through.
-      root.kinematics.velocity.ecef.x = $src.linear_velocity.x
-      root.kinematics.velocity.ecef.y = $src.linear_velocity.y
-      root.kinematics.velocity.ecef.z = $src.linear_velocity.z
+      # Velocity: DIS ECEF m/s. Vector3 has its own `unit` slot (ADR-0007
+      # already-correct case); just label and pass through.
+      root.kinematics.velocity.ecef.x    = $src.linear_velocity_ecef.x
+      root.kinematics.velocity.ecef.y    = $src.linear_velocity_ecef.y
+      root.kinematics.velocity.ecef.z    = $src.linear_velocity_ecef.z
       root.kinematics.velocity.ecef.unit = "m/s"
 
-      # Attitude: source emits Euler degrees. Pass through.
-      root.kinematics.attitude.euler.yaw_deg   = $src.orientation.psi
-      root.kinematics.attitude.euler.pitch_deg = $src.orientation.theta
-      root.kinematics.attitude.euler.roll_deg  = $src.orientation.phi
-      root.kinematics.attitude.reference = "ATT_REF_BODY_TO_ECEF"
+      # Attitude: DIS emits radians natively. Per ADR-0013 the schema now
+      # carries the unit, so we tell the truth instead of mislabelling as
+      # `*_deg`. Consumers convert via pint.
+      root.kinematics.attitude.euler.yaw.value   = $src.orientation_euler.psi
+      root.kinematics.attitude.euler.yaw.unit    = "rad"
+      root.kinematics.attitude.euler.pitch.value = $src.orientation_euler.theta
+      root.kinematics.attitude.euler.pitch.unit  = "rad"
+      root.kinematics.attitude.euler.roll.value  = $src.orientation_euler.phi
+      root.kinematics.attitude.euler.roll.unit   = "rad"
+      root.kinematics.attitude.reference         = "ATT_REF_BODY_TO_ECEF"
 
-      # Sustainment: hardcode units to match the simulator's known output.
-      root.sustainment.thermal.component_temperature.value = $src.thermal.engine_temp
-      root.sustainment.thermal.component_temperature.unit  = "[degF]"
-      root.sustainment.thermal.ambient_temperature.value   = $src.thermal.ambient_temp
-      root.sustainment.thermal.ambient_temperature.unit    = "[degF]"
-      root.sustainment.thermal.coolant_temperature.value   = $src.thermal.coolant_temp
-      root.sustainment.thermal.coolant_temperature.unit    = "[degF]"
+      # SUSTAINMENT: intentionally absent for DIS-sourced events.
+      # DIS Entity State PDUs contain no sustainment metrics.
+      # root.sustainment is NOT mapped here — its absence is correct.
 
-      root.sustainment.power.bus_voltage.value = $src.power.voltage
-      root.sustainment.power.bus_voltage.unit  = "V"
-      root.sustainment.power.battery_state_of_charge.value = $src.power.soc_pct
-      root.sustainment.power.battery_state_of_charge.unit  = "%"
-
-      root.sustainment.fluids.fuel_remaining.value = $src.fluids.fuel
-      root.sustainment.fluids.fuel_remaining.unit  = "gal_us"
-
-      root.provenance.producer_id     = "vrforces-bridge"
-      root.provenance.source_protocol = "DIS/IEEE-1278.1"
+      root.provenance.producer_id     = "dis-ingestor-binary"
+      root.provenance.source_protocol = "DIS/IEEE-1278.1-binary"
       root.provenance.source_sequence = $src.pdu_sequence.or(0)
-      root.provenance.sample_time     = $src.timestamp
+      root.provenance.sample_time     = $src.ingest_timestamp
       root.provenance.ingest_time     = now()
       root.provenance.classification  = "U"
