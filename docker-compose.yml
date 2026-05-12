@@ -77,7 +77,51 @@ services:
             -p 4 -r 1 \
             -c retention.ms=2592000000 \
             || true
-        echo "Topics initialized."
+        echo "INFO: Core topics initialized."
+
+        # CM state topics (compacted — latest state per key, retained forever)
+        rpk -X brokers=redpanda-edge:9092 topic create asset-cm-state \
+            -p 8 -r 1 \
+            -c cleanup.policy=compact \
+            -c min.cleanable.dirty.ratio=0.1 \
+            -c segment.ms=60000 \
+            -c retention.ms=-1 \
+            || true
+        echo "INFO: asset-cm-state created or already exists."
+
+        rpk -X brokers=redpanda-edge:9092 topic create cm-items \
+            -p 8 -r 1 \
+            -c cleanup.policy=compact \
+            -c min.cleanable.dirty.ratio=0.1 \
+            -c segment.ms=60000 \
+            -c retention.ms=-1 \
+            || true
+        echo "INFO: cm-items created or already exists."
+
+        # CM events (hybrid compact+delete — recent events + compacted state)
+        rpk -X brokers=redpanda-edge:9092 topic create cm-events \
+            -p 8 -r 1 \
+            -c cleanup.policy=compact,delete \
+            -c retention.ms=2592000000 \
+            || true
+        echo "INFO: cm-events created or already exists."
+
+        # Bronze ingest topics (per ADR-0010 — one topic per protocol)
+        rpk -X brokers=redpanda-edge:9092 topic create ingress-dis-raw \
+            -p 8 -r 1 \
+            -c retention.ms=86400000 \
+            -c compression.type=zstd \
+            || true
+        echo "INFO: ingress-dis-raw created or already exists."
+
+        rpk -X brokers=redpanda-edge:9092 topic create ingress-proprietary-raw \
+            -p 8 -r 1 \
+            -c retention.ms=86400000 \
+            -c compression.type=zstd \
+            || true
+        echo "INFO: ingress-proprietary-raw created or already exists."
+
+        echo "INFO: All topics initialized."
 
   postgres-hq:
     image: postgres:15

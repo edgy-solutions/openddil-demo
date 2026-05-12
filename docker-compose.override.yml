@@ -15,3 +15,9 @@ services:
       - ../openddil-contracts/gen/python/openddil:/app/openddil
       - ../openddil-contracts/gen/python/google:/app/google
       - ../openddil-tactical-agents/edge/rules.yaml:/app/rules.yaml
+
+  redpanda-connect:
+    volumes:
+      # Ontology lookup — read-only. Bloblang resolves DIS entity type triples here.
+      # Update openddil-contracts/ontology/dis_entity_types.yaml to add new platform types.
+      - ../openddil-contracts/ontology:/ontology:ro

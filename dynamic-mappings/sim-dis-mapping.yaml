@@ -25,6 +25,36 @@ processor_resources:
       root.asset.dis_entity_id.application = $src.dis_entity_id.application
       root.asset.dis_entity_id.entity      = $src.dis_entity_id.entity
 
+      # -------------------------------------------------------------------------
+      # DIS EntityType Triple → OpenDDIL Platform Ontology
+      #
+      # Build the 7-tuple key from the incoming DIS entity_type fields and look
+      # it up in the curated ontology YAML. Falls back to the _default entry
+      # if the triple is unknown. The YAML file is read once per worker and
+      # cached by the runtime.
+      #
+      # ADR-0007: No math here. ADR-0010: No protocol quirks leak past this line.
+      # -------------------------------------------------------------------------
+      let et = $src.entity_type
+      let triple = "%d.%d.%d.%d.%d.%d.%d".format(
+        $et.kind.or(0),
+        $et.domain.or(0),
+        $et.country.or(0),
+        $et.category.or(0),
+        $et.subcategory.or(0),
+        $et.specific.or(0),
+        $et.extra.or(0)
+      )
+      let ontology_doc = file("/ontology/dis_entity_types.yaml").parse_yaml()
+      let ont = $ontology_doc.mappings.get($triple).or($ontology_doc.mappings._default)
+
+      root.asset.dis_entity_type_triple   = $triple
+      root.asset.platform_variant         = $ont.platform_variant
+      root.asset.platform_family          = $ont.platform_family
+      root.asset.configuration_baseline   = $ont.default_baseline.or("")
+      root.asset.cbm_schema               = $ont.cbm_schema.or("")
+      root.asset.domain_authority         = $ont.domain_authority.or("")
+
       # Position: source emits ECEF natively. Pass through. No conversion.
       root.kinematics.position.ecef.x_m = $src.location.x
       root.kinematics.position.ecef.y_m = $src.location.y
