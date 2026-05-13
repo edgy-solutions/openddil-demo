@@ -5,3 +5,5 @@
 - **Aesthetic**: Tier-1 military display. Slate/zinc backgrounds (`bg-slate-950`), neon accents (emerald, amber, rose). Sharp edges, no playful/rounded UI elements.
 - **Simulation**: Uses Toxiproxy to simulate DDIL environments (bandwidth, jitter, stutter).
 - **Backend Agents**: The data processing agents (Faust, Restate) are in `openddil-tactical-agents`. This repo only contains the simulator and UI.
+- **Docker Compose**: `docker-compose.yml` is REGISTRY IMAGES ONLY — no `build:` directives, no source mounts. All builds + dev mounts live in `docker-compose.override.yml`, which compose auto-merges. New services: publish to `ghcr.io/edgy-solutions/openddil/<service>:latest`, reference via `image:` in base, add `build:` block in override.
+- **Customer overlay**: Customer-encumbered services (proprietary feeds, sim-a AMQP ingress, System B egress, etc.) never live in this repo's compose. They live in the sibling `openddil-customer-bundle/` directory and layer on top via `-f`.

@@ -1,5 +1,32 @@
 version: '3.8'
 
+# =============================================================================
+# OpenDDIL Demo — base compose (REGISTRY IMAGES ONLY)
+# =============================================================================
+# RULE: This file must contain ONLY `image:` references (pulled from
+# ghcr.io / docker.io / etc.). It MUST NOT contain `build:` directives.
+# Local builds, hot-reload source mounts, and other developer affordances
+# live in docker-compose.override.yml, which `docker compose` auto-merges
+# on top of this file when present.
+#
+# Rationale:
+#   - The base compose models a deployable state — a customer or CI runner
+#     should be able to `docker compose -f docker-compose.yml up` and get
+#     a working system pulled from a registry without any source repos
+#     present on disk.
+#   - The override compose models a developer state — sibling repos
+#     cloned next to openddil-demo, source bind-mounted into containers
+#     for hot reload, image built locally rather than pulled.
+#
+# When adding a new service:
+#   1. Push the image to ghcr.io/edgy-solutions/openddil/<service>:latest
+#   2. Add the `image:` reference here.
+#   3. Add the matching `build:` block (+ any dev mounts) in
+#      docker-compose.override.yml.
+#
+# See AGENTS.md / llms.txt / .cursorrules in this repo for the rule.
+# =============================================================================
+
 services:
   redpanda-edge:
     image: docker.redpanda.com/redpandadata/redpanda:latest
@@ -193,8 +220,8 @@ services:
   #     up
 
   openddil-sensor-ingest:
-    build:
-      context: ../openddil-sensor-ingest
+    image: ghcr.io/edgy-solutions/openddil/sensor-ingest:latest
+    pull_policy: always
     command: python dis_ingestor.py
     ports:
       - "62040:62040/udp"
@@ -230,7 +257,7 @@ services:
       - toxiproxy
 
   simulator:
-    image: ghcr.io/edgy-solutions/openddil-demo-simulator:latest
+    image: ghcr.io/edgy-solutions/openddil/simulator:latest
     profiles:
       - "disabled"
     pull_policy: always
@@ -244,7 +271,7 @@ services:
       - redpanda-edge
 
   faust-edge:
-    image: ghcr.io/openddil/faust-edge:latest
+    image: ghcr.io/edgy-solutions/openddil/faust-edge:latest
     restart: always
     container_name: openddil-demo-faust
     working_dir: /tmp
@@ -267,7 +294,7 @@ services:
       - "9070:9070"
 
   restate-hub:
-    image: ghcr.io/edgy-solutions/hub-restate-projector:latest
+    image: ghcr.io/edgy-solutions/openddil/hub-restate-projector:latest
     pull_policy: always
     container_name: openddil-demo-restate-hub
     entrypoint: ["/opt/venv/bin/python", "/app/restate_hub.py"]
@@ -287,8 +314,8 @@ services:
   # Kafka publisher (egress) targets redpanda-edge:9092 for asset-cm-state
   # and tactical-events; Kafka ingress is wired by cm-service-bootstrap.
   cm-service:
-    build:
-      context: ../openddil-cm-service
+    image: ghcr.io/edgy-solutions/openddil/cm-service:latest
+    pull_policy: always
     container_name: openddil-demo-cm-service
     environment:
       CM_BASELINES_DIR:       /baselines
@@ -298,9 +325,12 @@ services:
       LOG_LEVEL:              INFO
       PYTHONPATH:             /proto:/app/src
     volumes:
+      # Cross-repo reference data mounted from the contracts source repo —
+      # OSS contributors maintaining the contracts repo see updates without
+      # rebuilding the cm-service image. Production deployments may
+      # alternatively bake these into the image.
       - ../openddil-contracts/gen/python:/proto:ro
       - ../openddil-contracts/baselines:/baselines:ro
-      - ../openddil-cm-service/cli:/app/cli:ro
     ports:
       - "9080:9080"
     depends_on:
@@ -322,8 +352,8 @@ services:
   # AssetLogisticsStatusUpdate to asset-logistics-status. Kafka subscriptions
   # registered by logistics-fusion-bootstrap (below).
   logistics-fusion-service:
-    build:
-      context: ../openddil-logistics-fusion-service
+    image: ghcr.io/edgy-solutions/openddil/logistics-fusion-service:latest
+    pull_policy: always
     container_name: openddil-demo-logistics-fusion-service
     environment:
       FUSION_KAFKA_BROKERS:    redpanda-edge:9092
@@ -349,8 +379,10 @@ services:
   # Kafka subscriptions for asset-telemetry-windows, asset-cm-state, and
   # raw-sensor-stream. Idempotent (uses shared bootstrap library's dedup).
   logistics-fusion-bootstrap:
-    build:
-      context: ../openddil-logistics-fusion-service
+    # Reuses the same image as logistics-fusion-service; only the entrypoint
+    # differs (the bootstrap wrapper script).
+    image: ghcr.io/edgy-solutions/openddil/logistics-fusion-service:latest
+    pull_policy: always
     container_name: openddil-demo-logistics-fusion-bootstrap
     entrypoint: ["python", "/app/bootstrap/register_subscriptions.py"]
     environment:
@@ -361,7 +393,9 @@ services:
       LOG_LEVEL:                INFO
       PYTHONPATH:               /app
     volumes:
-      - ../openddil-logistics-fusion-service/bootstrap:/app/bootstrap:ro
+      # Shared bootstrap library — cross-repo Python module, mounted rather
+      # than baked so updates to openddil-contracts/bootstrap propagate
+      # without rebuilding every service image.
       - ../openddil-contracts/bootstrap:/app/openddil_bootstrap:ro
     depends_on:
       logistics-fusion-service:
@@ -371,8 +405,9 @@ services:
     restart: "no"
 
   cm-service-bootstrap:
-    build:
-      context: ../openddil-cm-service
+    # Reuses the same image as cm-service; only the entrypoint differs.
+    image: ghcr.io/edgy-solutions/openddil/cm-service:latest
+    pull_policy: always
     container_name: openddil-demo-cm-service-bootstrap
     entrypoint: ["python", "/app/bootstrap/register_subscriptions.py"]
     environment:
@@ -386,7 +421,9 @@ services:
       # which resolves via the shared library mount below.
       PYTHONPATH:           /app
     volumes:
-      - ../openddil-cm-service/bootstrap:/app/bootstrap:ro
+      # Shared bootstrap library — cross-repo Python module, mounted rather
+      # than baked so updates to openddil-contracts/bootstrap propagate
+      # without rebuilding every service image.
       - ../openddil-contracts/bootstrap:/app/openddil_bootstrap:ro
     depends_on:
       cm-service:
@@ -396,7 +433,7 @@ services:
     restart: "no"
 
   frontend:
-    image: ghcr.io/edgy-solutions/openddil-demo-frontend:latest
+    image: ghcr.io/edgy-solutions/openddil/frontend:latest
     pull_policy: always
     container_name: openddil-demo-frontend
     ports:

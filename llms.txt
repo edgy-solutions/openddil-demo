@@ -21,3 +21,19 @@ This repository (`openddil-demo`) houses the orchestration and UI for the OpenDD
 - Frontend must use React, Tailwind (Dark Mode), and React Three Fiber.
 - Aesthetic must be strict Tier-1 military (slate/zinc backgrounds, neon accents, sharp edges).
 - Tactical agents (Faust/Restate) are located in `openddil-tactical-agents`.
+
+## Docker Compose split (HARD RULE)
+- `docker-compose.yml` is REGISTRY IMAGES ONLY. Every service references
+  `image: ghcr.io/...` (or docker.io, etc). No `build:` directives. No
+  source bind-mounts. Customer / CI consumers can run the file directly
+  with zero source repos on disk.
+- `docker-compose.override.yml` owns every `build:` block, hot-reload
+  source mount, and `pull_policy: build`. Compose auto-merges this on
+  `docker compose up` from the openddil-demo directory.
+- When adding a new service: (1) publish the image to
+  `ghcr.io/edgy-solutions/openddil/<service>:latest`, (2) reference via `image:` in
+  the base compose, (3) add the matching `build:` block + source mounts
+  in the override compose.
+- Customer-encumbered services live in
+  `openddil-customer-bundle/docker-compose.customer.yml` (sibling repo)
+  and are layered via `-f` flags.

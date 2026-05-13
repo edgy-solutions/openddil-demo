@@ -10,6 +10,10 @@ permissions:
   contents: read
   packages: write
 
+# All images publish under ghcr.io/edgy-solutions/openddil/<service>:latest.
+# `${{ github.repository_owner }}` resolves to `edgy-solutions` for this repo.
+# These images are referenced by docker-compose.yml in this same repo.
+
 jobs:
   build-frontend:
     runs-on: ubuntu-latest
@@ -33,7 +37,7 @@ jobs:
           context: ./frontend
           file: ./frontend/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/openddil-demo-frontend:latest
+          tags: ghcr.io/${{ github.repository_owner }}/openddil/frontend:latest
           target: production
 
   build-simulator:
@@ -58,5 +62,5 @@ jobs:
           context: ./simulator
           file: ./simulator/Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/openddil-demo-simulator:latest
+          tags: ghcr.io/${{ github.repository_owner }}/openddil/simulator:latest
           target: production

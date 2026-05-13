@@ -17,3 +17,26 @@ You are an AI agent working on the `openddil-demo` repository. This repository h
 
 3. **Backend Agents**:
    - The actual Faust and Restate agents processing the data live in the `openddil-tactical-agents` repository. Do not recreate them here.
+
+4. **Docker Compose split — base = images only, override = builds**:
+   - `docker-compose.yml` (base) MUST contain ONLY `image:` references
+     pulled from a registry (ghcr.io, docker.io, etc.). It MUST NOT
+     contain any `build:` directives, source bind-mounts, or
+     `pull_policy: build`. A customer or CI runner with only this file
+     should be able to `docker compose -f docker-compose.yml up` and
+     get a working stack from registry images alone.
+   - `docker-compose.override.yml` owns every `build:` block, every
+     hot-reload source mount, and `pull_policy: build`. Docker Compose
+     auto-merges this file when present, so `docker compose up` from
+     this directory still does the dev-friendly thing.
+   - **When adding a new service**:
+     1. Publish the image to `ghcr.io/edgy-solutions/openddil/<service>:latest`.
+     2. Reference it via `image:` in `docker-compose.yml`.
+     3. Put the matching `build:` block (and any source mounts) into
+        `docker-compose.override.yml`.
+   - **Never** add a `build:` directive to `docker-compose.yml`.
+     If a service requires local builds for the demo to work at all,
+     publish an image first, then reference that image.
+   - **Customer-encumbered services** never live in either of these
+     files. They live in `openddil-customer-bundle/docker-compose.customer.yml`
+     and are layered on top via `-f` flags.

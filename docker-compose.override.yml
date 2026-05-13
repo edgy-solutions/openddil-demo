@@ -1,8 +1,35 @@
+# =============================================================================
+# OpenDDIL Demo — developer override
+# =============================================================================
+# Docker Compose auto-merges this file on top of docker-compose.yml when
+# both are present in the working directory (the default behavior of
+# `docker compose up`). This file MUST own:
+#   - every `build:` directive (the base compose pulls from a registry)
+#   - every developer-only volume mount (live source bind-mounts for
+#     hot-reload, generated proto bindings, ontology overlays)
+#   - every `pull_policy: build`
+#
+# Skip this file in CI / customer-facing deployments by invoking compose
+# explicitly:
+#   docker compose -f docker-compose.yml up   # base only, all images pulled
+#
+# See AGENTS.md / llms.txt / .cursorrules in this repo for the underlying
+# rule and the new-service checklist.
+# =============================================================================
 services:
-  # Development Overrides
-  # This file enables local builds and hot-reloading for developers.
-  # Usage: docker compose up (Docker automatically merges this with docker-compose.yml)
 
+  # --------------------------------------------------------------------------
+  # DIS sidecar — local build + (no source mount needed; image-baked entry)
+  # --------------------------------------------------------------------------
+  openddil-sensor-ingest:
+    build:
+      context: ../openddil-sensor-ingest
+      dockerfile: Dockerfile
+    pull_policy: build
+
+  # --------------------------------------------------------------------------
+  # Faust edge — local build + mount source for hot-reload
+  # --------------------------------------------------------------------------
   faust-edge:
     build:
       context: ../openddil-tactical-agents/edge
@@ -16,6 +43,52 @@ services:
       - ../openddil-contracts/gen/python/google:/app/google
       - ../openddil-tactical-agents/edge/rules.yaml:/app/rules.yaml
 
+  # --------------------------------------------------------------------------
+  # CM service — local build + mount source for hot-reload + CLI helper
+  # --------------------------------------------------------------------------
+  cm-service:
+    build:
+      context: ../openddil-cm-service
+      dockerfile: Dockerfile
+    pull_policy: build
+    volumes:
+      # CLI helper for test-time CmEvent submission. Production images bake
+      # cli/ in via Dockerfile COPY; dev mode mounts it for fast iteration.
+      - ../openddil-cm-service/cli:/app/cli:ro
+      # Source mount for hot-reload (overrides the COPY'd /app/src)
+      - ../openddil-cm-service/src:/app/src
+
+  cm-service-bootstrap:
+    build:
+      context: ../openddil-cm-service
+      dockerfile: Dockerfile
+    pull_policy: build
+    volumes:
+      # Source mount for the bootstrap wrapper (production bakes it in).
+      - ../openddil-cm-service/bootstrap:/app/bootstrap:ro
+
+  # --------------------------------------------------------------------------
+  # Logistics fusion service — local build + source mount
+  # --------------------------------------------------------------------------
+  logistics-fusion-service:
+    build:
+      context: ../openddil-logistics-fusion-service
+      dockerfile: Dockerfile
+    pull_policy: build
+    volumes:
+      - ../openddil-logistics-fusion-service/src:/app/src
+
+  logistics-fusion-bootstrap:
+    build:
+      context: ../openddil-logistics-fusion-service
+      dockerfile: Dockerfile
+    pull_policy: build
+    volumes:
+      - ../openddil-logistics-fusion-service/bootstrap:/app/bootstrap:ro
+
+  # --------------------------------------------------------------------------
+  # Redpanda Connect — ontology mount for dev iteration
+  # --------------------------------------------------------------------------
   redpanda-connect:
     volumes:
       # Ontology lookup — read-only. Bloblang resolves DIS entity type triples here.
