@@ -2,6 +2,11 @@
 Hero Scenario v3 runner — invokes each test as a subprocess so failures in
 one test don't poison the others, and prints a summary.
 
+This is the OSS-only test runner. Customer-feed tests (proprietary, sim-a,
+System B egress, end-to-end fusion) live in the customer overlay at
+openddil-customer-bundle/tests/run_all.py. Run them separately when the
+customer overlay is mounted.
+
 Exit code:
   0 = all tests PASS or SKIP
   1 = any test FAIL
@@ -19,6 +24,7 @@ HERE = Path(__file__).parent
 PY = sys.executable
 
 TESTS = [
+    # DIS sidecar + Silver translation (Phase 2.5)
     "test_01_binary_pdu_acceptance.py",
     "test_02_malformed_pdu_resilience.py",
     "test_03_non_entity_state_dropped.py",
@@ -29,6 +35,14 @@ TESTS = [
     "test_08_truth_serum.py",
     "test_09_angle_quantity_roundtrip.py",
     "test_10_position_quantity_roundtrip.py",
+    # cm-service lifecycle (Phase 3) — driven entirely by DIS data
+    "test_12_cm_first_seen_init.py",
+    "test_13_mod_compliance_flow.py",
+    "test_14_critical_alert.py",
+    "test_15_no_realert_on_stable_critical.py",
+    "test_16_resolved_alert.py",
+    # Pure-Python fusion rules unit tests (Phase 3.5) — no customer shapes
+    "test_24_fusion_rules_unit.py",
 ]
 
 
@@ -47,7 +61,7 @@ def run_one(script: str) -> tuple[str, str, str]:
 
 
 def main() -> int:
-    print("Hero Scenario v3 — Binary DIS Ingestion Verification")
+    print("Hero Scenario v3 (OSS) — DIS Ingestion + CM Lifecycle + Fusion Rules")
     print("=" * 60)
     results = []
     for t in TESTS:

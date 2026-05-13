@@ -3,6 +3,35 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Distribution / Build
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
 # Docker
 .docker/
 
@@ -14,6 +43,8 @@ __pycache__/
 .idea/
 *.swp
 *.swo
+.DS_Store
+Thumbs.db
 
 # Project Specific
 toxiproxy.json

@@ -121,6 +121,32 @@ services:
             || true
         echo "INFO: ingress-proprietary-raw created or already exists."
 
+        # Phase 3.5: System A proprietary battle simulator
+        rpk -X brokers=redpanda-edge:9092 topic create ingress-sim-a-raw \
+            -p 8 -r 1 \
+            -c retention.ms=86400000 \
+            -c compression.type=zstd \
+            || true
+        echo "INFO: ingress-sim-a-raw created or already exists."
+
+        # Phase 3.5: rolling-window aggregations from the Faust windowing agent
+        rpk -X brokers=redpanda-edge:9092 topic create asset-telemetry-windows \
+            -p 8 -r 1 \
+            -c retention.ms=86400000 \
+            -c cleanup.policy=delete \
+            || true
+        echo "INFO: asset-telemetry-windows created or already exists."
+
+        # Phase 3.5: per-asset fused logistics status (compacted, retained forever)
+        rpk -X brokers=redpanda-edge:9092 topic create asset-logistics-status \
+            -p 8 -r 1 \
+            -c cleanup.policy=compact \
+            -c min.cleanable.dirty.ratio=0.1 \
+            -c segment.ms=60000 \
+            -c retention.ms=-1 \
+            || true
+        echo "INFO: asset-logistics-status created or already exists."
+
         echo "INFO: All topics initialized."
 
   postgres-hq:
@@ -155,6 +181,17 @@ services:
       - ./toxiproxy.json:/etc/toxiproxy.json
     command: -host 0.0.0.0 -port 8475
 
+  # NOTE: RabbitMQ, the System A AMQP-ingress Connect container, the System B
+  # AMQP-egress Connect container, and the proprietary-ingest sidecar are
+  # CUSTOMER-ENCUMBERED service blocks. They live in the customer overlay
+  # at openddil-customer-bundle/docker-compose.customer.yml — NOT in this
+  # public file. To run the full demo with customer feeds, layer the overlay:
+  #
+  #   docker compose \
+  #     -f openddil-demo/docker-compose.yml \
+  #     -f openddil-customer-bundle/docker-compose.customer.yml \
+  #     up
+
   openddil-sensor-ingest:
     build:
       context: ../openddil-sensor-ingest
@@ -172,6 +209,10 @@ services:
       redpanda-init:
         condition: service_completed_successfully
     restart: unless-stopped
+
+  # Customer-feed sidecars (openddil-proprietary-ingest, the System A AMQP
+  # Connect, and the System B AMQP egress Connect) live in the customer
+  # overlay — see the note near the toxiproxy block above.
 
   redpanda-connect:
     container_name: openddil-demo-redpanda-connect-1
@@ -213,8 +254,14 @@ services:
       - redpanda-edge
 
   restate-server:
-    image: restatedev/restate:1.1.2
+    # Bumped 2026-05-13 from 1.1.2 to 1.6.2 — restate-sdk-python 0.17.1
+    # speaks a newer discovery protocol than 1.1.x supports (the older server
+    # rejected handler registration with HTTP 415).
+    image: restatedev/restate:1.6.2
     container_name: openddil-demo-restate-server
+    command: ["-c", "/config/restate-config.toml"]
+    volumes:
+      - ./restate-config.toml:/config/restate-config.toml:ro
     ports:
       - "8080:8080"
       - "9070:9070"
@@ -230,6 +277,123 @@ services:
       - ../openddil-tactical-agents/hub/restate_hub.py:/app/restate_hub.py
     depends_on:
       - restate-server
+
+  # ===========================================================================
+  # Configuration Management Service (Phase 3, ADR-0014)
+  # ===========================================================================
+  # Restate Virtual Object "AssetCM" — one durable instance per asset_id.
+  # Owns As-Maintained state, discrepancy analysis, and lifecycle transitions.
+  # ASGI endpoint on :9080; Restate discovers handlers from there.
+  # Kafka publisher (egress) targets redpanda-edge:9092 for asset-cm-state
+  # and tactical-events; Kafka ingress is wired by cm-service-bootstrap.
+  cm-service:
+    build:
+      context: ../openddil-cm-service
+    container_name: openddil-demo-cm-service
+    environment:
+      CM_BASELINES_DIR:       /baselines
+      CM_KAFKA_BROKERS:       redpanda-edge:9092
+      CM_HTTP_PORT:           "9080"
+      CM_STALENESS_WINDOW_S:  "900"
+      LOG_LEVEL:              INFO
+      PYTHONPATH:             /proto:/app/src
+    volumes:
+      - ../openddil-contracts/gen/python:/proto:ro
+      - ../openddil-contracts/baselines:/baselines:ro
+      - ../openddil-cm-service/cli:/app/cli:ro
+    ports:
+      - "9080:9080"
+    depends_on:
+      redpanda-edge:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # One-shot: registers cm-service with Restate and creates the Kafka
+  # subscriptions for raw-sensor-stream and cm-events. Idempotent — safe
+  # to re-run.
+  # =============================================================================
+  # Logistics Fusion Service (Phase 3.5, ADR-0014)
+  # =============================================================================
+  # Restate Virtual Object "AssetLogistics" — one durable instance per
+  # asset_id. Consumes windowed telemetry + cm-state + Silver telemetry,
+  # computes overall logistics severity via pure-Python rules, emits
+  # AssetLogisticsStatusUpdate to asset-logistics-status. Kafka subscriptions
+  # registered by logistics-fusion-bootstrap (below).
+  logistics-fusion-service:
+    build:
+      context: ../openddil-logistics-fusion-service
+    container_name: openddil-demo-logistics-fusion-service
+    environment:
+      FUSION_KAFKA_BROKERS:    redpanda-edge:9092
+      FUSION_HTTP_PORT:        "9081"
+      EMIT_INTERVAL_SECONDS:   "30"
+      STALE_INPUT_SECONDS:     "300"
+      ONTOLOGY_DIR:            /ontology
+      LOG_LEVEL:               INFO
+      PYTHONPATH:              /proto:/app/src
+    volumes:
+      - ../openddil-contracts/gen/python:/proto:ro
+      - ../openddil-contracts/ontology:/ontology:ro
+    ports:
+      - "9081:9081"
+    depends_on:
+      redpanda-edge:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # One-shot: registers logistics-fusion-service with Restate and creates the
+  # Kafka subscriptions for asset-telemetry-windows, asset-cm-state, and
+  # raw-sensor-stream. Idempotent (uses shared bootstrap library's dedup).
+  logistics-fusion-bootstrap:
+    build:
+      context: ../openddil-logistics-fusion-service
+    container_name: openddil-demo-logistics-fusion-bootstrap
+    entrypoint: ["python", "/app/bootstrap/register_subscriptions.py"]
+    environment:
+      RESTATE_ADMIN_URL:        http://restate-server:9070
+      FUSION_SERVICE_ENDPOINT:  http://logistics-fusion-service:9081
+      KAFKA_CLUSTER_NAME:       openddil-edge
+      KAFKA_BROKERS:            redpanda-edge:9092
+      LOG_LEVEL:                INFO
+      PYTHONPATH:               /app
+    volumes:
+      - ../openddil-logistics-fusion-service/bootstrap:/app/bootstrap:ro
+      - ../openddil-contracts/bootstrap:/app/openddil_bootstrap:ro
+    depends_on:
+      logistics-fusion-service:
+        condition: service_started
+      restate-server:
+        condition: service_started
+    restart: "no"
+
+  cm-service-bootstrap:
+    build:
+      context: ../openddil-cm-service
+    container_name: openddil-demo-cm-service-bootstrap
+    entrypoint: ["python", "/app/bootstrap/register_subscriptions.py"]
+    environment:
+      RESTATE_ADMIN_URL:    http://restate-server:9070
+      CM_SERVICE_ENDPOINT:  http://cm-service:9080
+      KAFKA_CLUSTER_NAME:   openddil-edge
+      KAFKA_BROKERS:        redpanda-edge:9092
+      LOG_LEVEL:            INFO
+      # The bootstrap wrapper does
+      #   from openddil_bootstrap.restate_subscriptions import ...
+      # which resolves via the shared library mount below.
+      PYTHONPATH:           /app
+    volumes:
+      - ../openddil-cm-service/bootstrap:/app/bootstrap:ro
+      - ../openddil-contracts/bootstrap:/app/openddil_bootstrap:ro
+    depends_on:
+      cm-service:
+        condition: service_started
+      restate-server:
+        condition: service_started
+    restart: "no"
 
   frontend:
     image: ghcr.io/edgy-solutions/openddil-demo-frontend:latest

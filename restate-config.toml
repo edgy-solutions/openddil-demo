@@ -1,0 +1,11 @@
+# Restate server configuration for the openddil-demo stack.
+# Generated 2026-05-13 to register a Kafka cluster so AssetCM
+# subscriptions can use source URIs like kafka://openddil-edge/<topic>.
+#
+# Cluster name MUST match what the bootstrap script writes into the
+# subscription source URI (see openddil-cm-service/bootstrap/register_subscriptions.py
+# and KAFKA_CLUSTER_NAME env var).
+
+[[ingress.kafka-clusters]]
+name = "openddil-edge"
+brokers = ["redpanda-edge:9092"]

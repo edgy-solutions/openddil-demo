@@ -7,6 +7,20 @@ http:
   enabled: true
   address: 0.0.0.0:4196
 
+# =============================================================================
+# OSS Bronze → Silver translation pipeline (DIS + diagnostic HTTP only)
+# =============================================================================
+# Customer-feed Bronze topics (ingress-proprietary-raw, ingress-sim-a-raw)
+# are handled by a SEPARATE Connect container that lives in the customer
+# overlay (openddil-customer-bundle/connect/). The Bloblang mappings for
+# those feeds embody customer-specific JSON shapes and live in the
+# customer overlay — not in this OSS file.
+#
+# Both Connect containers publish to the SAME Silver topic raw-sensor-stream
+# (multi-producer pattern); downstream consumers (faust-edge, cm-service,
+# logistics-fusion-service) are feed-agnostic.
+# =============================================================================
+
 input:
   broker:
     inputs:
@@ -19,6 +33,8 @@ input:
 
       # Diagnostic HTTP Ingress (Port 9999)
       # Production DIS arrives via Kafka; HTTP is for diagnostic testing only.
+      # HTTP payloads have no kafka_topic metadata, so they fall through
+      # to sim_dis_mapping (the diagnostic uses DIS-shape JSON).
       - http_server:
           address: 0.0.0.0:9999
           path: /
