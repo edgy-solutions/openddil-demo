@@ -33,6 +33,7 @@ import {
   shortSeverity,
   shortCmStatus,
 } from './lib/fleetAggregates';
+import { assetCallsign } from './lib/assetLabel';
 
 function AorAssetList({
   fleet, logistics, selectedId, onSelect,
@@ -48,16 +49,25 @@ function AorAssetList({
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">AOR Assets ({rows.length})</h2>
       <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
         {rows.length === 0 && <div className="text-xs text-slate-500">No assets in the pipeline.</div>}
-        {rows.map((r) => (
-          <button
-            key={r.asset_id}
-            onClick={() => onSelect(r.asset_id)}
-            className={`w-full flex items-center justify-between text-left text-xs px-2 py-1 border rounded-sm transition-colors ${severityHeatClass(r.severity)} ${selectedId === r.asset_id ? 'ring-1 ring-cyan-400' : ''}`}
-          >
-            <span>{r.callsign || r.asset_id}</span>
-            <span className="text-[9px] font-bold">{shortSeverity(r.severity)}</span>
-          </button>
-        ))}
+        {rows.map((r) => {
+          const callsign = assetCallsign(r);
+          return (
+            <button
+              key={r.asset_id}
+              onClick={() => onSelect(r.asset_id)}
+              title={r.asset_id}
+              className={`w-full flex items-center justify-between gap-2 text-left text-xs px-2 py-1 border rounded-sm transition-colors ${severityHeatClass(r.severity)} ${selectedId === r.asset_id ? 'ring-1 ring-cyan-400' : ''}`}
+            >
+              <span className="min-w-0 flex-1">
+                {/* asset_id is the distinguishing identifier — callsign is a
+                    shared, non-unique value in the sim-a test feed. */}
+                <span className="block truncate">{r.asset_id}</span>
+                {callsign && <span className="block truncate opacity-60">{callsign}</span>}
+              </span>
+              <span className="text-[9px] font-bold shrink-0">{shortSeverity(r.severity)}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

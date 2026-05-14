@@ -8,6 +8,7 @@
 // platform_variant. Link toggles and the edge-buffer readout are unchanged.
 import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
 import type { FleetAsset } from '../hooks';
+import { assetLabel } from '../lib/assetLabel';
 
 interface HeaderProps {
   link1: boolean;
@@ -20,9 +21,10 @@ interface HeaderProps {
   setSelectedAsset: (v: string) => void;
 }
 
-function assetLabel(a: FleetAsset): string {
-  const name = a.callsign || a.asset_id;
-  return a.platform_variant ? `${name} (${a.platform_variant})` : name;
+// asset_id-first label (assetLabel) so assets with a shared callsign stay
+// distinguishable in the picker; platform_variant appended for context.
+function pickerLabel(a: FleetAsset): string {
+  return a.platform_variant ? `${assetLabel(a)} (${a.platform_variant})` : assetLabel(a);
 }
 
 export default function Header({ link1, setLink1, link2, setLink2, buffer, fleet, selectedAsset, setSelectedAsset }: HeaderProps) {
@@ -40,7 +42,7 @@ export default function Header({ link1, setLink1, link2, setLink2, buffer, fleet
             >
               {fleet.length === 0 && <option value="">— no assets in pipeline —</option>}
               {fleet.map((a) => (
-                <option key={a.asset_id} value={a.asset_id}>{assetLabel(a)}</option>
+                <option key={a.asset_id} value={a.asset_id}>{pickerLabel(a)}</option>
               ))}
             </select>
             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">

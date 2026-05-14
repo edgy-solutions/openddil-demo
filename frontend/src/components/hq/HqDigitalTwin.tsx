@@ -9,6 +9,7 @@
 import { Globe, ChevronRight } from 'lucide-react';
 import { useFleetAssets, useAllCmState, useAllLogisticsStatus } from '../../hooks';
 import { platformFamily, shortSeverity, severityHeatClass } from '../../lib/fleetAggregates';
+import { assetCallsign } from '../../lib/assetLabel';
 import { cmStatusBadge } from '../CmStateCard';
 
 export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
@@ -52,10 +53,16 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
               {assets.map((a) => {
                 const cmBadge = cmStatusBadge(cmByAsset.get(a.asset_id));
                 const sev = sevByAsset.get(a.asset_id);
+                const callsign = assetCallsign(a);
                 return (
-                  <div key={a.asset_id} className="flex items-center justify-between p-1 hover:bg-slate-800 rounded text-[10px]">
-                    <span className="text-slate-300">{a.callsign || a.asset_id}</span>
-                    <span className="flex items-center gap-1">
+                  <div key={a.asset_id} className="flex items-center justify-between gap-2 p-1 hover:bg-slate-800 rounded text-[10px]">
+                    {/* asset_id is the distinguishing identifier; the sim-a
+                        test feed reuses one shared callsign across assets. */}
+                    <span className="min-w-0 flex-1 truncate text-slate-300" title={a.asset_id}>
+                      {a.asset_id}
+                      {callsign && <span className="opacity-60"> · {callsign}</span>}
+                    </span>
+                    <span className="flex items-center gap-1 shrink-0">
                       <span className={`px-1 py-px rounded-sm border ${cmBadge.cls}`}>{cmBadge.label}</span>
                       <span className={`px-1 py-px rounded-sm border ${severityHeatClass(sev)}`}>{shortSeverity(sev)}</span>
                     </span>
