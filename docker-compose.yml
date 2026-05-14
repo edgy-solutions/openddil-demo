@@ -367,6 +367,11 @@ services:
 
   faust-edge:
     image: ghcr.io/edgy-solutions/openddil/faust-edge:latest
+    # pull_policy: always to match every other OpenDDIL-owned service in
+    # this base compose (Phase 4d pull_policy audit). The matching
+    # `build:` + `pull_policy: build` lives in docker-compose.override.yml
+    # so a developer's local build is not silently discarded.
+    pull_policy: always
     restart: always
     container_name: openddil-demo-faust
     working_dir: /tmp

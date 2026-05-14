@@ -15,6 +15,16 @@
 #
 # See AGENTS.md / llms.txt / .cursorrules in this repo for the underlying
 # rule and the new-service checklist.
+#
+# INVARIANT (Phase 4d pull_policy audit) — every OpenDDIL-owned service
+# (image: ghcr.io/edgy-solutions/openddil/...) MUST have BOTH:
+#   - base docker-compose.yml: `pull_policy: always`  (consumers pull latest)
+#   - this file:               `build:` + `pull_policy: build`  (devs build local)
+# A service with base `pull_policy: always` and NO build override here
+# has its local build silently discarded on every `docker compose up` —
+# the bug found with the frontend in Phase 4b and audited as a class in
+# 4d. Third-party images (redpanda, postgres, electric, toxiproxy, atlas,
+# restate-server, redpanda-connect) correctly pull and need no override.
 # =============================================================================
 services:
 
@@ -121,4 +131,20 @@ services:
     build:
       context: ../openddil-demo/frontend
       dockerfile: Dockerfile
+    pull_policy: build
+
+  # --------------------------------------------------------------------------
+  # Restate hub projector — local build (Phase 4d pull_policy audit)
+  # --------------------------------------------------------------------------
+  # The base compose pulls
+  # ghcr.io/edgy-solutions/openddil/hub-restate-projector:latest with
+  # `pull_policy: always` but had no build override — the bug class. The
+  # base compose bind-mounts restate_hub.py for source hot-reload, so a
+  # developer's *source* edits were fine, but Dockerfile / pyproject.toml
+  # (dependency) changes were silently discarded on every up. The hub
+  # Dockerfile's COPYs assume the repo root as context.
+  restate-hub:
+    build:
+      context: ../openddil-tactical-agents
+      dockerfile: hub/projector/Dockerfile
     pull_policy: build
