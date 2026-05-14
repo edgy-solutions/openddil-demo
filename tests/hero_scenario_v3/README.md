@@ -70,3 +70,26 @@ Each test exits with code `0` on PASS and `1` on FAIL, printing a single
   so mock thermal data cannot reach algorithms even via the diagnostic HTTP
   injection path. The 200 K / 200 °F unit-handling assertion is exercised by
   the algorithm-level unit tests in `openddil-tactical-agents`, not here.
+
+## Tracked follow-ups
+
+Open items deliberately scoped *out* of the phase that introduced them.
+
+- **Run the Playwright suite (tests 29–34) in an environment with Chromium.**
+  Added in Phase 4d. They have only ever been verified to *SKIP* cleanly
+  (no browser in the dev environment) — never executed. A never-run test
+  can have a wrong selector or timeout and still look fine. Until a real
+  run (CI or a local box with `playwright install chromium`) passes, the
+  Playwright suite is written, not a verified safety net. Tests 32/33
+  especially — the toxiproxy-sever / freeze-overlay assertions — need a
+  real run to count.
+- **Make `consume_asset_cm_state_for` poll-until-applied.**
+  `test_13_mod_compliance_flow` is a pre-existing timing flake: it submits a
+  `ModApplied` CmEvent via the CLI, `sleep(5)`s, then consumes a single
+  `asset-cm-state` snapshot. Under full-suite load the
+  CLI→Kafka→Restate→cm-service→emit chain can outrun the sleep, so the
+  snapshot is pre-apply (`state=2`, not `4`). It passes on isolated re-run.
+  The Phase 4d warm-up gate does *not* fix this — it addresses
+  consumer-group readiness, a different flake class. Fix:
+  `consume_asset_cm_state_for` should poll until the expected state appears
+  (or timeout), not sleep-then-snapshot.

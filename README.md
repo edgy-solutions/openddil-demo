@@ -37,6 +37,18 @@ Run these tests to verify the integrity of the architecture:
 2. **Truth Serum (Units)**: Send `200 K` (Cold) vs `200 F` (Hot). Use `tests/test_udp_final.py`.
 3. **Offline-First**: Load UI -> Sever WAN link (Toxiproxy) -> Wait 30s -> Verify staleness banner and local cache render.
 
+> **DDIL demo staging — the sim-a feed must be active.** The Phase 4c.5
+> edge→HQ buffer counter reads *real* `bridge-group` consumer-group lag:
+> messages queued at the edge because the HQ link is severed. That number
+> only **climbs** while traffic is actually flowing into the edge — i.e.
+> while the sim-a feed (or another live feed) is producing. If the feeds
+> are idle or stale, severing the link is still genuinely real (the
+> `hq_link_severed` state flips, the SYSTEM FREEZE overlay fires), but the
+> buffer stays at 0 because there is nothing to buffer. **Before demoing
+> the sever → buffer-climbs → restore → buffer-drains cycle, confirm the
+> sim-a feed is live** (`rpk topic consume raw-sensor-stream` should show
+> fresh records). The mechanism is verified; the *visual* needs traffic.
+
 ## 🗺 Tactical Roadmap
 
 Done (Phases 2, 2.5, 3):

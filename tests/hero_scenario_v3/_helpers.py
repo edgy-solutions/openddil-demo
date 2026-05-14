@@ -463,6 +463,81 @@ def sensor_alive() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline warm-up gate
+# ---------------------------------------------------------------------------
+# Consumer groups the OSS hero-scenario tests depend on. Until each is present
+# and Stable on redpanda-edge, a freshly-`up`'d stack drops or mis-orders the
+# first events a test sends — the flaky-test class seen in Phase 3.6, where a
+# test would send a PDU before connect-dis-mapper had finished joining its
+# group and then time out waiting for a Silver record that was never consumed.
+#
+#   connect-dis-mapper    redpanda-connect: ingress-dis-raw -> raw-sensor-stream
+#   cm-service-silver     cm-service Restate sub: raw-sensor-stream -> AssetCM
+#   cm-service-cm-events  cm-service Restate sub: cm-events        -> AssetCM
+#
+# logistics-fusion's groups (fusion-service-*) are intentionally NOT gated
+# here: the OSS runner never drives them — they need the sim-a / proprietary
+# feeds that live in the customer overlay.
+_REQUIRED_GROUPS = (
+    "connect-dis-mapper",
+    "cm-service-silver",
+    "cm-service-cm-events",
+)
+
+
+def _consumer_group_state(group: str) -> str | None:
+    """
+    Return the Kafka consumer-group state for `group` as reported by
+    `rpk group describe` (e.g. "Stable", "Empty", "PreparingRebalance"),
+    or None if the group does not exist yet or rpk errored.
+    """
+    cmd = _docker_compose_cmd() + [
+        "exec", "-T", REDPANDA_SVC,
+        "rpk", "group", "describe", group,
+    ]
+    try:
+        proc = subprocess.run(cmd, cwd=str(COMPOSE_DIR), capture_output=True,
+                              timeout=10, text=True)
+    except subprocess.TimeoutExpired:
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        m = re.match(r"\s*STATE\s+(\S+)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def wait_for_pipeline_ready(timeout_s: int = 120,
+                            groups: tuple[str, ...] = _REQUIRED_GROUPS) -> bool:
+    """
+    Block until every consumer group in `groups` is present and Stable on
+    redpanda-edge, or `timeout_s` elapses.
+
+    A group is "ready" only once its members have joined and a rebalance has
+    settled (STATE == "Stable"). An absent group, an Empty group, or a group
+    mid-rebalance is treated as not-ready. Returns True when all groups are
+    ready; False on timeout — the runner treats False as a hard gate failure
+    rather than running tests against a cold pipeline.
+    """
+    deadline = time.monotonic() + timeout_s
+    pending = set(groups)
+    last_report: set[str] | None = None
+    while time.monotonic() < deadline:
+        pending = {g for g in pending if _consumer_group_state(g) != "Stable"}
+        if not pending:
+            print("    pipeline warm -- all consumer groups Stable")
+            return True
+        if pending != last_report:
+            print(f"    waiting on consumer groups: {', '.join(sorted(pending))}")
+            last_report = set(pending)
+        time.sleep(2)
+    print(f"    TIMEOUT after {timeout_s}s -- still cold: {', '.join(sorted(pending))}")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Convenience
 # ---------------------------------------------------------------------------
 def wait_for_metric_increase(name: str, baseline: float,

@@ -23,6 +23,9 @@ from pathlib import Path
 HERE = Path(__file__).parent
 PY = sys.executable
 
+sys.path.insert(0, str(HERE))
+from _helpers import wait_for_pipeline_ready  # noqa: E402
+
 TESTS = [
     # DIS sidecar + Silver translation (Phase 2.5)
     "test_01_binary_pdu_acceptance.py",
@@ -43,6 +46,16 @@ TESTS = [
     "test_16_resolved_alert.py",
     # Pure-Python fusion rules unit tests (Phase 3.5) — no customer shapes
     "test_24_fusion_rules_unit.py",
+    # Playwright UI smoke tests (Phase 4d). Drive a headless browser against
+    # the running frontend. SKIP gracefully if Playwright / a browser binary
+    # is not installed — see _ui_helpers.py. Tests 32/33 exercise the real
+    # toxiproxy hq-link DDIL mechanic (ADR-0021), not a UI simulation.
+    "test_29_ui_maintainer_view_loads.py",
+    "test_30_ui_regional_aggregation.py",
+    "test_31_ui_hq_aggregate_metrics.py",
+    "test_32_ui_ddil_disconnect_banner.py",
+    "test_33_ui_ddil_reconnect_clears.py",
+    "test_34_ui_demo_mock_banners.py",
 ]
 
 
@@ -63,6 +76,19 @@ def run_one(script: str) -> tuple[str, str, str]:
 def main() -> int:
     print("Hero Scenario v3 (OSS) — DIS Ingestion + CM Lifecycle + Fusion Rules")
     print("=" * 60)
+
+    # Warm-up gate: don't run a single test until the pipeline's consumer
+    # groups have joined and settled. Running against a cold pipeline is the
+    # Phase 3.6 flaky-test class — the failures look like real bugs but are
+    # just races. A gate timeout is a hard stop (exit 2), distinct from a
+    # test failure (exit 1).
+    print("... warm-up gate: waiting for pipeline consumer groups")
+    if not wait_for_pipeline_ready():
+        print()
+        print("GATE FAILED — pipeline did not warm up; not running tests.")
+        print("Check `docker compose ps` and the redpanda-connect / cm-service logs.")
+        return 2
+
     results = []
     for t in TESTS:
         print(f"... running {t}")
