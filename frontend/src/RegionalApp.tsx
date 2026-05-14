@@ -112,10 +112,8 @@ function CmComplianceSummary({ cm }: { cm: ReturnType<typeof useAllCmState>['dat
 }
 
 export default function RegionalApp() {
-  // UI demo state — link toggles + regional buffer (see 4c checkpoint finding).
+  // link1 = the DDIL link toggle (severs/restores the real hq-link proxy).
   const [link1, setLink1] = useState(true);
-  const [link2, setLink2] = useState(true);
-  const [buffer, setBuffer] = useState(24);
   const [isRuleEditorOpen, setIsRuleEditorOpen] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState<string>('ALL');
@@ -126,17 +124,17 @@ export default function RegionalApp() {
   const cm = useAllCmState();
   const events = useTacticalEvents(50);
 
-  // Regional buffer simulation (UI mechanic).
+  // DDIL hq-link sever/restore — disables/enables the real toxiproxy
+  // hq-link proxy (see MaintainerApp for why disable, not a toxic). The
+  // regional view can drive the sever too; there is one shared hq-link.
+  // The real bridge-group lag (RegionalHeader via useEdgeBuffer) reflects it.
   useEffect(() => {
-    const interval = setInterval(() => {
-      setBuffer((prev) => {
-        if (!link2) return prev + Math.floor(Math.random() * 80) + 20;
-        if (prev > 24) return Math.max(24, prev - Math.floor(prev * 0.3) - 50);
-        return 24 + Math.floor(Math.random() * 5);
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [link2]);
+    fetch('/proxies/hq-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: link1 }),
+    }).catch((e) => console.error('Toxiproxy error', e));
+  }, [link1]);
 
   const filteredEvents = useMemo(() => {
     if (severityFilter === 'ALL') return events.data;
@@ -147,8 +145,6 @@ export default function RegionalApp() {
     <div className="font-mono h-screen flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <RegionalHeader
         link1={link1} setLink1={setLink1}
-        link2={link2} setLink2={setLink2}
-        buffer={buffer}
         setIsRuleEditorOpen={setIsRuleEditorOpen}
       />
 
@@ -172,7 +168,7 @@ export default function RegionalApp() {
               />
               <TopFactors logistics={logistics.data} />
               <CmComplianceSummary cm={cm.data} />
-              <WorkOrders link2={link2} />
+              <WorkOrders />
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-[10px] text-slate-500 uppercase tracking-wider">Severity filter</span>

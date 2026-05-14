@@ -8,12 +8,12 @@
 // rollup, the enterprise fleet tree (HqDigitalTwin), and CM-derived
 // actionable items (HqWorkOrders).
 //
-// The WAN-cut demo (HqHeader toggle + freeze overlay + buffer) is kept as
-// a UI mechanic. NOTE (Phase 4c finding): the Toxiproxy hq-link proxy is
-// not registered at runtime, so toggleWan's fetch 404s and falls through
-// to the simulation branch — the freeze overlay and buffer are pure UI,
-// not backed by a real WAN sever. See the 4c checkpoint.
-import { useState, useEffect, useRef, useMemo } from 'react';
+// Phase 4c.5: the WAN-cut demo is now REAL. The toggle severs/restores
+// the toxiproxy hq-link proxy (now loaded via -config); the buffer
+// backlog and link status come from useEdgeBuffer (the edge_buffer_status
+// shape the projector's monitor writes from real bridge-group lag); the
+// freeze overlay shows when the link is genuinely severed.
+import { useState, useMemo } from 'react';
 import HqHeader from './components/hq/HqHeader';
 import HqBattleView from './components/hq/HqBattleView';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
@@ -24,6 +24,7 @@ import {
   useAllLogisticsStatus,
   useFleetAssets,
   useAllTelemetryWindows,
+  useEdgeBuffer,
 } from './hooks';
 import {
   cmComplianceSummary,
@@ -137,65 +138,40 @@ function WearTrends({ windows }: { windows: ReturnType<typeof useAllTelemetryWin
 
 export default function HqApp() {
   const [wanActive, setWanActive] = useState(true);
-  const [buffer, setBuffer] = useState(0);
-  const [bufferTrend, setBufferTrend] = useState<'up' | 'down' | 'none'>('none');
-  const bufferRef = useRef(buffer);
-  bufferRef.current = buffer;
 
   // Pipeline data — ElectricSQL Shapes.
   const cm = useAllCmState();
   const logistics = useAllLogisticsStatus();
   const fleet = useFleetAssets();
   const windows = useAllTelemetryWindows();
+  const edge = useEdgeBuffer();
+  // Real observed link state; the freeze overlay shows when the edge->HQ
+  // link is genuinely severed, not just commanded.
+  const severed = edge.status ? edge.status.hq_link_severed : !wanActive;
 
-  // The Toxiproxy "God Switch". See the file header: hq-link is not
-  // registered at runtime, so the fetch 404s and we fall through to the
-  // UI-only simulation. Kept as the WAN-cut demo mechanic.
+  // The "God Switch" — disables/enables the real toxiproxy hq-link proxy
+  // (registered at runtime as of Phase 4c.5: toxiproxy now loads -config).
+  // Disable, not a toxic: toxiproxy then closes connections and refuses
+  // new ones, so the edge-hq-bridge genuinely cannot reach redpanda-hq.
   const toggleWan = async (active: boolean) => {
     setWanActive(active);
     try {
-      if (!active) {
-        await fetch('/proxies/hq-link/toxics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: 'hq_timeout', type: 'timeout', stream: 'downstream',
-            toxicity: 1.0, attributes: { timeout: 0 },
-          }),
-        });
-      } else {
-        await fetch('/proxies/hq-link/toxics/hq_timeout', { method: 'DELETE' });
-      }
+      await fetch('/proxies/hq-link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: active }),
+      });
     } catch (err) {
       console.error('Toxiproxy Error:', err);
     }
   };
 
-  // Buffer simulation (UI mechanic — see file header / 4c checkpoint finding).
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setBuffer((prev) => {
-        if (!wanActive) {
-          setBufferTrend('up');
-          return prev + Math.floor(Math.random() * 850) + 200;
-        }
-        if (prev > 0) {
-          setBufferTrend('down');
-          return Math.max(0, prev - Math.floor(prev * 0.4) - 1500);
-        }
-        setBufferTrend('none');
-        return 0;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [wanActive]);
-
   return (
-    <div className={`font-mono h-screen flex flex-col overflow-hidden transition-colors duration-500 ${!wanActive ? 'freeze-active' : ''}`}>
-      <HqHeader wanActive={wanActive} setWanActive={toggleWan} buffer={buffer} bufferTrend={bufferTrend} />
+    <div className={`font-mono h-screen flex flex-col overflow-hidden transition-colors duration-500 ${severed ? 'freeze-active' : ''}`}>
+      <HqHeader wanActive={wanActive} setWanActive={toggleWan} />
 
-      {/* Global Freeze Overlay — WAN-cut demo (UI mechanic). */}
-      {!wanActive && (
+      {/* Global Freeze Overlay — driven by the REAL hq-link sever state. */}
+      {severed && (
         <div className="absolute inset-0 z-40 pointer-events-none flex flex-col items-center justify-center pt-20">
           <div className="scanlines absolute inset-0 pointer-events-none z-50 bg-[linear-gradient(to_bottom,rgba(255,255,255,0),rgba(255,255,255,0)_50%,rgba(0,0,0,0.2)_50%,rgba(0,0,0,0.2))] bg-[length:100%_4px]"></div>
           <div className="bg-rose-950/90 border-2 border-rose-500 px-16 py-8 flex flex-col items-center backdrop-blur-md shadow-[0_0_100px_rgba(225,29,72,0.4)] z-50">
@@ -207,14 +183,15 @@ export default function HqApp() {
       )}
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden relative z-0">
-        <HqBattleView wanActive={wanActive} linksUp={wanActive ? 17 : 0} linksDown={wanActive ? 0 : 17} />
+        {/* One real hq-link: severed => 0 up / 1 down, else 1 up / 0 down. */}
+        <HqBattleView wanActive={!severed} linksUp={severed ? 0 : 1} linksDown={severed ? 1 : 0} />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
           <FleetReadiness cm={cm.data} logistics={logistics.data} />
           <ConfigurationPosture cm={cm.data} fleet={fleet.data} />
           <WearTrends windows={windows.data} />
-          <HqDigitalTwin wanActive={wanActive} />
-          <HqWorkOrders wanActive={wanActive} />
+          <HqDigitalTwin wanActive={!severed} />
+          <HqWorkOrders wanActive={!severed} />
         </div>
       </main>
     </div>

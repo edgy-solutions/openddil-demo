@@ -8,10 +8,10 @@
 // feed, and the 3D schematic (LtamdsView for RADAR-class via
 // DiagnosticCanvas, GenericSchematic otherwise).
 //
-// All pipeline data comes from ElectricSQL Shapes (./hooks). The link
-// toggles + Toxiproxy uplink demo + edge-buffer counter are UI demo
-// mechanics carried over from 4b — see the Phase 4c checkpoint for the
-// finding on the edge-buffer / DDIL-sever wiring.
+// All pipeline data comes from ElectricSQL Shapes (./hooks). Phase 4c.5:
+// the link toggle now severs/restores the REAL toxiproxy hq-link proxy,
+// and the edge-buffer counter (in Header) reads real bridge-group lag via
+// useEdgeBuffer — no more client-side simulation.
 import { useState, useEffect } from 'react';
 import Header from './components/Header';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
@@ -38,10 +38,8 @@ function formatSeen(iso: string | null): string {
 }
 
 function MaintainerApp() {
-  // UI demo state — not pipeline data.
+  // link1 = the DDIL link toggle (severs/restores the real hq-link proxy).
   const [link1, setLink1] = useState(true);
-  const [link2, setLink2] = useState(true);
-  const [buffer, setBuffer] = useState(0);
   const [degraded, setDegraded] = useState(false);
   const [clock, setClock] = useState('');
   const [selectedAssetId, setSelectedAssetId] = useState('');
@@ -64,32 +62,18 @@ function MaintainerApp() {
     }
   }, [fleet.data, selectedAssetId]);
 
-  // Toxiproxy uplink-sever demo. NOTE (Phase 4c finding): the hq-link
-  // proxy is not registered at runtime (toxiproxy starts without -config),
-  // so this POST currently 404s silently — see the 4c checkpoint.
+  // DDIL uplink sever/restore. Phase 4c.5: the link toggle DISABLES /
+  // ENABLES the real toxiproxy hq-link proxy — toxiproxy then closes all
+  // connections and refuses new ones, so the edge-hq-bridge genuinely
+  // cannot reach redpanda-hq, stops committing `bridge-group` offsets,
+  // and the real edge buffer climbs. (A timeout toxic would only delay
+  // the ack and still let the produce through — it would not buffer.)
   useEffect(() => {
-    const handleToxiproxy = async (enabled: boolean) => {
-      try {
-        if (!enabled) {
-          await fetch('/proxies/hq-link/toxics', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: 'timeout_down',
-              type: 'timeout',
-              stream: 'downstream',
-              toxicity: 1.0,
-              attributes: { timeout: 0 },
-            }),
-          });
-        } else {
-          await fetch('/proxies/hq-link/toxics/timeout_down', { method: 'DELETE' });
-        }
-      } catch (e) {
-        console.error('Toxiproxy error', e);
-      }
-    };
-    handleToxiproxy(link1);
+    fetch('/proxies/hq-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: link1 }),
+    }).catch((e) => console.error('Toxiproxy error', e));
   }, [link1]);
 
   // link1 drives the degraded UI state.
@@ -98,19 +82,14 @@ function MaintainerApp() {
     else if (link1 && degraded) setDegraded(false);
   }, [link1, degraded]);
 
-  // Clock + edge-buffer simulation. No data fetches — pipeline data is
-  // push-based via the shape hooks above.
+  // Wall clock. The edge buffer is no longer simulated here — Header reads
+  // the real bridge-group lag via useEdgeBuffer.
   useEffect(() => {
     const interval = setInterval(() => {
       setClock(new Date().toLocaleTimeString('en-US', { hour12: false }));
-      setBuffer((prev) => {
-        if (!link1 || !link2) return prev + Math.floor(Math.random() * 45) + 10;
-        if (prev > 0) return Math.max(0, prev - Math.floor(prev * 0.2) - 100);
-        return prev;
-      });
     }, 500);
     return () => clearInterval(interval);
-  }, [link1, link2]);
+  }, []);
 
   const selectedAsset = fleet.data.find((a) => a.asset_id === selectedAssetId) ?? null;
   const tel = telemetry.data[0] ?? null;
@@ -130,8 +109,6 @@ function MaintainerApp() {
     <div className="font-mono h-screen flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <Header
         link1={link1} setLink1={setLink1}
-        link2={link2} setLink2={setLink2}
-        buffer={buffer}
         fleet={fleet.data}
         selectedAsset={selectedAssetId}
         setSelectedAsset={setSelectedAssetId}

@@ -7,10 +7,11 @@
 // item. This panel rolls those up across the fleet from asset_cm_state
 // (useAllCmState): one row per discrepancy that has a recommended action.
 //
-// The link2 "system freeze" overlay is kept as a UI affordance — see the
-// Phase 4c checkpoint finding on the DDIL link/buffer wiring.
+// The "system freeze" overlay is driven by the REAL hq-link state
+// (useEdgeBuffer().hq_link_severed) as of Phase 4c.5 — when the edge->HQ
+// link is genuinely severed, the panel shows the freeze.
 import { ClipboardList, Lock } from 'lucide-react';
-import { useAllCmState } from '../../hooks';
+import { useAllCmState, useEdgeBuffer } from '../../hooks';
 
 interface ActionItem {
   key: string;
@@ -37,8 +38,10 @@ function statusClass(status: string): string {
   }
 }
 
-export default function WorkOrders({ link2 }: { link2: boolean }) {
+export default function WorkOrders() {
   const cm = useAllCmState();
+  const { status } = useEdgeBuffer();
+  const severed = status?.hq_link_severed ?? false;
 
   const items: ActionItem[] = [];
   for (const row of cm.data) {
@@ -65,12 +68,12 @@ export default function WorkOrders({ link2 }: { link2: boolean }) {
         </span>
       </h2>
 
-      {/* System Freeze Overlay — UI affordance driven by the link2 toggle. */}
-      {!link2 && (
+      {/* System Freeze Overlay — driven by the REAL hq-link sever state. */}
+      {severed && (
         <div className="absolute inset-0 bg-rose-950/80 backdrop-blur-sm z-20 flex flex-col items-center justify-center border-2 border-rose-500 mt-12 mx-3 mb-3">
           <Lock className="w-8 h-8 text-rose-500 mb-2" />
           <span className="font-bold text-rose-400 tracking-widest text-sm">SYSTEM FREEZE</span>
-          <span className="text-[10px] text-rose-300 mt-1">WAITING FOR HQ WAN...</span>
+          <span className="text-[10px] text-rose-300 mt-1">EDGE→HQ LINK SEVERED</span>
         </div>
       )}
 

@@ -20,3 +20,8 @@ export {
   type TelemetryWindows,
 } from './useTelemetryWindows';
 export { useTacticalEvents, type TacticalEvent } from './useTacticalEvents';
+export {
+  useEdgeBuffer,
+  type EdgeBufferStatus,
+  type EdgeBufferResult,
+} from './useEdgeBuffer';

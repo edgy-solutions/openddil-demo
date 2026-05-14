@@ -68,8 +68,14 @@ services:
       - '1'
       - --kafka-addr
       - PLAINTEXT://0.0.0.0:19092,OUTSIDE://0.0.0.0:19093
+      # The PLAINTEXT listener ADVERTISES the toxiproxy address, not its
+      # own (Phase 4c.5). The edge-hq-bridge bootstraps via toxiproxy:8474,
+      # and a Kafka client then connects directly to whatever address the
+      # broker advertises — so for toxiproxy to actually mediate produce
+      # traffic (and for the DDIL sever to be real), the broker must
+      # advertise toxiproxy:8474. The bridge is redpanda-hq's only client.
       - --advertise-kafka-addr
-      - PLAINTEXT://redpanda-hq:19092,OUTSIDE://localhost:19093
+      - PLAINTEXT://toxiproxy:8474,OUTSIDE://localhost:19093
     ports:
       - "19092:19092"
       - "19093:19093"
@@ -271,7 +277,39 @@ services:
       - "8475:8475" # API port
     volumes:
       - ./toxiproxy.json:/etc/toxiproxy.json
-    command: -host 0.0.0.0 -port 8475
+    # `-config` was missing before Phase 4c.5 — toxiproxy.json was mounted
+    # but never loaded, so the hq-link proxy did not exist at runtime and
+    # the DDIL sever demo was a no-op. Loading the config registers
+    # hq-link (edge -> redpanda-hq:19092) so the WAN sever is real.
+    command: -host 0.0.0.0 -port 8475 -config /etc/toxiproxy.json
+
+  # =============================================================================
+  # Edge -> HQ bridge (Phase 4c.5)
+  # =============================================================================
+  # Restores the edge->HQ topology the DDIL demo depends on. Consumes
+  # raw-sensor-stream + tactical-events from redpanda-edge under the
+  # `bridge-group` consumer group and forwards them through the toxiproxy
+  # hq-link proxy to redpanda-hq. When hq-link is severed, the bridge's
+  # writes fail, it stops committing offsets, and `bridge-group` lag on
+  # redpanda-edge climbs — that lag IS the real edge-buffer depth the UI
+  # shows. The bridge config (redpanda-connect.yaml) existed but was not
+  # wired to any service before 4c.5.
+  edge-hq-bridge:
+    image: docker.redpanda.com/redpandadata/connect:latest
+    container_name: openddil-demo-edge-hq-bridge
+    volumes:
+      - ./redpanda-connect.yaml:/connect.yaml:ro
+    command: ["--chilled", "run", "/connect.yaml"]
+    depends_on:
+      redpanda-edge:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      toxiproxy:
+        condition: service_started
+      redpanda-hq:
+        condition: service_started
+    restart: unless-stopped
 
   # NOTE: RabbitMQ, the System A AMQP-ingress Connect container, the System B
   # AMQP-egress Connect container, and the proprietary-ingest sidecar are

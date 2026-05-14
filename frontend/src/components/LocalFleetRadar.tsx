@@ -15,6 +15,14 @@ interface Asset {
   node_id: string;
 }
 
+// Short radar label — the last id segment, capped. Full asset_ids
+// (e.g. "USA-ARMY-1HBCT-M1A2-4773") overlap unreadably on a 200-unit
+// SVG; the last segment is short and reasonably distinguishing.
+function radarLabel(id: string): string {
+  const seg = id.split(/[-:]/).filter(Boolean).pop() ?? id;
+  return seg.length > 10 ? seg.slice(0, 10) : seg;
+}
+
 export default function LocalFleetRadar({ degraded, localAssets = [] }: { degraded: boolean, localAssets?: Asset[] }) {
   return (
     <div className="absolute bottom-4 left-4 w-[280px] h-[180px] border border-slate-700 bg-slate-900/90 shadow-2xl z-20 flex flex-col pointer-events-none panel">
@@ -47,14 +55,26 @@ export default function LocalFleetRadar({ degraded, localAssets = [] }: { degrad
             // If degraded, mock one as COMM_LOST
             const isCommLost = degraded && i === 0; 
             
+            // Place the label outward of the dot and anchor it on the
+            // side away from center, so labels don't stack over each
+            // other or the crosshairs.
+            const onLeft = x < 0;
+            const labelX = x + (onLeft ? -9 : 9);
             return (
               <g key={asset.id}>
                 {!isCommLost && (
                   <line x1="0" y1="0" x2={x} y2={y} stroke="#22d3ee" strokeWidth="1.5" strokeDasharray="4 2" opacity="0.6" />
                 )}
-                <circle cx={x} cy={y} r="6" fill={isCommLost ? '#64748b' : '#22d3ee'} />
-                <text x={x + 10} y={y + 4} fill={isCommLost ? '#64748b' : '#94a3b8'} fontSize="8" fontFamily="monospace">
-                  {asset.id}
+                <circle cx={x} cy={y} r="5" fill={isCommLost ? '#64748b' : '#22d3ee'} />
+                <text
+                  x={labelX}
+                  y={y + 3}
+                  textAnchor={onLeft ? 'end' : 'start'}
+                  fill={isCommLost ? '#64748b' : '#94a3b8'}
+                  fontSize="7"
+                  fontFamily="monospace"
+                >
+                  {radarLabel(asset.id)}
                 </text>
               </g>
             );

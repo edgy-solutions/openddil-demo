@@ -1,21 +1,19 @@
 // =============================================================================
-// Header — edge-view toolbar
+// Header — maintainer-view toolbar
 // =============================================================================
-// Phase 4b rewrite. The NODE (FOB) picker is gone: telemetry_latest_state
-// carries no node_id, so there is no FOB grouping to drive it — that was
-// mock-simulator structure. The ASSET picker is now populated from
-// useFleetAssets() (real pipeline assets), labelled by callsign +
-// platform_variant. Link toggles and the edge-buffer readout are unchanged.
-import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
+// Phase 4c.5: the buffer counter and link status are now REAL — read from
+// useEdgeBuffer() (the edge_buffer_status shape the projector's monitor
+// writes), not a client-side simulation. The link toggle severs/restores
+// the real toxiproxy hq-link proxy. The vestigial second link toggle
+// (link2 — never backed by anything) was removed.
+import { Laptop, Building2, TrendingUp } from 'lucide-react';
 import type { FleetAsset } from '../hooks';
+import { useEdgeBuffer } from '../hooks';
 import { assetLabel } from '../lib/assetLabel';
 
 interface HeaderProps {
   link1: boolean;
   setLink1: (v: boolean) => void;
-  link2: boolean;
-  setLink2: (v: boolean) => void;
-  buffer: number;
   fleet: FleetAsset[];
   selectedAsset: string;
   setSelectedAsset: (v: string) => void;
@@ -27,7 +25,15 @@ function pickerLabel(a: FleetAsset): string {
   return a.platform_variant ? `${assetLabel(a)} (${a.platform_variant})` : assetLabel(a);
 }
 
-export default function Header({ link1, setLink1, link2, setLink2, buffer, fleet, selectedAsset, setSelectedAsset }: HeaderProps) {
+export default function Header({ link1, setLink1, fleet, selectedAsset, setSelectedAsset }: HeaderProps) {
+  const { status } = useEdgeBuffer();
+  // Real observed state from the projector's monitor; falls back to the
+  // commanded toggle state until the first shape sync arrives.
+  const severed = status ? status.hq_link_severed : !link1;
+  const lag = status?.bridge_group_lag ?? 0;
+  const probeDown = status != null && !status.probe_healthy;
+  const linkLabel = probeDown ? 'LINK: PROBE DOWN' : severed ? 'DDIL: LINK SEVERED' : 'EDGE↔HQ: LINK UP';
+
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
@@ -56,8 +62,9 @@ export default function Header({ link1, setLink1, link2, setLink2, buffer, fleet
           <span className="text-xs font-bold tracking-wider">TACTICAL EDGE</span>
         </div>
 
+        {/* DDIL link — the toggle severs/restores the real toxiproxy hq-link */}
         <div className="flex-1 flex flex-col items-center relative">
-          <div className={`absolute w-full h-[2px] top-3 -z-10 ${link1 ? 'bg-slate-700' : 'bg-rose-900'}`}></div>
+          <div className={`absolute w-full h-[2px] top-3 -z-10 ${severed ? 'bg-rose-900' : 'bg-slate-700'}`}></div>
           <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in mt-1">
             <input
               type="checkbox"
@@ -70,42 +77,25 @@ export default function Header({ link1, setLink1, link2, setLink2, buffer, fleet
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link1 ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${link1 ? 'text-emerald-400' : 'text-rose-500 glow-rose'}`}>
-            {link1 ? 'SATCOM: ALIVE' : 'DDIL: LOCAL ONLY'}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
+            {linkLabel}
           </span>
         </div>
-        <div className="flex flex-col items-center text-slate-400">
-          <Server className="w-6 h-6 mb-1 text-slate-200" />
-          <span className="text-xs font-bold tracking-wider">REGIONAL HQ</span>
-        </div>
-        <div className="flex-1 flex flex-col items-center relative">
-          <div className={`absolute w-full h-[2px] top-3 -z-10 ${link2 ? 'bg-slate-700' : 'bg-rose-900'}`}></div>
-          <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in mt-1">
-            <input
-              type="checkbox"
-              id="toggle2"
-              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
-              checked={link2}
-              onChange={(e) => setLink2(e.target.checked)}
-            />
-            <label htmlFor="toggle2" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${link2 ? 'bg-emerald-500' : 'bg-rose-500'}`}>
-              <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link2 ? 'translate-x-full' : ''}`}></span>
-            </label>
-          </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${link2 ? 'text-emerald-400' : 'text-rose-500 glow-rose'}`}>
-            {link2 ? 'WAN: ACTIVE' : 'DDIL: ISOLATED'}
-          </span>
-        </div>
+
         <div className="flex flex-col items-center text-slate-400 mr-8">
           <Building2 className="w-6 h-6 mb-1 text-slate-200" />
           <span className="text-xs font-bold tracking-wider">CENTRAL HQ</span>
         </div>
-        <div className="pl-6 border-l border-slate-700 min-w-[150px]">
-          <div className="text-[10px] text-slate-400 tracking-wider">REDPANDA EDGE BUFFER</div>
+
+        {/* Real edge-buffer depth: bridge-group consumer lag on redpanda-edge */}
+        <div className="pl-6 border-l border-slate-700 min-w-[160px]">
+          <div className="text-[10px] text-slate-400 tracking-wider">EDGE→HQ BUFFER</div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-bold text-slate-100">{buffer > 1000 ? (buffer / 1000).toFixed(1) + 'K' : buffer}</span>
+            <span className="text-3xl font-bold text-slate-100">
+              {probeDown ? '—' : lag > 1000 ? (lag / 1000).toFixed(1) + 'K' : lag}
+            </span>
             <span className="text-xs text-slate-500">MSGS</span>
-            <TrendingUp className={`w-4 h-4 transition-all ${buffer === 0 ? 'opacity-0' : 'opacity-100'} ${(!link1 || !link2) ? 'text-rose-500' : 'text-emerald-500 rotate-180'}`} />
+            <TrendingUp className={`w-4 h-4 transition-all ${lag === 0 ? 'opacity-0' : 'opacity-100'} ${severed ? 'text-rose-500' : 'text-emerald-500 rotate-180'}`} />
           </div>
         </div>
       </div>
