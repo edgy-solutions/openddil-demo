@@ -5,7 +5,7 @@
 // EntityTelemetryEvent proto. Quantity-typed leaves arrive as
 // { value, unit } objects (ADR-0013) — consumers read `.value` for the
 // number and `.unit` for the label.
-import { num, useTableShape, type ShapeResult } from './electric';
+import { num, useTableShape, sqlLiteral, type ShapeResult } from './electric';
 
 /** A Quantity proto leaf: { value, unit }. */
 export interface Quantity {
@@ -45,7 +45,6 @@ function mapTelemetry(row: Record<string, any>): TelemetryLatest {
 /** Latest telemetry for one asset. Returns at most one row in `data`. */
 export function useTelemetryLatest(assetId: string): ShapeResult<TelemetryLatest> {
   return useTableShape('telemetry_latest_state', mapTelemetry, {
-    where: 'asset_id = $1',
-    params: { 1: assetId },
+    where: `asset_id = ${sqlLiteral(assetId)}`,
   });
 }

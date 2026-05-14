@@ -32,14 +32,29 @@ export function num(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * SQL string literal with single quotes escaped — for inlining a
+ * controlled value (e.g. an asset_id) directly into an Electric `where`
+ * clause.
+ *
+ * Phase 4c.5 fix: the per-asset hooks previously used Electric's
+ * positional-param path (`where: 'asset_id = $1'` + a nested
+ * `params: { 1: assetId }` object). That path behaved inconsistently —
+ * the where-filtered shapes returned empty in the React client even
+ * though the equivalent HTTP request returned data — so the maintainer
+ * view showed "No CM state" for assets that demonstrably had it.
+ * Inlining a quote-escaped literal is idiomatic for Electric (its docs
+ * show literal `where` clauses) and sidesteps the nested-params path
+ * entirely. asset_ids come from our own pipeline, not user free-text,
+ * but the quote-escaping keeps it injection-safe regardless.
+ */
+export function sqlLiteral(v: string): string {
+  return `'${v.replace(/'/g, "''")}'`;
+}
+
 interface TableShapeOptions {
-  /** SQL WHERE clause, e.g. `asset_id = $1`. */
+  /** Complete SQL WHERE clause, e.g. `asset_id = 'dis:1:1:4773'`. */
   where?: string;
-  /**
-   * Positional params for the WHERE clause, keyed by position: { 1: assetId }.
-   * Electric requires string values here (its ParamValue type).
-   */
-  params?: Record<string, string>;
 }
 
 /**
@@ -56,7 +71,6 @@ export function useTableShape<T>(
     params: {
       table,
       ...(opts.where ? { where: opts.where } : {}),
-      ...(opts.params ? { params: opts.params } : {}),
     },
   });
 

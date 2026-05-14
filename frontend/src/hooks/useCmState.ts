@@ -5,7 +5,7 @@
 // the projector's cm_state handler maps cm-service's integer enums back to
 // names (see ADR-0018). discrepancies / manual_discrepancies are separate
 // jsonb lists (ADR-0009): analyzer-rebuilt vs human-raised.
-import { useTableShape, type ShapeResult } from './electric';
+import { useTableShape, sqlLiteral, type ShapeResult } from './electric';
 
 export interface CmState {
   asset_id: string;
@@ -42,8 +42,7 @@ function mapCmState(row: Record<string, any>): CmState {
 /** CM state for one asset. Returns at most one row in `data`. */
 export function useCmState(assetId: string): ShapeResult<CmState> {
   return useTableShape('asset_cm_state', mapCmState, {
-    where: 'asset_id = $1',
-    params: { 1: assetId },
+    where: `asset_id = ${sqlLiteral(assetId)}`,
   });
 }
 

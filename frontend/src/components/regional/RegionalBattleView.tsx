@@ -125,9 +125,12 @@ export default function RegionalBattleView({ link1, selectedAssetId, onAssetSele
         </div>
         <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
           <div className="text-[10px] text-slate-500 mb-1">THEATER LINK STATUS</div>
+          {/* One edge->HQ DDIL link in this topology — count kept
+              consistent with HqBattleView's 1/0 (see topology ADR). The
+              3D placement is synthetic, hence the DEMO_MOCK banner. */}
           <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-            <span className="text-emerald-400 mr-4">{link1 ? 4 : 0} UP</span>
-            <span className="text-rose-400">{link1 ? 0 : 4} DOWN</span>
+            <span className="text-emerald-400 mr-4">{link1 ? 1 : 0} UP</span>
+            <span className="text-rose-400">{link1 ? 0 : 1} DOWN</span>
           </div>
         </div>
       </div>

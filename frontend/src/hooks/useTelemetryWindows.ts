@@ -4,7 +4,7 @@
 // fluid_trends / consumable_trends / component_wear_trends are jsonb blobs
 // mirroring the WindowedTelemetry proto (slope + latest + r_squared per
 // signal). Used by per-asset trend charts.
-import { num, useTableShape, type ShapeResult } from './electric';
+import { num, useTableShape, sqlLiteral, type ShapeResult } from './electric';
 
 export interface TelemetryWindows {
   asset_id: string;
@@ -38,8 +38,7 @@ function mapWindows(row: Record<string, any>): TelemetryWindows {
 /** Windowed telemetry for one asset. Returns at most one row in `data`. */
 export function useTelemetryWindows(assetId: string): ShapeResult<TelemetryWindows> {
   return useTableShape('asset_telemetry_windows', mapWindows, {
-    where: 'asset_id = $1',
-    params: { 1: assetId },
+    where: `asset_id = ${sqlLiteral(assetId)}`,
   });
 }
 

@@ -5,7 +5,7 @@
 // constraining_factors is a jsonb list of the factors pulling severity
 // above OK. Envelope flags (is_transition, is_initial) distinguish a real
 // severity change from a cadenced recompute.
-import { num, useTableShape, type ShapeResult } from './electric';
+import { num, useTableShape, sqlLiteral, type ShapeResult } from './electric';
 
 export interface ConstrainingFactor {
   factor_id: string;
@@ -62,8 +62,7 @@ function mapLogistics(row: Record<string, any>): LogisticsStatus {
 /** Logistics status for one asset. Returns at most one row in `data`. */
 export function useLogisticsStatus(assetId: string): ShapeResult<LogisticsStatus> {
   return useTableShape('asset_logistics_status', mapLogistics, {
-    where: 'asset_id = $1',
-    params: { 1: assetId },
+    where: `asset_id = ${sqlLiteral(assetId)}`,
   });
 }
 
