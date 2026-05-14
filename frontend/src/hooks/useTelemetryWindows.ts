@@ -42,3 +42,8 @@ export function useTelemetryWindows(assetId: string): ShapeResult<TelemetryWindo
     params: { 1: assetId },
   });
 }
+
+/** Windowed telemetry for the whole fleet — for HQ wear-trend rollups. */
+export function useAllTelemetryWindows(): ShapeResult<TelemetryWindows> {
+  return useTableShape('asset_telemetry_windows', mapWindows);
+}

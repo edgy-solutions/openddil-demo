@@ -1,56 +1,72 @@
+// =============================================================================
+// HqWorkOrders — enterprise actionable items from CM discrepancies
+// =============================================================================
+// Phase 4c rewrite. Was a hardcoded WO list. Like the regional WorkOrders,
+// there is no work-orders table in the pipeline — but CM discrepancies
+// carry a `recommended_action`. This panel rolls those up enterprise-wide
+// from asset_cm_state (useAllCmState), worst CM status first.
 import { Layers } from 'lucide-react';
+import { useAllCmState } from '../../hooks';
 
-interface WorkOrder {
-  id: string;
-  sn: string;
-  region: string;
-  status: string;
-  isNew?: boolean;
+const CM_RANK: Record<string, number> = {
+  CONFIG_STATUS_NOT_MISSION_CAPABLE: 4,
+  CONFIG_STATUS_MAJOR_DISCREPANCY: 3,
+  CONFIG_STATUS_MINOR_DISCREPANCY: 2,
+  CONFIG_STATUS_IN_COMPLIANCE: 1,
+};
+
+function statusClass(status: string): string {
+  switch (status) {
+    case 'CONFIG_STATUS_NOT_MISSION_CAPABLE': return 'bg-rose-500/20 text-rose-400 border-rose-500/50';
+    case 'CONFIG_STATUS_MAJOR_DISCREPANCY': return 'bg-orange-500/20 text-orange-400 border-orange-500/50';
+    case 'CONFIG_STATUS_MINOR_DISCREPANCY': return 'bg-amber-500/20 text-amber-400 border-amber-500/50';
+    default: return 'bg-slate-800 text-slate-500 border-slate-700';
+  }
 }
 
-interface HqWorkOrdersProps {
-  wanActive: boolean;
-  workOrders: WorkOrder[];
-}
+export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
+  const cm = useAllCmState();
 
-export default function HqWorkOrders({ wanActive, workOrders }: HqWorkOrdersProps) {
+  const items = cm.data
+    .flatMap((row) =>
+      [...(row.discrepancies ?? []), ...(row.manual_discrepancies ?? [])]
+        .filter((d: any) => d?.recommended_action)
+        .map((d: any, i: number) => ({
+          key: `${row.asset_id}:${d.discrepancy_id ?? i}`,
+          asset_id: row.asset_id,
+          recommended_action: d.recommended_action as string,
+          overall_status: row.overall_status,
+        })),
+    )
+    .sort((a, b) => (CM_RANK[b.overall_status] ?? 0) - (CM_RANK[a.overall_status] ?? 0));
+
   return (
     <div className={`panel h-[35%] shrink-0 flex flex-col overflow-hidden p-3 relative transition-colors duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`}>
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-3 flex items-center shrink-0 border-b border-slate-700 pb-2">
-        <Layers className={`w-4 h-4 mr-2 transition-colors ${wanActive ? 'text-cyan-400' : 'text-rose-500'}`} /> 
+        <Layers className={`w-4 h-4 mr-2 transition-colors ${wanActive ? 'text-cyan-400' : 'text-rose-500'}`} />
         ALCS Enterprise Logistics
+        <span className="ml-auto text-[10px] text-slate-500 normal-case tracking-normal">
+          from CM discrepancies
+        </span>
       </h2>
-      
+
       <div className="flex-1 overflow-auto">
+        {items.length === 0 && (
+          <div className="text-xs text-slate-500 p-2">
+            No actionable CM discrepancies enterprise-wide.
+          </div>
+        )}
         <table className="w-full text-left text-xs font-mono">
-          <thead className="text-[10px] text-slate-500 sticky top-0 bg-[#0f172a] shadow-md z-10">
-            <tr>
-              <th className="pb-2 font-normal w-16">WO #</th>
-              <th className="pb-2 font-normal">EQUIP S/N</th>
-              <th className="pb-2 font-normal">REGION</th>
-              <th className="pb-2 font-normal text-right">STATUS</th>
-            </tr>
-          </thead>
           <tbody className="text-slate-300 divide-y divide-slate-800">
-            {workOrders.map((wo) => (
-              <tr 
-                key={wo.id} 
-                className={`hover:bg-slate-800/50 ${
-                  wo.isNew ? 'bg-amber-900/40 border-l-2 border-amber-500 transition-colors duration-1000' : ''
-                }`}
-              >
-                <td className={`py-2 ${wo.isNew ? 'text-amber-400 font-bold' : 'text-slate-500'}`}>{wo.id}</td>
-                <td className={wo.isNew ? 'text-amber-400' : ''}>{wo.sn}</td>
-                <td className={`text-[10px] ${wo.isNew ? 'text-amber-400' : ''}`}>{wo.region}</td>
-                <td className="text-right">
-                  <span className={`px-1.5 py-0.5 rounded text-[9px] border ${
-                    wo.status === 'AUTO-REQ' 
-                      ? 'bg-amber-500/20 text-amber-400 border-amber-500/50 font-bold'
-                      : wo.status === 'SHIPPED'
-                        ? 'bg-slate-800 text-slate-500 border-slate-700'
-                        : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30'
-                  }`}>
-                    {wo.status}
+            {items.map((it) => (
+              <tr key={it.key} className="hover:bg-slate-800/50">
+                <td className="py-2 align-top">
+                  <div className="text-cyan-400">{it.asset_id}</div>
+                  <div className="text-slate-500 text-[11px]">{it.recommended_action}</div>
+                </td>
+                <td className="text-right align-top">
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] border ${statusClass(it.overall_status)}`}>
+                    {it.overall_status.replace('CONFIG_STATUS_', '').replace(/_/g, ' ')}
                   </span>
                 </td>
               </tr>

@@ -1,14 +1,17 @@
 // =============================================================================
-// App — the edge / maintainer view
+// MaintainerApp — the maintainer view (per-asset detail)
 // =============================================================================
-// Phase 4b rewrite. Was three polling loops against endpoints that mostly
-// didn't exist (/simulator/assets, /api/telemetry, /api/alerts). Now every
-// piece of pipeline data comes from ElectricSQL Shapes via the hooks in
-// ./hooks — no polling, single read path.
+// Phase 4c. Renamed from App.tsx (the Phase 4b "edge view") and expanded
+// into the maintainer-focused per-asset detail view: a fleet picker plus,
+// for the selected asset, an identity strip, a CM state card, a logistics
+// status card, the sustainment telemetry panel, an asset-filtered event
+// feed, and the 3D schematic (LtamdsView for RADAR-class via
+// DiagnosticCanvas, GenericSchematic otherwise).
 //
-// What stayed: the link1/link2 toggles, the Toxiproxy uplink-sever demo,
-// the edge-buffer simulation. Those are UI demo mechanics, not pipeline
-// data, and remain genuine.
+// All pipeline data comes from ElectricSQL Shapes (./hooks). The link
+// toggles + Toxiproxy uplink demo + edge-buffer counter are UI demo
+// mechanics carried over from 4b — see the Phase 4c checkpoint for the
+// finding on the edge-buffer / DDIL-sever wiring.
 import { useState, useEffect } from 'react';
 import Header from './components/Header';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
@@ -16,6 +19,8 @@ import LocalFleetRadar from './components/LocalFleetRadar';
 import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
+import CmStateCard from './components/CmStateCard';
+import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
   useFleetAssets,
   useTelemetryLatest,
@@ -25,39 +30,14 @@ import {
 } from './hooks';
 import { platformClass } from './config/platformChartConfig';
 
-// CM overall_status -> badge classes.
-function cmStatusBadge(status: string | undefined): { label: string; cls: string } {
-  switch (status) {
-    case 'CONFIG_STATUS_IN_COMPLIANCE':
-      return { label: 'IN COMPLIANCE', cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' };
-    case 'CONFIG_STATUS_MINOR_DISCREPANCY':
-      return { label: 'MINOR DISCREPANCY', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50' };
-    case 'CONFIG_STATUS_MAJOR_DISCREPANCY':
-      return { label: 'MAJOR DISCREPANCY', cls: 'bg-orange-500/20 text-orange-400 border-orange-500/50' };
-    case 'CONFIG_STATUS_NOT_MISSION_CAPABLE':
-      return { label: 'NOT MISSION CAPABLE', cls: 'bg-rose-500/20 text-rose-400 border-rose-500/50' };
-    default:
-      return { label: 'NO CM STATE', cls: 'bg-slate-700/40 text-slate-400 border-slate-600' };
-  }
+function formatSeen(iso: string | null): string {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('en-US', { hour12: false });
 }
 
-// Logistics overall_severity -> badge classes.
-function severityBadge(sev: string | undefined): { label: string; cls: string } {
-  switch (sev) {
-    case 'LOGISTICS_SEVERITY_OK':
-      return { label: 'OK', cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' };
-    case 'LOGISTICS_SEVERITY_DEGRADED':
-      return { label: 'DEGRADED', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50' };
-    case 'LOGISTICS_SEVERITY_CRITICAL':
-      return { label: 'CRITICAL', cls: 'bg-rose-500/20 text-rose-400 border-rose-500/50' };
-    case 'LOGISTICS_SEVERITY_NON_OPERATIONAL':
-      return { label: 'NON-OPERATIONAL', cls: 'bg-rose-700/30 text-rose-300 border-rose-700/60' };
-    default:
-      return { label: 'NO LOGISTICS STATE', cls: 'bg-slate-700/40 text-slate-400 border-slate-600' };
-  }
-}
-
-function App() {
+function MaintainerApp() {
   // UI demo state — not pipeline data.
   const [link1, setLink1] = useState(true);
   const [link2, setLink2] = useState(true);
@@ -71,7 +51,8 @@ function App() {
   const telemetry = useTelemetryLatest(selectedAssetId);
   const cm = useCmState(selectedAssetId);
   const logistics = useLogisticsStatus(selectedAssetId);
-  const events = useTacticalEvents(100);
+  // Maintainer view: recent events filtered to the selected asset.
+  const events = useTacticalEvents(10, selectedAssetId);
 
   // Default the selected asset to the first in the fleet; re-home if the
   // current selection drops out of the fleet.
@@ -83,9 +64,9 @@ function App() {
     }
   }, [fleet.data, selectedAssetId]);
 
-  // Toxiproxy uplink-sever demo: link1 off => add a timeout toxic to the
-  // hq-link proxy; link1 on => remove it. This is the genuine offline-first
-  // mechanic and stays.
+  // Toxiproxy uplink-sever demo. NOTE (Phase 4c finding): the hq-link
+  // proxy is not registered at runtime (toxiproxy starts without -config),
+  // so this POST currently 404s silently — see the 4c checkpoint.
   useEffect(() => {
     const handleToxiproxy = async (enabled: boolean) => {
       try {
@@ -113,11 +94,8 @@ function App() {
 
   // link1 drives the degraded UI state.
   useEffect(() => {
-    if (!link1 && !degraded) {
-      setDegraded(true);
-    } else if (link1 && degraded) {
-      setDegraded(false);
-    }
+    if (!link1 && !degraded) setDegraded(true);
+    else if (link1 && degraded) setDegraded(false);
   }, [link1, degraded]);
 
   // Clock + edge-buffer simulation. No data fetches — pipeline data is
@@ -126,11 +104,8 @@ function App() {
     const interval = setInterval(() => {
       setClock(new Date().toLocaleTimeString('en-US', { hour12: false }));
       setBuffer((prev) => {
-        if (!link1 || !link2) {
-          return prev + Math.floor(Math.random() * 45) + 10;
-        } else if (prev > 0) {
-          return Math.max(0, prev - Math.floor(prev * 0.2) - 100);
-        }
+        if (!link1 || !link2) return prev + Math.floor(Math.random() * 45) + 10;
+        if (prev > 0) return Math.max(0, prev - Math.floor(prev * 0.2) - 100);
         return prev;
       });
     }, 500);
@@ -144,9 +119,6 @@ function App() {
   const variant = selectedAsset?.platform_variant ?? null;
   const assetClass = platformClass(variant);
   const coreTemp = tel?.sustainment?.thermal?.component_temperature?.value ?? 32.0;
-
-  const cmBadge = cmStatusBadge(cmState?.overall_status);
-  const sevBadge = severityBadge(logiState?.overall_severity);
 
   const radarAssets = fleet.data.map((a) => ({
     id: a.asset_id,
@@ -166,35 +138,20 @@ function App() {
       />
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
-        {/* Left Column */}
+        {/* Left + center: identity strip + 3D schematic */}
         <div className="col-span-2 flex flex-col gap-4 overflow-hidden">
-          {/* Asset status header — real CM + logistics state */}
           <div className="panel flex items-center justify-between shrink-0 p-3">
             <div>
-              <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">
+              <h2 className="text-sm text-slate-200 tracking-wider uppercase mb-1">
                 {selectedAsset
-                  ? `${selectedAsset.callsign || selectedAsset.asset_id} — ${variant ?? 'unknown variant'}`
+                  ? selectedAsset.callsign || selectedAsset.asset_id
                   : 'No asset selected'}
               </h2>
-              <div className="flex space-x-4">
-                <div className="flex items-center space-x-2 bg-slate-950 px-3 py-1 border border-slate-800">
-                  <span className="text-xs text-slate-500">CM</span>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-sm border transition-colors ${cmBadge.cls}`}>
-                    {cmBadge.label}
-                  </span>
-                </div>
-                <div className="flex items-center space-x-2 bg-slate-950 px-3 py-1 border border-slate-800">
-                  <span className="text-xs text-slate-500">LOGISTICS</span>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-sm border transition-colors ${sevBadge.cls}`}>
-                    {sevBadge.label}
-                  </span>
-                </div>
-                <div className="flex items-center space-x-2 bg-slate-950 px-3 py-1 border border-slate-800">
-                  <span className="text-xs text-slate-500">UPLINK</span>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-sm border transition-colors ${degraded ? 'bg-amber-500/20 text-amber-400 border-amber-500/50' : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50'}`}>
-                    {degraded ? 'DEGRADED' : 'NOMINAL'}
-                  </span>
-                </div>
+              <div className="flex gap-4 text-[11px] text-slate-500">
+                <span>variant: <span className="text-slate-300">{variant ?? 'unknown'}</span></span>
+                <span>id: <span className="text-slate-300">{selectedAsset?.asset_id ?? '—'}</span></span>
+                <span>force: <span className="text-slate-300">{selectedAsset?.force_id ?? '—'}</span></span>
+                <span>last seen: <span className="text-slate-300">{formatSeen(selectedAsset?.last_sample_at ?? null)}</span></span>
               </div>
             </div>
             <div className="text-right">
@@ -209,8 +166,10 @@ function App() {
           </div>
         </div>
 
-        {/* Right Column */}
+        {/* Right: per-asset detail cards */}
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
+          <CmStateCard cm={cmState} />
+          <LogisticsStatusCard logistics={logiState} />
           <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} />
           <AlertFeed events={events.data} />
           <Inventory />
@@ -220,4 +179,4 @@ function App() {
   );
 }
 
-export default App;
+export default MaintainerApp;

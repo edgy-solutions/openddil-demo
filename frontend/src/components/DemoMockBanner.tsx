@@ -10,15 +10,32 @@
 //   const DEMO_MOCK = true;
 //   ...
 //   {DEMO_MOCK && <DemoMockBanner note="live data wiring pending RTI/Cyber DDS" />}
+//
+// `position` defaults to top-right. Components with a full-width top
+// title bar (LocalFleetRadar, BattleView) pass "bottom-right" so the
+// badge doesn't collide with the title.
 // =============================================================================
 
-export function DemoMockBanner({ note }: { note?: string }) {
+type BannerPosition = 'top-right' | 'bottom-right';
+
+const POSITION_CLASSES: Record<BannerPosition, string> = {
+  'top-right': 'top-1 right-1',
+  'bottom-right': 'bottom-1 right-1',
+};
+
+export function DemoMockBanner({
+  note,
+  position = 'top-right',
+}: {
+  note?: string;
+  position?: BannerPosition;
+}) {
   return (
     <div
-      className="absolute top-1 right-1 z-20 px-1.5 py-0.5 text-[9px] font-bold
-                 tracking-wider uppercase bg-amber-500/15 text-amber-400
-                 border border-amber-500/40 rounded-sm pointer-events-none
-                 select-none"
+      className={`absolute ${POSITION_CLASSES[position]} z-30 px-1.5 py-0.5
+                  text-[9px] font-bold tracking-wider uppercase
+                  bg-amber-500/15 text-amber-400 border border-amber-500/40
+                  rounded-sm pointer-events-none select-none`}
       title={note ? `Demo mock — ${note}` : 'Demo mock — live data wiring pending'}
     >
       Demo Mock{note ? ` — ${note}` : ''}

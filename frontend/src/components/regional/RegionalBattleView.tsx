@@ -1,10 +1,22 @@
+// =============================================================================
+// RegionalBattleView — regional theater 3D map
+// =============================================================================
+// DEMO_MOCK: the 3D theater map renders against hardcoded asset positions
+// (DISCOVERED_FLEET) — the pipeline carries ECEF/WGS84 kinematics but this
+// view has no real geo projection yet (deferred per Phase 4c). Asset
+// selection still works and is also driven by the real AOR asset list in
+// RegionalApp. Phase 4c removed the AssetSpawner dependency (GLB-model
+// renderer, deleted with the simulator plumbing) — assets now render as
+// simple clickable markers. See ADR-0017.
 import { useRef, useMemo } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import AssetSpawner from '../AssetSpawner';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsArc from '../LogisticsArc';
+import { DemoMockBanner } from '../DemoMockBanner';
+
+const DEMO_MOCK = true;
 
 const DISCOVERED_FLEET: { id: string, type: string, position: [number, number, number], status: 'NOMINAL' | 'DEGRADED' | 'CRITICAL' | 'COMM_LOST' }[] = [
   { id: 'LTAMDS-04', type: 'RADAR', position: [-40, 0, 20], status: 'NOMINAL' },
@@ -13,9 +25,16 @@ const DISCOVERED_FLEET: { id: string, type: string, position: [number, number, n
   { id: 'GHOST-UGV-1', type: 'QUADRUPED', position: [-80, 0, 70], status: 'COMM_LOST' }
 ];
 
+const STATUS_COLOR: Record<string, number> = {
+  NOMINAL: 0x10b981,
+  DEGRADED: 0xf59e0b,
+  CRITICAL: 0xf43f5e,
+  COMM_LOST: 0x64748b,
+};
+
 function Terrain() {
   const geoRef = useRef<THREE.PlaneGeometry>(null);
-  
+
   useMemo(() => {
     if (geoRef.current) {
       const pos = geoRef.current.attributes.position;
@@ -34,6 +53,33 @@ function Terrain() {
       <planeGeometry ref={geoRef} args={[400, 400, 30, 30]} />
       <meshStandardMaterial color={0x0f172a} roughness={1.0} flatShading />
     </mesh>
+  );
+}
+
+// Simple clickable asset marker — replaces the deleted AssetSpawner's
+// GLB-model rendering. A glowing sphere + a selection ring; enough to
+// place and select assets without the model-loading machinery.
+function AssetMarker({
+  asset, selected, onClick,
+}: {
+  asset: typeof DISCOVERED_FLEET[number];
+  selected: boolean;
+  onClick: (e: ThreeEvent<MouseEvent>) => void;
+}) {
+  const color = STATUS_COLOR[asset.status] ?? 0x64748b;
+  return (
+    <group position={asset.position}>
+      <mesh onClick={onClick}>
+        <sphereGeometry args={[2.5, 16, 16]} />
+        <meshBasicMaterial color={color} />
+      </mesh>
+      {selected && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.2, 0]}>
+          <ringGeometry args={[4, 4.6, 32]} />
+          <meshBasicMaterial color={0x22d3ee} side={THREE.DoubleSide} />
+        </mesh>
+      )}
+    </group>
   );
 }
 
@@ -71,6 +117,7 @@ export default function RegionalBattleView({ link1, selectedAssetId, onAssetSele
 
   return (
     <div className="col-span-2 panel flex flex-col relative overflow-hidden">
+      {DEMO_MOCK && <DemoMockBanner note="synthetic theater positions" />}
       <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
         <div>
           <h1 className="glitch-text text-2xl font-bold text-emerald-400">REGIONAL BATTLEVIEW</h1>
@@ -103,30 +150,37 @@ export default function RegionalBattleView({ link1, selectedAssetId, onAssetSele
           <ambientLight intensity={0.8} />
           <directionalLight position={[50, 100, 50]} intensity={1.5} />
           <hemisphereLight groundColor={0x020617} intensity={0.5} />
-          
+
           <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={10} maxPolarAngle={Math.PI / 2 - 0.1} />
-          
+
           <CameraRig targetPos={targetPos} isZoomed={!!selectedAssetId} />
           <FogController isZoomed={!!selectedAssetId} />
 
           <gridHelper args={[400, 100, 0x1e293b, 0x0f172a]} position={[0, -2, 0]} />
           <Terrain />
 
-          <AssetSpawner assets={DISCOVERED_FLEET} onAssetClick={onAssetSelect} selectedAssetId={selectedAssetId} />
-
-          {DISCOVERED_FLEET.map((asset, i) => (
-            <DdilNetworkLink 
-              key={`link-${i}`} 
-              start={new THREE.Vector3(0, 0, -80)} 
-              end={new THREE.Vector3(...asset.position)} 
-              status={link1 ? 'NOMINAL' : 'SEVERED'} 
+          {DISCOVERED_FLEET.map((asset) => (
+            <AssetMarker
+              key={asset.id}
+              asset={asset}
+              selected={asset.id === selectedAssetId}
+              onClick={(e) => { e.stopPropagation(); onAssetSelect(asset.id, asset.type); }}
             />
           ))}
 
-          <LogisticsArc 
-            start={new THREE.Vector3(50, 0, -50)} 
-            end={new THREE.Vector3(...DISCOVERED_FLEET[1].position)} 
-            item="Rear Actuator" 
+          {DISCOVERED_FLEET.map((asset, i) => (
+            <DdilNetworkLink
+              key={`link-${i}`}
+              start={new THREE.Vector3(0, 0, -80)}
+              end={new THREE.Vector3(...asset.position)}
+              status={link1 ? 'NOMINAL' : 'SEVERED'}
+            />
+          ))}
+
+          <LogisticsArc
+            start={new THREE.Vector3(50, 0, -50)}
+            end={new THREE.Vector3(...DISCOVERED_FLEET[1].position)}
+            item="Rear Actuator"
           />
         </Canvas>
       </div>

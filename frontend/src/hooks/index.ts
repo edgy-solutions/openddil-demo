@@ -7,14 +7,16 @@ export {
   type TelemetryLatest,
   type Quantity,
 } from './useTelemetryLatest';
-export { useCmState, type CmState } from './useCmState';
+export { useCmState, useAllCmState, type CmState } from './useCmState';
 export {
   useLogisticsStatus,
+  useAllLogisticsStatus,
   type LogisticsStatus,
   type ConstrainingFactor,
 } from './useLogisticsStatus';
 export {
   useTelemetryWindows,
+  useAllTelemetryWindows,
   type TelemetryWindows,
 } from './useTelemetryWindows';
 export { useTacticalEvents, type TacticalEvent } from './useTacticalEvents';

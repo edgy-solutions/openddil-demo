@@ -66,3 +66,8 @@ export function useLogisticsStatus(assetId: string): ShapeResult<LogisticsStatus
     params: { 1: assetId },
   });
 }
+
+/** Logistics status for the whole fleet — for regional / HQ aggregation. */
+export function useAllLogisticsStatus(): ShapeResult<LogisticsStatus> {
+  return useTableShape('asset_logistics_status', mapLogistics);
+}

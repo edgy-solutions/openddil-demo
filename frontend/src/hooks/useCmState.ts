@@ -46,3 +46,8 @@ export function useCmState(assetId: string): ShapeResult<CmState> {
     params: { 1: assetId },
   });
 }
+
+/** CM state for the whole fleet — for regional / HQ aggregation. */
+export function useAllCmState(): ShapeResult<CmState> {
+  return useTableShape('asset_cm_state', mapCmState);
+}

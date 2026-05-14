@@ -1,6 +1,16 @@
+// =============================================================================
+// TacticalRuleBuilder — dynamic threat-heuristics editor (modal)
+// =============================================================================
+// DEMO_MOCK: the rule list is local component state and "Deploy" is a
+// simulated 1s round-trip — there is no rule-deployment pipeline behind
+// it. Kept as a recognizable regional affordance; wiring it to a real
+// rule store / fusion-rule hot-reload path is future work. See ADR-0017.
 import { useState } from 'react';
 import { NumberInput, Button, Table, TableHead, TableRow, TableHeaderCell, TableBody, TableCell, Badge } from '@tremor/react';
 import { X, ChevronDown } from 'lucide-react';
+import { DemoMockBanner } from '../DemoMockBanner';
+
+const DEMO_MOCK = true;
 
 interface Rule {
   id: string;
@@ -65,6 +75,7 @@ export default function TacticalRuleBuilder({ isOpen, onClose }: TacticalRuleBui
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
       <div className="bg-slate-900 border border-slate-700 border-t-4 border-t-cyan-500 rounded-xl p-6 w-full max-w-2xl flex flex-col max-h-[90vh] shadow-2xl shadow-cyan-900/20 overflow-visible relative">
+        {DEMO_MOCK && <DemoMockBanner note="no rule-deployment pipeline" />}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />

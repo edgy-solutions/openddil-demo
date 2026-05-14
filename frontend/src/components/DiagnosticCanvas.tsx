@@ -330,10 +330,37 @@ export function Quadruped({ degraded }: { degraded: boolean }) {
     );
 }
 
+// Synthetic placeholder schematic for platform classes that have no
+// dedicated 3D model yet (e.g. GROUND / AIR / UNKNOWN). Renders a slowly
+// rotating wireframe so the canvas reads as "synthetic placeholder", not
+// "broken empty void". Replaced per-platform as real schematics land.
+function GenericSchematic({ degraded }: { degraded: boolean }) {
+    const groupRef = useRef<THREE.Group>(null);
+    useFrame((_, delta) => {
+        if (groupRef.current) groupRef.current.rotation.y += delta * 0.3;
+    });
+    const color = degraded ? 0xf43f5e : 0x22d3ee;
+    return (
+        <group ref={groupRef}>
+            <mesh>
+                <boxGeometry args={[4, 2.5, 6]} />
+                <meshBasicMaterial color={color} wireframe transparent opacity={0.6} />
+            </mesh>
+            <mesh position={[0, 2, 0]}>
+                <octahedronGeometry args={[1.2, 0]} />
+                <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
+            </mesh>
+        </group>
+    );
+}
+
+const KNOWN_SCHEMATICS = ['LASER_SHORAD', 'ARTILLERY', 'QUADRUPED'];
+
 export default function DiagnosticCanvas({ assetType, degraded, coreTemp }: { assetType: string, degraded: boolean, coreTemp: number }) {
     if (assetType === 'RADAR') {
         return <LtamdsView degraded={degraded} coreTemp={coreTemp} />;
     }
+    const hasDedicatedSchematic = KNOWN_SCHEMATICS.includes(assetType);
 
     return (
         <div className="absolute inset-0 bg-[#020617] text-[#22d3ee] font-mono select-none overflow-hidden">
@@ -364,12 +391,16 @@ export default function DiagnosticCanvas({ assetType, degraded, coreTemp }: { as
                 {assetType === 'LASER_SHORAD' && <LaserShorad degraded={degraded} />}
                 {assetType === 'ARTILLERY' && <Artillery degraded={degraded} />}
                 {assetType === 'QUADRUPED' && <Quadruped degraded={degraded} />}
+                {!hasDedicatedSchematic && <GenericSchematic degraded={degraded} />}
             </Canvas>
 
             {/* Top Left Overlay */}
             <div className="absolute top-6 left-6 z-10 pointer-events-none">
                 <h1 className="glitch-text text-2xl font-bold text-cyan-400">{assetType} DIAGNOSTICS</h1>
-                <p className="text-xs tracking-widest opacity-70">ENGINEERING SCHEMATIC @[//] LIVE</p>
+                <p className="text-xs tracking-widest opacity-70">
+                    ENGINEERING SCHEMATIC // SYNTHETIC
+                    {hasDedicatedSchematic ? '' : ' PLACEHOLDER'}
+                </p>
             </div>
         </div>
     );

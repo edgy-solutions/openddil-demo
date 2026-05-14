@@ -18,7 +18,7 @@ interface Asset {
 export default function LocalFleetRadar({ degraded, localAssets = [] }: { degraded: boolean, localAssets?: Asset[] }) {
   return (
     <div className="absolute bottom-4 left-4 w-[280px] h-[180px] border border-slate-700 bg-slate-900/90 shadow-2xl z-20 flex flex-col pointer-events-none panel">
-      {DEMO_MOCK && <DemoMockBanner note="synthetic radar positions" />}
+      {DEMO_MOCK && <DemoMockBanner note="synthetic radar positions" position="bottom-right" />}
       <div className="bg-slate-800 text-[10px] px-2 py-1 text-slate-300 font-bold font-mono border-b border-slate-700 flex justify-between items-center">
         <span className="tracking-wider">LOCAL FLEET RADAR</span>
         <div className="flex items-center gap-1">

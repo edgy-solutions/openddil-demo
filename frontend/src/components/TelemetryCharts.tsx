@@ -133,9 +133,10 @@ export default function TelemetryCharts({ telemetry, platformVariant, degraded }
 
       {!hasSustainment && (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-3 rounded-sm">
-          No sustainment telemetry for this asset. The DIS feed carries
-          kinematics only — thermal / fluid / wear metrics arrive via the
-          sim-a or proprietary feeds.
+          No sustainment telemetry yet — derived prognostics from kinematic
+          history are not yet wired for DIS-sourced assets. Measured
+          sustainment arrives via the sim-a / proprietary feeds.
+          <span className="block mt-1 opacity-60">See ADR-0020 (Prognostics Derivation Stage).</span>
         </div>
       )}
 

@@ -1,111 +1,185 @@
-import { useState, useEffect } from 'react';
+// =============================================================================
+// RegionalApp — the regional view (AOR fleet rollup)
+// =============================================================================
+// Phase 4c rewrite. Was hardcoded LTAMDS work orders + a battery-tree
+// DigitalTwin. Now a real regional dashboard built from the shape hooks:
+// an AOR asset list colour-coded by logistics severity, the top
+// constraining factors across the fleet, a CM compliance summary, and a
+// fleet-wide tactical event feed with a severity filter. Picking an asset
+// (here or in the 3D map) opens AssetDeepDive.
+//
+// The 3D RegionalBattleView is kept but DEMO_MOCK (synthetic theater
+// positions — real geo projection deferred). The link toggles + regional
+// buffer are UI demo mechanics — see the Phase 4c checkpoint finding on
+// the DDIL link/buffer wiring.
+import { useState, useEffect, useMemo } from 'react';
 import RegionalHeader from './components/regional/RegionalHeader';
 import RegionalBattleView from './components/regional/RegionalBattleView';
-import DigitalTwin from './components/regional/DigitalTwin';
-import WorkOrders, { type WorkOrder } from './components/regional/WorkOrders';
+import WorkOrders from './components/regional/WorkOrders';
 import TacticalRuleBuilder from './components/regional/TacticalRuleBuilder';
 import AssetDeepDive from './components/regional/AssetDeepDive';
+import AlertFeed from './components/AlertFeed';
+import {
+  useFleetAssets,
+  useAllLogisticsStatus,
+  useAllCmState,
+  useTacticalEvents,
+} from './hooks';
+import {
+  aorAssetList,
+  topConstrainingFactors,
+  cmComplianceSummary,
+  severityHeatClass,
+  shortSeverity,
+  shortCmStatus,
+} from './lib/fleetAggregates';
 
-const INITIAL_WORK_ORDERS: WorkOrder[] = [
-  { id: 'WO-8810', sn: 'LTAMDS-04', part: 'Coolant Pump', status: 'COMPLETED' },
-  { id: 'WO-8809', sn: 'LTAMDS-02', part: 'T/R Module', status: 'COMPLETED' },
-  { id: 'WO-8807', sn: 'LTAMDS-07', part: 'Power Supply', status: 'COMPLETED' },
-  { id: 'WO-8805', sn: 'LTAMDS-09', part: 'Filter Assy', status: 'COMPLETED' },
-];
+function AorAssetList({
+  fleet, logistics, selectedId, onSelect,
+}: {
+  fleet: ReturnType<typeof useFleetAssets>['data'];
+  logistics: ReturnType<typeof useAllLogisticsStatus>['data'];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const rows = useMemo(() => aorAssetList(fleet, logistics), [fleet, logistics]);
+  return (
+    <div className="panel shrink-0 p-3">
+      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">AOR Assets ({rows.length})</h2>
+      <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+        {rows.length === 0 && <div className="text-xs text-slate-500">No assets in the pipeline.</div>}
+        {rows.map((r) => (
+          <button
+            key={r.asset_id}
+            onClick={() => onSelect(r.asset_id)}
+            className={`w-full flex items-center justify-between text-left text-xs px-2 py-1 border rounded-sm transition-colors ${severityHeatClass(r.severity)} ${selectedId === r.asset_id ? 'ring-1 ring-cyan-400' : ''}`}
+          >
+            <span>{r.callsign || r.asset_id}</span>
+            <span className="text-[9px] font-bold">{shortSeverity(r.severity)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TopFactors({ logistics }: { logistics: ReturnType<typeof useAllLogisticsStatus>['data'] }) {
+  const factors = useMemo(() => topConstrainingFactors(logistics, 10), [logistics]);
+  return (
+    <div className="panel shrink-0 p-3">
+      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">Top Constraining Factors</h2>
+      {factors.length === 0 && <div className="text-xs text-slate-500">No constraining factors across the fleet.</div>}
+      <div className="space-y-1">
+        {factors.map((f) => (
+          <div key={f.factor_id} className="flex items-center justify-between text-xs">
+            <span className="text-slate-300">{f.factor_id}</span>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-sm border ${severityHeatClass(f.worstSeverity)}`}>
+              {f.affectedAssets} asset{f.affectedAssets === 1 ? '' : 's'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CmComplianceSummary({ cm }: { cm: ReturnType<typeof useAllCmState>['data'] }) {
+  const buckets = useMemo(() => cmComplianceSummary(cm), [cm]);
+  return (
+    <div className="panel shrink-0 p-3">
+      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">CM Compliance Summary</h2>
+      {buckets.length === 0 && <div className="text-xs text-slate-500">No CM state across the fleet.</div>}
+      <div className="space-y-1">
+        {buckets.map((b) => (
+          <div key={b.status} className="flex items-center justify-between text-xs">
+            <span className="text-slate-300">{shortCmStatus(b.status)}</span>
+            <span className="text-slate-200 font-bold">{b.count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function RegionalApp() {
+  // UI demo state — link toggles + regional buffer (see 4c checkpoint finding).
   const [link1, setLink1] = useState(true);
   const [link2, setLink2] = useState(true);
   const [buffer, setBuffer] = useState(24);
-  const [degradedBravo, setDegradedBravo] = useState(false);
-  const [workOrders, setWorkOrders] = useState<WorkOrder[]>(INITIAL_WORK_ORDERS);
   const [isRuleEditorOpen, setIsRuleEditorOpen] = useState(false);
-  const [selectedAsset, setSelectedAsset] = useState<{id: string, type: string} | null>(null);
+  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<string>('ALL');
 
-  // Link 1 (Edge to Region) logic
-  useEffect(() => {
-    if (!link1) {
-      setDegradedBravo(true);
-    } else {
-      setDegradedBravo(false);
-    }
-  }, [link1]);
+  // Pipeline data — ElectricSQL Shapes.
+  const fleet = useFleetAssets();
+  const logistics = useAllLogisticsStatus();
+  const cm = useAllCmState();
+  const events = useTacticalEvents(50);
 
-  // Link 2 (Region to HQ) logic
-  useEffect(() => {
-    if (link2 && buffer > 100) {
-      // Simulate instantly receiving a backlog of WOs when connection restores
-      const newWO: WorkOrder = {
-        id: 'WO-9942',
-        sn: 'LTAMDS-04',
-        part: 'Coolant Pump',
-        status: 'AUTO-REQ',
-        isNew: true
-      };
-      setWorkOrders(prev => [newWO, ...prev]);
-      
-      // Remove highlight after 2 seconds
-      setTimeout(() => {
-        setWorkOrders(prev => prev.map(wo => wo.id === 'WO-9942' ? { ...wo, isNew: false } : wo));
-      }, 2000);
-    }
-  }, [link2]); // Removed buffer from dependency to only trigger on link2 restore
-
-  // Buffer Loop
+  // Regional buffer simulation (UI mechanic).
   useEffect(() => {
     const interval = setInterval(() => {
-      setBuffer(prev => {
-        if (!link2) {
-          // If cut off from HQ, regional buffer grows rapidly
-          return prev + Math.floor(Math.random() * 80) + 20;
-        } else if (prev > 24) {
-          // Drain buffer when connected
-          return Math.max(24, prev - Math.floor(prev * 0.3) - 50);
-        } else {
-          // Idle fluctuation
-          return 24 + Math.floor(Math.random() * 5);
-        }
+      setBuffer((prev) => {
+        if (!link2) return prev + Math.floor(Math.random() * 80) + 20;
+        if (prev > 24) return Math.max(24, prev - Math.floor(prev * 0.3) - 50);
+        return 24 + Math.floor(Math.random() * 5);
       });
     }, 1000);
     return () => clearInterval(interval);
   }, [link2]);
 
+  const filteredEvents = useMemo(() => {
+    if (severityFilter === 'ALL') return events.data;
+    return events.data.filter((e) => (e.severity ?? '').toUpperCase().includes(severityFilter));
+  }, [events.data, severityFilter]);
+
   return (
     <div className="font-mono h-screen flex flex-col overflow-hidden bg-slate-950 text-slate-200">
-      <RegionalHeader 
-        link1={link1} 
-        setLink1={setLink1} 
-        link2={link2} 
-        setLink2={setLink2} 
-        buffer={buffer} 
+      <RegionalHeader
+        link1={link1} setLink1={setLink1}
+        link2={link2} setLink2={setLink2}
+        buffer={buffer}
         setIsRuleEditorOpen={setIsRuleEditorOpen}
       />
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
-        <RegionalBattleView 
-          link1={link1} 
-          selectedAssetId={selectedAsset?.id || null} 
-          onAssetSelect={(id, type) => {
-            if (id && type) {
-              setSelectedAsset({id, type});
-            } else {
-              setSelectedAsset(null);
-            }
-          }} 
+        <RegionalBattleView
+          link1={link1}
+          selectedAssetId={selectedAssetId}
+          onAssetSelect={(id) => setSelectedAssetId(id)}
         />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-hidden">
-          {selectedAsset ? (
-            <AssetDeepDive 
-              assetId={selectedAsset.id} 
-              assetType={selectedAsset.type} 
-              onClose={() => setSelectedAsset(null)} 
-            />
+          {selectedAssetId ? (
+            <AssetDeepDive assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
           ) : (
-            <>
-              <DigitalTwin degradedBravo={degradedBravo} />
-              <WorkOrders link2={link2} workOrders={workOrders} />
-            </>
+            <div className="flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
+              <AorAssetList
+                fleet={fleet.data}
+                logistics={logistics.data}
+                selectedId={selectedAssetId}
+                onSelect={setSelectedAssetId}
+              />
+              <TopFactors logistics={logistics.data} />
+              <CmComplianceSummary cm={cm.data} />
+              <WorkOrders link2={link2} />
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] text-slate-500 uppercase tracking-wider">Severity filter</span>
+                  <select
+                    value={severityFilter}
+                    onChange={(e) => setSeverityFilter(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 text-slate-300 text-[10px] rounded px-1 py-0.5"
+                  >
+                    <option value="ALL">All</option>
+                    <option value="CRITICAL">Critical</option>
+                    <option value="DEGRADED">Degraded</option>
+                    <option value="MAJOR">Major</option>
+                  </select>
+                </div>
+                <AlertFeed events={filteredEvents} />
+              </div>
+            </div>
           )}
         </div>
       </main>

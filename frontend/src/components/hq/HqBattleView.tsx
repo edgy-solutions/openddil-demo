@@ -1,3 +1,9 @@
+// =============================================================================
+// HqBattleView — global theater command 3D view
+// =============================================================================
+// DEMO_MOCK: renders synthetic global region positions — the pipeline has
+// no theater/region geo hierarchy, so this is decorative. Real geo
+// rendering is deferred (same as RegionalBattleView). See ADR-0017.
 import React, { useRef, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
@@ -6,6 +12,9 @@ import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
+import { DemoMockBanner } from '../DemoMockBanner';
+
+const DEMO_MOCK = true;
 
 const REGIONS = [
   { id: 'West', x: -300, z: 100, count: 4, color: 0x10b981 },
@@ -64,13 +73,14 @@ export default function HqBattleView({ wanActive, linksUp, linksDown }: { wanAct
 
   return (
     <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-battleview">
-      
+      {DEMO_MOCK && <DemoMockBanner note="synthetic global positions" />}
+
       <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
         <div>
           <h1 className={`glitch-text text-3xl font-bold transition-colors ${wanActive ? 'text-emerald-400 shadow-[0_0_10px_#10b981]' : 'text-rose-500 shadow-[0_0_10px_#f43f5e]'}`} style={{ textShadow: wanActive ? '0 0 10px #10b981' : '0 0 10px #f43f5e' }}>
             THEATER COMMAND VIEW
           </h1>
-          <p className="text-[10px] font-mono tracking-widest text-slate-400 mt-1">GLOBAL CONTIGUOUS SHIELD NETWORK @[//] ALL REGIONS</p>
+          <p className="text-[10px] font-mono tracking-widest text-slate-400 mt-1">GLOBAL CONTIGUOUS SHIELD NETWORK // ALL REGIONS</p>
         </div>
         <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
           <div className="text-[10px] text-slate-500 mb-1">GLOBAL LINK STATUS</div>
