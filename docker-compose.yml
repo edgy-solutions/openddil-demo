@@ -498,7 +498,7 @@ services:
     restart: "no"
 
   # =============================================================================
-  # Projector (Phase 4a, ADR-0016)
+  # Projector (Phase 4a, ADR-0019)
   # =============================================================================
   # Single generic Kafka -> Postgres projector. Consumes the per-asset
   # pipeline topics (asset-cm-state, asset-logistics-status,
