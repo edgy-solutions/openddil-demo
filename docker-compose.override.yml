@@ -107,3 +107,18 @@ services:
       # Source mount for hot-reload (overrides the COPY'd /app/src). The
       # generated proto stubs at /proto come from the base-compose mount.
       - ../openddil-projector/src:/app/src
+
+  # --------------------------------------------------------------------------
+  # Frontend — local build (Phase 4b)
+  # --------------------------------------------------------------------------
+  # The base compose pulls ghcr.io/edgy-solutions/openddil/frontend:latest
+  # with `pull_policy: always`. Without this override, a developer editing
+  # frontend source would have their local build silently replaced by the
+  # registry image on every `docker compose up`. No source mount: the
+  # frontend is an nginx-served static build, not hot-reloaded — rebuild
+  # the image to pick up changes.
+  frontend:
+    build:
+      context: ../openddil-demo/frontend
+      dockerfile: Dockerfile
+    pull_policy: build

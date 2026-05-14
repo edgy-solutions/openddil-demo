@@ -321,19 +321,11 @@ services:
       - redpanda-edge
       - toxiproxy
 
-  simulator:
-    image: ghcr.io/edgy-solutions/openddil/simulator:latest
-    profiles:
-      - "disabled"
-    pull_policy: always
-    container_name: openddil-demo-simulator
-    environment:
-      KAFKA_BROKER: "redpanda-edge:9092"
-    # Ports 8000 removed to avoid corporate machine conflicts; now proxied via Nginx
-    # ports:
-    #   - "8000:8000"
-    depends_on:
-      - redpanda-edge
+  # NOTE: the `simulator` service was removed in Phase 4b (ADR-0019 era).
+  # Real ingestion goes through DIS / sim-a / proprietary feeds; the UI now
+  # reads pipeline state from Postgres via ElectricSQL, not from a mock
+  # simulator API. The SimulatorApp UI, the /simulator/* and /models/*
+  # nginx routes, and this service block all went together.
 
   faust-edge:
     image: ghcr.io/edgy-solutions/openddil/faust-edge:latest

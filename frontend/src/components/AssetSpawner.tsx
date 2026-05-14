@@ -1,3 +1,18 @@
+// =============================================================================
+// AssetSpawner — 3D asset-model renderer (GLB models + X-ray fallbacks)
+// =============================================================================
+// DEMO_MOCK: renders 3D asset models against a hardcoded fleet passed by
+// RegionalBattleView. Was simulator-coupled (loaded /models/*.glb proxied
+// through the now-deleted simulator container); Phase 4b removed that
+// proxy, so the GLBs now serve statically from the frontend's public/ dir
+// and the ErrorBoundary covers any miss.
+//
+// Phase 4b KEEPS this component (per the AssetSpawner sequencing decision)
+// because RegionalBattleView depends on it and the regional view is Phase
+// 4c's concern. It is DELETED in 4c when RegionalBattleView is rewired.
+// This is a react-three-fiber primitive (<group>) with no DOM wrapper, so
+// the DEMO_MOCK marker is this comment + const only — a DOM
+// <DemoMockBanner> cannot live inside a Canvas. See ADR-0017.
 import { Suspense, useMemo, useRef, Component } from 'react';
 import type { ReactNode } from 'react';
 import { useGLTF } from '@react-three/drei';
@@ -5,6 +20,9 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { LaserShorad, Artillery, Quadruped, RadarXRay } from './DiagnosticCanvas';
 import AssetCallout from './AssetCallout';
+
+const DEMO_MOCK = true;
+void DEMO_MOCK; // marker only — pure-3D primitive, no DOM banner; deleted in 4c
 
 class ErrorBoundary extends Component<{ fallback: ReactNode, children: ReactNode }, { hasError: boolean }> {
     constructor(props: { fallback: ReactNode, children: ReactNode }) {

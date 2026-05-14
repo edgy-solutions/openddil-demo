@@ -1,29 +1,63 @@
+// =============================================================================
+// AlertFeed — recent tactical events (CloudEvents)
+// =============================================================================
+// Phase 4b rewrite. Was fed by a polled /api/alerts endpoint that never
+// existed plus locally-synthesised {id,msg,type,time} alerts. Now renders
+// real CloudEvents from the tactical_events shape (useTacticalEvents):
+// type, subject, severity, time.
 import { AlertTriangle } from 'lucide-react';
+import type { TacticalEvent } from '../hooks';
 
-export interface Alert {
-  id: string;
-  msg: string;
-  type: 'info' | 'warn' | 'crit';
-  time: string;
+// Map a CloudEvent's best-effort severity string to a feed colour.
+function severityColors(severity: string | null): string {
+  const s = (severity ?? '').toUpperCase();
+  if (s.includes('CRITICAL') || s.includes('NOT_MISSION_CAPABLE') || s.includes('NON_OPERATIONAL')) {
+    return 'border-rose-500 bg-rose-500/10 text-rose-400';
+  }
+  if (s.includes('DEGRADED') || s.includes('MAJOR') || s.includes('MINOR')) {
+    return 'border-amber-500 bg-amber-500/10 text-amber-400';
+  }
+  return 'border-slate-500 bg-slate-800/50 text-slate-300';
 }
 
-export default function AlertFeed({ alerts }: { alerts: Alert[] }) {
+// CloudEvent `type` is a reverse-DNS string; show the last segment.
+function shortType(type: string): string {
+  const parts = type.split('.');
+  return parts.slice(-2).join('.') || type;
+}
+
+function formatTime(iso: string): string {
+  if (!iso) return '--:--:--';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleTimeString('en-US', { hour12: false });
+}
+
+export default function AlertFeed({ events }: { events: TacticalEvent[] }) {
   return (
     <div className="panel flex-1 flex flex-col min-h-[150px] p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center">
-          <AlertTriangle className="w-4 h-4 mr-2" /> Faust/Restate Alert Feed
+        <AlertTriangle className="w-4 h-4 mr-2" /> Tactical Event Feed
       </h2>
       <div className="flex-1 overflow-y-auto space-y-2 text-xs font-mono pr-2">
-        {alerts.map(alert => {
-          let colors = "border-slate-500 bg-slate-800/50 text-slate-300";
-          if (alert.type === "warn") colors = "border-amber-500 bg-amber-500/10 text-amber-400";
-          if (alert.type === "crit") colors = "border-rose-500 bg-rose-500/10 text-rose-400";
-          return (
-            <div key={alert.id} className={`p-2 border-l-2 text-xs mb-2 transition-all ${colors}`}>
-              <span className="opacity-50 mr-2">[{alert.time}]</span> {alert.msg}
+        {events.length === 0 && (
+          <div className="text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
+            No tactical events. Awaiting CM / logistics transitions.
+          </div>
+        )}
+        {events.map((e) => (
+          <div key={e.id} className={`p-2 border-l-2 text-xs mb-2 transition-all ${severityColors(e.severity)}`}>
+            <div className="flex justify-between">
+              <span className="font-bold">{shortType(e.type)}</span>
+              <span className="opacity-50">[{formatTime(e.time)}]</span>
             </div>
-          );
-        })}
+            <div className="opacity-80 mt-0.5">
+              {e.subject}
+              {e.severity ? <span className="ml-2 opacity-70">— {e.severity}</span> : null}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

@@ -1,8 +1,19 @@
+// =============================================================================
+// DiagnosticCanvas — 3D asset X-ray schematics (Stryker / HIMARS / UGV / radar)
+// =============================================================================
+// DEMO_MOCK: useful maintainer-view mockups, not yet wired to real data.
+// The RADAR branch delegates to LtamdsView (which carries its own banner);
+// the other branches render synthetic 3D schematics with no data input.
+// Full rewiring to the pipeline's per-platform telemetry is future work
+// once schemas for those platforms are flowing. See ADR-0017.
 import { useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import LtamdsView from './LtamdsView';
+import { DemoMockBanner } from './DemoMockBanner';
+
+const DEMO_MOCK = true;
 
 export function RadarXRay({ degraded }: { degraded: boolean }) {
     return (
@@ -326,6 +337,7 @@ export default function DiagnosticCanvas({ assetType, degraded, coreTemp }: { as
 
     return (
         <div className="absolute inset-0 bg-[#020617] text-[#22d3ee] font-mono select-none overflow-hidden">
+            {DEMO_MOCK && <DemoMockBanner note="synthetic 3D schematic" />}
             <style>{`
                 .hud-border {
                     border: 1px solid rgba(34, 211, 238, 0.3);

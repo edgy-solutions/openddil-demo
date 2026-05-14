@@ -1,8 +1,7 @@
 import { useShape } from '@electric-sql/react';
 import { AlertTriangle, WifiOff, Package } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-
-const ELECTRIC_URL = import.meta.env.VITE_ELECTRIC_URL ?? 'http://localhost:5133/v1/shape';
+import { ELECTRIC_URL, num } from '../hooks';
 
 function InitialLoadSpinner() {
   return (
@@ -26,13 +25,18 @@ function InventoryTable({ rows }: { rows: any[] }) {
   return (
     <div className="space-y-3 mt-3">
         {items.map((item: any) => {
-           // Total capacity = everything that exists of this item, on hand or
-           // out. The inventory_items schema has no max_capacity column
+           // Electric returns numeric columns as STRINGS (precision-
+           // conservative) — coerce before any arithmetic, or "12" + "4"
+           // silently becomes "124" and "0" === 0 is false.
+           const available = num(item.available_count);
+           const allocated = num(item.allocated_count);
+           // Total capacity = everything that exists of this item, on hand
+           // or out. The inventory_items schema has no max_capacity column
            // (Phase 4a decision); available + allocated is the honest total.
-           const max = (item.available_count + item.allocated_count) || 1;
-           const pct = Math.min(100, Math.max(0, (item.available_count / max) * 100));
-           const isCritical = item.available_count === 0;
-           
+           const max = (available + allocated) || 1;
+           const pct = Math.min(100, Math.max(0, (available / max) * 100));
+           const isCritical = available === 0;
+
            return (
              <div key={item.id}>
                  <div className="flex justify-between text-xs mb-1 text-slate-300">
@@ -41,7 +45,7 @@ function InventoryTable({ rows }: { rows: any[] }) {
                        {item.name}
                      </span>
                      <span className={isCritical ? "text-rose-500 font-bold" : "text-emerald-400"}>
-                       {item.available_count}
+                       {available}
                      </span>
                  </div>
                  <div className="w-full bg-slate-800 h-2 overflow-hidden border border-slate-700/50">

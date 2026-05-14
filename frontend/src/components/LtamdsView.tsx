@@ -1,8 +1,24 @@
+// =============================================================================
+// LtamdsView — LTAMDS RADAR maintainer view (3D T/R element schematic)
+// =============================================================================
+// PRESERVED per Phase 4 Decision 4. This is the RADAR-class maintainer
+// view; its data shape will change again when an RTI / Cyber DDS feed
+// lands, so it is intentionally NOT heavily refactored now.
+//
+// DEMO_MOCK: renders against synthetic T/R-element data. There is no
+// RADAR-class platform_variant in the current pipeline (the OSS DIS feed
+// is M1A2-SEPv3 ground assets), so there is nothing real to wire to yet.
+// When a RADAR-class asset appears in telemetry_latest_state, wire the
+// element grid to its sustainment.* fields; until then this stays mock
+// behind an explicit banner. See ADR-0017.
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import * as TWEEN from '@tweenjs/tween.js';
+import { DemoMockBanner } from './DemoMockBanner';
+
+const DEMO_MOCK = true;
 
 const COLORS = { nominal: 0x22d3ee, warning: 0xfacc15, critical: 0xef4444, bg: 0x020617, housing: 0x0f172a, card: 0x1e293b };
 const DEPTH_NAMES = ["RADAR UNIT", "PROCESSOR BANK", "SIGNAL CONVERTER", "GAN MMIC CHIP"];
@@ -338,6 +354,7 @@ export default function LtamdsView({ degraded, coreTemp }: { degraded: boolean, 
 
     return (
         <div className="absolute inset-0 bg-[#020617] text-[#22d3ee] font-mono select-none overflow-hidden">
+            {DEMO_MOCK && <DemoMockBanner note="live data wiring pending RTI/Cyber DDS integration" />}
             <style>{`
                 .hud-border {
                     border: 1px solid rgba(34, 211, 238, 0.3);

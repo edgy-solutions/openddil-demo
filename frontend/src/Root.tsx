@@ -3,11 +3,14 @@ import App from './App';
 import RegionalApp from './RegionalApp';
 import HqApp from './HqApp';
 import ControllerApp from './ControllerApp';
-import SimulatorApp from './SimulatorApp';
-import { Laptop, Server, Building2, SlidersHorizontal, Settings2 } from 'lucide-react';
+import { Laptop, Server, Building2, SlidersHorizontal } from 'lucide-react';
+
+// Phase 4b removed the SIMULATOR tab and SimulatorApp. Real ingestion goes
+// through DIS / sim-a / proprietary feeds; the UI reads pipeline state from
+// Postgres via ElectricSQL, not from a mock simulator API.
 
 function Root() {
-  const [view, setView] = useState<'edge' | 'regional' | 'hq' | 'controller' | 'simulator'>('edge');
+  const [view, setView] = useState<'edge' | 'regional' | 'hq' | 'controller'>('edge');
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-300 overflow-hidden font-mono">
@@ -17,36 +20,29 @@ function Root() {
           <span className="text-white">OpenDDIL</span> DEMO
         </div>
         <div className="flex gap-2">
-          <button 
+          <button
             onClick={() => setView('edge')}
             className={`px-3 py-1 flex items-center gap-2 text-xs font-bold transition-colors ${view === 'edge' ? 'bg-slate-800 text-white border border-slate-600' : 'text-slate-500 hover:text-slate-300'}`}
           >
             <Laptop className="w-3 h-3" /> EDGE
           </button>
-          <button 
+          <button
             onClick={() => setView('regional')}
             className={`px-3 py-1 flex items-center gap-2 text-xs font-bold transition-colors ${view === 'regional' ? 'bg-slate-800 text-white border border-slate-600' : 'text-slate-500 hover:text-slate-300'}`}
           >
             <Server className="w-3 h-3" /> REGIONAL
           </button>
-          <button 
+          <button
             onClick={() => setView('hq')}
             className={`px-3 py-1 flex items-center gap-2 text-xs font-bold transition-colors ${view === 'hq' ? 'bg-slate-800 text-white border border-slate-600' : 'text-slate-500 hover:text-slate-300'}`}
           >
             <Building2 className="w-3 h-3" /> HQ
           </button>
-          <button 
+          <button
             onClick={() => setView('controller')}
             className={`px-3 py-1 flex items-center gap-2 text-xs font-bold transition-colors ${view === 'controller' ? 'bg-slate-800 text-white border border-slate-600' : 'text-slate-500 hover:text-slate-300'}`}
           >
             <SlidersHorizontal className="w-3 h-3" /> DDIL CONTROLLER
-          </button>
-          <div className="w-px h-4 bg-slate-700 mx-1 self-center" />
-          <button 
-            onClick={() => setView('simulator')}
-            className={`px-3 py-1 flex items-center gap-2 text-xs font-bold transition-colors ${view === 'simulator' ? 'bg-slate-800 text-cyan-400 border border-slate-600' : 'text-slate-500 hover:text-cyan-500'}`}
-          >
-            <Settings2 className="w-3 h-3" /> SIMULATOR
           </button>
         </div>
       </div>
@@ -57,7 +53,6 @@ function Root() {
         {view === 'regional' && <RegionalApp />}
         {view === 'hq' && <HqApp />}
         {view === 'controller' && <ControllerApp />}
-        {view === 'simulator' && <SimulatorApp />}
       </div>
     </div>
   );

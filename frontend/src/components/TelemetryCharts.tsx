@@ -1,152 +1,160 @@
+// =============================================================================
+// TelemetryCharts — per-asset sustainment telemetry, platform-variant-aware
+// =============================================================================
+// Phase 4b rewrite. Was keyed by the mock simulator's coarse asset TYPE
+// (RADAR/LASER_SHORAD/...) and read bare-double fields. Now keyed by
+// `platform_variant` (see config/platformChartConfig.ts) and reads
+// `sustainment.*` Quantity leaves ({ value, unit }) from the real
+// telemetry_latest_state shape.
+//
+// Schema-drift reality: the OSS DIS feed carries kinematics only — no
+// sustainment. When `sustainment` is absent the component renders an
+// explicit empty state rather than charting zeros.
 import { useEffect, useRef } from 'react';
 import { Activity } from 'lucide-react';
 import { Chart, registerables } from 'chart.js';
+import type { TelemetryLatest, Quantity } from '../hooks';
+import { platformChartConfig, type ChartField } from '../config/platformChartConfig';
 
 Chart.register(...registerables);
 Chart.defaults.color = '#64748b';
 Chart.defaults.font.family = 'monospace';
 
 const commonOptions = {
-    responsive: true, 
-    maintainAspectRatio: false,
-    plugins: { legend: { display: false }, tooltip: { enabled: false } },
-    scales: {
-        x: { display: false },
-        y: { border: { display: false }, grid: { color: '#1e293b', drawTicks: false }, ticks: { maxTicksLimit: 4, font: { size: 9 } } }
-    },
-    animation: { duration: 0 }
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { display: false }, tooltip: { enabled: false } },
+  scales: {
+    x: { display: false },
+    y: { border: { display: false }, grid: { color: '#1e293b', drawTicks: false }, ticks: { maxTicksLimit: 4, font: { size: 9 } } },
+  },
+  animation: { duration: 0 },
 };
 
-export const ASSET_CONFIGS: Record<string, any> = {
-  'RADAR': {
-    fields: [
-      { key: 'core_temp', label: 'Primary Array Thermal Matrix', unit: '°C', min: 20, max: 100, anomalyThreshold: 85 },
-      { key: 'coolant_pressure', label: 'Coolant System Pressure', unit: 'PSI', min: 0, max: 200, anomalyThreshold: 180 }
-    ]
-  },
-  'LASER_SHORAD': {
-    fields: [
-      { key: 'cavity_temp', label: 'Laser Cavity Temperature', unit: '°C', min: 20, max: 200, anomalyThreshold: 140 },
-      { key: 'pump_rpm', label: 'Cooling Pump Speed', unit: 'RPM', min: 0, max: 6000, anomalyThreshold: 5500 }
-    ]
-  },
-  'ARTILLERY': {
-    fields: [
-      { key: 'hydraulic_pressure', label: 'Hydraulic System Pressure', unit: 'PSI', min: 0, max: 4000, anomalyThreshold: 3500 },
-      { key: 'elevation_angle', label: 'Pod Elevation Angle', unit: 'DEG', min: 0, max: 90, anomalyThreshold: 85 }
-    ]
-  },
-  'QUADRUPED': {
-    fields: [
-      { key: 'joint_torque', label: 'Actuator Joint Torque', unit: 'Nm', min: 0, max: 50, anomalyThreshold: 40 },
-      { key: 'battery_discharge', label: 'Battery Discharge Rate', unit: 'kW', min: 0, max: 20, anomalyThreshold: 15 }
-    ]
+const HISTORY = 30;
+
+/** Navigate a dot-path into a nested object; undefined if any hop is missing. */
+function getByPath(obj: any, path: string): any {
+  return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+}
+
+/** Pull a Quantity {value, unit} from the sustainment blob at a field's path. */
+function readQuantity(sustainment: any, field: ChartField): Quantity | null {
+  const q = getByPath(sustainment, field.path);
+  if (q && typeof q === 'object' && typeof q.value === 'number') {
+    return { value: q.value, unit: typeof q.unit === 'string' ? q.unit : '' };
   }
-};
+  return null;
+}
 
 interface TelemetryChartsProps {
-  assetType: string;
-  telemetry: any;
+  telemetry: TelemetryLatest | null;
+  platformVariant: string | null;
   degraded: boolean;
 }
 
-export default function TelemetryCharts({ assetType, telemetry, degraded }: TelemetryChartsProps) {
-  const chartRefs = [useRef<HTMLCanvasElement>(null), useRef<HTMLCanvasElement>(null)];
+export default function TelemetryCharts({ telemetry, platformVariant, degraded }: TelemetryChartsProps) {
+  const config = platformChartConfig(platformVariant);
+  const sustainment = telemetry?.sustainment ?? null;
+  const hasSustainment =
+    sustainment != null &&
+    typeof sustainment === 'object' &&
+    Object.keys(sustainment).length > 0;
+
+  // One canvas ref per configured field.
+  const chartRefs = useRef<(HTMLCanvasElement | null)[]>([]);
   const chartInstances = useRef<(Chart | undefined)[]>([]);
-  const dataHistories = useRef<number[][]>([Array(30).fill(0), Array(30).fill(0)]);
-  const prevAssetType = useRef(assetType);
+  const dataHistories = useRef<number[][]>([]);
+  const prevVariant = useRef<string | null>(null);
 
-  const config = ASSET_CONFIGS[assetType] || ASSET_CONFIGS['RADAR'];
-
+  // (Re)build charts when the platform variant changes.
   useEffect(() => {
-    if (prevAssetType.current !== assetType) {
-      dataHistories.current = [Array(30).fill(0), Array(30).fill(0)];
-      prevAssetType.current = assetType;
+    if (!hasSustainment) return;
+    if (prevVariant.current !== platformVariant) {
+      dataHistories.current = config.fields.map(() => Array(HISTORY).fill(0));
+      prevVariant.current = platformVariant;
     }
-
-    chartRefs.forEach((ref, idx) => {
-      if (ref.current) {
-        if (chartInstances.current[idx]) {
-          chartInstances.current[idx]?.destroy();
-        }
-
-        const ctx = ref.current.getContext('2d')!;
-        const grad = ctx.createLinearGradient(0, 0, 0, 100);
-        grad.addColorStop(0, 'rgba(34, 211, 238, 0.5)');
-        grad.addColorStop(1, 'rgba(34, 211, 238, 0.0)');
-
-        const fieldConfig = config.fields[idx];
-
-        chartInstances.current[idx] = new Chart(ctx, {
-          type: 'line',
-          data: { 
-            labels: Array.from({length: 30}, (_, i) => i), 
-            datasets: [{ 
-              data: dataHistories.current[idx], 
-              borderColor: '#22d3ee', 
-              backgroundColor: grad, 
-              borderWidth: 1.5, 
-              fill: true, 
-              pointRadius: 0, 
-              tension: 0.4 
-            }] 
-          },
-          options: { 
-            ...commonOptions, 
-            scales: { 
-              y: { 
-                ...commonOptions.scales?.y, 
-                min: fieldConfig.min, 
-                max: fieldConfig.max 
-              } 
-            } 
-          }
-        });
-      }
+    config.fields.forEach((_field, idx) => {
+      const ref = chartRefs.current[idx];
+      if (!ref) return;
+      chartInstances.current[idx]?.destroy();
+      const ctx = ref.getContext('2d')!;
+      const grad = ctx.createLinearGradient(0, 0, 0, 100);
+      grad.addColorStop(0, 'rgba(34, 211, 238, 0.5)');
+      grad.addColorStop(1, 'rgba(34, 211, 238, 0.0)');
+      chartInstances.current[idx] = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: Array.from({ length: HISTORY }, (_, i) => i),
+          datasets: [{
+            data: dataHistories.current[idx],
+            borderColor: '#22d3ee',
+            backgroundColor: grad,
+            borderWidth: 1.5,
+            fill: true,
+            pointRadius: 0,
+            tension: 0.4,
+          }],
+        },
+        options: commonOptions,
+      });
     });
-
     return () => {
-      chartInstances.current.forEach(chart => chart?.destroy());
+      chartInstances.current.forEach((c) => c?.destroy());
+      chartInstances.current = [];
     };
-  }, [assetType]);
+  }, [platformVariant, hasSustainment, config.fields]);
 
+  // Push new samples whenever telemetry updates.
   useEffect(() => {
-    config.fields.forEach((fieldConfig: any, idx: number) => {
-      const val = telemetry[fieldConfig.key] || 0;
-      dataHistories.current[idx].push(val);
-      dataHistories.current[idx].shift();
-
-      const isAnomaly = val >= fieldConfig.anomalyThreshold;
+    if (!hasSustainment) return;
+    config.fields.forEach((field, idx) => {
+      const q = readQuantity(sustainment, field);
+      const val = q?.value ?? 0;
+      const hist = dataHistories.current[idx];
+      if (!hist) return;
+      hist.push(val);
+      hist.shift();
+      const isAnomaly = field.anomalyThreshold != null && val >= field.anomalyThreshold;
       const color = isAnomaly || degraded ? '#f43f5e' : '#22d3ee';
-
-      if (chartInstances.current[idx]) {
-        chartInstances.current[idx]!.data.datasets[0].borderColor = color;
-        chartInstances.current[idx]!.update();
+      const inst = chartInstances.current[idx];
+      if (inst) {
+        inst.data.datasets[0].borderColor = color;
+        inst.update();
       }
     });
-  }, [telemetry, degraded, assetType]);
+  }, [telemetry, degraded, hasSustainment, sustainment, config.fields]);
 
   return (
     <div className="panel shrink-0 p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-4 flex items-center">
-          <Activity className="w-4 h-4 mr-2" /> Prognostics &amp; Telemetry
+        <Activity className="w-4 h-4 mr-2" /> Prognostics &amp; Telemetry
       </h2>
-      
-      {config.fields.map((fieldConfig: any, idx: number) => {
-        const val = telemetry[fieldConfig.key] || 0;
-        const isAnomaly = val >= fieldConfig.anomalyThreshold;
-        
+
+      {!hasSustainment && (
+        <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-3 rounded-sm">
+          No sustainment telemetry for this asset. The DIS feed carries
+          kinematics only — thermal / fluid / wear metrics arrive via the
+          sim-a or proprietary feeds.
+        </div>
+      )}
+
+      {hasSustainment && config.fields.map((field, idx) => {
+        const q = readQuantity(sustainment, field);
+        const val = q?.value ?? 0;
+        const unit = q?.unit ?? '';
+        const isAnomaly = field.anomalyThreshold != null && val >= field.anomalyThreshold;
         return (
-          <div key={fieldConfig.key} className="mb-4">
-              <div className="flex justify-between text-xs mb-1">
-                  <span className="text-slate-300">{fieldConfig.label}</span>
-                  <span className={`font-bold ${isAnomaly || degraded ? 'text-rose-400 glow-rose' : 'text-cyan-400'}`}>
-                    {val.toFixed(1)} {fieldConfig.unit}
-                  </span>
-              </div>
-              <div className="h-24 w-full relative">
-                  <canvas ref={chartRefs[idx]}></canvas>
-              </div>
+          <div key={field.path} className="mb-4">
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-300">{field.label}</span>
+              <span className={`font-bold ${isAnomaly || degraded ? 'text-rose-400 glow-rose' : 'text-cyan-400'}`}>
+                {q ? `${val.toFixed(1)} ${unit}` : 'n/a'}
+              </span>
+            </div>
+            <div className="h-24 w-full relative">
+              <canvas ref={(el) => { chartRefs.current[idx] = el; }}></canvas>
+            </div>
           </div>
         );
       })}

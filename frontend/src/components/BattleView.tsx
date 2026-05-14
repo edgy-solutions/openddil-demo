@@ -1,6 +1,15 @@
+// =============================================================================
+// BattleView — small tactical 3D canvas (threat orbit + shield)
+// =============================================================================
+// DEMO_MOCK: renders a synthetic threat-and-shield animation, no data
+// input. Cosmetic situational-awareness mockup; not on a real-data wiring
+// path in Phase 4. See ADR-0017.
 import { useRef } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { DemoMockBanner } from './DemoMockBanner';
+
+const DEMO_MOCK = true;
 
 function BattleScene({ degraded, radarColor }: { degraded: boolean, radarColor: string }) {
   const threatRef = useRef<THREE.Mesh>(null);
@@ -62,6 +71,7 @@ function BattleScene({ degraded, radarColor }: { degraded: boolean, radarColor: 
 export default function BattleView({ degraded, radarColor }: { degraded: boolean, radarColor: string }) {
   return (
     <div className="absolute bottom-4 left-4 w-[280px] h-[180px] border border-slate-700 bg-slate-900/90 shadow-2xl z-20 flex flex-col pointer-events-none panel">
+      {DEMO_MOCK && <DemoMockBanner note="synthetic threat animation" />}
       <div className="bg-slate-800 text-[10px] px-2 py-1 text-slate-300 font-bold font-mono border-b border-slate-700 flex justify-between items-center">
         <span className="tracking-wider">TACTICAL BATTLEVIEW</span>
         <div className="flex items-center gap-1">
