@@ -143,12 +143,15 @@ function MaintainerApp() {
           </div>
         </div>
 
-        {/* Right: per-asset detail cards */}
+        {/* Right: per-asset detail cards. isLoading is threaded so each
+            panel shows a syncing state on cold start instead of flashing
+            its genuinely-empty copy before the where-filtered shape has
+            completed its first sync. */}
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
-          <CmStateCard cm={cmState} />
-          <LogisticsStatusCard logistics={logiState} />
-          <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} />
-          <AlertFeed events={events.data} />
+          <CmStateCard cm={cmState} isLoading={cm.isLoading} />
+          <LogisticsStatusCard logistics={logiState} isLoading={logistics.isLoading} />
+          <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} isLoading={telemetry.isLoading} />
+          <AlertFeed events={events.data} isLoading={events.isLoading} />
           <Inventory />
         </div>
       </main>

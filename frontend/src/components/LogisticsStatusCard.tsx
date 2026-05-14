@@ -8,6 +8,7 @@
 // view.
 import { Fuel } from 'lucide-react';
 import type { LogisticsStatus, ConstrainingFactor } from '../hooks';
+import { SyncingNotice } from './SyncingNotice';
 
 export function severityBadge(sev: string | undefined): { label: string; cls: string } {
   switch (sev) {
@@ -61,7 +62,7 @@ function FactorRow({ factor }: { factor: ConstrainingFactor }) {
   );
 }
 
-export default function LogisticsStatusCard({ logistics }: { logistics: LogisticsStatus | null }) {
+export default function LogisticsStatusCard({ logistics, isLoading = false }: { logistics: LogisticsStatus | null; isLoading?: boolean }) {
   const badge = severityBadge(logistics?.overall_severity);
   const factors = logistics?.constraining_factors ?? [];
 
@@ -71,13 +72,17 @@ export default function LogisticsStatusCard({ logistics }: { logistics: Logistic
         <Fuel className="w-4 h-4 mr-2" /> Logistics Status
       </h2>
 
-      {!logistics && (
+      {/* syncing -> genuinely empty -> data; the syncing state must never
+          fall through to the empty copy (cold-start race). */}
+      {isLoading && <SyncingNotice label="Syncing logistics state…" />}
+
+      {!isLoading && !logistics && (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
           No logistics state for this asset yet.
         </div>
       )}
 
-      {logistics && (
+      {!isLoading && logistics && (
         <>
           <div className="flex items-center justify-between mb-2">
             <span className={`text-xs font-bold px-2 py-0.5 rounded-sm border ${badge.cls}`}>

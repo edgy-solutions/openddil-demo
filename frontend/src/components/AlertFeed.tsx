@@ -7,6 +7,7 @@
 // type, subject, severity, time.
 import { AlertTriangle } from 'lucide-react';
 import type { TacticalEvent } from '../hooks';
+import { SyncingNotice } from './SyncingNotice';
 
 // Map a CloudEvent's best-effort severity string to a feed colour.
 function severityColors(severity: string | null): string {
@@ -34,19 +35,22 @@ function formatTime(iso: string): string {
     : d.toLocaleTimeString('en-US', { hour12: false });
 }
 
-export default function AlertFeed({ events }: { events: TacticalEvent[] }) {
+export default function AlertFeed({ events, isLoading = false }: { events: TacticalEvent[]; isLoading?: boolean }) {
   return (
     <div className="panel flex-1 flex flex-col min-h-[150px] p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center">
         <AlertTriangle className="w-4 h-4 mr-2" /> Tactical Event Feed
       </h2>
       <div className="flex-1 overflow-y-auto space-y-2 text-xs font-mono pr-2">
-        {events.length === 0 && (
+        {/* syncing -> genuinely empty -> events; syncing never falls
+            through to the empty copy (cold-start race). */}
+        {isLoading && <SyncingNotice label="Syncing events…" />}
+        {!isLoading && events.length === 0 && (
           <div className="text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
             No tactical events. Awaiting CM / logistics transitions.
           </div>
         )}
-        {events.map((e) => (
+        {!isLoading && events.map((e) => (
           <div key={e.id} className={`p-2 border-l-2 text-xs mb-2 transition-all ${severityColors(e.severity)}`}>
             <div className="flex justify-between">
               <span className="font-bold">{shortType(e.type)}</span>

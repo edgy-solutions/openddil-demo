@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { ShieldAlert, ChevronRight } from 'lucide-react';
 import type { CmState } from '../hooks';
+import { SyncingNotice } from './SyncingNotice';
 
 export function cmStatusBadge(status: string | undefined): { label: string; cls: string } {
   switch (status) {
@@ -28,7 +29,7 @@ function lifecycleLabel(lifecycle: string): string {
   return lifecycle.replace(/^LIFECYCLE_/, '');
 }
 
-export default function CmStateCard({ cm }: { cm: CmState | null }) {
+export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | null; isLoading?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const badge = cmStatusBadge(cm?.overall_status);
   const discrepancies = cm?.discrepancies ?? [];
@@ -41,13 +42,18 @@ export default function CmStateCard({ cm }: { cm: CmState | null }) {
         <ShieldAlert className="w-4 h-4 mr-2" /> Configuration Management
       </h2>
 
-      {!cm && (
+      {/* Three states: syncing (first sync not complete) -> genuinely
+          empty (synced, zero rows) -> data. The syncing state must never
+          fall through to the empty copy — see SyncingNotice. */}
+      {isLoading && <SyncingNotice label="Syncing CM state…" />}
+
+      {!isLoading && !cm && (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
           No CM state for this asset yet.
         </div>
       )}
 
-      {cm && (
+      {!isLoading && cm && (
         <>
           <div className="flex items-center justify-between mb-2">
             <span className={`text-xs font-bold px-2 py-0.5 rounded-sm border ${badge.cls}`}>

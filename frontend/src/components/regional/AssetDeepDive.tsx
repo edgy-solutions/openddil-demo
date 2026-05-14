@@ -48,9 +48,11 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
         </button>
       </div>
 
-      <CmStateCard cm={cm.data[0] ?? null} />
-      <LogisticsStatusCard logistics={logistics.data[0] ?? null} />
-      <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={false} />
+      {/* isLoading threaded so the panels show a syncing state on cold
+          start rather than flashing the genuinely-empty copy. */}
+      <CmStateCard cm={cm.data[0] ?? null} isLoading={cm.isLoading} />
+      <LogisticsStatusCard logistics={logistics.data[0] ?? null} isLoading={logistics.isLoading} />
+      <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={false} isLoading={telemetry.isLoading} />
     </div>
   );
 }

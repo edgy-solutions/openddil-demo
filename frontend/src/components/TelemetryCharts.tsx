@@ -15,6 +15,7 @@ import { Activity } from 'lucide-react';
 import { Chart, registerables } from 'chart.js';
 import type { TelemetryLatest, Quantity } from '../hooks';
 import { platformChartConfig, type ChartField } from '../config/platformChartConfig';
+import { SyncingNotice } from './SyncingNotice';
 
 Chart.register(...registerables);
 Chart.defaults.color = '#64748b';
@@ -51,9 +52,11 @@ interface TelemetryChartsProps {
   telemetry: TelemetryLatest | null;
   platformVariant: string | null;
   degraded: boolean;
+  /** Telemetry shape's first sync not yet complete (cold-start). */
+  isLoading?: boolean;
 }
 
-export default function TelemetryCharts({ telemetry, platformVariant, degraded }: TelemetryChartsProps) {
+export default function TelemetryCharts({ telemetry, platformVariant, degraded, isLoading = false }: TelemetryChartsProps) {
   const config = platformChartConfig(platformVariant);
   const sustainment = telemetry?.sustainment ?? null;
   const hasSustainment =
@@ -131,7 +134,12 @@ export default function TelemetryCharts({ telemetry, platformVariant, degraded }
         <Activity className="w-4 h-4 mr-2" /> Prognostics &amp; Telemetry
       </h2>
 
-      {!hasSustainment && (
+      {/* syncing -> (synced, no sustainment) -> charts. The syncing
+          state must never fall through to the "no sustainment" copy
+          (cold-start race). */}
+      {isLoading && <SyncingNotice label="Syncing telemetry…" />}
+
+      {!isLoading && !hasSustainment && (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-3 rounded-sm">
           No sustainment telemetry yet — derived prognostics from kinematic
           history are not yet wired for DIS-sourced assets. Measured
@@ -140,7 +148,7 @@ export default function TelemetryCharts({ telemetry, platformVariant, degraded }
         </div>
       )}
 
-      {hasSustainment && config.fields.map((field, idx) => {
+      {!isLoading && hasSustainment && config.fields.map((field, idx) => {
         const q = readQuantity(sustainment, field);
         const val = q?.value ?? 0;
         const unit = q?.unit ?? '';

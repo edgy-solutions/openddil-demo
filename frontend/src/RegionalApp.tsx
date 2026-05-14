@@ -183,7 +183,7 @@ export default function RegionalApp() {
                     <option value="MAJOR">Major</option>
                   </select>
                 </div>
-                <AlertFeed events={filteredEvents} />
+                <AlertFeed events={filteredEvents} isLoading={events.isLoading} />
               </div>
             </div>
           )}
