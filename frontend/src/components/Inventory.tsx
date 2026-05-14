@@ -19,14 +19,17 @@ function InitialLoadSpinner() {
 
 function InventoryTable({ rows }: { rows: any[] }) {
   const items = rows && rows.length > 0 ? rows : [
-    { id: "1", name: "Coolant Pumps", available_count: 0, max_capacity: 10 },
-    { id: "2", name: "T/R Modules", available_count: 14, max_capacity: 30 }
+    { id: "1", name: "Coolant Pumps", available_count: 0, allocated_count: 10 },
+    { id: "2", name: "T/R Modules", available_count: 14, allocated_count: 16 }
   ];
 
   return (
     <div className="space-y-3 mt-3">
         {items.map((item: any) => {
-           const max = item.max_capacity || 100;
+           // Total capacity = everything that exists of this item, on hand or
+           // out. The inventory_items schema has no max_capacity column
+           // (Phase 4a decision); available + allocated is the honest total.
+           const max = (item.available_count + item.allocated_count) || 1;
            const pct = Math.min(100, Math.max(0, (item.available_count / max) * 100));
            const isCritical = item.available_count === 0;
            

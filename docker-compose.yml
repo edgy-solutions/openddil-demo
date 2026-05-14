@@ -185,6 +185,60 @@ services:
       POSTGRES_DB: openddil
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d openddil"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: apply the canonical Atlas schema to postgres-hq, then create
+  # the ElectricSQL publication. Runs after postgres-hq is healthy; exits 0
+  # on success. Without this, postgres-hq comes up with zero tables and
+  # every downstream consumer (Electric, projector, UI shapes) silently
+  # fails. The schema lives in openddil-stack/ (single canonical location);
+  # `migrations/` is committed alongside it.
+  atlas-init:
+    image: arigaio/atlas:latest
+    container_name: openddil-demo-atlas-init
+    depends_on:
+      postgres-hq:
+        condition: service_healthy
+    volumes:
+      - ../openddil-stack/schema:/schema:ro
+    # The arigaio/atlas image has no shell — `atlas` is the entrypoint, so
+    # `command:` carries only the subcommand args. Matches the atlas-init
+    # block in openddil-stack/docker-compose.yml.
+    command:
+      - "migrate"
+      - "apply"
+      - "--dir"
+      - "file:///schema/migrations"
+      - "--url"
+      - "postgres://postgres:password@postgres-hq:5432/openddil?sslmode=disable"
+    restart: "no"
+
+  # Postgres-side ElectricSQL setup: creates the publication that the
+  # electric-sync service reads. Runs after atlas-init has created the
+  # tables. Separate from atlas-init because Atlas owns DDL; this owns
+  # publications/replication-role grants.
+  electric-publish-init:
+    image: postgres:15
+    container_name: openddil-demo-electric-publish-init
+    depends_on:
+      atlas-init:
+        condition: service_completed_successfully
+    volumes:
+      - ../openddil-stack/electric:/electric:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "[electric-publish-init] applying publication..."
+        PGPASSWORD=password psql -v ON_ERROR_STOP=1 \
+          -h postgres-hq -U postgres -d openddil \
+          -f /electric/electrify.sql
+        echo "[electric-publish-init] publication ready"
+    restart: "no"
 
   electric-sync:
     image: electricsql/electric:latest
@@ -194,10 +248,21 @@ services:
       AUTH_JWT_ALG: HS256
       AUTH_JWT_KEY: "secret"
       ELECTRIC_INSECURE: "true"
+      # ElectricSQL defaults to binding port 3000 inside the container. The
+      # host port mapping below assumes it listens on 5133 — set the bind
+      # port explicitly so the two agree. The env var is ELECTRIC_PORT (not
+      # PORT — confirmed against the image's own healthcheck,
+      # `curl http://localhost:${ELECTRIC_PORT-3000}/v1/health`). Phase 4a
+      # fix; previously the 5133->5133 mapping pointed at nothing and every
+      # shape request died as "Empty reply from server."
+      ELECTRIC_PORT: "5133"
     ports:
       - "5133:5133"
     depends_on:
-      - postgres-hq
+      postgres-hq:
+        condition: service_healthy
+      electric-publish-init:
+        condition: service_completed_successfully
 
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:latest
@@ -431,6 +496,45 @@ services:
       restate-server:
         condition: service_started
     restart: "no"
+
+  # =============================================================================
+  # Projector (Phase 4a, ADR-0016)
+  # =============================================================================
+  # Single generic Kafka -> Postgres projector. Consumes the per-asset
+  # pipeline topics (asset-cm-state, asset-logistics-status,
+  # telemetry-latest-state, tactical-events, asset-telemetry-windows) and
+  # UPSERTs them into the Postgres read-model tables that ElectricSQL
+  # exposes as Shapes to the UI. One service, many subscriptions.
+  #
+  # Depends on atlas-init: the read-model tables must exist before the
+  # projector can write them.
+  openddil-projector:
+    image: ghcr.io/edgy-solutions/openddil/projector:latest
+    pull_policy: always
+    container_name: openddil-demo-projector
+    environment:
+      KAFKA_BROKERS:       redpanda-edge:9092
+      POSTGRES_DSN:        postgres://postgres:password@postgres-hq:5432/openddil
+      METRICS_PORT:        "8084"
+      RATE_LIMIT_PER_SEC:  "10"
+      LOG_LEVEL:           INFO
+      PYTHONPATH:          /proto:/app/src
+    volumes:
+      # Generated proto stubs — mounted from the contracts repo, same
+      # pattern as cm-service and logistics-fusion-service.
+      - ../openddil-contracts/gen/python:/proto:ro
+    ports:
+      - "8084:8084"   # Prometheus metrics
+    depends_on:
+      redpanda-edge:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres-hq:
+        condition: service_healthy
+      atlas-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   frontend:
     image: ghcr.io/edgy-solutions/openddil/frontend:latest

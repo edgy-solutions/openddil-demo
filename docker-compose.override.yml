@@ -94,3 +94,16 @@ services:
       # Ontology lookup — read-only. Bloblang resolves DIS entity type triples here.
       # Update openddil-contracts/ontology/dis_entity_types.yaml to add new platform types.
       - ../openddil-contracts/ontology:/ontology:ro
+
+  # --------------------------------------------------------------------------
+  # Projector — local build + source mount for hot-reload (Phase 4a)
+  # --------------------------------------------------------------------------
+  openddil-projector:
+    build:
+      context: ../openddil-projector
+      dockerfile: Dockerfile
+    pull_policy: build
+    volumes:
+      # Source mount for hot-reload (overrides the COPY'd /app/src). The
+      # generated proto stubs at /proto come from the base-compose mount.
+      - ../openddil-projector/src:/app/src
