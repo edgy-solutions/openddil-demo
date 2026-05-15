@@ -133,6 +133,8 @@ def build_entity_state_pdu(
     extra: int = 0,
     force_id: int = 1,
     marking: str = "TEST-01",
+    location_ecef: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    orientation_psi_theta_phi: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> bytes:
     """
     Hand-roll a minimal v7 Entity State PDU compatible with what
@@ -190,10 +192,10 @@ def build_entity_state_pdu(
     buf += b"\x00" * 8
     # EntityLinearVelocity (3 floats = 12 bytes)
     buf += struct.pack(">fff", 0.0, 0.0, 0.0)
-    # EntityLocation (3 doubles = 24 bytes)
-    buf += struct.pack(">ddd", 0.0, 0.0, 0.0)
-    # EntityOrientation (3 floats = 12 bytes)
-    buf += struct.pack(">fff", 0.0, 0.0, 0.0)
+    # EntityLocation (3 doubles = 24 bytes) — ECEF metres
+    buf += struct.pack(">ddd", *location_ecef)
+    # EntityOrientation (3 floats = 12 bytes) — psi, theta, phi in radians
+    buf += struct.pack(">fff", *orientation_psi_theta_phi)
     # EntityAppearance (4 bytes)
     buf += struct.pack(">I", 0)
     # DeadReckoningParameters (40 bytes total: algo + 15 params + 3f + 3f)
@@ -463,6 +465,21 @@ def sensor_alive() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Readiness-gate principle (Phase 5 lesson — applies any time a test asks
+# "is this engine running?"):
+#   Gate on a signal that is true AT ENGINE STARTUP, NOT on a signal that
+#   only becomes true after the engine has done its job. Output-existence
+#   ("does the output topic have records?") is a result, not a readiness,
+#   signal — it skips the test before the engine can produce. Reliable
+#   startup-time signals: consumer-group membership Stable, changelog-topic
+#   creation (Faust creates these at Table init), container `running`
+#   status, an HTTP health endpoint. test_35 had a chicken-and-egg gate on
+#   `derived-sustainment` existing; fixed by keying on the engine's
+#   changelog topic instead. `wait_for_pipeline_ready` below is the
+#   canonical pattern — keys on consumer groups being Stable.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Pipeline warm-up gate
 # ---------------------------------------------------------------------------
 # Consumer groups the OSS hero-scenario tests depend on. Until each is present
@@ -474,14 +491,21 @@ def sensor_alive() -> bool:
 #   connect-dis-mapper    redpanda-connect: ingress-dis-raw -> raw-sensor-stream
 #   cm-service-silver     cm-service Restate sub: raw-sensor-stream -> AssetCM
 #   cm-service-cm-events  cm-service Restate sub: cm-events        -> AssetCM
+#   fusion-service-derived  logistics-fusion Restate sub: derived-sustainment
+#                           -> AssetLogistics (Phase 5 step 2; needed for the
+#                           cross-tying integration test which drives DIS-only
+#                           assets through to logistics-status — without this
+#                           subscription Stable, the integration test would
+#                           race fusion's startup)
 #
-# logistics-fusion's groups (fusion-service-*) are intentionally NOT gated
-# here: the OSS runner never drives them — they need the sim-a / proprietary
-# feeds that live in the customer overlay.
+# logistics-fusion's other groups (fusion-service-windows, -cm-state, -silver)
+# are intentionally NOT gated here: the OSS runner never drives them — they
+# need the sim-a / proprietary feeds that live in the customer overlay.
 _REQUIRED_GROUPS = (
     "connect-dis-mapper",
     "cm-service-silver",
     "cm-service-cm-events",
+    "fusion-service-derived",
 )
 
 

@@ -73,23 +73,149 @@ Each test exits with code `0` on PASS and `1` on FAIL, printing a single
 
 ## Tracked follow-ups
 
-Open items deliberately scoped *out* of the phase that introduced them.
+**Canonical home for open items deliberately scoped *out* of the phase
+that introduced them.** Cross-domain (tests, engine, COP) — kept in one
+place so a future reader has *one* file to audit. If you're adding an
+item: add it here, even if it isn't a test-runner item.
 
-- **Run the Playwright suite (tests 29–34) in an environment with Chromium.**
-  Added in Phase 4d. They have only ever been verified to *SKIP* cleanly
-  (no browser in the dev environment) — never executed. A never-run test
-  can have a wrong selector or timeout and still look fine. Until a real
-  run (CI or a local box with `playwright install chromium`) passes, the
-  Playwright suite is written, not a verified safety net. Tests 32/33
-  especially — the toxiproxy-sever / freeze-overlay assertions — need a
-  real run to count.
-- **Make `consume_asset_cm_state_for` poll-until-applied.**
-  `test_13_mod_compliance_flow` is a pre-existing timing flake: it submits a
-  `ModApplied` CmEvent via the CLI, `sleep(5)`s, then consumes a single
-  `asset-cm-state` snapshot. Under full-suite load the
-  CLI→Kafka→Restate→cm-service→emit chain can outrun the sleep, so the
-  snapshot is pre-apply (`state=2`, not `4`). It passes on isolated re-run.
-  The Phase 4d warm-up gate does *not* fix this — it addresses
-  consumer-group readiness, a different flake class. Fix:
-  `consume_asset_cm_state_for` should poll until the expected state appears
-  (or timeout), not sleep-then-snapshot.
+### Tests
+
+1. **Run the Playwright suite (tests 29–34) in an environment with Chromium.**
+   Phase 4d. They have only ever been verified to *SKIP* cleanly (no
+   browser in the dev environment) — never executed. A never-run test
+   can have a wrong selector or timeout and still look fine. Until a
+   real run (CI or a local box with `playwright install chromium`)
+   passes, the Playwright suite is written, not a verified safety net.
+   Tests 32/33 especially — the toxiproxy-sever / freeze-overlay
+   assertions — need a real run to count.
+2. **Make `consume_asset_cm_state_for` poll-until-applied.**
+   `test_13_mod_compliance_flow` is a pre-existing timing flake: submits
+   a `ModApplied` CmEvent via the CLI, `sleep(5)`s, then consumes a
+   single `asset-cm-state` snapshot. Under full-suite load the
+   CLI→Kafka→Restate→cm-service→emit chain can outrun the sleep, so the
+   snapshot is pre-apply (`state=2`, not `4`). Passes on isolated re-run.
+   Phase 4d's warm-up gate does *not* fix this — it addresses
+   consumer-group readiness, a different flake class. Fix: poll until
+   the expected state appears (or timeout), not sleep-then-snapshot.
+3. **customer-overlay four-shape parametric test for the Unit feed.** Phase 5
+   build pass. The customer-overlay re-plumb verified one *stationary* sample
+   each of Unit and Sensor; it never exercised: a moving asset (non-zero
+   speed/heading — validates the LLM-inferred `m/s` / `deg` units
+   end-to-end), a Red-side asset (`side: "red"` → `FORCE_OPPOSING`),
+   a different `id` / `platform_type` (proves the alias/ontology paths
+   aren't accidentally hard-coded to IRON-01 / SHORAD_Radar), and a
+   `unitNumber`-only variant (no `id`, currently DLQ — confirm intent).
+   **Until this closes, customer-overlay's kinematics are NOT cleared as Phase 5
+   derivation input** (DIS sims are the step-zero feed; this is a
+   gating-but-not-blocking item for customer-overlay → engine wiring).
+
+### Engine (Phase 5 prognostics)
+
+4. **Barrel-life is built but dormant pending Fire/Detonation PDU
+   ingestion.** The model has the shape and passes unit tests;
+   `_derive_barrel_life` correctly returns `None` while
+   `state.rounds_fired == 0`. The wiring side of this — DIS sidecar
+   extension to ingest Fire/Detonation PDUs, new Bloblang mapping, the
+   `prognostics.accumulators.record_round_fired()` call — is **scoped as
+   a separate future phase**, not a Phase 5 tail; see
+   [Future phases](#future-phases) below. The follow-up here is the
+   *code-level placeholder* that keeps the dormancy visible to future
+   readers; the future phase is the work that closes the dormancy.
+   `test_38_prognostics_barrel_life_dormant` asserts the dormancy on
+   every run so a clean test suite cannot hide it.
+5. **Find or define an engine-on signal; replace the observed-time
+   stand-in.** Phase 5's engine-hours model uses *observed time* (first
+   to last sample) as a stand-in — a deliberate overestimate that
+   counts parked-but-visible time. Honest enough for the mechanism
+   demo (ADR-0020 names it explicitly in the demo narrative), but it
+   needs a real engine-on signal before any operational claim about
+   engine hours can be made. Candidates: a DIS protocol extension, a
+   sim-side flag in a future feed, or a derivable proxy (e.g.
+   non-zero linear/angular velocity over a window).
+
+### COP / consumers
+
+6. **Surface derived sustainment in the COP** *(post-hierarchy pass)*.
+   ADR-0020 originally ruled the COP surface for derived sustainment
+   OUT of Phase 5 scope. **Phase 5 step 2 landed two of the four
+   pieces:** the `logistics-fusion-service` subscription
+   (`fusion-service-derived` consuming `derived-sustainment` → routed to
+   `AssetLogistics/on_derived_sustainment`), and the small `_eval_wear`
+   enhancement (reads `remaining_useful_life.unit == "%"`, stamps
+   `origin = ORIGIN_DERIVED` on the resulting `ConstrainingFactor` from
+   `sustainment.value_provenance["*"]`). `test_39` verifies both
+   end-to-end. **What remains for the COP-surface pass:** the projector
+   mapping that exposes `derived-sustainment` on the COP surface, and
+   the measured-vs-derived rendering treatment (ADR-0017 honesty
+   extended to derived data — distinct visual treatment so consumers
+   can never mistake derived for measured). The remainder comes *after*
+   hierarchical restoration per ADR-0022 sequencing.
+
+## Future phases
+
+**Distinct category from tracked follow-ups.** Follow-ups are code-level
+placeholders or small forward-looking enhancements; future phases are
+larger blocks of work with their own scope, their own dependencies, and
+their own demonstration story. Listed here so a future reader does not
+mistake them for "small things we forgot to finish."
+
+### Fire/Detonation + barrel-life activation
+
+Activates follow-up #4 (the dormant `wear.barrel` model). New work
+spanning:
+
+- the DIS sidecar (`dis_ingestor.py`): extend the PDU-type allowlist
+  beyond Entity State to include Fire (type 2) and Detonation (type 3),
+- a new Bloblang mapping (`sim-dis-mapping.yaml`): Fire/Detonation case
+  emitting onto `raw-sensor-stream` (or a sibling topic) in a shape the
+  prognostics engine can consume,
+- the prognostics engine: route the round-fired event through
+  `accumulators.record_round_fired()` — that single call activates the
+  dormant model end-to-end.
+
+**Blocked on**: customer ammo / shot / round-fired message inventory.
+Before this phase can be scoped, we need to know what the customer's
+ammo message actually looks like — payload shape, timing semantics, what
+counts as a "round" vs. an "event," whether entity-id correlation
+matches DIS. Without that input the DIS-side work would be built against
+an LLM-reconstructed sample — repeating the customer-overlay / Sensor mistake
+(see `feedback_artifact_provenance` — "wire outranks schema").
+
+**What this phase would deliver**: an active `wear.barrel` model
+emitting on `derived-sustainment`, a flight test asserting non-empty
+barrel-life for a fired entity, and the same `origin = ORIGIN_DERIVED`
+`ConstrainingFactor` treatment that Phase 5 step 2 established for the
+kinematics-only wear models. `test_38_prognostics_barrel_life_dormant`
+gets inverted to `_active`.
+
+## Phase 5 close note
+
+For the demo narrative when stakeholders are walked through it.
+
+**Phase 5 closed at step 2.** The demo claims: a derivation engine is
+wired end-to-end on the three kinematics-derivable wear models — track
+(from cumulative distance), engine (from observed time), suspension
+(from terrain integral). Kinematic-only assets that previously showed an
+empty prognostics panel now produce live `derived-sustainment` events;
+`logistics-fusion-service` consumes them through the new
+`fusion-service-derived` subscription, the `_eval_wear` percent-aware
+branch evaluates them, and the resulting `asset-logistics-status`
+updates carry `ConstrainingFactor`s stamped `origin = ORIGIN_DERIVED`
+structurally — the contract that keeps measured-vs-derived visible to
+any downstream consumer. The demo does **not** claim that the derived
+values are accurate, that engine-hours reflects engine-on time (it is
+observed time — a deliberate overestimate, named in ADR-0020), that
+barrel-life is active (the model is built but dormant pending
+Fire/Detonation PDU ingestion — promoted to its own future phase,
+blocked on customer ammo-message inventory), or that the coefficient
+values represent real platform life (defaults in `coefficients.py` are
+honest-authored at order-of-magnitude reasonable values; the demo
+overrides via `PROGNOSTICS_*` env vars in
+`docker-compose.override.yml` to compressed values so a few-km /
+few-minute scenario actually crosses thresholds — *the compressed
+values are sized so the demo shows the engine working, not estimates
+of real platform life*). Severity stamps on derived factors are real
+arithmetic against actual kinematics; they are not validated
+assessments of asset condition. The `ORIGIN_DERIVED` marker is the
+contract that protects the distinction at every consumer boundary
+downstream.

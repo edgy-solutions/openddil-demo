@@ -319,6 +319,7 @@ def consume_asset_logistics_updates(
     asset even when the topic is hot with cadenced updates for other assets.
     """
     from openddil.logistics.v1 import logistics_status_pb2 as ls
+    from openddil.telemetry.v1 import telemetry_pb2 as tel
 
     records = consume_topic_recent(
         "asset-logistics-status",
@@ -348,6 +349,8 @@ def consume_asset_logistics_updates(
                 "factor_id":   f.factor_id,
                 "severity":    ls.LogisticsSeverity.Name(f.severity),
                 "description": f.description,
+                "origin":      tel.Origin.Name(f.origin),
+                "confidence":  f.confidence,
             } for f in upd.status.constraining_factors],
         })
     return out

@@ -49,9 +49,30 @@ services:
       # Local code mounts for hot-reloading during development
       - ../openddil-tactical-agents/edge/faust_edge.py:/app/faust_edge.py
       - ../openddil-tactical-agents/edge/detection:/app/detection
+      # Phase 5: prognostics derivation engine package (ADR-0020). Mounted
+      # alongside detection/ — the one-line register call in faust_edge.py
+      # imports it. Only agent.py inside this package imports faust.
+      - ../openddil-tactical-agents/edge/prognostics:/app/prognostics
       - ../openddil-contracts/gen/python/openddil:/app/openddil
       - ../openddil-contracts/gen/python/google:/app/google
       - ../openddil-tactical-agents/edge/rules.yaml:/app/rules.yaml
+    environment:
+      # Phase 5 demo visibility-tuning. The honest-authored defaults live
+      # in openddil-tactical-agents/edge/prognostics/coefficients.py
+      # (5000 km / 5000 h / 1000 rounds / 100000 deg·km) — order-of-magnitude
+      # reasonable for real tracked vehicles. The values below override them
+      # so a few-km / few-minute scripted scenario actually crosses fusion's
+      # wear thresholds and produces real constraining factors; without the
+      # override the demo would show 100%-remaining for every model and
+      # nothing severity-driven would happen. Rationale + framing: see
+      # ADR-0020 "Methodology placeholders to name out loud" → "Coefficients
+      # are compressed in the demo deployment for visibility." Different
+      # artifacts for different purposes: the contract stays honest, the
+      # demo stays visible.
+      PROGNOSTICS_TRACK_LIFE_TOTAL_KM:     "10"
+      PROGNOSTICS_ENGINE_LIFE_TOTAL_HOURS: "1"
+      PROGNOSTICS_TERRAIN_TOTAL_DEG_KM:    "50"
+      PROGNOSTICS_BARREL_LIFE_TOTAL_ROUNDS: "100"
 
   # --------------------------------------------------------------------------
   # CM service — local build + mount source for hot-reload + CLI helper
