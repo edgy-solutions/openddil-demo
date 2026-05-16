@@ -151,6 +151,25 @@ item: add it here, even if it isn't a test-runner item.
    can never mistake derived for measured). The remainder comes *after*
    hierarchical restoration per ADR-0022 sequencing.
 
+7. **Restore per-asset 3D model rendering in regional / HQ / zoom-in
+   views.** Phase 4c removed `AssetSpawner` (the GLB-model renderer)
+   when the simulator plumbing was deleted; the regional and HQ 3D maps
+   currently render every asset as a status-colored sphere (a "dome"
+   from the top-down camera). The `DdilNetworkLink` comm lines and
+   `LogisticsHubNode` markers survived; the per-platform tank / radar /
+   launcher / UGV silhouettes did not. The status badges that used to
+   float on lines above each asset are also gone. **When this work
+   lands, the deliverable starts with a survey** — exactly which models
+   disappeared, where they were rendered (regional map / HQ theater /
+   AssetDeepDive zoom-in / floating status labels), why each was
+   removed, and what's still wired vs. what needs reconstruction.
+   User-provided GLBs go in `frontend/public/models/`; loader is
+   `@react-three/drei`'s `useGLTF` with `<Suspense>` boundaries.
+   Status-color treatment likely lives on an emissive base ring under
+   each model rather than recoloring baked GLB materials. Eye-candy
+   pass (2026-05-15) deliberately left this out as "model fidelity,"
+   not "frame parity."
+
 ## Future phases
 
 **Distinct category from tracked follow-ups.** Follow-ups are code-level

@@ -8,13 +8,13 @@
 // fleet-wide tactical event feed with a severity filter. Picking an asset
 // (here or in the 3D map) opens AssetDeepDive.
 //
-// The 3D RegionalBattleView is kept but DEMO_MOCK (synthetic theater
-// positions — real geo projection deferred). The link toggles + regional
+// The 3D RegionalSustainmentPosture is kept but DEMO_MOCK (synthetic
+// theater positions — real geo projection deferred). The link toggles + regional
 // buffer are UI demo mechanics — see the Phase 4c checkpoint finding on
 // the DDIL link/buffer wiring.
 import { useState, useEffect, useMemo } from 'react';
 import RegionalHeader from './components/regional/RegionalHeader';
-import RegionalBattleView from './components/regional/RegionalBattleView';
+import RegionalSustainmentPosture from './components/regional/RegionalSustainmentPosture';
 import WorkOrders from './components/regional/WorkOrders';
 import TacticalRuleBuilder from './components/regional/TacticalRuleBuilder';
 import AssetDeepDive from './components/regional/AssetDeepDive';
@@ -149,7 +149,7 @@ export default function RegionalApp() {
       />
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
-        <RegionalBattleView
+        <RegionalSustainmentPosture
           link1={link1}
           selectedAssetId={selectedAssetId}
           onAssetSelect={(id) => setSelectedAssetId(id)}

@@ -24,7 +24,7 @@ export interface ChartField {
 }
 
 export interface PlatformChartConfig {
-  /** coarse class for 3D-view routing (LtamdsView vs DiagnosticCanvas). */
+  /** coarse class for 3D-view routing (SensorArrayView vs DiagnosticCanvas). */
   assetClass: 'RADAR' | 'GROUND' | 'AIR' | 'UGV' | 'UNKNOWN';
   fields: ChartField[];
 }

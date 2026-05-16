@@ -15,7 +15,7 @@
 // freeze overlay shows when the link is genuinely severed.
 import { useState, useMemo } from 'react';
 import HqHeader from './components/hq/HqHeader';
-import HqBattleView from './components/hq/HqBattleView';
+import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
 import HqWorkOrders from './components/hq/HqWorkOrders';
 import { AlertOctagon } from 'lucide-react';
@@ -184,7 +184,7 @@ export default function HqApp() {
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden relative z-0">
         {/* One real hq-link: severed => 0 up / 1 down, else 1 up / 0 down. */}
-        <HqBattleView wanActive={!severed} linksUp={severed ? 0 : 1} linksDown={severed ? 1 : 0} />
+        <TheaterReadinessPosture wanActive={!severed} linksUp={severed ? 0 : 1} linksDown={severed ? 1 : 0} />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
           <FleetReadiness cm={cm.data} logistics={logistics.data} />

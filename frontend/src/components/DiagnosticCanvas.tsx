@@ -1,61 +1,30 @@
 // =============================================================================
-// DiagnosticCanvas — 3D asset X-ray schematics (Stryker / HIMARS / UGV / radar)
+// DiagnosticCanvas — 3D asset diagnostic schematics (maintainer-tier view)
 // =============================================================================
-// DEMO_MOCK: useful maintainer-view mockups, not yet wired to real data.
-// The RADAR branch delegates to LtamdsView (which carries its own banner);
-// the other branches render synthetic 3D schematics with no data input.
-// Full rewiring to the pipeline's per-platform telemetry is future work
-// once schemas for those platforms are flowing. See ADR-0017.
-import { useRef } from 'react';
+// Routes by assetType to the matching 3D schematic. Visual chrome (cyan
+// bezel, scanning-line drift, glitch-text headers) comes from HudFrame so
+// every maintainer-tier 3D surface reads as the same family.
+//
+// DEMO_MOCK: synthetic 3D schematics. None are wired to per-platform
+// telemetry yet — the RADAR branch delegates to SensorArrayView (which
+// carries its own banner via the LTAMDS config); the other branches
+// render synthetic schematics with no data input. Full rewiring to the
+// pipeline's per-platform telemetry is future work once schemas for
+// those platforms are flowing. See ADR-0017.
+import { useRef, useMemo } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { OrbitControls, RoundedBox } from '@react-three/drei';
 import * as THREE from 'three';
-import LtamdsView from './LtamdsView';
-import { DemoMockBanner } from './DemoMockBanner';
+import SensorArrayView, { LTAMDS_CONFIG } from './SensorArrayView';
+import HudFrame from './HudFrame';
 
 const DEMO_MOCK = true;
-
-export function RadarXRay({ degraded }: { degraded: boolean }) {
-    return (
-        <group scale={2.5} position={[0, 1.5, 0]}>
-            <mesh position={[0, 0, 0]}>
-                <boxGeometry args={[6, 3, 8]} />
-                <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
-                <lineSegments>
-                    <edgesGeometry args={[new THREE.BoxGeometry(6, 3, 8)]} />
-                    <lineBasicMaterial color={0x22d3ee} transparent opacity={0.3} />
-                </lineSegments>
-            </mesh>
-            <mesh position={[0, 3.5, 2]} rotation={[-Math.PI / 6, 0, 0]}>
-                <boxGeometry args={[6, 7, 1.5]} />
-                <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
-                <lineSegments>
-                    <edgesGeometry args={[new THREE.BoxGeometry(6, 7, 1.5)]} />
-                    <lineBasicMaterial color={0x22d3ee} transparent opacity={0.3} />
-                </lineSegments>
-            </mesh>
-            {/* Glowing dots on the face */}
-            <group position={[0, 3.5, 2]} rotation={[-Math.PI / 6, 0, 0]}>
-                <group position={[0, 0, 0.76]}>
-                    {Array.from({ length: 4 }).map((_, row) => (
-                        Array.from({ length: 4 }).map((_, col) => (
-                            <mesh key={`${row}-${col}`} position={[-1.5 + col * 1, -2 + row * 1.33, 0]}>
-                                <boxGeometry args={[0.4, 0.4, 0.05]} />
-                                <meshBasicMaterial color={degraded && row === 2 ? 0xef4444 : 0x10b981} transparent opacity={0.8} />
-                            </mesh>
-                        ))
-                    ))}
-                </group>
-            </group>
-        </group>
-    );
-}
 
 export function LaserShorad({ degraded }: { degraded: boolean }) {
     const coreRef = useRef<THREE.Group>(null);
     const indicatorRefs = useRef<THREE.Mesh[]>([]);
     indicatorRefs.current = [];
-    
+
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
         indicatorRefs.current.forEach((mesh, i) => {
@@ -79,7 +48,7 @@ export function LaserShorad({ degraded }: { degraded: boolean }) {
                 <cylinderGeometry args={[1.4, 1.4, 8, 32]} />
                 <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
             </mesh>
-            
+
             {/* Subtle Schematic Overlay */}
             <mesh position={[0, 0, 0]}>
                 <cylinderGeometry args={[1.41, 1.41, 8, 16]} />
@@ -95,10 +64,10 @@ export function LaserShorad({ degraded }: { degraded: boolean }) {
                         const x = Math.cos(angle) * 1.45;
                         const z = Math.sin(angle) * 1.45;
                         return (
-                            <mesh 
-                                key={`${row}-${col}`} 
-                                position={[x, y, z]} 
-                                rotation={[0, -angle + Math.PI/2, 0]}
+                            <mesh
+                                key={`${row}-${col}`}
+                                position={[x, y, z]}
+                                rotation={[0, -angle + Math.PI / 2, 0]}
                                 ref={(el) => { if (el) indicatorRefs.current.push(el); }}
                             >
                                 <boxGeometry args={[0.4, 0.4, 0.05]} />
@@ -117,7 +86,7 @@ export function Artillery({ degraded }: { degraded: boolean }) {
     const podRef = useRef<THREE.Group>(null);
     const indicatorRefs = useRef<THREE.Mesh[]>([]);
     indicatorRefs.current = [];
-    
+
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
         if (podRef.current) {
@@ -151,14 +120,14 @@ export function Artillery({ degraded }: { degraded: boolean }) {
                 <boxGeometry args={[4, 1, 4]} />
                 <meshStandardMaterial color={0x1e293b} metalness={0.7} roughness={0.3} />
             </mesh>
-            
+
             <group ref={podRef} position={[0, -1.5, 0]}>
                 {/* Solid Pod Form */}
                 <mesh position={[0, 2, 0]}>
                     <boxGeometry args={[4.5, 3.5, 7]} />
                     <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
                 </mesh>
-                
+
                 {/* Subtle Schematic Overlay */}
                 <mesh position={[0, 2, 0]}>
                     <boxGeometry args={[4.52, 3.52, 7.02]} />
@@ -170,12 +139,12 @@ export function Artillery({ degraded }: { degraded: boolean }) {
                     {[[-1, 0.8], [1, 0.8], [-1, 0], [1, 0], [-1, -0.8], [1, -0.8]].map((pos, i) => (
                         <group key={i} position={[pos[0], pos[1], 0]}>
                             {/* Outer tube ring */}
-                            <mesh rotation={[Math.PI/2, 0, 0]}>
+                            <mesh rotation={[Math.PI / 2, 0, 0]}>
                                 <cylinderGeometry args={[0.6, 0.6, 0.1, 16]} />
                                 <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
                             </mesh>
                             {/* Indicator element */}
-                            <mesh 
+                            <mesh
                                 position={[0, 0, 0.06]}
                                 ref={(el) => { if (el) indicatorRefs.current.push(el); }}
                             >
@@ -185,9 +154,9 @@ export function Artillery({ degraded }: { degraded: boolean }) {
                         </group>
                     ))}
                 </group>
-                
+
                 {/* Side Panels */}
-                <group position={[2.26, 2, 0]} rotation={[0, Math.PI/2, 0]}>
+                <group position={[2.26, 2, 0]} rotation={[0, Math.PI / 2, 0]}>
                     {Array.from({ length: 4 }).map((_, row) => (
                         Array.from({ length: 8 }).map((_, col) => (
                             <mesh key={`side-${row}-${col}`} position={[-2.5 + col * 0.7, -1 + row * 0.65, 0]}>
@@ -206,7 +175,7 @@ export function Quadruped({ degraded }: { degraded: boolean }) {
     const anomalyCoreRef = useRef<THREE.Mesh>(null);
     const indicatorRefs = useRef<THREE.Mesh[]>([]);
     indicatorRefs.current = [];
-    
+
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
         if (anomalyCoreRef.current) {
@@ -218,7 +187,7 @@ export function Quadruped({ degraded }: { degraded: boolean }) {
                 (anomalyCoreRef.current.material as THREE.MeshBasicMaterial).opacity = 0.8;
             }
         }
-        
+
         indicatorRefs.current.forEach((mesh, i) => {
             if (mesh) {
                 if (degraded && i % 5 === 0) {
@@ -241,7 +210,7 @@ export function Quadruped({ degraded }: { degraded: boolean }) {
     return (
         <group>
             {/* Torso Pod */}
-            <group position={[0, 3.5, 0]} rotation={[0, 0, Math.PI/2]}>
+            <group position={[0, 3.5, 0]} rotation={[0, 0, Math.PI / 2]}>
                 <mesh>
                     <capsuleGeometry args={[1.2, 3, 32, 32]} />
                     <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
@@ -256,11 +225,11 @@ export function Quadruped({ degraded }: { degraded: boolean }) {
             {/* Heat Map Grids (Subtle clusters near leg connections) */}
             {[-1.2, 1.2].map((x, i) => (
                 [-0.8, 0.8].map((z, j) => (
-                    <group key={`grid-${i}-${j}`} position={[x, 4.65, z]} rotation={[-Math.PI/2, 0, 0]}>
+                    <group key={`grid-${i}-${j}`} position={[x, 4.65, z]} rotation={[-Math.PI / 2, 0, 0]}>
                         {Array.from({ length: 2 }).map((_, row) => (
                             Array.from({ length: 3 }).map((_, col) => (
-                                <mesh 
-                                    key={`pad-${row}-${col}`} 
+                                <mesh
+                                    key={`pad-${row}-${col}`}
                                     position={[-0.2 + col * 0.2, -0.1 + row * 0.2, 0]}
                                     ref={(el) => { if (el) indicatorRefs.current.push(el); }}
                                 >
@@ -278,19 +247,19 @@ export function Quadruped({ degraded }: { degraded: boolean }) {
                 <group key={i} position={leg.pos as [number, number, number]}>
                     {/* Hip Motor */}
                     {leg.isAnomaly ? (
-                        <mesh ref={anomalyCoreRef} rotation={[Math.PI/2, 0, 0]}>
+                        <mesh ref={anomalyCoreRef} rotation={[Math.PI / 2, 0, 0]}>
                             <cylinderGeometry args={[0.4, 0.4, 0.6, 32]} />
                             <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} blending={THREE.AdditiveBlending} />
                         </mesh>
                     ) : (
-                        <mesh rotation={[Math.PI/2, 0, 0]}>
+                        <mesh rotation={[Math.PI / 2, 0, 0]}>
                             <cylinderGeometry args={[0.35, 0.35, 0.5, 32]} />
                             <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
                         </mesh>
                     )}
-                    
+
                     {/* Thigh */}
-                    <group rotation={[0, 0, -Math.PI/6]}>
+                    <group rotation={[0, 0, -Math.PI / 6]}>
                         <mesh position={[0, -0.8, 0]}>
                             <cylinderGeometry args={[0.2, 0.15, 1.6, 16]} />
                             <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
@@ -299,15 +268,15 @@ export function Quadruped({ degraded }: { degraded: boolean }) {
                             <cylinderGeometry args={[0.21, 0.16, 1.6, 8]} />
                             <meshBasicMaterial color={0x22d3ee} wireframe transparent opacity={0.15} />
                         </mesh>
-                        
+
                         {/* Knee Motor */}
-                        <mesh position={[0, -1.6, 0]} rotation={[Math.PI/2, 0, 0]}>
+                        <mesh position={[0, -1.6, 0]} rotation={[Math.PI / 2, 0, 0]}>
                             <cylinderGeometry args={[0.25, 0.25, 0.4, 32]} />
                             <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
                         </mesh>
 
                         {/* Shin */}
-                        <group position={[0, -1.6, 0]} rotation={[0, 0, Math.PI/6]}>
+                        <group position={[0, -1.6, 0]} rotation={[0, 0, Math.PI / 6]}>
                             <mesh position={[0, -0.8, 0]}>
                                 <cylinderGeometry args={[0.15, 0.1, 1.6, 16]} />
                                 <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
@@ -330,78 +299,194 @@ export function Quadruped({ degraded }: { degraded: boolean }) {
     );
 }
 
-// Synthetic placeholder schematic for platform classes that have no
-// dedicated 3D model yet (e.g. GROUND / AIR / UNKNOWN). Renders a slowly
-// rotating wireframe so the canvas reads as "synthetic placeholder", not
-// "broken empty void". Replaced per-platform as real schematics land.
-function GenericSchematic({ degraded }: { degraded: boolean }) {
-    const groupRef = useRef<THREE.Group>(null);
-    useFrame((_, delta) => {
-        if (groupRef.current) groupRef.current.rotation.y += delta * 0.3;
+// VehicleClassSchematic — solid-bodied placeholder for the ground-vehicle
+// class (M1A2 et al. — anything without a dedicated per-platform schematic).
+// Reads as "intentional placeholder for vehicle class," not as "spinning
+// fallback void." Uses the same palette and material discipline as
+// Artillery/LaserShorad: dark slate housing + subtle cyan wireframe
+// overlay + indicator strip on a side panel. No rotation animation by
+// design — stationary reads as deliberate, not as a placeholder twitch.
+function VehicleClassSchematic({ degraded }: { degraded: boolean }) {
+    const indicatorRefs = useRef<THREE.Mesh[]>([]);
+    indicatorRefs.current = [];
+
+    useFrame((state) => {
+        const time = state.clock.getElapsedTime();
+        indicatorRefs.current.forEach((mesh, i) => {
+            if (!mesh) return;
+            if (degraded && i < 2) {
+                (mesh.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
+                (mesh.material as THREE.MeshBasicMaterial).opacity = 0.6 + Math.sin(time * 6 + i) * 0.4;
+            } else {
+                (mesh.material as THREE.MeshBasicMaterial).color.setHex(0x10b981);
+                (mesh.material as THREE.MeshBasicMaterial).opacity = 0.8;
+            }
+        });
     });
-    const color = degraded ? 0xf43f5e : 0x22d3ee;
+
+    // Hull side-profile, extruded along width. Carries the glacis (front
+    // slope) and rear taper built into the silhouette so no detached plate
+    // mesh is needed — the box-shape problem is solved by the geometry,
+    // not by stuck-on decoration. Coordinates: X = forward, Y = up.
+    const sideProfile = useMemo(() => {
+        const s = new THREE.Shape();
+        s.moveTo(-4, -0.8);      // rear-bottom
+        s.lineTo(4, -0.8);       // front-bottom (lower nose)
+        s.lineTo(4, -0.1);       // front-bottom rises slightly (lower glacis)
+        s.lineTo(2.4, 0.85);     // glacis crests at deck level
+        s.lineTo(-3.7, 0.85);    // deck rear
+        s.lineTo(-4, 0.3);       // rear-top tapers down
+        s.closePath();
+        return s;
+    }, []);
+
+    // Production palette — graduated slates (hull darkest → turret →
+    // barrel lightest) for contrast, cyan/emerald accents for landmarks.
+    // Matches the Artillery / LaserShorad / Quadruped palette family.
+    // Positions and bevel sizes were verified component-by-component in
+    // the debug-color iteration; only colors changed below.
     return (
-        <group ref={groupRef}>
-            <mesh>
-                <boxGeometry args={[4, 2.5, 6]} />
-                <meshBasicMaterial color={color} wireframe transparent opacity={0.6} />
+        <group>
+            {/* Hull — extruded side profile (glacis + rear taper built in).
+                Dark slate-900 matches the other schematics' housing. */}
+            <mesh rotation={[0, -Math.PI / 2, 0]} position={[2.5, 0, 0]}>
+                <extrudeGeometry args={[sideProfile, {
+                    depth: 5,
+                    bevelEnabled: true,
+                    bevelThickness: 0.10,
+                    bevelSize: 0.10,
+                    bevelSegments: 2,
+                }]} />
+                <meshStandardMaterial color={0x0f172a} metalness={0.7} roughness={0.3} />
             </mesh>
-            <mesh position={[0, 2, 0]}>
-                <octahedronGeometry args={[1.2, 0]} />
-                <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
+
+            {/* Deck centerline accent — thin emissive cyan bar running the
+                length of the hull, gives the eye a landmark across the
+                top surface. */}
+            <mesh position={[0, 0.97, -0.4]}>
+                <boxGeometry args={[0.12, 0.05, 6.5]} />
+                <meshBasicMaterial color={0x22d3ee} transparent opacity={0.7} />
             </mesh>
+
+            {/* Glacis-crest accent — thin emissive cyan bar across the top
+                of the front slope, defines the front edge clearly. */}
+            <mesh position={[0, 0.93, 2.4]}>
+                <boxGeometry args={[4.6, 0.06, 0.08]} />
+                <meshBasicMaterial color={0x22d3ee} transparent opacity={0.7} />
+            </mesh>
+
+            {/* Track skirts — slate-800 (one shade lighter than hull) so
+                they read as a separate component. RoundedBox for chamfered
+                ends; X=±2.85 clears the hull-bevel envelope. */}
+            <RoundedBox args={[0.4, 0.8, 7.4]} radius={0.15} smoothness={3} position={[2.85, -0.5, 0]}>
+                <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
+            </RoundedBox>
+            <RoundedBox args={[0.4, 0.8, 7.4]} radius={0.15} smoothness={3} position={[-2.85, -0.5, 0]}>
+                <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
+            </RoundedBox>
+
+            {/* Turret — slate-700, two shades lighter than the hull so it
+                clearly rises above. Y=1.45 places the bottom (Y=1.025)
+                above the hull-bevel-top. */}
+            <mesh position={[0, 1.45, -0.5]}>
+                <cylinderGeometry args={[1.5, 1.7, 0.85, 32]} />
+                <meshStandardMaterial color={0x334155} metalness={0.6} roughness={0.4} />
+            </mesh>
+
+            {/* Turret-base accent ring — cyan structural seam at the
+                turret/hull boundary. Single ring, not a full wireframe
+                overlay (avoids the meridian-line "accidental seams"
+                effect a wireframe on a featureless cylinder produces). */}
+            <mesh position={[0, 1.03, -0.5]} rotation={[Math.PI / 2, 0, 0]}>
+                <ringGeometry args={[1.65, 1.85, 48]} />
+                <meshBasicMaterial color={0x22d3ee} transparent opacity={0.55} side={THREE.DoubleSide} />
+            </mesh>
+
+            {/* Main gun barrel — slate-600, lighter still so the slim
+                cylinder is visible against the turret/hull behind it. */}
+            <mesh position={[0, 1.45, 2.5]} rotation={[Math.PI / 2, 0, 0]}>
+                <cylinderGeometry args={[0.18, 0.18, 4.5, 12]} />
+                <meshStandardMaterial color={0x475569} metalness={0.9} roughness={0.2} />
+            </mesh>
+
+            {/* Indicator strip — 6 status pads on the side panel,
+                health-aware (matches Artillery's tube-indicator pattern).
+                Moved to X=±2.95 to sit clearly outboard of the hull-bevel
+                envelope (±2.6) and outside the track skirts. */}
+            <group position={[2.95, 0.2, 0]} rotation={[0, Math.PI / 2, 0]}>
+                {Array.from({ length: 6 }).map((_, col) => (
+                    <mesh
+                        key={`indicator-${col}`}
+                        position={[-2.5 + col * 1.0, 0, 0]}
+                        ref={(el) => { if (el) indicatorRefs.current.push(el); }}
+                    >
+                        <boxGeometry args={[0.4, 0.4, 0.05]} />
+                        <meshBasicMaterial color={0x10b981} transparent opacity={0.8} />
+                    </mesh>
+                ))}
+            </group>
+
+            {/* Same indicator strip on the opposite side, cosmetic */}
+            <group position={[-2.95, 0.2, 0]} rotation={[0, -Math.PI / 2, 0]}>
+                {Array.from({ length: 6 }).map((_, col) => (
+                    <mesh key={`indicator-r-${col}`} position={[-2.5 + col * 1.0, 0, 0]}>
+                        <boxGeometry args={[0.4, 0.4, 0.05]} />
+                        <meshBasicMaterial color={0x0ea5e9} transparent opacity={0.3} />
+                    </mesh>
+                ))}
+            </group>
         </group>
     );
 }
 
 const KNOWN_SCHEMATICS = ['LASER_SHORAD', 'ARTILLERY', 'QUADRUPED'];
 
+// Headers track the maintainer-tier framing: "Ground Diagnostics" for the
+// ground-vehicle class (the VehicleClassSchematic fallback), and the
+// existing `{assetType} DIAGNOSTICS` pattern for the dedicated schematics.
+// LTAMDS keeps its own title from LTAMDS_CONFIG (renders via SensorArrayView).
+function headerForAsset(assetType: string, hasDedicatedSchematic: boolean): { title: string, subtitle: string } {
+    if (hasDedicatedSchematic) {
+        return {
+            title: `${assetType} DIAGNOSTICS`,
+            subtitle: 'ENGINEERING SCHEMATIC // SYNTHETIC',
+        };
+    }
+    return {
+        title: 'GROUND DIAGNOSTICS',
+        subtitle: `${assetType} // SYNTHETIC PLACEHOLDER`,
+    };
+}
+
 export default function DiagnosticCanvas({ assetType, degraded, coreTemp }: { assetType: string, degraded: boolean, coreTemp: number }) {
     if (assetType === 'RADAR') {
-        return <LtamdsView degraded={degraded} coreTemp={coreTemp} />;
+        // Sensor-array class. LTAMDS is the only config shipped today; the
+        // claim that this could carry other arrays becomes provable when a
+        // second config arrives.
+        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={LTAMDS_CONFIG} />;
     }
     const hasDedicatedSchematic = KNOWN_SCHEMATICS.includes(assetType);
+    const { title, subtitle } = headerForAsset(assetType, hasDedicatedSchematic);
 
     return (
-        <div className="absolute inset-0 bg-[#020617] text-[#22d3ee] font-mono select-none overflow-hidden">
-            {DEMO_MOCK && <DemoMockBanner note="synthetic 3D schematic" />}
-            <style>{`
-                .hud-border {
-                    border: 1px solid rgba(34, 211, 238, 0.3);
-                    background: rgba(15, 23, 42, 0.85);
-                    backdrop-filter: blur(12px);
-                    clip-path: polygon(0% 0%, 90% 0%, 100% 10%, 100% 100%, 10% 100%, 0% 90%);
-                    box-shadow: 0 0 30px rgba(34, 211, 238, 0.1);
-                }
-                .glitch-text {
-                    text-transform: uppercase;
-                    letter-spacing: 0.2em;
-                    text-shadow: 0 0 10px #22d3ee;
-                }
-            `}</style>
-            
+        <HudFrame
+            title={title}
+            subtitle={subtitle}
+            bannerNote={DEMO_MOCK ? 'synthetic 3D schematic' : undefined}
+        >
             <Canvas camera={{ position: [10, 10, 10], fov: 50 }}>
                 <color attach="background" args={[0x020617]} />
                 <fogExp2 attach="fog" args={[0x020617, 0.05]} />
                 <ambientLight intensity={0.4} />
                 <spotLight position={[20, 40, 20]} intensity={1.5} color={0x22d3ee} />
-                
+
                 <OrbitControls enableDamping dampingFactor={0.05} />
-                
+
                 {assetType === 'LASER_SHORAD' && <LaserShorad degraded={degraded} />}
                 {assetType === 'ARTILLERY' && <Artillery degraded={degraded} />}
                 {assetType === 'QUADRUPED' && <Quadruped degraded={degraded} />}
-                {!hasDedicatedSchematic && <GenericSchematic degraded={degraded} />}
+                {!hasDedicatedSchematic && <VehicleClassSchematic degraded={degraded} />}
             </Canvas>
-
-            {/* Top Left Overlay */}
-            <div className="absolute top-6 left-6 z-10 pointer-events-none">
-                <h1 className="glitch-text text-2xl font-bold text-cyan-400">{assetType} DIAGNOSTICS</h1>
-                <p className="text-xs tracking-widest opacity-70">
-                    ENGINEERING SCHEMATIC // SYNTHETIC
-                    {hasDedicatedSchematic ? '' : ' PLACEHOLDER'}
-                </p>
-            </div>
-        </div>
+        </HudFrame>
     );
 }

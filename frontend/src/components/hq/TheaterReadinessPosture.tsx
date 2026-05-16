@@ -1,9 +1,16 @@
 // =============================================================================
-// HqBattleView — global theater command 3D view
+// TheaterReadinessPosture — theater-tier readiness 3D map
 // =============================================================================
+// Renamed from HqBattleView per the logistics-frame visual pass — the
+// HQ-tier framing is "Theater Readiness Posture" (broader than logistics:
+// covers CM compliance, baseline distribution, fleet wear trends, and
+// logistics severity). Same component, same data wiring, same DEMO_MOCK
+// status.
+//
 // DEMO_MOCK: renders synthetic global region positions — the pipeline has
 // no theater/region geo hierarchy, so this is decorative. Real geo
-// rendering is deferred (same as RegionalBattleView). See ADR-0017.
+// rendering is deferred (same as RegionalSustainmentPosture). See
+// ADR-0017.
 import React, { useRef, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
@@ -54,7 +61,7 @@ function AbstractContinents() {
   );
 }
 
-export default function HqBattleView({ wanActive, linksUp, linksDown }: { wanActive: boolean, linksUp: number, linksDown: number }) {
+export default function TheaterReadinessPosture({ wanActive, linksUp, linksDown }: { wanActive: boolean, linksUp: number, linksDown: number }) {
   const radars = useMemo(() => {
     const list: { x: number, z: number, color: number }[] = [];
     REGIONS.forEach(region => {
@@ -72,15 +79,15 @@ export default function HqBattleView({ wanActive, linksUp, linksDown }: { wanAct
   }, []);
 
   return (
-    <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-battleview">
+    <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-theater-readiness">
       {DEMO_MOCK && <DemoMockBanner note="synthetic global positions" />}
 
       <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
         <div>
           <h1 className={`glitch-text text-3xl font-bold transition-colors ${wanActive ? 'text-emerald-400 shadow-[0_0_10px_#10b981]' : 'text-rose-500 shadow-[0_0_10px_#f43f5e]'}`} style={{ textShadow: wanActive ? '0 0 10px #10b981' : '0 0 10px #f43f5e' }}>
-            THEATER COMMAND VIEW
+            THEATER READINESS POSTURE
           </h1>
-          <p className="text-[10px] font-mono tracking-widest text-slate-400 mt-1">GLOBAL CONTIGUOUS SHIELD NETWORK // ALL REGIONS</p>
+          <p className="text-[10px] font-mono tracking-widest text-slate-400 mt-1">GLOBAL FLEET // ALL REGIONS</p>
         </div>
         <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
           <div className="text-[10px] text-slate-500 mb-1">GLOBAL LINK STATUS</div>

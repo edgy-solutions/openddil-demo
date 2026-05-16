@@ -12,8 +12,8 @@
 //   {DEMO_MOCK && <DemoMockBanner note="live data wiring pending RTI/Cyber DDS" />}
 //
 // `position` defaults to top-right. Components with a full-width top
-// title bar (LocalFleetRadar, BattleView) pass "bottom-right" so the
-// badge doesn't collide with the title.
+// title bar (LocalFleetRadar) pass "bottom-right" so the badge doesn't
+// collide with the title.
 // =============================================================================
 
 type BannerPosition = 'top-right' | 'bottom-right';

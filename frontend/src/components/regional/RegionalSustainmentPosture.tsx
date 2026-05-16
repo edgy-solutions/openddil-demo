@@ -1,7 +1,12 @@
 // =============================================================================
-// RegionalBattleView — regional theater 3D map
+// RegionalSustainmentPosture — regional logistics-tier 3D map
 // =============================================================================
-// DEMO_MOCK: the 3D theater map renders against hardcoded asset positions
+// Renamed from RegionalBattleView per the logistics-frame visual pass —
+// the tier's role-native framing (S-4 / G-4 sustainment officer) is
+// "Sustainment Posture," not "BattleView." Same component, same data
+// wiring, same DEMO_MOCK status.
+//
+// DEMO_MOCK: the 3D map renders against hardcoded asset positions
 // (DISCOVERED_FLEET) — the pipeline carries ECEF/WGS84 kinematics but this
 // view has no real geo projection yet (deferred per Phase 4c). Asset
 // selection still works and is also driven by the real AOR asset list in
@@ -13,7 +18,6 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import DdilNetworkLink from '../DdilNetworkLink';
-import LogisticsArc from '../LogisticsArc';
 import { DemoMockBanner } from '../DemoMockBanner';
 
 const DEMO_MOCK = true;
@@ -111,7 +115,7 @@ function FogController({ isZoomed }: { isZoomed: boolean }) {
   return null;
 }
 
-export default function RegionalBattleView({ link1, selectedAssetId, onAssetSelect }: { link1: boolean, selectedAssetId: string | null, onAssetSelect: (id: string | null, type: string | null) => void }) {
+export default function RegionalSustainmentPosture({ link1, selectedAssetId, onAssetSelect }: { link1: boolean, selectedAssetId: string | null, onAssetSelect: (id: string | null, type: string | null) => void }) {
   const targetAsset = useMemo(() => DISCOVERED_FLEET.find(a => a.id === selectedAssetId), [selectedAssetId]);
   const targetPos = targetAsset ? new THREE.Vector3(...targetAsset.position) : null;
 
@@ -120,14 +124,15 @@ export default function RegionalBattleView({ link1, selectedAssetId, onAssetSele
       {DEMO_MOCK && <DemoMockBanner note="synthetic theater positions" />}
       <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
         <div>
-          <h1 className="glitch-text text-2xl font-bold text-emerald-400">REGIONAL BATTLEVIEW</h1>
-          <p className="text-[10px] font-mono tracking-widest text-slate-400">THEATER SUB-SECTOR: MEDITERRANEAN EAST</p>
+          <h1 className="glitch-text text-2xl font-bold text-emerald-400">REGIONAL SUSTAINMENT POSTURE</h1>
+          <p className="text-[10px] font-mono tracking-widest text-slate-400">AREA OF RESPONSIBILITY: MEDITERRANEAN EAST</p>
         </div>
         <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
           <div className="text-[10px] text-slate-500 mb-1">THEATER LINK STATUS</div>
           {/* One edge->HQ DDIL link in this topology — count kept
-              consistent with HqBattleView's 1/0 (see topology ADR). The
-              3D placement is synthetic, hence the DEMO_MOCK banner. */}
+              consistent with TheaterReadinessPosture's 1/0 (see topology
+              ADR). The 3D placement is synthetic, hence the DEMO_MOCK
+              banner. */}
           <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
             <span className="text-emerald-400 mr-4">{link1 ? 1 : 0} UP</span>
             <span className="text-rose-400">{link1 ? 0 : 1} DOWN</span>
@@ -179,12 +184,6 @@ export default function RegionalBattleView({ link1, selectedAssetId, onAssetSele
               status={link1 ? 'NOMINAL' : 'SEVERED'}
             />
           ))}
-
-          <LogisticsArc
-            start={new THREE.Vector3(50, 0, -50)}
-            end={new THREE.Vector3(...DISCOVERED_FLEET[1].position)}
-            item="Rear Actuator"
-          />
         </Canvas>
       </div>
 

@@ -1,27 +1,77 @@
 // =============================================================================
-// LtamdsView — LTAMDS RADAR maintainer view (3D T/R element schematic)
+// SensorArrayView — generic 3D sensor-array maintainer view
 // =============================================================================
-// PRESERVED per Phase 4 Decision 4. This is the RADAR-class maintainer
-// view; its data shape will change again when an RTI / Cyber DDS feed
-// lands, so it is intentionally NOT heavily refactored now.
+// Generalized from the original LtamdsView. The 3D scene machinery (depth
+// drilling, element interrogation, scaling tweens, click-to-focus) is
+// preserved exactly — only the array-specific bits (face counts, depth
+// names, header text) are now config-driven. LTAMDS ships as the only
+// `SensorArrayConfig` today; the abstraction holds for any future radar /
+// sonar / IR / phased-array maintainer view that needs the same visual
+// drill-down treatment.
 //
-// DEMO_MOCK: renders against synthetic T/R-element data. There is no
-// RADAR-class platform_variant in the current pipeline (the OSS DIS feed
-// is M1A2-SEPv3 ground assets), so there is nothing real to wire to yet.
-// When a RADAR-class asset appears in telemetry_latest_state, wire the
-// element grid to its sustainment.* fields; until then this stays mock
-// behind an explicit banner. See ADR-0017.
+// PRESERVED per Phase 4 Decision 4 — data shape will change again when an
+// RTI / Cyber DDS feed lands. Visual lift only this pass; no refactor of
+// the 3D logic.
+//
+// DEMO_MOCK: renders against synthetic element data. There is no
+// RADAR/sensor-array platform_variant in the current pipeline (the OSS DIS
+// feed is M1A2-SEPv3 ground assets), so there is nothing real to wire to
+// yet. When a sensor-array asset appears in telemetry_latest_state, wire
+// the element grid to its sustainment.* fields; until then this stays
+// mock behind an explicit banner. See ADR-0017.
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import * as TWEEN from '@tweenjs/tween.js';
-import { DemoMockBanner } from './DemoMockBanner';
-
-const DEMO_MOCK = true;
+import HudFrame from './HudFrame';
 
 const COLORS = { nominal: 0x22d3ee, warning: 0xfacc15, critical: 0xef4444, bg: 0x020617, housing: 0x0f172a, card: 0x1e293b };
-const DEPTH_NAMES = ["RADAR UNIT", "PROCESSOR BANK", "SIGNAL CONVERTER", "GAN MMIC CHIP"];
+
+// ---------------------------------------------------------------------------
+// Public config — the LTAMDS-specific values that used to be hardcoded.
+// Ship one config (LTAMDS_CONFIG, below) today; the type contract is what
+// makes future "a different array" work a config change, not a rewrite.
+// ---------------------------------------------------------------------------
+export interface FaceSpec {
+    cols: number;
+    rows: number;
+    /** Local position of the face center, in the housing's frame. */
+    pos: [number, number, number];
+    /** Local rotation Euler, in the housing's frame. */
+    rot: [number, number, number];
+    /** Display name shown in the interrogation panel. */
+    name: string;
+}
+
+export interface SensorArrayConfig {
+    /** Top-left header — platform-specific identity. */
+    title: string;
+    /** Subtitle under the title. */
+    subtitle: string;
+    /** Names for each drill-down depth, from outer housing inward. */
+    depthNames: [string, string, string, string];
+    /** Face specs for depth 0 (the outer housing). */
+    faces: FaceSpec[];
+    /** Banner text passed to HudFrame (DEMO_MOCK status, per ADR-0017). */
+    bannerNote: string;
+}
+
+// ---------------------------------------------------------------------------
+// LTAMDS_CONFIG — the only config shipped today. Values lifted verbatim
+// from the original LtamdsView so the visual output is identical.
+// ---------------------------------------------------------------------------
+export const LTAMDS_CONFIG: SensorArrayConfig = {
+    title: 'LTAMDS Gen-4',
+    subtitle: 'ARRAY DIAGNOSTIC INTERFACE @[//] SECTOR 7G',
+    depthNames: ['RADAR UNIT', 'PROCESSOR BANK', 'SIGNAL CONVERTER', 'GAN MMIC CHIP'],
+    faces: [
+        { cols: 8, rows: 14, pos: [0, 0, 2.51], rot: [0, 0, 0], name: 'PRIMARY NORTH' },
+        { cols: 5, rows: 8,  pos: [-3.51, 0, -1], rot: [0, -Math.PI / 2, 0], name: 'SECTOR ALPHA' },
+        { cols: 5, rows: 8,  pos: [3.51, 0, -1],  rot: [0,  Math.PI / 2, 0], name: 'SECTOR BETA'  },
+    ],
+    bannerNote: 'live data wiring pending RTI/Cyber DDS integration',
+};
 
 const tweenGroup = new TWEEN.Group();
 
@@ -45,25 +95,26 @@ interface ElementData {
     wireframe?: boolean;
 }
 
-function generateElements(depth: number, degraded: boolean): ElementData[] {
+function generateElements(depth: number, degraded: boolean, faces: FaceSpec[]): ElementData[] {
     const elements: ElementData[] = [];
-    
+
     if (depth === 0) {
-        const addFace = (cols: number, rows: number, pos: [number, number, number], rot: [number, number, number], faceName: string) => {
+        const addFace = (spec: FaceSpec) => {
+            const { cols, rows, pos, rot, name } = spec;
             const spacing = 0.65;
             for (let i = 0; i < cols; i++) {
                 for (let j = 0; j < rows; j++) {
                     let health = Math.random();
                     if (degraded && Math.random() > 0.85) health = 0.98;
                     const status = getStatusFromHealth(health);
-                    
+
                     const localPos = new THREE.Vector3((i - (cols - 1) / 2) * spacing, (j - (rows - 1) / 2) * spacing, 0);
                     localPos.applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(...rot)));
                     localPos.add(new THREE.Vector3(...pos));
-                    
+
                     elements.push({
                         id: `TR-${Math.floor(Math.random() * 8999) + 1000}`,
-                        face: faceName,
+                        face: name,
                         temp: (30 + health * 40).toFixed(1),
                         load: (Math.random() * 100).toFixed(0),
                         healthValue: health,
@@ -71,28 +122,26 @@ function generateElements(depth: number, degraded: boolean): ElementData[] {
                         pos: [localPos.x, localPos.y, localPos.z],
                         rot,
                         size: [0.5, 0.5, 0.15],
-                        color: status.color
+                        color: status.color,
                     });
                 }
             }
         };
 
-        addFace(8, 14, [0, 0, 2.51], [0, 0, 0], "PRIMARY NORTH");
-        addFace(5, 8, [-3.51, 0, -1], [0, -Math.PI / 2, 0], "SECTOR ALPHA");
-        addFace(5, 8, [3.51, 0, -1], [0, Math.PI / 2, 0], "SECTOR BETA");
+        for (const face of faces) addFace(face);
     } else {
         let size: [number, number, number] = [6, 6, 0.5];
         let spacing = 8;
         let prefix = "BOARD";
         if (depth === 2) { size = [4, 4, 0.5]; spacing = 6; prefix = "MODULE"; }
         if (depth === 3) { size = [2, 2, 0.5]; spacing = 3; prefix = "CHIP"; }
-        
+
         for (let i = 0; i < 2; i++) {
             for (let j = 0; j < 2; j++) {
                 let health = Math.random();
                 if (degraded && Math.random() > 0.85) health = 0.98;
                 const status = getStatusFromHealth(health);
-                
+
                 elements.push({
                     id: `${prefix}-${i}${j}`,
                     face: "INTERNAL",
@@ -104,7 +153,7 @@ function generateElements(depth: number, degraded: boolean): ElementData[] {
                     rot: [0, 0, 0],
                     size,
                     color: COLORS.card,
-                    wireframe: true
+                    wireframe: true,
                 });
             }
         }
@@ -112,18 +161,18 @@ function generateElements(depth: number, degraded: boolean): ElementData[] {
     return elements;
 }
 
-function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitioning, setIsTransitioning, degraded }: any) {
+function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitioning, setIsTransitioning, degraded, faces }: any) {
     const { camera } = useThree();
     const controlsRef = useRef<any>(null);
     const groupsRef = useRef<THREE.Group[]>([]);
-    
+
     const [selectedMesh, setSelectedMesh] = useState<THREE.Mesh | null>(null);
 
-    const elements0 = useMemo(() => generateElements(0, degraded), [degraded]);
-    const elements1 = useMemo(() => generateElements(1, degraded), [degraded]);
-    const elements2 = useMemo(() => generateElements(2, degraded), [degraded]);
-    const elements3 = useMemo(() => generateElements(3, degraded), [degraded]);
-    
+    const elements0 = useMemo(() => generateElements(0, degraded, faces), [degraded, faces]);
+    const elements1 = useMemo(() => generateElements(1, degraded, faces), [degraded, faces]);
+    const elements2 = useMemo(() => generateElements(2, degraded, faces), [degraded, faces]);
+    const elements3 = useMemo(() => generateElements(3, degraded, faces), [degraded, faces]);
+
     const allElements = [elements0, elements1, elements2, elements3];
 
     useFrame(() => {
@@ -137,12 +186,12 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
 
         camera.position.copy(targetCamPos);
         camera.lookAt(targetLookAt);
-        
+
         if (controlsRef.current) {
             controlsRef.current.target.copy(targetLookAt);
             controlsRef.current.update();
         }
-        
+
         // Scale in new group
         const activeGroup = groupsRef.current[currentDepth];
         if (activeGroup) {
@@ -169,36 +218,36 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
 
     const handleSelect = (data: ElementData, mesh: THREE.Mesh) => {
         if (isTransitioning) return;
-        
+
         // Cancel any ongoing tweens
         tweenGroup.removeAll();
-        
+
         setIsTransitioning(true);
         if (controlsRef.current) {
             controlsRef.current.enabled = false;
         }
-        
+
         if (selectedMesh && selectedMesh !== mesh) {
             selectedMesh.scale.set(1, 1, 1);
         }
-        
+
         setSelectedMesh(mesh);
         onInterrogate(data);
-        
+
         new TWEEN.Tween(mesh.scale, tweenGroup)
             .to({ x: 1.2, y: 1.2, z: 2 }, 300)
             .easing(TWEEN.Easing.Back.Out)
             .start();
-            
+
         const targetPos = new THREE.Vector3();
         mesh.getWorldPosition(targetPos);
-        
+
         const offset = new THREE.Vector3(0, 0, currentDepth === 0 ? 5 : 8);
         offset.applyQuaternion(mesh.quaternion);
         if (currentDepth > 0) offset.z = 10;
-        
+
         const newCamPos = targetPos.clone().add(offset);
-        
+
         new TWEEN.Tween(camera.position, tweenGroup)
             .to({ x: newCamPos.x, y: newCamPos.y, z: newCamPos.z }, 1000)
             .easing(TWEEN.Easing.Quadratic.Out)
@@ -219,13 +268,13 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
     const handleDrillDown = (_data: ElementData, _mesh: THREE.Mesh) => {
         // Cancel any ongoing tweens (like the single-click zoom)
         tweenGroup.removeAll();
-        
+
         setIsTransitioning(true);
         if (controlsRef.current) {
             controlsRef.current.enabled = false;
         }
         onInterrogate(null); // hide HUD
-        
+
         if (selectedMesh) {
             // Instantly reset scale instead of tweening since we removed all tweens
             selectedMesh.scale.set(1, 1, 1);
@@ -264,18 +313,18 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
 
     return (
         <>
-            <OrbitControls 
-                ref={controlsRef} 
-                enableDamping 
-                dampingFactor={0.05} 
+            <OrbitControls
+                ref={controlsRef}
+                enableDamping
+                dampingFactor={0.05}
                 enableRotate={!isTransitioning}
                 enableZoom={!isTransitioning}
                 enablePan={!isTransitioning}
             />
             <group onPointerMissed={handlePointerMissed}>
                 {allElements.map((elements, depth) => (
-                    <group 
-                        key={depth} 
+                    <group
+                        key={depth}
                         ref={el => { if (el) groupsRef.current[depth] = el; }}
                         visible={currentDepth === depth}
                     >
@@ -290,11 +339,11 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
                             </mesh>
                         )}
                         {elements.map((data) => (
-                            <ElementMesh 
-                                key={data.id} 
-                                data={data} 
-                                onSelect={handleSelect} 
-                                onDrillDown={handleDrillDown} 
+                            <ElementMesh
+                                key={data.id}
+                                data={data}
+                                onSelect={handleSelect}
+                                onDrillDown={handleDrillDown}
                             />
                         ))}
                     </group>
@@ -306,7 +355,7 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
 
 function ElementMesh({ data, onSelect, onDrillDown }: { data: ElementData, onSelect: any, onDrillDown: any }) {
     const meshRef = useRef<THREE.Mesh>(null);
-    
+
     useFrame((state) => {
         if (meshRef.current && data.healthValue > 0.9) {
             const time = state.clock.getElapsedTime();
@@ -316,18 +365,18 @@ function ElementMesh({ data, onSelect, onDrillDown }: { data: ElementData, onSel
     });
 
     return (
-        <mesh 
-            ref={meshRef} 
-            position={data.pos} 
-            rotation={data.rot || [0,0,0]}
+        <mesh
+            ref={meshRef}
+            position={data.pos}
+            rotation={data.rot || [0, 0, 0]}
             onClick={(e) => { e.stopPropagation(); onSelect(data, meshRef.current); }}
             onDoubleClick={(e) => { e.stopPropagation(); onDrillDown(data, meshRef.current); }}
         >
             <boxGeometry args={data.size} />
-            <meshPhongMaterial 
-                color={data.color} 
-                emissive={data.status.color} 
-                emissiveIntensity={data.healthValue > 0.9 ? 0.6 : 0.1} 
+            <meshPhongMaterial
+                color={data.color}
+                emissive={data.status.color}
+                emissiveIntensity={data.healthValue > 0.9 ? 0.6 : 0.1}
             />
             {data.wireframe && (
                 <lineSegments>
@@ -339,7 +388,15 @@ function ElementMesh({ data, onSelect, onDrillDown }: { data: ElementData, onSel
     );
 }
 
-export default function LtamdsView({ degraded, coreTemp }: { degraded: boolean, coreTemp: number }) {
+interface SensorArrayViewProps {
+    degraded: boolean;
+    coreTemp: number;
+    /** Config for the specific sensor array being rendered. Defaults to
+     *  LTAMDS_CONFIG — the only config shipped today. */
+    config?: SensorArrayConfig;
+}
+
+export default function SensorArrayView({ degraded, coreTemp, config = LTAMDS_CONFIG }: SensorArrayViewProps) {
     const [currentDepth, setCurrentDepth] = useState(0);
     const [selectedElement, setSelectedElement] = useState<ElementData | null>(null);
     const [isTransitioning, setIsTransitioning] = useState(false);
@@ -352,81 +409,53 @@ export default function LtamdsView({ degraded, coreTemp }: { degraded: boolean, 
         setSelectedElement(data);
     };
 
+    const headerExtras = (
+        <>
+            <div className="mt-4 flex gap-2 text-[0.6rem] font-bold uppercase tracking-widest text-cyan-500/50">
+                {config.depthNames.slice(0, currentDepth + 1).map((name, i) => (
+                    <span key={i} className="flex items-center gap-2">
+                        <span className={i === currentDepth ? 'text-cyan-400' : ''}>{name}</span>
+                        {i < currentDepth && <span className="opacity-30">/</span>}
+                    </span>
+                ))}
+            </div>
+            <div className="mt-4 flex gap-4 text-[10px] font-mono">
+                <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    CORE TEMP: <span>{coreTemp.toFixed(1)}</span>°C
+                </div>
+                <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-cyan-500"></span>
+                    UPTIME: 1,422H
+                </div>
+            </div>
+        </>
+    );
+
     return (
-        <div className="absolute inset-0 bg-[#020617] text-[#22d3ee] font-mono select-none overflow-hidden">
-            {DEMO_MOCK && <DemoMockBanner note="live data wiring pending RTI/Cyber DDS integration" />}
-            <style>{`
-                .hud-border {
-                    border: 1px solid rgba(34, 211, 238, 0.3);
-                    background: rgba(15, 23, 42, 0.85);
-                    backdrop-filter: blur(12px);
-                    clip-path: polygon(0% 0%, 90% 0%, 100% 10%, 100% 100%, 10% 100%, 0% 90%);
-                    box-shadow: 0 0 30px rgba(34, 211, 238, 0.1);
-                }
-                .scanning-line {
-                    height: 2px;
-                    background: linear-gradient(to right, transparent, #22d3ee, transparent);
-                    position: absolute;
-                    width: 100%;
-                    animation: scan 3s linear infinite;
-                    opacity: 0.5;
-                    pointer-events: none;
-                }
-                @keyframes scan {
-                    0% { top: 0; }
-                    100% { top: 100%; }
-                }
-                .glitch-text {
-                    text-transform: uppercase;
-                    letter-spacing: 0.2em;
-                    text-shadow: 0 0 10px #22d3ee;
-                }
-            `}</style>
-            
+        <HudFrame
+            title={config.title}
+            subtitle={config.subtitle}
+            bannerNote={config.bannerNote}
+            bottomHint="[CLICK] FOCUS & INTERROGATE • [DBL-CLICK] DRILL DOWN • [SCROLL] ZOOM"
+            headerExtras={headerExtras}
+        >
             <Canvas camera={{ position: [15, 12, 20], fov: 50 }}>
                 <color attach="background" args={[COLORS.bg]} />
                 <fogExp2 attach="fog" args={[COLORS.bg, 0.05]} />
                 <ambientLight intensity={0.4} />
                 <spotLight position={[20, 40, 20]} intensity={1.5} color={0x22d3ee} />
-                
-                <SceneController 
-                    currentDepth={currentDepth} 
+
+                <SceneController
+                    currentDepth={currentDepth}
                     onDrillDown={handleDrillDown}
                     onInterrogate={handleInterrogate}
                     isTransitioning={isTransitioning}
                     setIsTransitioning={setIsTransitioning}
                     degraded={degraded}
+                    faces={config.faces}
                 />
             </Canvas>
-
-            {/* Top Left Overlay */}
-            <div className="absolute top-6 left-6 z-10 pointer-events-none">
-                <h1 className="glitch-text text-2xl font-bold text-cyan-400">LTAMDS Gen-4</h1>
-                <p className="text-xs tracking-widest opacity-70">ARRAY DIAGNOSTIC INTERFACE @[//] SECTOR 7G</p>
-                <div className="mt-4 flex gap-2 text-[0.6rem] font-bold uppercase tracking-widest text-cyan-500/50">
-                    {DEPTH_NAMES.slice(0, currentDepth + 1).map((name, i) => (
-                        <span key={i} className="flex items-center gap-2">
-                            <span className={i === currentDepth ? 'text-cyan-400' : ''}>{name}</span>
-                            {i < currentDepth && <span className="opacity-30">/</span>}
-                        </span>
-                    ))}
-                </div>
-                <div className="mt-4 flex gap-4 text-[10px] font-mono">
-                    <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                        CORE TEMP: <span id="overlay-core-temp">{coreTemp.toFixed(1)}</span>°C
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-cyan-500"></span>
-                        UPTIME: 1,422H
-                    </div>
-                </div>
-            </div>
-
-            {/* Bottom Left Controls */}
-            <div className="absolute bottom-6 left-6 z-10 text-[0.7rem] uppercase tracking-tighter opacity-50 pointer-events-none">
-                [CLICK] FOCUS &amp; INTERROGATE • [DBL-CLICK] DRILL DOWN • [SCROLL] ZOOM
-            </div>
 
             {/* Depth Indicator */}
             <div className="absolute bottom-6 right-6 z-10 flex gap-2 pointer-events-none">
@@ -463,11 +492,11 @@ export default function LtamdsView({ degraded, coreTemp }: { degraded: boolean, 
                     <div>
                         <p className="text-[0.6rem] opacity-50 mb-1">SIGNAL INTEGRITY</p>
                         <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
-                            <div 
-                                className="h-full transition-all duration-700" 
-                                style={{ 
+                            <div
+                                className="h-full transition-all duration-700"
+                                style={{
                                     width: selectedElement ? `${Math.max(5, Math.floor((1 - (selectedElement.healthValue > 0.9 ? 0.4 : 0.02)) * 100))}%` : '98%',
-                                    backgroundColor: selectedElement ? `#${selectedElement.status.color.toString(16).padStart(6, '0')}` : '#22d3ee'
+                                    backgroundColor: selectedElement ? `#${selectedElement.status.color.toString(16).padStart(6, '0')}` : '#22d3ee',
                                 }}
                             ></div>
                         </div>
@@ -483,6 +512,6 @@ export default function LtamdsView({ degraded, coreTemp }: { degraded: boolean, 
                     </div>
                 </div>
             </div>
-        </div>
+        </HudFrame>
     );
 }

@@ -5,8 +5,8 @@
 // into the maintainer-focused per-asset detail view: a fleet picker plus,
 // for the selected asset, an identity strip, a CM state card, a logistics
 // status card, the sustainment telemetry panel, an asset-filtered event
-// feed, and the 3D schematic (LtamdsView for RADAR-class via
-// DiagnosticCanvas, GenericSchematic otherwise).
+// feed, and the 3D schematic (SensorArrayView for RADAR-class via
+// DiagnosticCanvas, VehicleClassSchematic otherwise).
 //
 // All pipeline data comes from ElectricSQL Shapes (./hooks). Phase 4c.5:
 // the link toggle now severs/restores the REAL toxiproxy hq-link proxy,
@@ -96,7 +96,19 @@ function MaintainerApp() {
   const cmState = cm.data[0] ?? null;
   const logiState = logistics.data[0] ?? null;
   const variant = selectedAsset?.platform_variant ?? null;
-  const assetClass = platformClass(variant);
+  // DEV_ONLY / DEMO_OVERRIDE — `?force=radar` URL param routes
+  // DiagnosticCanvas to SensorArrayView regardless of the selected
+  // asset's variant. Visual-parity verification hook while no real
+  // RADAR-class platform_variant exists in the live pipeline. Gated by
+  // import.meta.env.DEV so it is COMPILED OUT of production builds —
+  // stakeholders cannot force-route platforms in prod.
+  // DELETE this entire block once a real RADAR-class asset flows
+  // through the pipeline (see tests/hero_scenario_v3/README.md
+  // follow-up #7 — GLB rendering survey covers the broader work).
+  const forceClass = import.meta.env.DEV
+    ? new URLSearchParams(window.location.search).get('force')
+    : null;
+  const assetClass = forceClass === 'radar' ? 'RADAR' : platformClass(variant);
   const coreTemp = tel?.sustainment?.thermal?.component_temperature?.value ?? 32.0;
 
   const radarAssets = fleet.data.map((a) => ({
