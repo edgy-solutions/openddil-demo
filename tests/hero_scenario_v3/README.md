@@ -151,7 +151,48 @@ item: add it here, even if it isn't a test-runner item.
    can never mistake derived for measured). The remainder comes *after*
    hierarchical restoration per ADR-0022 sequencing.
 
-7. **Restore per-asset 3D model rendering in regional / HQ / zoom-in
+7. **Projector multi-handler switch from env-default to message-field
+   provenance.** Phase 6a switched only the `telemetry_latest` handler
+   to read `Provenance.edge_id` / `Provenance.region_id` from the
+   inbound message; the other four per-asset handlers (`cm_state`,
+   `logistics_status`, `telemetry_windows`, `tactical_events`) **still
+   call `origin_provenance()` and pick up the projector instance's env
+   defaults**. **These tables currently carry the projector's env-default
+   `edge_id` for ALL rows in 6a; corrected at 6b when the cm-service /
+   fusion / faust-edge emitters get coordinated upgrades.** Detectable
+   in monitoring: `SELECT DISTINCT edge_id FROM asset_cm_state` will
+   show only the projector instance's env default regardless of which
+   edge the underlying events came from. The faust-edge emissions for
+   `derived-sustainment` and the `tactical-events` CloudEvents are
+   *already stamped* in 6a (shape-now-fill-later) — verified live:
+   `derived-sustainment` carries `provenance.edge_id` populated. The
+   `WindowedTelemetry` proto doesn't have a Provenance field; 6b adds
+   one as part of the regional aggregator's input contract.
+
+8. **Per-edge UI link toggle wiring.** The existing UI link toggle in
+   the HQ header drives a single toxiproxy proxy (`hq-link` on 8474),
+   which all three 6a edge-hq-bridges write through. Per-edge
+   severability ("sever edge-02's bridge only") needs per-edge HQ
+   broker listeners — Redpanda advertises ONE address, so multiple
+   proxies don't actually achieve independent sever today (the same
+   Phase 4c.5 convincing-fake failure mode applied one tier up). Wire
+   the UI control surface for per-edge severance once the broker side
+   supports it. Pairs with multi-edge `edge_buffer_monitor` (per-edge
+   `bridge-group-edge-NN` lag) — they're the same demo capability seen
+   from two angles. 6c rewire scope.
+
+9. **HTTP diagnostic input attribution.** The `redpanda-connect-01` DIS
+   mapper accepts diagnostic JSON on port 9999 (single-instance, host-
+   mapped only on `-01`). Those messages don't carry `origin_node` from
+   sensor-ingest, so the DIS-mapper Bloblang stamps
+   `Provenance.edge_id = ""` and the projector's `telemetry_latest`
+   handler falls back to its env-default (`edge-01` on instance-01)
+   with a rate-limited WARN. Defensible for diagnostic-only use; a
+   small env-stamping wrapper on the HTTP path would close it. Low
+   priority — exists so a future debugger knows why the WARN line shows
+   up on `*-from-9999` traffic.
+
+10. **Restore per-asset 3D model rendering in regional / HQ / zoom-in
    views.** Phase 4c removed `AssetSpawner` (the GLB-model renderer)
    when the simulator plumbing was deleted; the regional and HQ 3D maps
    currently render every asset as a status-colored sphere (a "dome"
