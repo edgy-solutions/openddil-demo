@@ -29,29 +29,39 @@
 services:
 
   # --------------------------------------------------------------------------
-  # DIS sidecar — local build + (no source mount needed; image-baked entry)
+  # DIS sidecar — 3 instances per ADR-0023 Phase 6a (one per edge)
   # --------------------------------------------------------------------------
-  openddil-sensor-ingest:
+  openddil-sensor-ingest-01:
+    build:
+      context: ../openddil-sensor-ingest
+      dockerfile: Dockerfile
+    pull_policy: build
+
+  openddil-sensor-ingest-02:
+    build:
+      context: ../openddil-sensor-ingest
+      dockerfile: Dockerfile
+    pull_policy: build
+
+  openddil-sensor-ingest-03:
     build:
       context: ../openddil-sensor-ingest
       dockerfile: Dockerfile
     pull_policy: build
 
   # --------------------------------------------------------------------------
-  # Faust edge — local build + mount source for hot-reload
+  # Faust edge — 3 instances per ADR-0023 Phase 6a (one per edge)
+  # Same image / same source mounts; per-instance config comes from compose
+  # env (FAUST_APP_ID, KAFKA_BROKERS, OPENDDIL_EDGE_ID, OPENDDIL_REGION_ID).
   # --------------------------------------------------------------------------
-  faust-edge:
+  faust-edge-01: &faust_edge_dev
     build:
       context: ../openddil-tactical-agents/edge
       dockerfile: Dockerfile
     pull_policy: build
     volumes:
-      # Local code mounts for hot-reloading during development
       - ../openddil-tactical-agents/edge/faust_edge.py:/app/faust_edge.py
       - ../openddil-tactical-agents/edge/detection:/app/detection
-      # Phase 5: prognostics derivation engine package (ADR-0020). Mounted
-      # alongside detection/ — the one-line register call in faust_edge.py
-      # imports it. Only agent.py inside this package imports faust.
       - ../openddil-tactical-agents/edge/prognostics:/app/prognostics
       - ../openddil-contracts/gen/python/openddil:/app/openddil
       - ../openddil-contracts/gen/python/google:/app/google
@@ -73,6 +83,12 @@ services:
       PROGNOSTICS_ENGINE_LIFE_TOTAL_HOURS: "1"
       PROGNOSTICS_TERRAIN_TOTAL_DEG_KM:    "50"
       PROGNOSTICS_BARREL_LIFE_TOTAL_ROUNDS: "100"
+
+  faust-edge-02:
+    <<: *faust_edge_dev
+
+  faust-edge-03:
+    <<: *faust_edge_dev
 
   # --------------------------------------------------------------------------
   # CM service — local build + mount source for hot-reload + CLI helper
@@ -118,26 +134,36 @@ services:
       - ../openddil-logistics-fusion-service/bootstrap:/app/bootstrap:ro
 
   # --------------------------------------------------------------------------
-  # Redpanda Connect — ontology mount for dev iteration
+  # Redpanda Connect — 3 DIS-mapper instances per ADR-0023 Phase 6a
+  # (ontology mount applies to all)
   # --------------------------------------------------------------------------
-  redpanda-connect:
+  redpanda-connect-01: &connect_dev
     volumes:
-      # Ontology lookup — read-only. Bloblang resolves DIS entity type triples here.
-      # Update openddil-contracts/ontology/dis_entity_types.yaml to add new platform types.
       - ../openddil-contracts/ontology:/ontology:ro
 
+  redpanda-connect-02:
+    <<: *connect_dev
+
+  redpanda-connect-03:
+    <<: *connect_dev
+
   # --------------------------------------------------------------------------
-  # Projector — local build + source mount for hot-reload (Phase 4a)
+  # Projector — 3 instances per ADR-0023 Phase 6a (one per edge cluster)
+  # Same image / same source mount; per-instance env in compose.
   # --------------------------------------------------------------------------
-  openddil-projector:
+  openddil-projector-01: &projector_dev
     build:
       context: ../openddil-projector
       dockerfile: Dockerfile
     pull_policy: build
     volumes:
-      # Source mount for hot-reload (overrides the COPY'd /app/src). The
-      # generated proto stubs at /proto come from the base-compose mount.
       - ../openddil-projector/src:/app/src
+
+  openddil-projector-02:
+    <<: *projector_dev
+
+  openddil-projector-03:
+    <<: *projector_dev
 
   # --------------------------------------------------------------------------
   # Frontend — local build (Phase 4b)

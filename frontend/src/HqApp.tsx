@@ -18,6 +18,7 @@ import HqHeader from './components/hq/HqHeader';
 import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
 import HqWorkOrders from './components/hq/HqWorkOrders';
+import EdgeAttribution from './components/hq/EdgeAttribution';
 import { AlertOctagon } from 'lucide-react';
 import {
   useAllCmState,
@@ -187,6 +188,7 @@ export default function HqApp() {
         <TheaterReadinessPosture wanActive={!severed} linksUp={severed ? 0 : 1} linksDown={severed ? 1 : 0} />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
+          <EdgeAttribution />
           <FleetReadiness cm={cm.data} logistics={logistics.data} />
           <ConfigurationPosture cm={cm.data} fleet={fleet.data} />
           <WearTrends windows={windows.data} />

@@ -28,7 +28,13 @@ version: '3.8'
 # =============================================================================
 
 services:
-  redpanda-edge:
+  # =========================================================================
+  # Edge tier — 3 brokers, one per edge (ADR-0023 Phase 6a).
+  # region-east carries edge-01 + edge-02; region-west carries edge-03.
+  # Each broker is its own Kafka cluster; cross-edge data movement happens
+  # only via the per-edge bridges to redpanda-hq.
+  # =========================================================================
+  redpanda-edge-01:
     image: docker.redpanda.com/redpandadata/redpanda:latest
     command:
       - redpanda
@@ -43,11 +49,63 @@ services:
       - --kafka-addr
       - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:9093
       - --advertise-kafka-addr
-      - PLAINTEXT://redpanda-edge:9092,OUTSIDE://localhost:9093
+      - PLAINTEXT://redpanda-edge-01:9092,OUTSIDE://localhost:9093
     ports:
       - "9092:9092"
       - "9093:9093"
       - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redpanda-edge-02:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '2'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:9093
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda-edge-02:9092,OUTSIDE://localhost:9095
+    ports:
+      - "9094:9092"
+      - "9095:9093"
+      - "9645:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redpanda-edge-03:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '3'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:9093
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda-edge-03:9092,OUTSIDE://localhost:9097
+    ports:
+      - "9096:9092"
+      - "9097:9093"
+      - "9646:9644"
     healthcheck:
       test: ["CMD", "rpk", "cluster", "health"]
       interval: 5s
@@ -84,7 +142,11 @@ services:
   redpanda-init:
     image: docker.redpanda.com/redpandadata/redpanda:latest
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
+        condition: service_healthy
+      redpanda-edge-02:
+        condition: service_healthy
+      redpanda-edge-03:
         condition: service_healthy
     restart: "no"
     entrypoint: /bin/sh
@@ -92,95 +154,82 @@ services:
       - -c
       - |
         set -e
-        rpk -X brokers=redpanda-edge:9092 topic create raw-sensor-stream \
-            -p 8 -r 1 \
-            -c retention.ms=86400000 \
-            || true
-        rpk -X brokers=redpanda-edge:9092 topic create ingress-dlq \
-            -p 1 -r 1 \
-            -c retention.ms=604800000 \
-            || true
-        rpk -X brokers=redpanda-edge:9092 topic create telemetry-latest-state \
-            -p 8 -r 1 \
-            -c cleanup.policy=compact \
-            -c min.cleanable.dirty.ratio=0.1 \
-            -c segment.ms=60000 \
-            || true
-        rpk -X brokers=redpanda-edge:9092 topic create tactical-events \
-            -p 4 -r 1 \
-            -c retention.ms=2592000000 \
-            || true
-        echo "INFO: Core topics initialized."
-
-        # CM state topics (compacted — latest state per key, retained forever)
-        rpk -X brokers=redpanda-edge:9092 topic create asset-cm-state \
-            -p 8 -r 1 \
-            -c cleanup.policy=compact \
-            -c min.cleanable.dirty.ratio=0.1 \
-            -c segment.ms=60000 \
-            -c retention.ms=-1 \
-            || true
-        echo "INFO: asset-cm-state created or already exists."
-
-        rpk -X brokers=redpanda-edge:9092 topic create cm-items \
-            -p 8 -r 1 \
-            -c cleanup.policy=compact \
-            -c min.cleanable.dirty.ratio=0.1 \
-            -c segment.ms=60000 \
-            -c retention.ms=-1 \
-            || true
-        echo "INFO: cm-items created or already exists."
-
-        # CM events (hybrid compact+delete — recent events + compacted state)
-        rpk -X brokers=redpanda-edge:9092 topic create cm-events \
-            -p 8 -r 1 \
-            -c cleanup.policy=compact,delete \
-            -c retention.ms=2592000000 \
-            || true
-        echo "INFO: cm-events created or already exists."
-
-        # Bronze ingest topics (per ADR-0010 — one topic per protocol)
-        rpk -X brokers=redpanda-edge:9092 topic create ingress-dis-raw \
-            -p 8 -r 1 \
-            -c retention.ms=86400000 \
-            -c compression.type=zstd \
-            || true
-        echo "INFO: ingress-dis-raw created or already exists."
-
-        rpk -X brokers=redpanda-edge:9092 topic create ingress-proprietary-raw \
-            -p 8 -r 1 \
-            -c retention.ms=86400000 \
-            -c compression.type=zstd \
-            || true
-        echo "INFO: ingress-proprietary-raw created or already exists."
-
-        # Phase 3.5: System A proprietary battle simulator
-        rpk -X brokers=redpanda-edge:9092 topic create ingress-sim-a-raw \
-            -p 8 -r 1 \
-            -c retention.ms=86400000 \
-            -c compression.type=zstd \
-            || true
-        echo "INFO: ingress-sim-a-raw created or already exists."
-
-        # Phase 3.5: rolling-window aggregations from the Faust windowing agent
-        rpk -X brokers=redpanda-edge:9092 topic create asset-telemetry-windows \
-            -p 8 -r 1 \
-            -c retention.ms=86400000 \
-            -c cleanup.policy=delete \
-            || true
-        echo "INFO: asset-telemetry-windows created or already exists."
-
-        # Phase 3.5: per-asset fused logistics status (compacted, retained forever)
-        rpk -X brokers=redpanda-edge:9092 topic create asset-logistics-status \
-            -p 8 -r 1 \
-            -c cleanup.policy=compact \
-            -c min.cleanable.dirty.ratio=0.1 \
-            -c segment.ms=60000 \
-            -c retention.ms=-1 \
-            || true
-        echo "INFO: asset-logistics-status created or already exists."
-
-        echo "INFO: All topics initialized."
+        # ADR-0023 Phase 6a: each edge broker is its own Kafka cluster; the
+        # same topic shapes are created on each so per-edge produce/consume
+        # works identically across the 3 edges.
+        for B in redpanda-edge-01:9092 redpanda-edge-02:9092 redpanda-edge-03:9092; do
+          echo "INFO: Initializing topics on $$B..."
+          rpk -X brokers=$$B topic create raw-sensor-stream \
+              -p 1 -r 1 \
+              -c retention.ms=86400000 \
+              || true
+          rpk -X brokers=$$B topic create ingress-dlq \
+              -p 1 -r 1 \
+              -c retention.ms=604800000 \
+              || true
+          rpk -X brokers=$$B topic create telemetry-latest-state \
+              -p 8 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              || true
+          rpk -X brokers=$$B topic create tactical-events \
+              -p 4 -r 1 \
+              -c retention.ms=2592000000 \
+              || true
+          rpk -X brokers=$$B topic create asset-cm-state \
+              -p 8 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              || true
+          rpk -X brokers=$$B topic create cm-items \
+              -p 8 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              || true
+          rpk -X brokers=$$B topic create cm-events \
+              -p 8 -r 1 \
+              -c cleanup.policy=compact,delete \
+              -c retention.ms=2592000000 \
+              || true
+          rpk -X brokers=$$B topic create ingress-dis-raw \
+              -p 8 -r 1 \
+              -c retention.ms=86400000 \
+              -c compression.type=zstd \
+              || true
+          rpk -X brokers=$$B topic create ingress-proprietary-raw \
+              -p 8 -r 1 \
+              -c retention.ms=86400000 \
+              -c compression.type=zstd \
+              || true
+          rpk -X brokers=$$B topic create ingress-sim-a-raw \
+              -p 8 -r 1 \
+              -c retention.ms=86400000 \
+              -c compression.type=zstd \
+              || true
+          rpk -X brokers=$$B topic create asset-telemetry-windows \
+              -p 8 -r 1 \
+              -c retention.ms=86400000 \
+              -c cleanup.policy=delete \
+              || true
+          rpk -X brokers=$$B topic create asset-logistics-status \
+              -p 8 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              || true
+          rpk -X brokers=$$B topic create derived-sustainment \
+              -p 1 -r 1 \
+              -c retention.ms=86400000 \
+              || true
+          echo "INFO: Topics initialized on $$B."
+        done
+        echo "INFO: All topics initialized across all 3 edge brokers."
 
   postgres-hq:
     image: postgres:15
@@ -281,27 +330,72 @@ services:
     # but never loaded, so the hq-link proxy did not exist at runtime and
     # the DDIL sever demo was a no-op. Loading the config registers
     # hq-link (edge -> redpanda-hq:19092) so the WAN sever is real.
+    #
+    # ADR-0023 Phase 6a: kept at ONE proxy (the existing hq-link on 8474)
+    # rather than expanding to 3 per-edge proxies, because per-edge
+    # severability at the bridge transport requires per-edge HQ broker
+    # listeners (redpanda-hq advertises ONE address; with 3 proxies, all
+    # bridges still end up routing follow-up traffic through whatever the
+    # broker advertises — same convincing-fake failure mode ADR-0021 §The
+    # runtime-verification lesson describes). 6a ships cluster-tier
+    # severability ("sever the link, all bridges stop"); true per-edge
+    # severability is 6c rewire alongside the UI multi-edge toggle work.
     command: -host 0.0.0.0 -port 8475 -config /etc/toxiproxy.json
 
   # =============================================================================
-  # Edge -> HQ bridge (Phase 4c.5)
+  # Edge -> HQ bridges (Phase 4c.5 / ADR-0023 Phase 6a)
   # =============================================================================
-  # Restores the edge->HQ topology the DDIL demo depends on. Consumes
-  # raw-sensor-stream + tactical-events from redpanda-edge under the
-  # `bridge-group` consumer group and forwards them through the toxiproxy
-  # hq-link proxy to redpanda-hq. When hq-link is severed, the bridge's
-  # writes fail, it stops committing offsets, and `bridge-group` lag on
-  # redpanda-edge climbs — that lag IS the real edge-buffer depth the UI
-  # shows. The bridge config (redpanda-connect.yaml) existed but was not
-  # wired to any service before 4c.5.
-  edge-hq-bridge:
+  # Three bridges, one per edge, each with its own consumer-group name so
+  # per-edge bridge-group lag is readable in rpk. All three currently write
+  # through the single toxiproxy hq-link proxy — true per-edge severability
+  # at the bridge transport requires per-edge HQ broker listeners
+  # (deferred to 6c rewire alongside the UI multi-edge toggle work). For
+  # 6a the demonstrated severability is cluster-tier ("sever the link,
+  # all 3 edges' bridges stop"); per-edge attribution on the read-model
+  # side is verified via the EDGE ATTRIBUTION panel which reads
+  # telemetry_latest_state.edge_id directly (independent path).
+  edge-hq-bridge-01:
     image: docker.redpanda.com/redpandadata/connect:latest
-    container_name: openddil-demo-edge-hq-bridge
+    container_name: openddil-demo-edge-hq-bridge-01
     volumes:
-      - ./redpanda-connect.yaml:/connect.yaml:ro
+      - ./redpanda-connect-edge-01.yaml:/connect.yaml:ro
     command: ["--chilled", "run", "/connect.yaml"]
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      toxiproxy:
+        condition: service_started
+      redpanda-hq:
+        condition: service_started
+    restart: unless-stopped
+
+  edge-hq-bridge-02:
+    image: docker.redpanda.com/redpandadata/connect:latest
+    container_name: openddil-demo-edge-hq-bridge-02
+    volumes:
+      - ./redpanda-connect-edge-02.yaml:/connect.yaml:ro
+    command: ["--chilled", "run", "/connect.yaml"]
+    depends_on:
+      redpanda-edge-02:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      toxiproxy:
+        condition: service_started
+      redpanda-hq:
+        condition: service_started
+    restart: unless-stopped
+
+  edge-hq-bridge-03:
+    image: docker.redpanda.com/redpandadata/connect:latest
+    container_name: openddil-demo-edge-hq-bridge-03
+    volumes:
+      - ./redpanda-connect-edge-03.yaml:/connect.yaml:ro
+    command: ["--chilled", "run", "/connect.yaml"]
+    depends_on:
+      redpanda-edge-03:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
@@ -322,19 +416,73 @@ services:
   #     -f openddil-customer-bundle/docker-compose.customer.yml \
   #     up
 
-  openddil-sensor-ingest:
+  # =============================================================================
+  # Sensor-ingest — 3 instances, one per edge (ADR-0023 Phase 6a).
+  # Each listens on a distinct host UDP port and stamps its OPENDDIL_EDGE_ID
+  # into Bronze JSON (DIS-mapper Bloblang preserves through to Silver
+  # Provenance.edge_id / region_id). Entity-range partitioning is
+  # test-side discipline — sensor-ingest stays a pure UDP→Kafka transport.
+  # =============================================================================
+  openddil-sensor-ingest-01:
     image: ghcr.io/edgy-solutions/openddil/sensor-ingest:latest
     pull_policy: always
+    container_name: openddil-demo-sensor-ingest-01
     command: python dis_ingestor.py
     ports:
       - "62040:62040/udp"
-      - "8081:8080" # Prometheus metrics (mapped to 8081 to avoid conflict with Restate)
+      - "8081:8080"
     environment:
-      KAFKA_BROKERS: redpanda-edge:9092
-      KAFKA_TOPIC: ingress-dis-raw
-      LOG_LEVEL: INFO
+      KAFKA_BROKERS:      redpanda-edge-01:9092
+      KAFKA_TOPIC:        ingress-dis-raw
+      OPENDDIL_EDGE_ID:   edge-01
+      OPENDDIL_REGION_ID: region-east
+      LOG_LEVEL:          INFO
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  openddil-sensor-ingest-02:
+    image: ghcr.io/edgy-solutions/openddil/sensor-ingest:latest
+    pull_policy: always
+    container_name: openddil-demo-sensor-ingest-02
+    command: python dis_ingestor.py
+    ports:
+      - "62041:62041/udp"
+      - "8082:8080"
+    environment:
+      UDP_PORT:           "62041"
+      KAFKA_BROKERS:      redpanda-edge-02:9092
+      KAFKA_TOPIC:        ingress-dis-raw
+      OPENDDIL_EDGE_ID:   edge-02
+      OPENDDIL_REGION_ID: region-east
+      LOG_LEVEL:          INFO
+    depends_on:
+      redpanda-edge-02:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  openddil-sensor-ingest-03:
+    image: ghcr.io/edgy-solutions/openddil/sensor-ingest:latest
+    pull_policy: always
+    container_name: openddil-demo-sensor-ingest-03
+    command: python dis_ingestor.py
+    ports:
+      - "62042:62042/udp"
+      - "8083:8080"
+    environment:
+      UDP_PORT:           "62042"
+      KAFKA_BROKERS:      redpanda-edge-03:9092
+      KAFKA_TOPIC:        ingress-dis-raw
+      OPENDDIL_EDGE_ID:   edge-03
+      OPENDDIL_REGION_ID: region-west
+      LOG_LEVEL:          INFO
+    depends_on:
+      redpanda-edge-03:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
@@ -344,11 +492,21 @@ services:
   # Connect, and the System B AMQP egress Connect) live in the customer
   # overlay — see the note near the toxiproxy block above.
 
-  redpanda-connect:
-    container_name: openddil-demo-redpanda-connect-1
+  # =============================================================================
+  # DIS-mapper Connect instances — 3 instances, one per edge (ADR-0023 6a).
+  # Each consumes its edge's ingress-dis-raw, runs the same sim_dis_mapping
+  # Bloblang (which preserves origin_node → Silver Provenance.edge_id/
+  # region_id), and produces to its own edge's raw-sensor-stream. Only the
+  # edge-01 instance maps host port 9999 for the diagnostic HTTP input;
+  # the other two listen internally without host exposure.
+  # =============================================================================
+  redpanda-connect-01:
+    container_name: openddil-demo-redpanda-connect-01
     image: docker.redpanda.com/redpandadata/connect:latest
     ports:
       - "9999:9999"
+    environment:
+      REDPANDA_BROKER: redpanda-edge-01:9092
     volumes:
       - ./openddil-base-connect.yaml:/connect.yaml
       - ./dynamic-mappings:/mappings
@@ -356,7 +514,37 @@ services:
       - ../openddil-contracts/ontology:/ontology:ro
     command: ["--chilled", "run", "-r", "/mappings/*.yaml", "/connect.yaml"]
     depends_on:
-      - redpanda-edge
+      - redpanda-edge-01
+      - toxiproxy
+
+  redpanda-connect-02:
+    container_name: openddil-demo-redpanda-connect-02
+    image: docker.redpanda.com/redpandadata/connect:latest
+    environment:
+      REDPANDA_BROKER: redpanda-edge-02:9092
+    volumes:
+      - ./openddil-base-connect.yaml:/connect.yaml
+      - ./dynamic-mappings:/mappings
+      - ../openddil-contracts/proto:/proto
+      - ../openddil-contracts/ontology:/ontology:ro
+    command: ["--chilled", "run", "-r", "/mappings/*.yaml", "/connect.yaml"]
+    depends_on:
+      - redpanda-edge-02
+      - toxiproxy
+
+  redpanda-connect-03:
+    container_name: openddil-demo-redpanda-connect-03
+    image: docker.redpanda.com/redpandadata/connect:latest
+    environment:
+      REDPANDA_BROKER: redpanda-edge-03:9092
+    volumes:
+      - ./openddil-base-connect.yaml:/connect.yaml
+      - ./dynamic-mappings:/mappings
+      - ../openddil-contracts/proto:/proto
+      - ../openddil-contracts/ontology:/ontology:ro
+    command: ["--chilled", "run", "-r", "/mappings/*.yaml", "/connect.yaml"]
+    depends_on:
+      - redpanda-edge-03
       - toxiproxy
 
   # NOTE: the `simulator` service was removed in Phase 4b (ADR-0019 era).
@@ -365,20 +553,57 @@ services:
   # simulator API. The SimulatorApp UI, the /simulator/* and /models/*
   # nginx routes, and this service block all went together.
 
-  faust-edge:
+  # =============================================================================
+  # faust-edge — 3 instances, one per edge (ADR-0023 Phase 6a). Distinct
+  # FAUST_APP_ID per instance namespaces each instance's consumer-group
+  # and changelog topic names ("openddil-edge-NN-*-changelog") so the
+  # partition-count invariant fix from Phase 5 step 1 (partitions=1 on
+  # both Tables) carries through unchanged on a per-edge basis.
+  # =============================================================================
+  faust-edge-01:
     image: ghcr.io/edgy-solutions/openddil/faust-edge:latest
-    # pull_policy: always to match every other OpenDDIL-owned service in
-    # this base compose (Phase 4d pull_policy audit). The matching
-    # `build:` + `pull_policy: build` lives in docker-compose.override.yml
-    # so a developer's local build is not silently discarded.
     pull_policy: always
     restart: always
-    container_name: openddil-demo-faust
+    container_name: openddil-demo-faust-edge-01
     working_dir: /tmp
     environment:
-      - PYTHONPATH=/app
+      PYTHONPATH:         /app
+      FAUST_APP_ID:       openddil-edge-01
+      KAFKA_BROKERS:      redpanda-edge-01:9092
+      OPENDDIL_EDGE_ID:   edge-01
+      OPENDDIL_REGION_ID: region-east
     depends_on:
-      - redpanda-edge
+      - redpanda-edge-01
+
+  faust-edge-02:
+    image: ghcr.io/edgy-solutions/openddil/faust-edge:latest
+    pull_policy: always
+    restart: always
+    container_name: openddil-demo-faust-edge-02
+    working_dir: /tmp
+    environment:
+      PYTHONPATH:         /app
+      FAUST_APP_ID:       openddil-edge-02
+      KAFKA_BROKERS:      redpanda-edge-02:9092
+      OPENDDIL_EDGE_ID:   edge-02
+      OPENDDIL_REGION_ID: region-east
+    depends_on:
+      - redpanda-edge-02
+
+  faust-edge-03:
+    image: ghcr.io/edgy-solutions/openddil/faust-edge:latest
+    pull_policy: always
+    restart: always
+    container_name: openddil-demo-faust-edge-03
+    working_dir: /tmp
+    environment:
+      PYTHONPATH:         /app
+      FAUST_APP_ID:       openddil-edge-03
+      KAFKA_BROKERS:      redpanda-edge-03:9092
+      OPENDDIL_EDGE_ID:   edge-03
+      OPENDDIL_REGION_ID: region-west
+    depends_on:
+      - redpanda-edge-03
 
   restate-server:
     # Bumped 2026-05-13 from 1.1.2 to 1.6.2 — restate-sdk-python 0.17.1
@@ -419,7 +644,9 @@ services:
     container_name: openddil-demo-cm-service
     environment:
       CM_BASELINES_DIR:       /baselines
-      CM_KAFKA_BROKERS:       redpanda-edge:9092
+      # ADR-0023 Phase 6a: cm-service stays single-cluster (edge-01) in 6a;
+      # cross-edge cm-state production is 6b coordinated upgrade.
+      CM_KAFKA_BROKERS:       redpanda-edge-01:9092
       CM_HTTP_PORT:           "9080"
       CM_STALENESS_WINDOW_S:  "900"
       LOG_LEVEL:              INFO
@@ -434,7 +661,7 @@ services:
     ports:
       - "9080:9080"
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
@@ -456,7 +683,9 @@ services:
     pull_policy: always
     container_name: openddil-demo-logistics-fusion-service
     environment:
-      FUSION_KAFKA_BROKERS:    redpanda-edge:9092
+      # ADR-0023 Phase 6a: fusion stays single-cluster (edge-01) in 6a;
+      # cross-edge fusion is 6b coordinated upgrade.
+      FUSION_KAFKA_BROKERS:    redpanda-edge-01:9092
       FUSION_HTTP_PORT:        "9081"
       EMIT_INTERVAL_SECONDS:   "30"
       STALE_INPUT_SECONDS:     "300"
@@ -469,7 +698,7 @@ services:
     ports:
       - "9081:9081"
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
@@ -489,7 +718,7 @@ services:
       RESTATE_ADMIN_URL:        http://restate-server:9070
       FUSION_SERVICE_ENDPOINT:  http://logistics-fusion-service:9081
       KAFKA_CLUSTER_NAME:       openddil-edge
-      KAFKA_BROKERS:            redpanda-edge:9092
+      KAFKA_BROKERS:            redpanda-edge-01:9092
       LOG_LEVEL:                INFO
       PYTHONPATH:               /app
     volumes:
@@ -514,7 +743,7 @@ services:
       RESTATE_ADMIN_URL:    http://restate-server:9070
       CM_SERVICE_ENDPOINT:  http://cm-service:9080
       KAFKA_CLUSTER_NAME:   openddil-edge
-      KAFKA_BROKERS:        redpanda-edge:9092
+      KAFKA_BROKERS:        redpanda-edge-01:9092
       LOG_LEVEL:            INFO
       # The bootstrap wrapper does
       #   from openddil_bootstrap.restate_subscriptions import ...
@@ -543,25 +772,91 @@ services:
   #
   # Depends on atlas-init: the read-model tables must exist before the
   # projector can write them.
-  openddil-projector:
+  # =============================================================================
+  # Projectors — 3 instances, one per edge cluster (ADR-0023 Phase 6a).
+  # confluent_kafka treats bootstrap.servers as a single Kafka cluster, so
+  # 3 separate edge clusters require 3 separate consumer instances. All
+  # three write to the same postgres-hq (per-asset rows UPSERT keyed by
+  # asset_id; per-edge entity-ID ranges keep writes disjoint per
+  # §Hero-scenario). Only projector-01 runs the edge_buffer_loop
+  # (BUFFER_MONITOR_ENABLED gates it) — multi-edge buffer monitoring is
+  # 6c rewire. telemetry_latest handler reads Provenance.edge_id from the
+  # message; other handlers stay env-default in 6a.
+  # =============================================================================
+  openddil-projector-01:
     image: ghcr.io/edgy-solutions/openddil/projector:latest
     pull_policy: always
-    container_name: openddil-demo-projector
+    container_name: openddil-demo-projector-01
     environment:
-      KAFKA_BROKERS:       redpanda-edge:9092
-      POSTGRES_DSN:        postgres://postgres:password@postgres-hq:5432/openddil
-      METRICS_PORT:        "8084"
-      RATE_LIMIT_PER_SEC:  "10"
-      LOG_LEVEL:           INFO
-      PYTHONPATH:          /proto:/app/src
+      KAFKA_BROKERS:           redpanda-edge-01:9092
+      POSTGRES_DSN:            postgres://postgres:password@postgres-hq:5432/openddil
+      METRICS_PORT:            "8084"
+      RATE_LIMIT_PER_SEC:      "10"
+      LOG_LEVEL:               INFO
+      PYTHONPATH:              /proto:/app/src
+      OPENDDIL_EDGE_ID:        edge-01
+      OPENDDIL_REGION_ID:      region-east
+      BUFFER_MONITOR_ENABLED:  "true"
     volumes:
-      # Generated proto stubs — mounted from the contracts repo, same
-      # pattern as cm-service and logistics-fusion-service.
       - ../openddil-contracts/gen/python:/proto:ro
     ports:
-      - "8084:8084"   # Prometheus metrics
+      - "8084:8084"
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres-hq:
+        condition: service_healthy
+      atlas-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  openddil-projector-02:
+    image: ghcr.io/edgy-solutions/openddil/projector:latest
+    pull_policy: always
+    container_name: openddil-demo-projector-02
+    environment:
+      KAFKA_BROKERS:           redpanda-edge-02:9092
+      POSTGRES_DSN:            postgres://postgres:password@postgres-hq:5432/openddil
+      METRICS_PORT:            "8084"
+      RATE_LIMIT_PER_SEC:      "10"
+      LOG_LEVEL:               INFO
+      PYTHONPATH:              /proto:/app/src
+      OPENDDIL_EDGE_ID:        edge-02
+      OPENDDIL_REGION_ID:      region-east
+      BUFFER_MONITOR_ENABLED:  "false"
+    volumes:
+      - ../openddil-contracts/gen/python:/proto:ro
+    depends_on:
+      redpanda-edge-02:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres-hq:
+        condition: service_healthy
+      atlas-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  openddil-projector-03:
+    image: ghcr.io/edgy-solutions/openddil/projector:latest
+    pull_policy: always
+    container_name: openddil-demo-projector-03
+    environment:
+      KAFKA_BROKERS:           redpanda-edge-03:9092
+      POSTGRES_DSN:            postgres://postgres:password@postgres-hq:5432/openddil
+      METRICS_PORT:            "8084"
+      RATE_LIMIT_PER_SEC:      "10"
+      LOG_LEVEL:               INFO
+      PYTHONPATH:              /proto:/app/src
+      OPENDDIL_EDGE_ID:        edge-03
+      OPENDDIL_REGION_ID:      region-west
+      BUFFER_MONITOR_ENABLED:  "false"
+    volumes:
+      - ../openddil-contracts/gen/python:/proto:ro
+    depends_on:
+      redpanda-edge-03:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully

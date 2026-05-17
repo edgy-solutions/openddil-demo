@@ -41,8 +41,50 @@ HTTP_DIAG_URL   = "http://127.0.0.1:9999/"
 TOPIC_BRONZE    = "ingress-dis-raw"
 TOPIC_SILVER    = "raw-sensor-stream"
 
-REDPANDA_SVC    = "redpanda-edge"
-SENSOR_SVC      = "openddil-sensor-ingest"
+# ADR-0023 Phase 6a: 3-edge topology. Default rpk targets edge-01 broker
+# (existing tests 35-39 are pinned to edge-01 by convention); multi-edge
+# tests address brokers and sensor containers via edge_id with the
+# port_for_edge / container_for_edge / broker_svc_for_edge helpers below.
+REDPANDA_SVC    = "redpanda-edge-01"
+SENSOR_SVC      = "openddil-sensor-ingest-01"
+
+# Per-edge port and container mapping (matches docker-compose.yml).
+EDGE_UDP_PORT = {
+    "edge-01": 62040,
+    "edge-02": 62041,
+    "edge-03": 62042,
+}
+EDGE_SENSOR_CONTAINER = {
+    "edge-01": "openddil-demo-sensor-ingest-01",
+    "edge-02": "openddil-demo-sensor-ingest-02",
+    "edge-03": "openddil-demo-sensor-ingest-03",
+}
+EDGE_BROKER_SVC = {
+    "edge-01": "redpanda-edge-01",
+    "edge-02": "redpanda-edge-02",
+    "edge-03": "redpanda-edge-03",
+}
+
+
+def port_for_edge(edge_id: str) -> int:
+    """Map an edge_id to its sensor-ingest's host UDP port."""
+    if edge_id not in EDGE_UDP_PORT:
+        raise ValueError(f"unknown edge_id {edge_id!r}; known: {list(EDGE_UDP_PORT)}")
+    return EDGE_UDP_PORT[edge_id]
+
+
+def container_for_edge(edge_id: str) -> str:
+    """Map an edge_id to its sensor-ingest container name (for socat send)."""
+    if edge_id not in EDGE_SENSOR_CONTAINER:
+        raise ValueError(f"unknown edge_id {edge_id!r}; known: {list(EDGE_SENSOR_CONTAINER)}")
+    return EDGE_SENSOR_CONTAINER[edge_id]
+
+
+def broker_svc_for_edge(edge_id: str) -> str:
+    """Map an edge_id to its Kafka broker compose service name."""
+    if edge_id not in EDGE_BROKER_SVC:
+        raise ValueError(f"unknown edge_id {edge_id!r}; known: {list(EDGE_BROKER_SVC)}")
+    return EDGE_BROKER_SVC[edge_id]
 
 
 # ---------------------------------------------------------------------------
@@ -70,18 +112,29 @@ def skip_(test_name: str, detail: str) -> None:
 # UDP send
 # ---------------------------------------------------------------------------
 _DOCKER_NETWORK   = "openddil-demo_default"
-_SENSOR_CONTAINER = "openddil-demo-openddil-sensor-ingest-1"
 
 
-def send_udp_bytes(data: bytes, host: str = UDP_HOST, port: int = UDP_PORT) -> None:
+def send_udp_bytes(data: bytes, host: str = UDP_HOST, port: int = UDP_PORT,
+                   edge_id: str | None = None) -> None:
     """
     Windows Docker Desktop has a long-standing 'UDP black hole' when sending
     from the host to a container's mapped UDP port. We dodge it by running a
     one-shot socat container on the same Docker network that pipes the bytes
     in via stdin and UDP-sends them to the sidecar by service hostname.
+
+    ADR-0023 Phase 6a: pass `edge_id="edge-NN"` to route to that edge's
+    sensor-ingest container + UDP port. Default routes to edge-01 (port
+    62040) so existing 35-39 tests work unchanged.
     """
+    if edge_id is None:
+        target_container = container_for_edge("edge-01")
+        target_port = port if port != UDP_PORT else port_for_edge("edge-01")
+    else:
+        target_container = container_for_edge(edge_id)
+        target_port = port_for_edge(edge_id)
+
     docker = shutil.which("docker") or "docker"
-    target = f"{_SENSOR_CONTAINER}:{port}"
+    target = f"{target_container}:{target_port}"
     proc = subprocess.run(
         [docker, "run", "--rm", "-i",
          "--network", _DOCKER_NETWORK,
@@ -94,6 +147,32 @@ def send_udp_bytes(data: bytes, host: str = UDP_HOST, port: int = UDP_PORT) -> N
             f"socat send failed (exit={proc.returncode}): "
             f"{proc.stderr.decode(errors='replace')}"
         )
+
+
+def query_postgres(sql: str, *, timeout_s: int = 15) -> list[list[str]]:
+    """Run a SQL query against postgres-hq via `docker compose exec` and
+    return rows as lists of stringified column values (tab-separated parse).
+    Tests use this to verify projector-written read-model state.
+    """
+    cmd = _docker_compose_cmd() + [
+        "exec", "-T", "postgres-hq",
+        "psql", "-U", "postgres", "-d", "openddil",
+        "-At", "-F", "|",  # unaligned, tuples-only, pipe-separated columns
+        "-c", sql,
+    ]
+    proc = subprocess.run(cmd, cwd=str(COMPOSE_DIR), capture_output=True,
+                          timeout=timeout_s, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"postgres query failed (exit={proc.returncode}): {proc.stderr.strip()}"
+        )
+    rows = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rows.append(line.split("|"))
+    return rows
 
 
 def send_fixture(name: str) -> bytes:

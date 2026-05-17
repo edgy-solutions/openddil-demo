@@ -1,0 +1,16 @@
+# Edge-03 → HQ bridge (ADR-0023 Phase 6a).
+input:
+  kafka:
+    addresses:
+      - redpanda-edge-03:9092
+    topics:
+      - raw-sensor-stream
+      - tactical-events
+    consumer_group: "bridge-group-edge-03"
+
+output:
+  kafka:
+    addresses:
+      - toxiproxy:8474
+    topic: "${! meta(\"kafka_topic\") }"
+    max_retries: 0
