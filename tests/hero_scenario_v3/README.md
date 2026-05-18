@@ -219,26 +219,55 @@ item: add it here, even if it isn't a test-runner item.
     field 21), faust-edge stamps it from env, and the projector
     `telemetry_windows` handler reads it via
     `resolve_provenance_from_proto` — all verified at the code level.
-    What §A did *not* close is the live-pipeline exercise: faust-edge's
-    `_emit_window_for_asset` only emits when sustainment-window
-    accumulators flush, and the current DIS-only test traffic
-    (EntityState PDUs only, no Fire / Detonation / sustainment
-    payloads) never drives the sustainment-window emission path. The
-    `asset_telemetry_windows` table therefore stays empty under
-    hero_scenario_v3, and `SELECT DISTINCT edge_id` returns zero
-    rows — *not because stamping is broken, but because no row was
-    ever emitted to test the stamping on*. **Closing this needs a
-    sustainment-data test fixture** — a synthetic feed that pushes
-    enough samples per edge to trigger window flushing on each, so
-    `test_42_windowed_emission_per_edge` becomes a real positive +
-    negative isolation assertion the way test_41 is for
-    telemetry-latest. Not Phase 6b scope; **becomes relevant if §B's
-    `region-wear-trends` aggregator (which joins `derived-sustainment`
-    with `asset-telemetry-windows`) needs the windowed-input side
-    exercised for its own verification.** If §B builds against the
-    derived-sustainment side only and treats the windowed-input as a
-    code-verified contributor, the fixture stays a tail item. If §B
-    needs both sides hot, the fixture is the prerequisite.
+    §B (now closed) chose to build `region-wear-trends` against
+    `derived-sustainment` only, leaving `asset-telemetry-windows` wired
+    in the fan-in envelope as a DEBUG no-op in the aggregator's
+    dispatcher. **This follow-up is STILL OPEN** — the windowed-input
+    end-to-end exercise didn't get done in §B and remains the gap
+    between "stamping verified in code" and "stamping verified on the
+    wire" for the `WindowedTelemetry` path. Closing this needs a
+    synthetic feed that pushes enough samples per edge to trigger
+    faust-edge's sustainment-window flushing (DIS-only traffic doesn't),
+    so both `test_42_windowed_emission_per_edge` (positive + negative
+    isolation on `asset_telemetry_windows`) and a future test_47-style
+    region-wear-trends-full-join check can be real assertions instead
+    of code-only ones. Not §C scope either; lives outside Phase 6.
+
+12. **Multi-region scaling beyond 2 regions.** ADR-0024 documents the
+    multi-cluster Faust pattern §B implemented; one corollary that
+    didn't bind at 2 regions but binds at scale: **each region's hq
+    source App subscribes to the shared hq topics (`asset-cm-state`,
+    `asset-logistics-status`) and filters by `region_id` at the source
+    side.** That's O(regions) consumers each receiving every message
+    on the shared topics. At 2-3 regions this is fine — the per-region
+    Faust App consumer overhead is cheap and the shared topic volume
+    is bounded by the per-asset event rate, not multiplied by region
+    count. At 10+ regions the duplicate-reads cost becomes meaningful:
+    every cm-service emit fans out to N consumers, each doing a
+    JSON parse + region-id check + drop or wrap. **Three mitigations
+    if the scaling pressure arrives:** (a) push the partitioning
+    upstream — have cm-service / fusion produce per-region partitions
+    keyed by region_id, source Apps consume only their region's
+    partitions; (b) per-region brokers (resolves ADR-0023's known
+    simplification — regional aggregators consume their own region's
+    broker exclusively, no shared-topic fan-out); (c) a per-shared-
+    topic redpanda-connect splitter between cm-service/fusion and the
+    fan-in topics, doing the region filter once and producing N
+    region-specific topics. None of these is needed today; flagged so
+    a future scaling review doesn't have to rediscover the trade-off.
+    See ADR-0024's Cons section.
+
+13. **test_44's fresh-entity-id pattern is the durable-Table fix; revisit
+    if more §B-style aggregation tests get written.** faust-regional's
+    `assets_latest` Table is changelog-replicated and survives test
+    restarts. A test that asserts "asset_count incremented by 1" on a
+    fixed entity_id passes once and fails on every re-run — the second
+    run UPSERTs the existing entry, delta=0. test_44 uses a unix-time-
+    derived entity_id in the 2100-2899 range to keep IDs unique within
+    edge-02's range. Same trick will be needed for any future test
+    that asserts "aggregator gained one new asset." Not a blocker on
+    its own; capturing the pattern because the next test author will
+    hit the same flake.
 
 ## Future phases
 
