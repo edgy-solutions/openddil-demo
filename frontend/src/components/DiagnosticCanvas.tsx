@@ -17,6 +17,7 @@ import { OrbitControls, RoundedBox } from '@react-three/drei';
 import * as THREE from 'three';
 import SensorArrayView, { LTAMDS_CONFIG } from './SensorArrayView';
 import HudFrame from './HudFrame';
+import { useTransitPhase, transitClass } from './EdgeTransit';
 
 const DEMO_MOCK = true;
 
@@ -458,11 +459,36 @@ function headerForAsset(assetType: string, hasDedicatedSchematic: boolean): { ti
     };
 }
 
-export default function DiagnosticCanvas({ assetType, degraded, coreTemp }: { assetType: string, degraded: boolean, coreTemp: number }) {
+export default function DiagnosticCanvas({
+    assetType,
+    degraded,
+    coreTemp,
+    transitTriggerKey,
+}: {
+    assetType: string,
+    degraded: boolean,
+    coreTemp: number,
+    // Phase 6c.3 — when this key changes (the selectedEdge from
+    // MaintainerApp), the schematic Canvas runs a transit animation.
+    // First-mount and same-key re-renders do NOT trigger. Asset
+    // changes within an edge don't trigger because the parent passes
+    // the edge id, not the asset id.
+    transitTriggerKey?: string | null,
+}) {
+    // Hook runs on every render; gating is internal (first-mount + same-
+    // key checks). Safe to call before the RADAR-branch early-return.
+    const transitPhase = useTransitPhase(transitTriggerKey ?? null);
+
     if (assetType === 'RADAR') {
         // Sensor-array class. LTAMDS is the only config shipped today; the
         // claim that this could carry other arrays becomes provable when a
         // second config arrives.
+        // §C.3 TODO: SensorArrayView bypasses HudFrame so cycle-1
+        // animation does NOT apply to RADAR-class schematics. Acceptable
+        // for now — the demo's M1A2-SEPv3 fleet renders via the
+        // VehicleClassSchematic path below (HudFrame-wrapped). If a
+        // RADAR-class asset becomes demo-relevant later, lift the
+        // contentClassName seam into SensorArrayView too.
         return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={LTAMDS_CONFIG} />;
     }
     const hasDedicatedSchematic = KNOWN_SCHEMATICS.includes(assetType);
@@ -473,6 +499,7 @@ export default function DiagnosticCanvas({ assetType, degraded, coreTemp }: { as
             title={title}
             subtitle={subtitle}
             bannerNote={DEMO_MOCK ? 'synthetic 3D schematic' : undefined}
+            contentClassName={transitClass(transitPhase)}
         >
             <Canvas camera={{ position: [10, 10, 10], fov: 50 }}>
                 <color attach="background" args={[0x020617]} />

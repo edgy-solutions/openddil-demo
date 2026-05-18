@@ -21,7 +21,6 @@ import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
 import CmStateCard from './components/CmStateCard';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
-import EdgeTransit from './components/EdgeTransit';
 import {
   useFleetAssets,
   useFleetAssetsForEdge,
@@ -263,14 +262,14 @@ function MaintainerApp() {
         onSelectEdge={onSelectEdge}
       />
 
-      {/* Phase 6c.3 — wrap the entire content area in EdgeTransit. On
-          selectedEdge change (and ONLY edge changes — not first mount,
-          not asset-within-edge selection changes), runs an 800ms
-          dematerialize → suspended → materialize transporter animation
-          over the children. See EdgeTransit.tsx + index.css transit-*
-          keyframes for the implementation vocabulary. */}
-      <EdgeTransit triggerKey={selectedEdge} className="flex-1 overflow-hidden">
-      <main className="grid grid-cols-3 gap-4 p-4 pt-2 h-full overflow-hidden">
+      {/* Phase 6c.3 corrected scope (per the recipe revision): the
+          edge-change transit animation is contained to the GROUND
+          DIAGNOSTICS schematic ONLY — not the entire content area.
+          MaintainerApp threads selectedEdge into DiagnosticCanvas as
+          transitTriggerKey; the schematic animates in place; everything
+          else snaps. See EdgeTransit.tsx + DiagnosticCanvas's
+          contentClassName seam through HudFrame. */}
+      <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
         {/* Left + center: identity strip + 3D schematic */}
         <div className="col-span-2 flex flex-col gap-4 overflow-hidden">
           <div className="panel flex items-center justify-between shrink-0 p-3">
@@ -294,7 +293,12 @@ function MaintainerApp() {
           </div>
 
           <div className="panel flex-1 relative overflow-hidden font-rajdhani font-semibold">
-            <DiagnosticCanvas assetType={assetClass === 'RADAR' ? 'RADAR' : assetClass} degraded={degraded} coreTemp={coreTemp} />
+            <DiagnosticCanvas
+              assetType={assetClass === 'RADAR' ? 'RADAR' : assetClass}
+              degraded={degraded}
+              coreTemp={coreTemp}
+              transitTriggerKey={selectedEdge}
+            />
             <LocalFleetRadar degraded={degraded} localAssets={radarAssets} />
           </div>
         </div>
@@ -311,7 +315,6 @@ function MaintainerApp() {
           <Inventory />
         </div>
       </main>
-      </EdgeTransit>
     </div>
   );
 }

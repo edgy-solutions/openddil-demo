@@ -25,6 +25,12 @@ interface HudFrameProps {
     /** Children render inside the frame (typically: the <Canvas> plus any
      *  HUD overlays the caller owns — interrogation panes, depth indicators). */
     children: ReactNode;
+    /** Phase 6c.3: optional className applied to the children-wrapping
+     *  div. Used by DiagnosticCanvas to animate the schematic
+     *  (Canvas) without animating HudFrame's chrome (header, banner,
+     *  scanning-line, glitch-text). Children get the class; the
+     *  GROUND DIAGNOSTICS title + DEMO MOCK badge stay put. */
+    contentClassName?: string;
 }
 
 export default function HudFrame({
@@ -34,6 +40,7 @@ export default function HudFrame({
     bottomHint,
     headerExtras,
     children,
+    contentClassName,
 }: HudFrameProps) {
     return (
         <div className="absolute inset-0 bg-[#020617] text-[#22d3ee] font-mono select-none overflow-hidden">
@@ -66,7 +73,15 @@ export default function HudFrame({
                 }
             `}</style>
 
-            {children}
+            {/* Phase 6c.3: children-wrapping div carries the optional
+                contentClassName so the schematic's Canvas can animate
+                in isolation (DiagnosticCanvas threads the transit
+                class here). The wrapper is `absolute inset-0` so it
+                fills the panel without disturbing HudFrame's child
+                layout (the Canvas inside expects to fill its parent). */}
+            <div className={`absolute inset-0 ${contentClassName ?? ''}`}>
+                {children}
+            </div>
 
             {/* Top Left Header Overlay */}
             <div className="absolute top-6 left-6 z-10 pointer-events-none">
