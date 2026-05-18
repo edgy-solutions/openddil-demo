@@ -500,18 +500,6 @@ export default function DiagnosticCanvas({
             subtitle={subtitle}
             bannerNote={DEMO_MOCK ? 'synthetic 3D schematic' : undefined}
             contentClassName={transitClass(transitPhase)}
-            /* Phase 6c.3 cycle 3: cyan-tint overlay rolled back. Cycle
-             * 2's contained cyan wash read as "panel turned cyan,"
-             * same failure family as cycle-1-original's full-pane wash.
-             * Z replaces the wash with a brighter-ghost (opacity floor
-             * 0.3, see index.css transit-content-anim) + brightness
-             * bump on the schematic during dematerialize/suspended
-             * (the schematic itself glows brighter as it dissolves,
-             * no overlay). HudFrame's contentOverlayActive prop and
-             * the conditional cyan div stay defined as held-in-
-             * reserve — available if a future cycle returns to an
-             * overlay approach (e.g. Y's moving light-sweep) — but
-             * not activated here. */
         >
             <Canvas camera={{ position: [10, 10, 10], fov: 50 }}>
                 <color attach="background" args={[0x020617]} />

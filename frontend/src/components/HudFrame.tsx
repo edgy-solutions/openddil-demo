@@ -31,19 +31,6 @@ interface HudFrameProps {
      *  scanning-line, glitch-text). Children get the class; the
      *  GROUND DIAGNOSTICS title + DEMO MOCK badge stay put. */
     contentClassName?: string;
-    /** Phase 6c.3 cycle 2: when true, render a cyan-tinted overlay div
-     *  as a sibling of (NOT inside) the children-wrapping div. The
-     *  sibling positioning matters — putting the overlay INSIDE the
-     *  content wrapper would make it inherit the wrapper's filter:blur
-     *  during the suspended phase; we want the cyan tint sharp, not
-     *  blurred. The overlay uses .transit-overlay (CSS keyframe
-     *  shimmer pulse) + mix-blend-screen + pointer-events-none, so it
-     *  tints what's underneath without blocking interaction and
-     *  without rendering as an opaque sheet. Header (z-10) and
-     *  DemoMockBanner (z-30) render ABOVE the overlay and are NOT
-     *  tinted. Contained inside this HudFrame instance — does not
-     *  leak past the panel chrome. */
-    contentOverlayActive?: boolean;
 }
 
 export default function HudFrame({
@@ -54,7 +41,6 @@ export default function HudFrame({
     headerExtras,
     children,
     contentClassName,
-    contentOverlayActive,
 }: HudFrameProps) {
     return (
         <div className="absolute inset-0 bg-[#020617] text-[#22d3ee] font-mono select-none overflow-hidden">
@@ -96,20 +82,6 @@ export default function HudFrame({
             <div className={`absolute inset-0 ${contentClassName ?? ''}`}>
                 {children}
             </div>
-
-            {/* Phase 6c.3 cycle 2 (cyan-tint shimmer B-accent): sibling
-                of the content wrapper, NOT a child. Sibling positioning
-                keeps the cyan tint sharp — putting it inside the content
-                wrapper would inherit filter:blur during suspended. The
-                .transit-overlay class supplies the 800ms shimmer
-                keyframe; mix-blend-screen tints rather than masks;
-                pointer-events-none keeps Canvas interactive. Header
-                (z-10 below) and DemoMockBanner (z-30 above) render
-                ABOVE this overlay in stacking order and are not
-                affected. Contained to this HudFrame instance. */}
-            {contentOverlayActive && (
-                <div className="transit-overlay absolute inset-0 bg-cyan-400 pointer-events-none mix-blend-screen" />
-            )}
 
             {/* Top Left Header Overlay */}
             <div className="absolute top-6 left-6 z-10 pointer-events-none">

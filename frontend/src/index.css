@@ -60,49 +60,71 @@
 }
 
 /* =============================================================================
- * Phase 6c.3 — Edge-change transporter animation
+ * Phase 6c.3 — Edge-change transit animation (CLOSED at cycle 3, Option Z)
  * =============================================================================
- * "Transporter" metaphor for the maintainer view's per-edge scope change.
- * Three phases over 800ms:
- *   - dematerialize (0 → 37.5%) : blur ramps up, opacity drops, cyan tint
- *                                  rises, inset glow peaks
- *   - suspended    (37.5 → 62.5%) : held at peak blur + 0.15 opacity + max
- *                                    cyan tint + scanline mid-sweep
- *   - materialize  (62.5 → 100%): blur clears, opacity returns, cyan tint
- *                                  fades, inset glow releases
- * Inverse curves on dematerialize/materialize per recipe locked-pair rule.
- * No animation on first mount or asset-within-edge changes — only edge
- * changes trigger the transit.
- * =============================================================================
- */
-
-/* Cycle 3/6 (Option Z): brighter-ghost + brightness bump.
- * Cycle 2's contained cyan wash read as "panel turned cyan" — same
- * failure family as cycle-1-original's full-pane wash. Z keeps the
- * single-element dissolve from cycle 1 and tunes its perceptibility:
- *   - opacity floor at suspended raised from 0.15 -> 0.3. The ghost
- *     stays visible against the panel's dark #020617 bg; the
- *     "darkness of the frame makes it hard to see what's going on"
- *     observation gets addressed by making the ghost itself more
- *     visible, not by adding an overlay.
- *   - brightness 1.0 -> 1.3 at suspended. The schematic glows
- *     brighter as it dissolves — "energy gathering" read comes from
- *     the schematic itself, not from a color wash. The bump is
- *     applied via filter-function chaining (blur + brightness
- *     interpolate together across the 800ms timeline).
- * Locked-inverse easing pair unchanged. No overlay.
+ * Transit metaphor for the maintainer view's per-edge scope change. Shipped
+ * shape: the 3D schematic inside the GROUND DIAGNOSTICS panel dissolves on
+ * edge change (the brightness bump + opacity drop + blur ramp do the work
+ * by themselves; no overlay). 800ms total, three phases. Schematic-only
+ * scope — cards / radar / identity strip / header chrome / Inventory all
+ * snap to the new edge's data without animation.
  *
- * Endpoint filter values use non-identity-but-imperceptible numbers
- * (blur(0.1px) brightness(1.001)) instead of the natural blur(0)
- * brightness(1) because the CSS minifier strips identity filter
- * values to empty parens (`blur()`, `brightness()`) which is invalid
- * CSS and breaks the keyframe at runtime. The 0.1px sub-pixel blur
- * and 0.1% brightness bump are visually imperceptible at the
- * endpoints AND survive minification AND keep the filter-chain
- * shape consistent across all four keyframes so the function-by-
- * function interpolation works cleanly. Caught live in cycle 3
- * deployment proof; would have rendered as snap-not-smooth without
- * the workaround. */
+ * Iteration record (cumulative across cycles, captured durably so a
+ * future polish pass doesn't re-derive the same lessons):
+ *
+ *   bd6b4e9 — Off-target metaphor (full-grid wrap, cyan overlay +
+ *             scanline sweep). Rejected at eyeball; did not count
+ *             toward cycle ceiling.
+ *   9998d8b — Cycle 1: Option A, schematic-only dissolve (opacity +
+ *             blur only). Read as "very purposeful, not glitched;
+ *             smooth, no jank." One knock: suspended phase felt blank
+ *             against the dark panel bg.
+ *   0585cc3 — Cycle 2: Option A + cyan-tint shimmer B-accent
+ *             (mix-blend-screen overlay pulsing through suspended).
+ *             Read as "awful, as bad as the 1st attempt." See
+ *             CYAN-WASH FAILURE FAMILY below.
+ *   a5a473e — Cycle 3 (shipped): Option Z, the cycle-1 dissolve plus
+ *             two tuning changes:
+ *               - opacity floor at suspended raised 0.15 -> 0.3 so
+ *                 the ghost stays visible against the panel's dark
+ *                 #020617 bg
+ *               - brightness chained into filter, 1.0 -> 1.3 at
+ *                 suspended, so the schematic itself glows brighter
+ *                 as it dissolves ("energy gathering" read comes from
+ *                 the schematic, not from an overlay)
+ *             Shipped at "good enough" — recipe bar respected,
+ *             cycle budget under-spent at 3 of 6.
+ *
+ * CYAN-WASH FAILURE FAMILY (cycle-1-original + cycle-2 both demonstrated):
+ *
+ *   A single color washing over a region — full-grid OR contained-to-
+ *   panel — reads as "X turned that color," not as "energy gathering."
+ *   The contained version (cycle 2) failed identically to the full-grid
+ *   version (cycle-1-original) even with mix-blend-screen, contained
+ *   bounds, and a shimmer pulse through the suspended phase. The wash
+ *   approach is the wrong shape; tuning opacity/timing/blend-mode won't
+ *   save it.
+ *
+ *   IF a future polish pass returns to color-based effects: the
+ *   differentiator that's still untested is MOTION (Option Y in the
+ *   §C.3 recipe — a thin band of light sweeping across the schematic
+ *   during suspended, not a static wash). Wash failed twice; sweep is
+ *   structurally different (the eye tracks moving features as separate
+ *   from the underlying object). Don't re-test the wash. Do test the
+ *   sweep, if anything.
+ *
+ * CSS MINIFIER IDENTITY-STRIP (caught live cycle 3, see tracked-follow-
+ * up #16's sharpening):
+ *
+ *   The CSS minifier strips identity filter values: blur(0) -> blur(),
+ *   brightness(1) -> brightness(). Those are invalid CSS and break the
+ *   keyframe at runtime (animation snaps rather than interpolates).
+ *   Endpoint values below use blur(0.1px) brightness(1.001) — sub-
+ *   perceptible at runtime, non-identity to the minifier, keep the
+ *   filter-chain shape consistent across all four keyframes so
+ *   function-by-function interpolation works. Do not "clean up" to
+ *   blur(0) brightness(1); it will silently break.
+ */
 @keyframes transit-content-anim {
   0%    { filter: blur(0.1px) brightness(1.001); opacity: 1;   animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
   37.5% { filter: blur(8px) brightness(1.3);     opacity: 0.3; animation-timing-function: linear; }
@@ -110,55 +132,6 @@
   100%  { filter: blur(0.1px) brightness(1.001); opacity: 1; }
 }
 
-/* Cycle 2/6 (the cyan-tint B-accent): shimmer-through-suspended.
- * Cycle 1's blank suspended phase made the dissolve hard to read against
- * the panel's dark #020617 bg — eye had nothing to track between
- * dematerialize and materialize. The 50% peak at 0.55 (above the
- * 37.5%/62.5% holds at 0.4) gives visible motion through the suspended
- * window. Applied via mix-blend-screen on a cyan-400 overlay, so the
- * effect is "panel tints brighter cyan" (transporter energy) rather
- * than "panel covered by an opaque sheet" (which would read as glitch).
- * Contained inside HudFrame's contentClassName seam — panel chrome
- * (header text z-10, DEMO MOCK badge z-30) renders ABOVE the overlay
- * and is NOT tinted. */
-@keyframes transit-overlay-anim {
-  0%    { opacity: 0;    animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
-  37.5% { opacity: 0.4;  animation-timing-function: ease-in-out; }
-  50%   { opacity: 0.55; animation-timing-function: ease-in-out; }
-  62.5% { opacity: 0.4;  animation-timing-function: cubic-bezier(0.6, 0.4, 1, 0); }
-  100%  { opacity: 0; }
-}
-
-@keyframes transit-glow-anim {
-  0%    { box-shadow: inset 0 0 0 rgba(34, 211, 238, 0); animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
-  37.5% { box-shadow: inset 0 0 60px rgba(34, 211, 238, 0.6); animation-timing-function: linear; }
-  62.5% { box-shadow: inset 0 0 60px rgba(34, 211, 238, 0.6); animation-timing-function: cubic-bezier(0.6, 0.4, 1, 0); }
-  100%  { box-shadow: inset 0 0 0 rgba(34, 211, 238, 0); }
-}
-
-/* Scanline sweep — vertical translateY across the full content area,
- * timed across the 800ms transit. Reuses the project's existing scanline
- * vocabulary (HqApp freeze-overlay; this is the same technique applied
- * to a single moving band rather than a static striped overlay). */
-@keyframes transit-scanline-sweep-anim {
-  0%    { transform: translateY(-100%); opacity: 0; }
-  20%   { opacity: 1; }
-  80%   { opacity: 1; }
-  100%  { transform: translateY(120%); opacity: 0; }
-}
-
 .transit-content {
   animation: transit-content-anim 800ms forwards;
-}
-
-.transit-overlay {
-  animation: transit-overlay-anim 800ms forwards;
-}
-
-.transit-glow {
-  animation: transit-glow-anim 800ms forwards;
-}
-
-.transit-scanline-band {
-  animation: transit-scanline-sweep-anim 800ms forwards;
 }

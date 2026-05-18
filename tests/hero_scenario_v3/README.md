@@ -353,6 +353,42 @@ item: add it here, even if it isn't a test-runner item.
     or a stale CDN. Either alone can be defeated by edge cases
     (concatenated bundles, partial sourcemap leaks).
 
+    **§C.3 sharpening — CSS minifier strips identity filter values.**
+    Same lesson family as the JSX-literal-vs-identifier rule above,
+    extended to CSS animation values. Caught live during §C.3 cycle 3
+    deployment proof: `transit-content-anim` was authored with
+    `filter: blur(0) brightness(1)` at the 0% / 100% keyframes (the
+    natural "no effect" endpoints). The CSS minifier (Vite + lightning-
+    css or postcss) treats `blur(0)` and `brightness(1)` as identity
+    values and strips the arguments — `blur(0)` becomes `blur()`,
+    `brightness(1)` becomes `brightness()`. Empty-paren filter
+    functions are INVALID CSS; the browser ignores them entirely.
+    Net effect: the keyframe's start/end frames had no recognized
+    filter declaration, the animation snapped between "no filter" and
+    the middle frames' `filter: blur(8px) brightness(1.3)` rather than
+    interpolating smoothly, and the dissolve looked broken at runtime.
+
+    **The fix**: use non-identity-but-imperceptible values at endpoints
+    so the minifier can't strip them and the filter-chain shape stays
+    consistent across all four keyframes (function-by-function
+    interpolation needs matching chain shape).
+      - Wrong:    `filter: blur(0) brightness(1)`
+      - Right:    `filter: blur(0.1px) brightness(1.001)`
+    The 0.1px sub-pixel blur and 0.1% brightness bump are visually
+    imperceptible at endpoints AND survive minification AND keep the
+    chain interpolating smoothly. Documented at point-of-use in
+    `frontend/src/index.css` (transit-content-anim block comment) so
+    a future editor doesn't "clean up" the values back to identity
+    and silently break the animation.
+
+    **The principled version**: any CSS animation, transition, or
+    custom property value that depends on a non-identity value being
+    preserved in the production bundle needs verification with the
+    served bundle, not the source. Grep the CSS bundle for the
+    keyframe and confirm the values match what you wrote — same
+    discipline as grepping the JS bundle for JSX literals. The
+    deployment-proof rule applies to both file types.
+
 17. **Inventory edge-scoping decision pending — visible discrepancy on
     the maintainer view until decided.** §C.2 scoped the maintainer
     view's asset picker per edge, but the Inventory panel (subscribed

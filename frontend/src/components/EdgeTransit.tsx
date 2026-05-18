@@ -1,32 +1,19 @@
 // =============================================================================
-// EdgeTransit — Phase 6c.3 transit hook (corrected scope)
+// EdgeTransit — Phase 6c.3 transit hook (CLOSED at cycle 3, Option Z)
 // =============================================================================
-// CORRECTED SCOPE (post-cycle-bd6b4e9 redirect): the animation target is
-// the 3D schematic inside the GROUND DIAGNOSTICS panel ONLY — not the
-// entire main grid, not the cards column, not LocalFleetRadar, not the
-// identity strip. Per the recipe revision, everything else snaps to new
+// Animation target: the 3D schematic inside the GROUND DIAGNOSTICS panel
+// ONLY — not the entire main grid, not the cards column, not
+// LocalFleetRadar, not the identity strip. Everything else snaps to new
 // asset data without animation.
 //
-// ESCALATION ORDER (recipe-locked):
-//   Cycle 1  — Option A: CSS dissolve on the schematic only — opacity
-//              down + blur up during dematerialize, held at low opacity
-//              + max blur during suspended, opacity up + blur down
-//              during materialize. NO cyan wash. NO scanlines. NO
-//              particles. NO scale change.
-//   Cycle 2+ — Option A + one B-accent (user picks: contained cyan tint
-//              inside the panel during suspended, soft inset glow on
-//              panel border, or subtle rotation suggesting "lifting off
-//              the pad"). The B-accent keyframes are held in reserve
-//              in index.css (transit-overlay-anim, transit-glow-anim)
-//              but NOT rendered in cycle 1.
-//   Bail     — if cycle 6 against the corrected target still feels
-//              wrong, drop to slide as the floor (recipe bail
-//              condition; specified before iteration, not derived
-//              under pressure).
-//
-// THE BAR IS "GOOD ENOUGH," NOT "SPECTACULAR." If cycle 1 lands at
-// good-enough, ship it — don't iterate toward fancier just because
-// B-accents exist.
+// What this hook returns: a transit phase. The schematic's render path
+// (DiagnosticCanvas -> HudFrame.contentClassName) maps the phase to a
+// CSS class; the class drives a single 800ms keyframe animation
+// (transit-content-anim in index.css) that dissolves the schematic via
+// opacity ramp + blur ramp + brightness bump — no overlay, no color
+// wash. See index.css for the full iteration history (cycles 1-3),
+// the cyan-wash failure-family learning (cycle 2), and the
+// CSS-minifier-identity-strip note (cycle 3).
 //
 // First-mount gating: prev-ref starts undefined; first effect run
 // sets it without animating. Asset-within-edge changes do NOT trigger
