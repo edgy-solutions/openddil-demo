@@ -8,15 +8,21 @@
 //
 // Reads "you are AT edge-02 looking at one of its assets."
 //
-// UX ASYMMETRY vs the §C.1 RegionPulldown (deliberate — see tracked
-// follow-up #15 + ADR-0023):
-//   - Regional pulldown: visually unobtrusive (dev infrastructure; no
-//     production analog because auth-context binds region in prod).
-//   - Maintainer pulldown (THIS one): visually prominent — the demo
-//     narrative payoff per ADR-0023 ("FOB transport" metaphor). Larger
-//     label, higher contrast border, foreground emphasis. §C.3's
-//     animated transition will play off whatever weight this pulldown
-//     establishes; this is the canvas §C.3 paints on.
+// UX VISUAL TREATMENT:
+//   Matches the ASSET picker's chrome (slate-800 bg, slate-700 border,
+//   slate-200 text, slate-400 label, single border-width). The §C.2
+//   recipe originally specified the maintainer pulldown as "visually
+//   prominent" with cyan-tinted prominent border + bold cyan EDGE label
+//   (the "demo narrative payoff" framing), but user feedback post-§C.3
+//   was "too bright" — dialed back to match the ASSET picker for visual
+//   coherence. The §C.3 transit animation does the demo-narrative work;
+//   the pulldown chrome can stay quiet.
+//
+//   (Follow-up #15's regional-vs-maintainer asymmetry still applies in
+//   substance: only the maintainer view has the FOB-transport animation
+//   on scope change, only the maintainer pulldown's scope-change matters
+//   for the demo narrative. The asymmetry shows up in WHAT happens on
+//   change, not in HOW the control looks.)
 //
 // AFFIRMATIVE SCOPE DISPLAY (Q5.c.2 decision):
 //   - Multi-edge deployment (3 edges): pulldown is enabled; user
@@ -47,8 +53,8 @@ export default function EdgePulldown({ available, selected, onSelect }: EdgePull
     : (selected ?? singleEdgeId ?? '');
 
   return (
-    <div className="flex flex-col pr-4 border-r-2 border-cyan-900/40">
-      <label className="text-[10px] text-cyan-300 tracking-widest font-bold mb-1">
+    <div className="flex flex-col pr-4 border-r border-slate-700">
+      <label className="text-[10px] text-slate-400 tracking-wider mb-1">
         EDGE
       </label>
       <div className="flex items-center gap-2">
@@ -57,10 +63,8 @@ export default function EdgePulldown({ available, selected, onSelect }: EdgePull
             value={displayValue}
             onChange={(e) => onSelect(e.target.value)}
             disabled={isColdStart || isSingleEdge}
-            className={`appearance-none w-44 border-2 text-sm rounded px-3 py-1.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-500
-              ${isColdStart || isSingleEdge
-                ? 'bg-slate-900 border-slate-700 text-slate-400 cursor-not-allowed'
-                : 'bg-cyan-950/30 border-cyan-700/60 text-cyan-100 focus:border-cyan-400'}`}
+            className={`appearance-none w-44 bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500
+              ${isColdStart || isSingleEdge ? 'text-slate-400 cursor-not-allowed' : 'cursor-pointer'}`}
           >
             {isColdStart && (
               <option value="">— no edges observed yet —</option>
@@ -69,16 +73,17 @@ export default function EdgePulldown({ available, selected, onSelect }: EdgePull
               <option key={e} value={e}>{e}</option>
             ))}
           </select>
-          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-cyan-400">
+          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
             <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
               <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
             </svg>
           </div>
         </div>
         {/* Chevron separator into the asset picker — sets up the two-
-            level "EDGE: › ASSET:" framing the §C.3 animation will play
-            off of. */}
-        <ChevronRight className="w-5 h-5 text-cyan-700 shrink-0" />
+            level "EDGE › ASSET" framing. Muted slate to match the
+            overall chrome palette (was cyan, dialed back per user
+            feedback that the cyan was too bright). */}
+        <ChevronRight className="w-5 h-5 text-slate-600 shrink-0" />
         {isSingleEdge && (
           <span className="text-[10px] text-slate-500 italic">
             (only edge observed)
