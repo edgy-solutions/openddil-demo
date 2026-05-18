@@ -76,11 +76,38 @@
  * =============================================================================
  */
 
+/* Cycle 3/6 (Option Z): brighter-ghost + brightness bump.
+ * Cycle 2's contained cyan wash read as "panel turned cyan" — same
+ * failure family as cycle-1-original's full-pane wash. Z keeps the
+ * single-element dissolve from cycle 1 and tunes its perceptibility:
+ *   - opacity floor at suspended raised from 0.15 -> 0.3. The ghost
+ *     stays visible against the panel's dark #020617 bg; the
+ *     "darkness of the frame makes it hard to see what's going on"
+ *     observation gets addressed by making the ghost itself more
+ *     visible, not by adding an overlay.
+ *   - brightness 1.0 -> 1.3 at suspended. The schematic glows
+ *     brighter as it dissolves — "energy gathering" read comes from
+ *     the schematic itself, not from a color wash. The bump is
+ *     applied via filter-function chaining (blur + brightness
+ *     interpolate together across the 800ms timeline).
+ * Locked-inverse easing pair unchanged. No overlay.
+ *
+ * Endpoint filter values use non-identity-but-imperceptible numbers
+ * (blur(0.1px) brightness(1.001)) instead of the natural blur(0)
+ * brightness(1) because the CSS minifier strips identity filter
+ * values to empty parens (`blur()`, `brightness()`) which is invalid
+ * CSS and breaks the keyframe at runtime. The 0.1px sub-pixel blur
+ * and 0.1% brightness bump are visually imperceptible at the
+ * endpoints AND survive minification AND keep the filter-chain
+ * shape consistent across all four keyframes so the function-by-
+ * function interpolation works cleanly. Caught live in cycle 3
+ * deployment proof; would have rendered as snap-not-smooth without
+ * the workaround. */
 @keyframes transit-content-anim {
-  0%    { filter: blur(0); opacity: 1; animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
-  37.5% { filter: blur(8px); opacity: 0.15; animation-timing-function: linear; }
-  62.5% { filter: blur(8px); opacity: 0.15; animation-timing-function: cubic-bezier(0.6, 0.4, 1, 0); }
-  100%  { filter: blur(0); opacity: 1; }
+  0%    { filter: blur(0.1px) brightness(1.001); opacity: 1;   animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+  37.5% { filter: blur(8px) brightness(1.3);     opacity: 0.3; animation-timing-function: linear; }
+  62.5% { filter: blur(8px) brightness(1.3);     opacity: 0.3; animation-timing-function: cubic-bezier(0.6, 0.4, 1, 0); }
+  100%  { filter: blur(0.1px) brightness(1.001); opacity: 1; }
 }
 
 /* Cycle 2/6 (the cyan-tint B-accent): shimmer-through-suspended.
