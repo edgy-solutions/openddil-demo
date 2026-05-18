@@ -25,3 +25,7 @@ export {
   type EdgeBufferStatus,
   type EdgeBufferResult,
 } from './useEdgeBuffer';
+export {
+  useRegionFleetSummary,
+  type RegionFleetSummary,
+} from './useRegionFleetSummary';

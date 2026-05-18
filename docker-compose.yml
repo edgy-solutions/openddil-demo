@@ -229,9 +229,52 @@ services:
               -p 1 -r 1 \
               -c retention.ms=86400000 \
               || true
+          # ADR-0023 Phase 6b §B — regional rollup output topics. Produced
+          # by faust-regional aggregator to redpanda-hq; created on every
+          # broker for projector subscription parity (per-edge projectors
+          # subscribe but find no data; only projector-hq populates the
+          # tables — same shape as the §A asset-cm-state/asset-logistics-
+          # status migration to hq).
+          rpk -X brokers=$$B topic create region-fleet-summary \
+              -p 1 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              || true
+          rpk -X brokers=$$B topic create region-top-factors \
+              -p 1 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              || true
+          rpk -X brokers=$$B topic create region-wear-trends \
+              -p 1 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              || true
           echo "INFO: Topics initialized on $$B."
         done
-        echo "INFO: All topics initialized across all 3 edge brokers."
+        # ADR-0023 Phase 6b §B — per-region fan-in topics. Pipeline
+        # internals (NOT persistent state) so configured for short
+        # retention; faust-regional source Apps produce here from each
+        # source edge cluster via aiokafka sidecar, aggregator App
+        # consumes on its hq broker. Created on hq ONLY — per-edge brokers
+        # never see fan-in traffic. partitions=1 matches the aggregator's
+        # Tables partition invariant (same discipline as
+        # prognostics_accumulators in faust-edge).
+        echo "INFO: Initializing per-region fan-in topics on redpanda-hq..."
+        for FAN_IN in region-east-fan-in region-west-fan-in; do
+          rpk -X brokers=redpanda-hq:19092 topic create $$FAN_IN \
+              -p 1 -r 1 \
+              -c cleanup.policy=delete \
+              -c retention.ms=3600000 \
+              || true
+        done
+        echo "INFO: All topics initialized across all 3 edge brokers + hq."
 
   postgres-hq:
     image: postgres:15
@@ -606,6 +649,74 @@ services:
       OPENDDIL_REGION_ID: region-west
     depends_on:
       - redpanda-edge-03
+
+  # =============================================================================
+  # faust-regional — 2 instances, one per region (ADR-0023 Phase 6b §B).
+  # =============================================================================
+  # Each container composes multiple faust.App instances in a single Python
+  # process via faust.Worker(aggregator, *source_apps): one source App per
+  # source edge (consumes from edge's Kafka cluster, wraps in
+  # RegionalAggregatorInput envelope, produces to per-region fan-in topic on
+  # hq via aiokafka sidecar) + one aggregator App on hq (consumes fan-in +
+  # asset-cm-state, owns Tables, emits 3 rolled-up topics on 30s heartbeat).
+  #
+  # Region-edge mapping per ADR-0023:
+  #   region-east = {edge-01, edge-02}   (2 source Apps)
+  #   region-west = {edge-03}            (1 source App, degenerate but
+  #                                       same shape — symmetric testing
+  #                                       and observability surfaces)
+  #
+  # See openddil-tactical-agents/regional/README.md for the Worker
+  # composition coupling note (intentional process-level coupling; Kafka
+  # durability handles restart).
+  # =============================================================================
+  faust-regional-east:
+    image: ghcr.io/edgy-solutions/openddil/faust-regional:latest
+    pull_policy: always
+    restart: always
+    container_name: openddil-demo-faust-regional-east
+    working_dir: /tmp
+    environment:
+      PYTHONPATH:                       /app
+      OPENDDIL_REGION_ID:               region-east
+      REGIONAL_EDGES:                   "edge-01=redpanda-edge-01:9092,edge-02=redpanda-edge-02:9092"
+      REGIONAL_HQ_BROKERS:              redpanda-hq:19092
+      REGIONAL_FAN_IN_TOPIC:            region-east-fan-in
+      REGIONAL_HEARTBEAT_INTERVAL_S:    "30"
+      REGIONAL_TOP_FACTORS_N:           "10"
+      LOG_LEVEL:                        INFO
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      redpanda-edge-01:
+        condition: service_healthy
+      redpanda-edge-02:
+        condition: service_healthy
+      redpanda-hq:
+        condition: service_started
+
+  faust-regional-west:
+    image: ghcr.io/edgy-solutions/openddil/faust-regional:latest
+    pull_policy: always
+    restart: always
+    container_name: openddil-demo-faust-regional-west
+    working_dir: /tmp
+    environment:
+      PYTHONPATH:                       /app
+      OPENDDIL_REGION_ID:               region-west
+      REGIONAL_EDGES:                   "edge-03=redpanda-edge-03:9092"
+      REGIONAL_HQ_BROKERS:              redpanda-hq:19092
+      REGIONAL_FAN_IN_TOPIC:            region-west-fan-in
+      REGIONAL_HEARTBEAT_INTERVAL_S:    "30"
+      REGIONAL_TOP_FACTORS_N:           "10"
+      LOG_LEVEL:                        INFO
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      redpanda-edge-03:
+        condition: service_healthy
+      redpanda-hq:
+        condition: service_started
 
   restate-server:
     # Bumped 2026-05-13 from 1.1.2 to 1.6.2 — restate-sdk-python 0.17.1

@@ -91,6 +91,28 @@ services:
     <<: *faust_edge_dev
 
   # --------------------------------------------------------------------------
+  # faust-regional — local build + mount source so the regional aggregator
+  # picks up edits without rebuild. ADR-0023 Phase 6b §B. Mounts mirror
+  # the faust-edge pattern: each Python module bind-mounted into /app, plus
+  # the generated proto tree (now including openddil.regional.v1).
+  # --------------------------------------------------------------------------
+  faust-regional-east: &faust_regional_dev
+    build:
+      context: ../openddil-tactical-agents/regional
+      dockerfile: Dockerfile
+    pull_policy: build
+    volumes:
+      - ../openddil-tactical-agents/regional/faust_regional.py:/app/faust_regional.py
+      - ../openddil-tactical-agents/regional/source_app.py:/app/source_app.py
+      - ../openddil-tactical-agents/regional/aggregator_app.py:/app/aggregator_app.py
+      - ../openddil-tactical-agents/regional/severity.py:/app/severity.py
+      - ../openddil-contracts/gen/python/openddil:/app/openddil
+      - ../openddil-contracts/gen/python/google:/app/google
+
+  faust-regional-west:
+    <<: *faust_regional_dev
+
+  # --------------------------------------------------------------------------
   # CM service — local build + mount source for hot-reload + CLI helper
   # --------------------------------------------------------------------------
   cm-service:
