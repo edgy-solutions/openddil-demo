@@ -269,7 +269,7 @@ function MaintainerApp() {
           transitTriggerKey; the schematic animates in place; everything
           else snaps. See EdgeTransit.tsx + DiagnosticCanvas's
           contentClassName seam through HudFrame. */}
-      <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
+      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden">
         {/* Left + center: identity strip + 3D schematic */}
         <div className="col-span-2 flex flex-col gap-4 overflow-hidden">
           <div className="panel flex items-center justify-between shrink-0 p-3">
@@ -307,7 +307,7 @@ function MaintainerApp() {
             panel shows a syncing state on cold start instead of flashing
             its genuinely-empty copy before the where-filtered shape has
             completed its first sync. */}
-        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
+        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2 min-h-0">
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
           <LogisticsStatusCard logistics={logiState} isLoading={logistics.isLoading} />
           <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} isLoading={telemetry.isLoading} />

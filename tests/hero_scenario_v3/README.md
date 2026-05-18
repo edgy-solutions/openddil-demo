@@ -305,89 +305,112 @@ item: add it here, even if it isn't a test-runner item.
     just because it'd be symmetric with maintainer; symmetry is the
     wrong shape here.
 
-16. **Frontend rebuild + container recreate is a mandatory build-pass
-    step for any sub-phase that touches frontend code.** The frontend
-    is an nginx-served static build (`docker-compose.override.yml`
-    builds locally but is NOT hot-reloaded — see the comment in the
-    override file). Source-file edits do NOT propagate to the running
-    container; `docker compose build frontend` + `docker compose up -d
-    --force-recreate frontend` is required, and the observable-end-
-    state verification must include confirming the live deployment
-    runs the new code (grep the served bundle for a known-new string,
-    or compare bundle hash to a known-old one). Caught live during
-    §C.1 verification: hooks + filter logic were correct, automated
-    tests (test_47, test_48) passed against the Shape API directly,
-    and the user's browser screenshot still showed the pre-§C.1 build
-    rendering identical content for both regions — because the user's
-    browser was loading the stale image. Same trip hazard exists for
-    §C.2 (maintainer pulldown is also frontend), §C.3 (animation),
-    and any future sub-phase touching `openddil-demo/frontend/`. The
-    principled version of this rule lives in ADR-0025 (build-pass
-    deployment verification discipline).
+16. **Frontend deployment-proof discipline (rule family).** The
+    frontend is an nginx-served static build (see comment in
+    `docker-compose.override.yml`) — source-file edits do NOT
+    propagate to the running container. Every sub-phase touching
+    `openddil-demo/frontend/` must include `docker compose build
+    frontend` + `docker compose up -d --force-recreate frontend` AND
+    a deployment-proof grep of the served bundle to confirm the new
+    code actually shipped. The principled version of the rule lives
+    in ADR-0025 (build-pass deployment verification discipline).
 
-    **§C.2 sharpening — the grep target must be a JSX string literal,
-    NOT a JS identifier.** The §C.2 recipe locked
-    `useFleetAssetsForEdge` as the unambiguous grep target on the
-    theory that "the function name did not exist pre-§C.2; finding it
-    proves the new code shipped." Production bundles (Vite +
-    minification) DO NOT preserve function names — `useFleetAssetsFor-
-    Edge` becomes a single-letter or two-letter symbol in the built
-    bundle and the grep returns nothing even when the code DID ship.
-    Only JSX string literals (and other user-visible strings) survive
-    minification.
+    Five sharpenings have accumulated as the rule met reality across
+    §C.1 / §C.2 / §C.3 / the post-Phase-6 polish pass. Each one
+    closes a specific way deployment-proof can give a false-positive
+    "shipped clean" signal:
 
-    **The right grep target shape**: a JSX literal that the sub-phase
-    introduced and that is verifiably absent from the prior version.
-    For §C.2:
-      - Present post-§C.2 (any of these is unambiguous proof):
+    **(16.a) Bundle-hash refresh is the load-bearing build-success
+    signal — not the absence of terminal errors.** `docker compose
+    build frontend` and `docker compose up -d --force-recreate
+    frontend` can return without surfacing build failures in the
+    terminal — they push build errors into a `docker-desktop://
+    dashboard/build/...` URL and exit cleanly. The next curl returns
+    the OLD bundle (because the new image never built). To surface
+    failures: use `docker compose build --progress=plain frontend`,
+    which prints errors to stdout instead of the dashboard. To detect
+    a silent failure: compare bundle hash before/after rebuild —
+    unchanged hash means the build silently failed regardless of
+    what the terminal said. Caught live during the post-Phase-6
+    polish pass: ~40-minute window where the EdgePulldown
+    cyan-dialback commit and three follow-up commits' bundles never
+    deployed because of JSX-comment syntax errors that buildx
+    swallowed.
+
+    **(16.b) JSX comments at the top of a `return (...)` body are
+    syntactically invalid — two siblings without a parent.** Writing
+    `return ( {/* comment */} <div>...</div> )` produces TS1005 /
+    TS2657 build errors ("JSX expressions must have one parent
+    element"). Rationale comments either go inside the root element
+    (`<div>{/* comment */}<children/></div>`) or as JS-style block
+    comments BEFORE the return statement (`/* comment */ return (
+    <div>...</div> )`). Caught and adapted during polish-pass; small
+    enough that this lives here rather than as its own working-style
+    note.
+
+    **(16.c) Grep target must be a JSX string literal, NOT a JS
+    identifier.** Production bundles (Vite + minification) do not
+    preserve function names — `useFleetAssetsForEdge` minifies to a
+    single-letter symbol, grep returns nothing, deployment proof
+    fails even when code shipped correctly. Only JSX string
+    literals and other user-visible strings survive minification.
+    The §C.2 recipe originally locked `useFleetAssetsForEdge` as the
+    proof target and the cycle-1 deploy-proof returned empty until
+    we discovered the minification effect. The right targets for
+    §C.2 deployment proof:
+      - Present post-§C.2 (any is unambiguous proof):
           `"no edges observed yet"` (EdgePulldown cold-state)
-          `"only edge observed"` (single-edge affirmative-display)
+          `"only edge observed"` (single-edge affirmative display)
           `"no assets in scope"` (Header asset picker, replaces
                                     pre-§C.2 `"no assets in pipeline"`)
-      - Absent post-§C.2 (regression check that the OLD bundle is gone):
-          `"no assets in pipeline"` (Header pre-§C.2 cold-state copy
-                                      that §C.2 replaced)
-    Pin TWO targets: one positive (new string) AND one negative (old
-    string is gone). The positive proves the new code shipped; the
-    negative proves the prior version isn't being served from cache
-    or a stale CDN. Either alone can be defeated by edge cases
-    (concatenated bundles, partial sourcemap leaks).
+      - Absent post-§C.2 (regression check that OLD bundle is gone):
+          `"no assets in pipeline"` (Header pre-§C.2 cold-state copy)
 
-    **§C.3 sharpening — CSS minifier strips identity filter values.**
-    Same lesson family as the JSX-literal-vs-identifier rule above,
-    extended to CSS animation values. Caught live during §C.3 cycle 3
-    deployment proof: `transit-content-anim` was authored with
-    `filter: blur(0) brightness(1)` at the 0% / 100% keyframes (the
-    natural "no effect" endpoints). The CSS minifier (Vite + lightning-
-    css or postcss) treats `blur(0)` and `brightness(1)` as identity
-    values and strips the arguments — `blur(0)` becomes `blur()`,
-    `brightness(1)` becomes `brightness()`. Empty-paren filter
-    functions are INVALID CSS; the browser ignores them entirely.
-    Net effect: the keyframe's start/end frames had no recognized
-    filter declaration, the animation snapped between "no filter" and
-    the middle frames' `filter: blur(8px) brightness(1.3)` rather than
-    interpolating smoothly, and the dissolve looked broken at runtime.
+    **(16.d) Pin TWO grep targets — one positive, one negative.**
+    Positive proves new code shipped; negative proves prior version
+    isn't being served from cache / a stale CDN / a concatenated
+    bundle. Either alone can be defeated by edge cases (partial
+    sourcemap leaks, bundler quirks, layered builds). The two-target
+    pattern is what catches the failure mode where positive grep
+    succeeds against a bundle that ALSO still has the old code
+    bundled in beside it.
 
-    **The fix**: use non-identity-but-imperceptible values at endpoints
-    so the minifier can't strip them and the filter-chain shape stays
-    consistent across all four keyframes (function-by-function
-    interpolation needs matching chain shape).
+    **(16.e) CSS minifier strips identity filter values.** Same
+    lesson family extended to CSS animation values. `filter:
+    blur(0)` minifies to `blur()` (invalid CSS, empty parens);
+    `brightness(1)` minifies to `brightness()` (also invalid). Empty-
+    paren filter functions are ignored by the browser; the keyframe
+    silently misses its endpoint state and the animation snaps
+    instead of interpolating. Caught live during §C.3 cycle 3.
       - Wrong:    `filter: blur(0) brightness(1)`
       - Right:    `filter: blur(0.1px) brightness(1.001)`
-    The 0.1px sub-pixel blur and 0.1% brightness bump are visually
-    imperceptible at endpoints AND survive minification AND keep the
-    chain interpolating smoothly. Documented at point-of-use in
-    `frontend/src/index.css` (transit-content-anim block comment) so
-    a future editor doesn't "clean up" the values back to identity
-    and silently break the animation.
+    Non-identity-but-imperceptible endpoint values survive
+    minification AND keep the filter-chain shape consistent across
+    all keyframes so function-by-function interpolation works.
+    Deployment-proof rule applies to CSS bundles too: grep the
+    CSS bundle keyframe for the values you wrote and confirm they
+    survived.
 
-    **The principled version**: any CSS animation, transition, or
-    custom property value that depends on a non-identity value being
-    preserved in the production bundle needs verification with the
-    served bundle, not the source. Grep the CSS bundle for the
-    keyframe and confirm the values match what you wrote — same
-    discipline as grepping the JS bundle for JSX literals. The
-    deployment-proof rule applies to both file types.
+    **(16.f) Tailwind v4's content scanner reads JS comments.** When
+    a class-name-shaped token appears in a JS-style comment (e.g., a
+    rationale comment explaining "the prior `min-h-[150px]` reservation
+    was wrong"), Tailwind's scanner picks it up and bakes the
+    utility CSS into the bundle even though no JSX element renders
+    with it. Deployment-proof negative grep for a "removed" class
+    can false-positive if the comment still references the literal
+    token. Either remove the token from source comments OR phrase
+    the rationale without using the class-name shape (e.g.,
+    "min-height-pixel-150 reservation"). Caught live during
+    post-Phase-6 polish-pass deployment proof.
+
+    **The unifying principle**: production bundles are NOT the
+    source. Minifiers, scanners, and tree-shakers transform source
+    in ways that defeat naive deployment proofs. Verify with values
+    that actually ship, in the form they actually ship (string
+    literals, post-minification keyframe values, etc.), against the
+    bundle that's actually served. When in doubt, hash-compare the
+    bundle file across the rebuild — that's the cheapest unambiguous
+    "did the deploy happen" signal.
 
 17. **Inventory edge-scoping decision pending — visible discrepancy on
     the maintainer view until decided.** §C.2 scoped the maintainer

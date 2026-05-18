@@ -330,18 +330,18 @@ export default function RegionalApp() {
         />
       </div>
 
-      <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
+      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden">
         <RegionalSustainmentPosture
           link1={link1}
           selectedAssetId={selectedAssetId}
           onAssetSelect={(id) => setSelectedAssetId(id)}
         />
 
-        <div className="col-span-1 flex flex-col gap-4 overflow-hidden">
+        <div className="col-span-1 flex flex-col gap-4 overflow-hidden min-h-0">
           {selectedAssetId ? (
             <AssetDeepDive assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
           ) : (
-            <div className="flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
+            <div className="flex-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2 min-h-0">
               <AorAssetList
                 fleet={fleet.data}
                 logistics={logistics.data}
