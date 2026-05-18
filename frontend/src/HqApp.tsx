@@ -1,18 +1,26 @@
 // =============================================================================
 // HqApp — the HQ view (enterprise fleet analytics)
 // =============================================================================
-// Phase 4c rewrite. Was hardcoded enterprise work orders + a theater tree.
-// Now a real enterprise dashboard from the shape hooks: fleet-wide
-// readiness (CM status + logistics severity counts), MWO/TCTO compliance
-// by platform family, baseline version distribution, fleet wear-trend
-// rollup, the enterprise fleet tree (HqDigitalTwin), and CM-derived
-// actionable items (HqWorkOrders).
+// Phase 6c.1 rewrite. Was client-side group-by over the global flat pool
+// (cmComplianceSummary / logisticsSeveritySummary / wearTrendRollup).
+// Now sums faust-regional's per-region aggregates (region_fleet_summary /
+// region_top_factors / region_wear_trends) across all regions to produce
+// the theater-level rollup. With 2 regions, sum-of-regions is right-sized
+// for client-side aggregation — see follow-up #12 for the at-scale
+// (10+ regions) trade-off and three named mitigations.
 //
-// Phase 4c.5: the WAN-cut demo is now REAL. The toggle severs/restores
-// the toxiproxy hq-link proxy (now loaded via -config); the buffer
-// backlog and link status come from useEdgeBuffer (the edge_buffer_status
-// shape the projector's monitor writes from real bridge-group lag); the
-// freeze overlay shows when the link is genuinely severed.
+// Semantic shift worth naming: pre-§C.1 FleetReadiness showed a 2-column
+// "CM status / Logistics severity" split (CM-specialist's question +
+// logistics-specialist's question). Post-§C.1 it shows the unified
+// severity buckets (nominal/degraded/critical/non_operational) the
+// aggregator computes as WORST-of(logistics, cm). This matches the
+// theater commander's "how many assets in what condition" question
+// rather than the two-specialty-split. The disambiguated specialty
+// views still live in ConfigurationPosture (CM) and EdgeAttribution
+// (per-edge); we lost no information, we re-framed the headline.
+//
+// Phase 4c.5: the WAN-cut demo is REAL (toxiproxy hq-link, edge-buffer
+// monitor, freeze overlay — unchanged in §C.1).
 import { useState, useMemo } from 'react';
 import HqHeader from './components/hq/HqHeader';
 import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
@@ -23,56 +31,188 @@ import RegionFleetSummary from './components/hq/RegionFleetSummary';
 import { AlertOctagon } from 'lucide-react';
 import {
   useAllCmState,
-  useAllLogisticsStatus,
   useFleetAssets,
-  useAllTelemetryWindows,
   useEdgeBuffer,
+  useRegionFleetSummary,
+  useRegionTopFactors,
+  useRegionWearTrends,
+  type RegionFactor,
+  type ComponentWearTrend,
 } from './hooks';
 import {
-  cmComplianceSummary,
-  logisticsSeveritySummary,
   mwoComplianceByFamily,
   baselineDistribution,
-  wearTrendRollup,
-  shortCmStatus,
-  shortSeverity,
 } from './lib/fleetAggregates';
 
-// --- readiness panels (inline — HQ-specific rollup displays) ----------------
+// Top-N HQ size matches per-region size (locked: tightening D). A theater
+// commander wants fewer summarized items, not more; configurable later if
+// needed.
+const HQ_TOP_FACTORS_N = 10;
+
+// --- HQ-level region-merge helpers (per recipe decision 6) -----------------
+//
+// These collapse N per-region aggregator rows into a single theater-level
+// view. They're inline (not in fleetAggregates.ts) because they're
+// tightly coupled to the new hook shapes and to HQ's display semantics.
+
+function sumFleetBuckets(
+  rows: ReturnType<typeof useRegionFleetSummary>['data'],
+): { nominal: number; degraded: number; critical: number; non_operational: number; asset_count: number } {
+  // Column-wise sum across regions. Trivial.
+  return rows.reduce(
+    (acc, r) => ({
+      nominal:         acc.nominal + r.nominal,
+      degraded:        acc.degraded + r.degraded,
+      critical:        acc.critical + r.critical,
+      non_operational: acc.non_operational + r.non_operational,
+      asset_count:     acc.asset_count + r.asset_count,
+    }),
+    { nominal: 0, degraded: 0, critical: 0, non_operational: 0, asset_count: 0 },
+  );
+}
+
+function mergeTopFactors(
+  rows: ReturnType<typeof useRegionTopFactors>['data'],
+  n: number,
+): RegionFactor[] {
+  // Merge by factor_id, sum counts across regions, merge severity_breakdown
+  // additively. Sort DESC by merged count, take top-N.
+  const merged = new Map<string, RegionFactor>();
+  for (const row of rows) {
+    for (const f of row.factors) {
+      const existing = merged.get(f.factor_id);
+      if (existing) {
+        existing.count += f.count;
+        for (const [sev, c] of Object.entries(f.severity_breakdown)) {
+          existing.severity_breakdown[sev] = (existing.severity_breakdown[sev] ?? 0) + c;
+        }
+      } else {
+        merged.set(f.factor_id, {
+          factor_id: f.factor_id,
+          count: f.count,
+          severity_breakdown: { ...f.severity_breakdown },
+        });
+      }
+    }
+  }
+  return Array.from(merged.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, n);
+}
+
+function mergeWearTrends(
+  rows: ReturnType<typeof useRegionWearTrends>['data'],
+): ComponentWearTrend[] {
+  // Merge by (component_id, unit) per the mixed-unit handling rule (Q3).
+  // mean_rul_remaining is a weighted mean — each region's contribution
+  // weighted by its asset_count, so a region with 10 assets contributes
+  // more to the theater mean than a region with 1. Never collapses across
+  // units; the same component_id appears multiple times if regions
+  // reported in different units.
+  type Accum = { sum_weighted_rul: number; sum_assets: number };
+  const acc = new Map<string, Accum>();
+  for (const row of rows) {
+    for (const c of row.components) {
+      const key = `${c.component_id}|${c.unit}`;
+      const existing = acc.get(key);
+      if (existing) {
+        existing.sum_weighted_rul += c.mean_rul_remaining * c.asset_count;
+        existing.sum_assets += c.asset_count;
+      } else {
+        acc.set(key, {
+          sum_weighted_rul: c.mean_rul_remaining * c.asset_count,
+          sum_assets: c.asset_count,
+        });
+      }
+    }
+  }
+  return Array.from(acc.entries()).map(([key, v]) => {
+    const [component_id, unit] = key.split('|');
+    return {
+      component_id,
+      unit,
+      mean_rul_remaining: v.sum_assets > 0 ? v.sum_weighted_rul / v.sum_assets : 0,
+      asset_count: v.sum_assets,
+    };
+  });
+}
+
+// --- panels (inline — HQ-specific rollup displays) -------------------------
 
 function FleetReadiness({
-  cm, logistics,
+  fleetSummary,
 }: {
-  cm: ReturnType<typeof useAllCmState>['data'];
-  logistics: ReturnType<typeof useAllLogisticsStatus>['data'];
+  fleetSummary: ReturnType<typeof useRegionFleetSummary>['data'];
 }) {
-  const cmBuckets = useMemo(() => cmComplianceSummary(cm), [cm]);
-  const sevBuckets = useMemo(() => logisticsSeveritySummary(logistics), [logistics]);
+  const totals = useMemo(() => sumFleetBuckets(fleetSummary), [fleetSummary]);
+  const empty = fleetSummary.length === 0;
   return (
     <div className="panel shrink-0 p-3">
-      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">Fleet-Wide Readiness</h2>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">CM status</div>
-          {cmBuckets.length === 0 && <div className="text-xs text-slate-500">—</div>}
-          {cmBuckets.map((b) => (
-            <div key={b.status} className="flex justify-between text-xs">
-              <span className="text-slate-400">{shortCmStatus(b.status)}</span>
-              <span className="text-slate-200 font-bold">{b.count}</span>
+      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">
+        Fleet-Wide Readiness (theater)
+      </h2>
+      {empty ? (
+        <div className="text-xs text-slate-500">
+          Awaiting first emission — no region rollup observed yet
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 gap-3 text-xs">
+          <div className="flex justify-between">
+            <span className="text-emerald-300">nominal</span>
+            <span className="text-slate-200 font-bold">{totals.nominal}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-amber-300">degraded</span>
+            <span className="text-slate-200 font-bold">{totals.degraded}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-orange-300">critical</span>
+            <span className="text-slate-200 font-bold">{totals.critical}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-red-300">non-operational</span>
+            <span className="text-slate-200 font-bold">{totals.non_operational}</span>
+          </div>
+          <div className="flex justify-between col-span-2 border-t border-slate-800 pt-1">
+            <span className="text-slate-400">total assets</span>
+            <span className="text-slate-200 font-bold">{totals.asset_count}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TopFactorsTheater({
+  topFactors,
+}: {
+  topFactors: ReturnType<typeof useRegionTopFactors>['data'];
+}) {
+  const merged = useMemo(
+    () => mergeTopFactors(topFactors, HQ_TOP_FACTORS_N),
+    [topFactors],
+  );
+  return (
+    <div className="panel shrink-0 p-3">
+      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">
+        Top Constraining Factors (theater)
+      </h2>
+      {merged.length === 0 ? (
+        <div className="text-xs text-slate-500">
+          Awaiting first emission — no factors observed yet
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {merged.map((f) => (
+            <div key={f.factor_id} className="flex items-center justify-between text-xs">
+              <span className="text-slate-300">{f.factor_id}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-sm border border-slate-700 text-slate-300">
+                {f.count} asset{f.count === 1 ? '' : 's'}
+              </span>
             </div>
           ))}
         </div>
-        <div>
-          <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Logistics severity</div>
-          {sevBuckets.length === 0 && <div className="text-xs text-slate-500">—</div>}
-          {sevBuckets.map((b) => (
-            <div key={b.severity} className="flex justify-between text-xs">
-              <span className="text-slate-400">{shortSeverity(b.severity)}</span>
-              <span className="text-slate-200 font-bold">{b.count}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -113,23 +253,36 @@ function ConfigurationPosture({
   );
 }
 
-function WearTrends({ windows }: { windows: ReturnType<typeof useAllTelemetryWindows>['data'] }) {
-  const rollup = useMemo(() => wearTrendRollup(windows), [windows]);
+function WearTrendsTheater({
+  wearTrends,
+}: {
+  wearTrends: ReturnType<typeof useRegionWearTrends>['data'];
+}) {
+  const merged = useMemo(() => mergeWearTrends(wearTrends), [wearTrends]);
   return (
     <div className="panel shrink-0 p-3">
-      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">Fleet Wear Trends</h2>
-      {rollup.length === 0 ? (
-        <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2 rounded-sm">
-          No windowed wear data. Windowed telemetry is sparse — the DIS feed
-          produces none (see ADR-0020); sustainment-rich feeds (sim-a /
-          proprietary) drive the windowing path.
+      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">
+        Fleet Wear Trends (theater)
+      </h2>
+      {merged.length === 0 ? (
+        <div className="text-xs text-slate-500">
+          Awaiting first emission — no wear components observed yet
         </div>
       ) : (
-        <div className="space-y-1">
-          {rollup.map((r) => (
-            <div key={r.component_key} className="flex justify-between text-xs">
-              <span className="text-slate-300">{r.component_key}</span>
-              <span className="text-slate-400">{r.assetCount} asset{r.assetCount === 1 ? '' : 's'}</span>
+        <div className="space-y-1 text-xs font-mono">
+          {merged.map((c) => (
+            <div
+              key={`${c.component_id}|${c.unit}`}
+              className="flex items-center justify-between"
+            >
+              <span className="text-slate-300">
+                {c.component_id}
+                {c.unit ? <span className="text-slate-500"> ({c.unit})</span> : null}
+              </span>
+              <span className="text-slate-200">
+                mean RUL {c.mean_rul_remaining.toFixed(1)}
+                <span className="text-slate-500"> · {c.asset_count} asset{c.asset_count === 1 ? '' : 's'}</span>
+              </span>
             </div>
           ))}
         </div>
@@ -141,20 +294,20 @@ function WearTrends({ windows }: { windows: ReturnType<typeof useAllTelemetryWin
 export default function HqApp() {
   const [wanActive, setWanActive] = useState(true);
 
-  // Pipeline data — ElectricSQL Shapes.
+  // Pipeline data — ElectricSQL Shapes. cm + fleet still used by
+  // ConfigurationPosture (MWO compliance by family, baseline distribution)
+  // — the per-platform-family slice is NOT in the rolled-up topics.
   const cm = useAllCmState();
-  const logistics = useAllLogisticsStatus();
   const fleet = useFleetAssets();
-  const windows = useAllTelemetryWindows();
   const edge = useEdgeBuffer();
-  // Real observed link state; the freeze overlay shows when the edge->HQ
-  // link is genuinely severed, not just commanded.
+
+  // Phase 6c.1: theater-level rollup sources.
+  const regionFleet = useRegionFleetSummary();
+  const regionTopFactors = useRegionTopFactors();
+  const regionWearTrends = useRegionWearTrends();
+
   const severed = edge.status ? edge.status.hq_link_severed : !wanActive;
 
-  // The "God Switch" — disables/enables the real toxiproxy hq-link proxy
-  // (registered at runtime as of Phase 4c.5: toxiproxy now loads -config).
-  // Disable, not a toxic: toxiproxy then closes connections and refuses
-  // new ones, so the edge-hq-bridge genuinely cannot reach redpanda-hq.
   const toggleWan = async (active: boolean) => {
     setWanActive(active);
     try {
@@ -172,7 +325,6 @@ export default function HqApp() {
     <div className={`font-mono h-screen flex flex-col overflow-hidden transition-colors duration-500 ${severed ? 'freeze-active' : ''}`}>
       <HqHeader wanActive={wanActive} setWanActive={toggleWan} />
 
-      {/* Global Freeze Overlay — driven by the REAL hq-link sever state. */}
       {severed && (
         <div className="absolute inset-0 z-40 pointer-events-none flex flex-col items-center justify-center pt-20">
           <div className="scanlines absolute inset-0 pointer-events-none z-50 bg-[linear-gradient(to_bottom,rgba(255,255,255,0),rgba(255,255,255,0)_50%,rgba(0,0,0,0.2)_50%,rgba(0,0,0,0.2))] bg-[length:100%_4px]"></div>
@@ -185,15 +337,15 @@ export default function HqApp() {
       )}
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden relative z-0">
-        {/* One real hq-link: severed => 0 up / 1 down, else 1 up / 0 down. */}
         <TheaterReadinessPosture wanActive={!severed} linksUp={severed ? 0 : 1} linksDown={severed ? 1 : 0} />
 
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2">
           <EdgeAttribution />
           <RegionFleetSummary />
-          <FleetReadiness cm={cm.data} logistics={logistics.data} />
+          <FleetReadiness fleetSummary={regionFleet.data} />
+          <TopFactorsTheater topFactors={regionTopFactors.data} />
           <ConfigurationPosture cm={cm.data} fleet={fleet.data} />
-          <WearTrends windows={windows.data} />
+          <WearTrendsTheater wearTrends={regionWearTrends.data} />
           <HqDigitalTwin wanActive={!severed} />
           <HqWorkOrders wanActive={!severed} />
         </div>

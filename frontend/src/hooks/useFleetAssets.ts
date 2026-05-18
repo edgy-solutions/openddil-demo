@@ -1,6 +1,6 @@
 // useFleetAssets — every asset the pipeline has seen telemetry for.
 // Backs the fleet picker / asset list. Source: telemetry_latest_state.
-import { num, useTableShape, type ShapeResult } from './electric';
+import { num, sqlLiteral, useTableShape, type ShapeResult } from './electric';
 
 export interface FleetAsset {
   asset_id: string;
@@ -33,4 +33,20 @@ function mapFleetAsset(row: Record<string, any>): FleetAsset {
 
 export function useFleetAssets(): ShapeResult<FleetAsset> {
   return useTableShape('telemetry_latest_state', mapFleetAsset);
+}
+
+// Phase 6c.1: region-scoped variant for the Regional view's pulldown.
+// Returns ONLY assets whose telemetry_latest_state.region_id matches
+// the given region. Used by RegionalApp's AorAssetList so the picker
+// reflects the selected region rather than the global fleet.
+//
+// Empty regionId returns the unfiltered shape — same as useFleetAssets()
+// — so cold-start (pulldown hasn't picked a region yet) doesn't break.
+export function useFleetAssetsForRegion(
+  regionId: string | null | undefined,
+): ShapeResult<FleetAsset> {
+  const where = regionId
+    ? `region_id = ${sqlLiteral(regionId)}`
+    : undefined;
+  return useTableShape('telemetry_latest_state', mapFleetAsset, { where });
 }

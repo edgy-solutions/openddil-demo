@@ -1,7 +1,11 @@
 // ElectricSQL shape hooks — the single read path for pipeline state.
 // Each hook subscribes to one projector-populated Postgres table.
 export { ELECTRIC_URL, num, type ShapeResult } from './electric';
-export { useFleetAssets, type FleetAsset } from './useFleetAssets';
+export {
+  useFleetAssets,
+  useFleetAssetsForRegion,
+  type FleetAsset,
+} from './useFleetAssets';
 export {
   useTelemetryLatest,
   type TelemetryLatest,
@@ -29,3 +33,13 @@ export {
   useRegionFleetSummary,
   type RegionFleetSummary,
 } from './useRegionFleetSummary';
+export {
+  useRegionTopFactors,
+  type RegionTopFactors,
+  type RegionFactor,
+} from './useRegionTopFactors';
+export {
+  useRegionWearTrends,
+  type RegionWearTrends,
+  type ComponentWearTrend,
+} from './useRegionWearTrends';

@@ -269,6 +269,42 @@ item: add it here, even if it isn't a test-runner item.
     its own; capturing the pattern because the next test author will
     hit the same flake.
 
+14. **Pre-§A region-unspecified residuals — CLEANED UP pre-§C.1, test_47
+    locks the invariant.** Inventory at §C.1 build time: 2 rows each in
+    `asset_cm_state` and `asset_logistics_status`, all for assets
+    `dis:1:1:1820` and `dis:1:1:2820`. Both assets were registered with
+    cm-service / fusion BEFORE §A's stamping fix landed; their Restate
+    Virtual Object state was initialized with empty `edge_id`/`region_id`
+    and never re-emitted because no subsequent state-transition observe
+    triggered. Cleanup approach: send refresh DIS PDUs through the
+    natural pipeline — `sensor-ingest -> dis-mapper -> raw-sensor-stream
+    -> cm-service.observe()` triggers `_extract_origin` to repopulate
+    `record.edge_id/region_id` from the inbound Provenance, then the
+    natural emit path updates `asset-cm-state` (and fusion follows the
+    same pattern for `asset-logistics-status`). Verified zero residuals
+    post-cleanup. test_47 makes the cleanup permanent — asserts zero
+    NULL/empty/'region-unspecified' rows in the rolled-up table AND in
+    both per-asset flat-pool tables as a startup invariant. If new
+    residuals ever appear, they'd indicate a new pre-§A-style stamping
+    regression upstream; the test catches it before it can drift.
+
+15. **Regional vs maintainer pulldown UX asymmetry — design constraint
+    for §C.2/§C.3.** The §C.1 regional pulldown is visually unobtrusive
+    (dev/demo infrastructure) and has NO animated transition between
+    region scopes. The §C.2 maintainer pulldown will be visually
+    prominent and §C.3 will add an animated transition between edge
+    scopes. The discriminator: **animation has a production analog or
+    it doesn't.** Regional officer in production is fixed-to-their-
+    region by auth context — no switching, so no transition to animate.
+    A maintainer in principle can physically travel between FOBs (a
+    real operational shift); the "FOB transport" animation maps that
+    real movement to a UI gesture. ADR-0023 §C.3 names this as the
+    demo-narrative payoff. When §C.3 design conversation starts, this
+    asymmetry is the design constraint that should be findable — don't
+    let "we did animation for regional too" backslide into the design
+    just because it'd be symmetric with maintainer; symmetry is the
+    wrong shape here.
+
 ## Future phases
 
 **Distinct category from tracked follow-ups.** Follow-ups are code-level

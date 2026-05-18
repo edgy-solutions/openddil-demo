@@ -1,9 +1,26 @@
 // =============================================================================
-// fleetAggregates — pure fleet-level rollups (Phase 4c)
+// fleetAggregates — pure fleet-level rollups (post-§C.1 prune)
 // =============================================================================
 // Shared by the regional and HQ views. Pure functions over the shape-hook
 // row arrays — no hooks, no I/O — so they're trivially testable and reused.
-import type { CmState, LogisticsStatus, FleetAsset, TelemetryWindows } from '../hooks';
+//
+// Phase 6c.1 pruned the client-side group-by functions that have aggregator-
+// sourced replacements:
+//   topConstrainingFactors  -> useRegionTopFactors (per-region, merged at
+//                              HQ inline)
+//   cmComplianceSummary     -> useRegionFleetSummary severity buckets
+//                              (WORST-of(logistics, cm) collapsed)
+//   logisticsSeveritySummary -> useRegionFleetSummary severity buckets
+//   wearTrendRollup         -> useRegionWearTrends (per-region, merged at
+//                              HQ inline)
+//
+// What's left here is per-asset display helpers (severityRank,
+// severityHeatClass, shortSeverity, shortCmStatus) plus the two per-
+// platform-family slicers (mwoComplianceByFamily, baselineDistribution)
+// and the per-asset picker join helper (aorAssetList). None of these has
+// an aggregator-sourced replacement — the rolled-up topics are
+// region-level, not per-asset or per-platform-family.
+import type { CmState, LogisticsStatus, FleetAsset } from '../hooks';
 
 // --- severity / status ordering ---------------------------------------------
 
@@ -39,6 +56,10 @@ export function shortCmStatus(status: string | undefined): string {
 }
 
 // --- AOR asset list (fleet joined with logistics severity) ------------------
+// Per-asset picker join helper. The aggregator emits region-level rollups,
+// not per-asset rows — the picker needs the per-asset join so each row
+// shows its own severity color. This is NOT replaceable by aggregator
+// output (region rollup loses the per-asset granularity by definition).
 
 export interface AorRow {
   asset_id: string;
@@ -63,77 +84,11 @@ export function aorAssetList(
     .sort((x, y) => severityRank(y.severity) - severityRank(x.severity));
 }
 
-// --- top-N constraining factors across the fleet ----------------------------
-
-export interface FactorRollup {
-  factor_id: string;
-  affectedAssets: number;
-  worstSeverity: string;
-}
-
-/** Group constraining_factors across all logistics rows by factor_id. */
-export function topConstrainingFactors(
-  logistics: LogisticsStatus[],
-  limit = 10,
-): FactorRollup[] {
-  const byFactor = new Map<string, { assets: Set<string>; worst: string }>();
-  for (const row of logistics) {
-    for (const f of row.constraining_factors ?? []) {
-      if (!f?.factor_id) continue;
-      const entry = byFactor.get(f.factor_id) ?? { assets: new Set<string>(), worst: 'LOGISTICS_SEVERITY_UNSPECIFIED' };
-      entry.assets.add(row.asset_id);
-      if (severityRank(f.severity) > severityRank(entry.worst)) entry.worst = f.severity;
-      byFactor.set(f.factor_id, entry);
-    }
-  }
-  return [...byFactor.entries()]
-    .map(([factor_id, e]) => ({ factor_id, affectedAssets: e.assets.size, worstSeverity: e.worst }))
-    .sort((a, b) => b.affectedAssets - a.affectedAssets || severityRank(b.worstSeverity) - severityRank(a.worstSeverity))
-    .slice(0, limit);
-}
-
-// --- CM compliance summary --------------------------------------------------
-
-export interface CmComplianceBucket {
-  status: string;
-  count: number;
-}
-
-/** Group CM state rows by overall_status, worst-first. */
-export function cmComplianceSummary(cm: CmState[]): CmComplianceBucket[] {
-  const CM_RANK: Record<string, number> = {
-    CONFIG_STATUS_NOT_MISSION_CAPABLE: 4,
-    CONFIG_STATUS_MAJOR_DISCREPANCY: 3,
-    CONFIG_STATUS_MINOR_DISCREPANCY: 2,
-    CONFIG_STATUS_IN_COMPLIANCE: 1,
-    CONFIG_STATUS_UNSPECIFIED: 0,
-  };
-  const counts = new Map<string, number>();
-  for (const row of cm) {
-    counts.set(row.overall_status, (counts.get(row.overall_status) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([status, count]) => ({ status, count }))
-    .sort((a, b) => (CM_RANK[b.status] ?? 0) - (CM_RANK[a.status] ?? 0));
-}
-
-// --- HQ-level rollups -------------------------------------------------------
-
-export interface SeverityBucket {
-  severity: string;
-  count: number;
-}
-
-/** Group logistics rows by overall_severity, worst-first. */
-export function logisticsSeveritySummary(logistics: LogisticsStatus[]): SeverityBucket[] {
-  const counts = new Map<string, number>();
-  for (const row of logistics) {
-    counts.set(row.overall_severity, (counts.get(row.overall_severity) ?? 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([severity, count]) => ({ severity, count }))
-    .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
-}
+// --- per-platform-family slicers (HQ-only, no aggregator replacement) -------
+// The rolled-up topics slice by region, not by platform_variant. These
+// two functions stay because they answer a different question (how does
+// MWO compliance / baseline distribution vary across platform families)
+// that the regional rollups don't cover.
 
 /** Coarse platform family from a platform_variant ("M1A2-SEPv3" -> "M1A2"). */
 export function platformFamily(variant: string | null | undefined): string {
@@ -195,31 +150,4 @@ export function baselineDistribution(cm: CmState[]): BaselineBucket[] {
   return [...counts.entries()]
     .map(([baseline_id, count]) => ({ baseline_id, count }))
     .sort((a, b) => b.count - a.count);
-}
-
-export interface WearTrendRollup {
-  component_key: string;
-  assetCount: number;
-}
-
-/**
- * Roll up component wear trends across the fleet — which components show
- * up in asset_telemetry_windows.component_wear_trends, and how many assets
- * report each. Modest by design: windowed wear data is sparse (the DIS
- * feed produces none — see ADR-0020), so this gracefully shows little.
- */
-export function wearTrendRollup(windows: TelemetryWindows[]): WearTrendRollup[] {
-  const byComponent = new Map<string, Set<string>>();
-  for (const row of windows) {
-    for (const w of row.component_wear_trends ?? []) {
-      const key = (w as any)?.component_key ?? (w as any)?.component_id;
-      if (!key) continue;
-      const set = byComponent.get(key) ?? new Set<string>();
-      set.add(row.asset_id);
-      byComponent.set(key, set);
-    }
-  }
-  return [...byComponent.entries()]
-    .map(([component_key, assets]) => ({ component_key, assetCount: assets.size }))
-    .sort((a, b) => b.assetCount - a.assetCount);
 }
