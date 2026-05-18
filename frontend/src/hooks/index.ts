@@ -4,6 +4,7 @@ export { ELECTRIC_URL, num, type ShapeResult } from './electric';
 export {
   useFleetAssets,
   useFleetAssetsForRegion,
+  useFleetAssetsForEdge,
   type FleetAsset,
 } from './useFleetAssets';
 export {

@@ -325,6 +325,70 @@ item: add it here, even if it isn't a test-runner item.
     principled version of this rule lives in ADR-0025 (build-pass
     deployment verification discipline).
 
+    **§C.2 sharpening — the grep target must be a JSX string literal,
+    NOT a JS identifier.** The §C.2 recipe locked
+    `useFleetAssetsForEdge` as the unambiguous grep target on the
+    theory that "the function name did not exist pre-§C.2; finding it
+    proves the new code shipped." Production bundles (Vite +
+    minification) DO NOT preserve function names — `useFleetAssetsFor-
+    Edge` becomes a single-letter or two-letter symbol in the built
+    bundle and the grep returns nothing even when the code DID ship.
+    Only JSX string literals (and other user-visible strings) survive
+    minification.
+
+    **The right grep target shape**: a JSX literal that the sub-phase
+    introduced and that is verifiably absent from the prior version.
+    For §C.2:
+      - Present post-§C.2 (any of these is unambiguous proof):
+          `"no edges observed yet"` (EdgePulldown cold-state)
+          `"only edge observed"` (single-edge affirmative-display)
+          `"no assets in scope"` (Header asset picker, replaces
+                                    pre-§C.2 `"no assets in pipeline"`)
+      - Absent post-§C.2 (regression check that the OLD bundle is gone):
+          `"no assets in pipeline"` (Header pre-§C.2 cold-state copy
+                                      that §C.2 replaced)
+    Pin TWO targets: one positive (new string) AND one negative (old
+    string is gone). The positive proves the new code shipped; the
+    negative proves the prior version isn't being served from cache
+    or a stale CDN. Either alone can be defeated by edge cases
+    (concatenated bundles, partial sourcemap leaks).
+
+17. **Inventory edge-scoping decision pending — visible discrepancy on
+    the maintainer view until decided.** §C.2 scoped the maintainer
+    view's asset picker per edge, but the Inventory panel (subscribed
+    to `inventory_items` directly via `useShape`) stays UNFILTERED
+    regardless of edge scope. A maintainer at `?edge=edge-02` sees
+    their scoped asset picker but the FOB inventory shows all FOBs'
+    items. This is honest in the commit narrative; it's an unresolved
+    structural question, not a §C.2 bug.
+
+    **Decision needed**: is `inventory_items` per-FOB (each FOB has
+    its own inventory) or logistics-shared (a single fleet-wide
+    inventory)? Both are defensible deployment models; the answer
+    depends on the operational story the project intends.
+
+    **Resolution paths**:
+      (a) If per-FOB → add `edge_id` column to `inventory_items` in
+          `openddil-stack/schema/schema.hcl`; add a `useInventoryFor-
+          Edge(edgeId)` hook mirroring `useFleetAssetsForEdge`;
+          update Inventory component to consume the scoped hook on
+          the maintainer view (HQ / regional views may stay
+          unfiltered). Atlas migration + frontend rewire. Estimated
+          size: similar to §C.2's hook addition (~0.2× §C.1).
+      (b) If logistics-shared → document why in
+          `openddil-stack/schema/schema.hcl` near the
+          `inventory_items` table (one-paragraph comment naming the
+          deployment model). No code change required; the visible
+          unfiltered behavior is correct.
+
+    **Until decided** (during §C.2 demo or any §C.2-onwards
+    maintainer walkthrough), the visible discrepancy stands. Not a
+    blocker; flagged so it doesn't read as a §C.2 bug or get
+    discovered late under deadline pressure. Same shape as #11
+    (sustainment-data fixture) and #14 (region-unspecified residuals)
+    — name the decision, name the resolution paths, name the visible-
+    during-deferred consequence.
+
 ## Future phases
 
 **Distinct category from tracked follow-ups.** Follow-ups are code-level

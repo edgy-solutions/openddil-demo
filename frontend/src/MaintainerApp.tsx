@@ -12,7 +12,7 @@
 // the link toggle now severs/restores the REAL toxiproxy hq-link proxy,
 // and the edge-buffer counter (in Header) reads real bridge-group lag via
 // useEdgeBuffer — no more client-side simulation.
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Header from './components/Header';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
 import LocalFleetRadar from './components/LocalFleetRadar';
@@ -23,12 +23,36 @@ import CmStateCard from './components/CmStateCard';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
   useFleetAssets,
+  useFleetAssetsForEdge,
   useTelemetryLatest,
   useCmState,
   useLogisticsStatus,
   useTacticalEvents,
 } from './hooks';
 import { platformClass } from './config/platformChartConfig';
+
+// Phase 6c.2: edge-scope mechanism (pulldown + ?edge= URL param). The
+// available-edges list is derived from useFleetAssets().data distinct
+// edge_ids (symmetric with §C.1's region-from-summary pattern). The
+// regex below pins the URL-param shape so a malformed value (?edge=foo)
+// is rejected rather than passed to the Shape API as a where-clause.
+const EDGE_ID_PATTERN = /^edge-[a-zA-Z0-9-]+$/;
+// Asset-id deep-link pattern. Conservative — covers the dis:1:1:NNNN
+// shape the demo uses; expand if other producers introduce other
+// asset-id shapes.
+const ASSET_ID_PATTERN = /^[a-zA-Z0-9:_-]+$/;
+
+function initialEdge(): string | null {
+  const param = new URLSearchParams(window.location.search).get('edge');
+  if (param && EDGE_ID_PATTERN.test(param)) return param;
+  return null;
+}
+
+function initialAssetParam(): string | null {
+  const param = new URLSearchParams(window.location.search).get('asset');
+  if (param && ASSET_ID_PATTERN.test(param)) return param;
+  return null;
+}
 
 function formatSeen(iso: string | null): string {
   if (!iso) return 'never';
@@ -43,24 +67,124 @@ function MaintainerApp() {
   const [degraded, setDegraded] = useState(false);
   const [clock, setClock] = useState('');
   const [selectedAssetId, setSelectedAssetId] = useState('');
+  // Phase 6c.2: edge scope. Initial value comes from ?edge= URL param if
+  // present and well-formed; otherwise resolved from the observed-edges
+  // list (first alphabetically) once the unfiltered fleet shape returns.
+  const [selectedEdge, setSelectedEdge] = useState<string | null>(initialEdge);
+
+  // Pending deep-link from ?asset= URL param — used at most once on
+  // first load. We hold it as state (not a ref) so it stays visible in
+  // React DevTools when debugging deep-link issues. Cleared after first
+  // successful application OR after we've determined the asset isn't in
+  // the scoped edge (case 2 of tightening A).
+  const [pendingDeepLinkAsset, setPendingDeepLinkAsset] = useState<string | null>(initialAssetParam);
 
   // Pipeline data — ElectricSQL Shapes, no polling.
-  const fleet = useFleetAssets();
+  // Unfiltered fleet shape — sourced for the EdgePulldown's
+  // available-edges list. Cheap (same shape every panel-tier consumer
+  // already subscribes to elsewhere) and stays current as new edges
+  // come online.
+  const fleetAll = useFleetAssets();
+  // Edge-scoped fleet — drives the Header's asset picker. When
+  // selectedEdge is null (URL had no ?edge= AND default not yet
+  // resolved), falls back to the unfiltered shape so the picker isn't
+  // empty during the brief cold-start window.
+  const fleetScoped = useFleetAssetsForEdge(selectedEdge);
+  const fleet = selectedEdge ? fleetScoped : fleetAll;
+
   const telemetry = useTelemetryLatest(selectedAssetId);
   const cm = useCmState(selectedAssetId);
   const logistics = useLogisticsStatus(selectedAssetId);
   // Maintainer view: recent events filtered to the selected asset.
   const events = useTacticalEvents(10, selectedAssetId);
 
-  // Default the selected asset to the first in the fleet; re-home if the
-  // current selection drops out of the fleet.
+  // Available edges for the pulldown — distinct edge_ids actually
+  // observed in the pipeline. Sorted alphabetically. Symmetric with
+  // RegionalApp's region-from-summary pattern.
+  const availableEdges = useMemo(
+    () => Array.from(new Set(
+      fleetAll.data
+        .map((a) => a.edge_id)
+        .filter((e): e is string => !!e && e !== 'edge-unspecified'),
+    )).sort(),
+    [fleetAll.data],
+  );
+
+  // Default-on-first-load for the edge pulldown: first observed edge
+  // alphabetically, if no ?edge= URL param resolved one. Cold-start
+  // tolerant: if no edges observed yet, stays null and pulldown shows
+  // its "no edges observed yet" state.
+  useEffect(() => {
+    if (selectedEdge) return;
+    if (availableEdges.length === 0) return;
+    setSelectedEdge(availableEdges[0]);
+  }, [availableEdges, selectedEdge]);
+
+  // Keep ?edge= in sync so reload / shared link lands on the same scope.
+  useEffect(() => {
+    if (!selectedEdge) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('edge', selectedEdge);
+    window.history.replaceState(null, '', url);
+  }, [selectedEdge]);
+
+  // Keep ?asset= in sync so deep links to (edge, asset) pairs are
+  // shareable. Cleared when no asset is selected so the URL doesn't
+  // carry a stale value.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (selectedAssetId) url.searchParams.set('asset', selectedAssetId);
+    else url.searchParams.delete('asset');
+    window.history.replaceState(null, '', url);
+  }, [selectedAssetId]);
+
+  // Asset selection logic — Phase 6c.2 three-case behavior for the
+  // ?edge= + ?asset= URL-param combination (tightening A):
+  //
+  //   1. Both params present AND ?asset= is in the scoped edge's
+  //      fleet → use that asset (honor the deep link).
+  //   2. Both params present BUT ?asset= is NOT in the scoped edge →
+  //      fall back to auto-pick first asset of the edge (URL is stale
+  //      or wrong; deep-link cleared).
+  //   3. Only ?edge= present (or no URL params) → auto-pick first
+  //      asset of the scoped edge.
+  //
+  // After first application, pendingDeepLinkAsset is cleared and this
+  // collapses to the normal "auto-pick first; re-home on fleet change"
+  // logic.
   useEffect(() => {
     if (fleet.data.length === 0) return;
+
+    // Case 1 / 2: pending deep-link asset to resolve.
+    if (pendingDeepLinkAsset) {
+      const found = fleet.data.some((a) => a.asset_id === pendingDeepLinkAsset);
+      if (found) {
+        setSelectedAssetId(pendingDeepLinkAsset);  // case 1 — honor link
+      } else {
+        setSelectedAssetId(fleet.data[0].asset_id);  // case 2 — fallback
+      }
+      setPendingDeepLinkAsset(null);
+      return;
+    }
+
+    // Case 3 + ordinary re-home: default to first, re-home if current
+    // selection dropped out of the (possibly newly-scoped) fleet.
     const stillPresent = fleet.data.some((a) => a.asset_id === selectedAssetId);
     if (!selectedAssetId || !stillPresent) {
       setSelectedAssetId(fleet.data[0].asset_id);
     }
-  }, [fleet.data, selectedAssetId]);
+  }, [fleet.data, selectedAssetId, pendingDeepLinkAsset]);
+
+  // Explicit reset on pulldown change — clearing selectedAssetId here
+  // makes the re-home effect above fire deterministically rather than
+  // relying on stillPresent edge cases (e.g., an asset_id that happens
+  // to exist in both edges, though that shouldn't be possible with the
+  // current pipeline shape, defensive against future schema changes).
+  const onSelectEdge = (edgeId: string) => {
+    if (edgeId === selectedEdge) return;
+    setSelectedAssetId('');
+    setSelectedEdge(edgeId);
+  };
 
   // DDIL uplink sever/restore. Phase 4c.5: the link toggle DISABLES /
   // ENABLES the real toxiproxy hq-link proxy — toxiproxy then closes all
@@ -124,6 +248,9 @@ function MaintainerApp() {
         fleet={fleet.data}
         selectedAsset={selectedAssetId}
         setSelectedAsset={setSelectedAssetId}
+        availableEdges={availableEdges}
+        selectedEdge={selectedEdge}
+        onSelectEdge={onSelectEdge}
       />
 
       <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">

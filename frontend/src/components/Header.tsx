@@ -10,6 +10,7 @@ import { Laptop, Building2, TrendingUp } from 'lucide-react';
 import type { FleetAsset } from '../hooks';
 import { useEdgeBuffer } from '../hooks';
 import { assetLabel } from '../lib/assetLabel';
+import EdgePulldown from './EdgePulldown';
 
 interface HeaderProps {
   link1: boolean;
@@ -17,6 +18,12 @@ interface HeaderProps {
   fleet: FleetAsset[];
   selectedAsset: string;
   setSelectedAsset: (v: string) => void;
+  // Phase 6c.2 — per-edge scope. The Maintainer view owns this state
+  // (URL-param-synced + reset-on-switch behavior); Header just renders
+  // the pulldown and proxies changes back up.
+  availableEdges: string[];
+  selectedEdge: string | null;
+  onSelectEdge: (edgeId: string) => void;
 }
 
 // asset_id-first label (assetLabel) so assets with a shared callsign stay
@@ -25,7 +32,11 @@ function pickerLabel(a: FleetAsset): string {
   return a.platform_variant ? `${assetLabel(a)} (${a.platform_variant})` : assetLabel(a);
 }
 
-export default function Header({ link1, setLink1, fleet, selectedAsset, setSelectedAsset }: HeaderProps) {
+export default function Header({
+  link1, setLink1,
+  fleet, selectedAsset, setSelectedAsset,
+  availableEdges, selectedEdge, onSelectEdge,
+}: HeaderProps) {
   const { status } = useEdgeBuffer();
   // Real observed state from the projector's monitor; falls back to the
   // commanded toggle state until the first shape sync arrives.
@@ -37,7 +48,22 @@ export default function Header({ link1, setLink1, fleet, selectedAsset, setSelec
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
-        {/* Asset Context Switcher — populated from the real fleet (useFleetAssets) */}
+        {/* Phase 6c.2: two-level scope chrome — EDGE: [edge-N] › ASSET: [...]
+            EdgePulldown is visually prominent (cyan-tinted border, bold label)
+            because the maintainer pulldown is the demo-narrative payoff per
+            ADR-0023 (FOB transport). The asset picker that follows is the
+            FINE selection within the edge's scope. */}
+        <EdgePulldown
+          available={availableEdges}
+          selected={selectedEdge}
+          onSelect={onSelectEdge}
+        />
+
+        {/* Asset Context Switcher — populated from the edge-scoped fleet
+            (useFleetAssetsForEdge in MaintainerApp). The picker contents
+            update on edge change; MaintainerApp's re-home effect picks
+            the first asset of the new edge unless a deep-link ?asset=
+            URL param specifies one in the scoped edge. */}
         <div className="flex flex-col pr-6 border-r border-slate-700">
           <label className="text-[10px] text-slate-400 tracking-wider mb-1">ASSET</label>
           <div className="relative">
@@ -46,7 +72,7 @@ export default function Header({ link1, setLink1, fleet, selectedAsset, setSelec
               onChange={(e) => setSelectedAsset(e.target.value)}
               className="appearance-none w-64 bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 cursor-pointer"
             >
-              {fleet.length === 0 && <option value="">— no assets in pipeline —</option>}
+              {fleet.length === 0 && <option value="">— no assets in scope —</option>}
               {fleet.map((a) => (
                 <option key={a.asset_id} value={a.asset_id}>{pickerLabel(a)}</option>
               ))}

@@ -50,3 +50,27 @@ export function useFleetAssetsForRegion(
     : undefined;
   return useTableShape('telemetry_latest_state', mapFleetAsset, { where });
 }
+
+// Phase 6c.2: edge-scoped variant for the Maintainer view's pulldown.
+// Returns ONLY assets whose telemetry_latest_state.edge_id matches the
+// given edge. Used by MaintainerApp to scope the Header's asset picker
+// to the selected edge — the per-asset hooks (useTelemetryLatest /
+// useCmState / useLogisticsStatus / useTacticalEvents) ride on the
+// picker's narrowing, so they don't need their own edge filter.
+//
+// Empty edgeId returns the unfiltered shape (same cold-start handling
+// as useFleetAssetsForRegion). The maintainer view's default-on-first-
+// load logic resolves edgeId from the URL param or from the first
+// observed edge alphabetically before this is called with a real value.
+//
+// Distinctive function-name symbol (per ADR-0025 / follow-up #16):
+// "useFleetAssetsForEdge" is the deployment-proof grep target for §C.2
+// — pre-§C.2 bundles do not contain this string; post-build bundles do.
+export function useFleetAssetsForEdge(
+  edgeId: string | null | undefined,
+): ShapeResult<FleetAsset> {
+  const where = edgeId
+    ? `edge_id = ${sqlLiteral(edgeId)}`
+    : undefined;
+  return useTableShape('telemetry_latest_state', mapFleetAsset, { where });
+}
