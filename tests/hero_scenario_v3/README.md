@@ -152,22 +152,25 @@ item: add it here, even if it isn't a test-runner item.
    hierarchical restoration per ADR-0022 sequencing.
 
 7. **Projector multi-handler switch from env-default to message-field
-   provenance.** Phase 6a switched only the `telemetry_latest` handler
-   to read `Provenance.edge_id` / `Provenance.region_id` from the
-   inbound message; the other four per-asset handlers (`cm_state`,
-   `logistics_status`, `telemetry_windows`, `tactical_events`) **still
-   call `origin_provenance()` and pick up the projector instance's env
-   defaults**. **These tables currently carry the projector's env-default
-   `edge_id` for ALL rows in 6a; corrected at 6b when the cm-service /
-   fusion / faust-edge emitters get coordinated upgrades.** Detectable
-   in monitoring: `SELECT DISTINCT edge_id FROM asset_cm_state` will
-   show only the projector instance's env default regardless of which
-   edge the underlying events came from. The faust-edge emissions for
-   `derived-sustainment` and the `tactical-events` CloudEvents are
-   *already stamped* in 6a (shape-now-fill-later) — verified live:
-   `derived-sustainment` carries `provenance.edge_id` populated. The
-   `WindowedTelemetry` proto doesn't have a Provenance field; 6b adds
-   one as part of the regional aggregator's input contract.
+   provenance — CLOSED in Phase 6b §A (2026-05-17).** The four
+   remaining per-asset handlers (`cm_state`, `logistics_status`,
+   `telemetry_windows`, `tactical_events`) now read `edge_id` /
+   `region_id` from the inbound message via the shared
+   `resolve_provenance_from_{proto,dict,top_level}` helpers in
+   `handlers/base.py`. Coordinated emitter upgrades landed in
+   cm-service (`AsMaintainedRecord` gains the fields; observe()
+   stamps; `_reanalyze` preserves across the proto round-trip;
+   CloudEvent data block carries them for tactical events),
+   logistics-fusion-service (`_extract_origin` / `_refresh_origin`
+   reading from proto-camelCase Provenance, snake-case Provenance,
+   and asset-cm-state's JSON envelope top-level keys), and
+   faust-edge (`_emit_window_for_asset` stamps WindowedTelemetry
+   .provenance from `OPENDDIL_EDGE_ID` env). Verified live —
+   `SELECT DISTINCT edge_id` returns 3 populated edges for
+   `telemetry_latest_state`, `asset_cm_state`,
+   `asset_logistics_status`, and `tactical_events`. The
+   `WindowedTelemetry` proto gained `provenance = 21` in §A; the
+   end-to-end exercise of that path is the new follow-up #11.
 
 8. **Per-edge UI link toggle wiring.** The existing UI link toggle in
    the HQ header drives a single toxiproxy proxy (`hq-link` on 8474),
@@ -210,6 +213,32 @@ item: add it here, even if it isn't a test-runner item.
    each model rather than recoloring baked GLB materials. Eye-candy
    pass (2026-05-15) deliberately left this out as "model fidelity,"
    not "frame parity."
+
+11. **Sustainment-data test fixtures for the windowed-path end-to-end
+    exercise.** Phase 6b §A added `WindowedTelemetry.provenance` (proto
+    field 21), faust-edge stamps it from env, and the projector
+    `telemetry_windows` handler reads it via
+    `resolve_provenance_from_proto` — all verified at the code level.
+    What §A did *not* close is the live-pipeline exercise: faust-edge's
+    `_emit_window_for_asset` only emits when sustainment-window
+    accumulators flush, and the current DIS-only test traffic
+    (EntityState PDUs only, no Fire / Detonation / sustainment
+    payloads) never drives the sustainment-window emission path. The
+    `asset_telemetry_windows` table therefore stays empty under
+    hero_scenario_v3, and `SELECT DISTINCT edge_id` returns zero
+    rows — *not because stamping is broken, but because no row was
+    ever emitted to test the stamping on*. **Closing this needs a
+    sustainment-data test fixture** — a synthetic feed that pushes
+    enough samples per edge to trigger window flushing on each, so
+    `test_42_windowed_emission_per_edge` becomes a real positive +
+    negative isolation assertion the way test_41 is for
+    telemetry-latest. Not Phase 6b scope; **becomes relevant if §B's
+    `region-wear-trends` aggregator (which joins `derived-sustainment`
+    with `asset-telemetry-windows`) needs the windowed-input side
+    exercised for its own verification.** If §B builds against the
+    derived-sustainment side only and treats the windowed-input as a
+    code-verified contributor, the fixture stays a tail item. If §B
+    needs both sides hot, the fixture is the prerequisite.
 
 ## Future phases
 
