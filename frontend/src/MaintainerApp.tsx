@@ -21,6 +21,7 @@ import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
 import CmStateCard from './components/CmStateCard';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
+import EdgeTransit from './components/EdgeTransit';
 import {
   useFleetAssets,
   useFleetAssetsForEdge,
@@ -262,7 +263,14 @@ function MaintainerApp() {
         onSelectEdge={onSelectEdge}
       />
 
-      <main className="flex-1 grid grid-cols-3 gap-4 p-4 pt-2 overflow-hidden">
+      {/* Phase 6c.3 — wrap the entire content area in EdgeTransit. On
+          selectedEdge change (and ONLY edge changes — not first mount,
+          not asset-within-edge selection changes), runs an 800ms
+          dematerialize → suspended → materialize transporter animation
+          over the children. See EdgeTransit.tsx + index.css transit-*
+          keyframes for the implementation vocabulary. */}
+      <EdgeTransit triggerKey={selectedEdge} className="flex-1 overflow-hidden">
+      <main className="grid grid-cols-3 gap-4 p-4 pt-2 h-full overflow-hidden">
         {/* Left + center: identity strip + 3D schematic */}
         <div className="col-span-2 flex flex-col gap-4 overflow-hidden">
           <div className="panel flex items-center justify-between shrink-0 p-3">
@@ -303,6 +311,7 @@ function MaintainerApp() {
           <Inventory />
         </div>
       </main>
+      </EdgeTransit>
     </div>
   );
 }
