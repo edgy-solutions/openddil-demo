@@ -500,6 +500,7 @@ export default function DiagnosticCanvas({
             subtitle={subtitle}
             bannerNote={DEMO_MOCK ? 'synthetic 3D schematic' : undefined}
             contentClassName={transitClass(transitPhase)}
+            contentOverlayActive={transitPhase === 'transit'}
         >
             <Canvas camera={{ position: [10, 10, 10], fov: 50 }}>
                 <color attach="background" args={[0x020617]} />

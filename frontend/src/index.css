@@ -83,10 +83,22 @@
   100%  { filter: blur(0); opacity: 1; }
 }
 
+/* Cycle 2/6 (the cyan-tint B-accent): shimmer-through-suspended.
+ * Cycle 1's blank suspended phase made the dissolve hard to read against
+ * the panel's dark #020617 bg — eye had nothing to track between
+ * dematerialize and materialize. The 50% peak at 0.55 (above the
+ * 37.5%/62.5% holds at 0.4) gives visible motion through the suspended
+ * window. Applied via mix-blend-screen on a cyan-400 overlay, so the
+ * effect is "panel tints brighter cyan" (transporter energy) rather
+ * than "panel covered by an opaque sheet" (which would read as glitch).
+ * Contained inside HudFrame's contentClassName seam — panel chrome
+ * (header text z-10, DEMO MOCK badge z-30) renders ABOVE the overlay
+ * and is NOT tinted. */
 @keyframes transit-overlay-anim {
-  0%    { opacity: 0; animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
-  37.5% { opacity: 0.4; animation-timing-function: linear; }
-  62.5% { opacity: 0.4; animation-timing-function: cubic-bezier(0.6, 0.4, 1, 0); }
+  0%    { opacity: 0;    animation-timing-function: cubic-bezier(0.4, 0, 0.6, 1); }
+  37.5% { opacity: 0.4;  animation-timing-function: ease-in-out; }
+  50%   { opacity: 0.55; animation-timing-function: ease-in-out; }
+  62.5% { opacity: 0.4;  animation-timing-function: cubic-bezier(0.6, 0.4, 1, 0); }
   100%  { opacity: 0; }
 }
 
