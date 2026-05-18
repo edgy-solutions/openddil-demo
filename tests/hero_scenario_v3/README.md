@@ -305,6 +305,26 @@ item: add it here, even if it isn't a test-runner item.
     just because it'd be symmetric with maintainer; symmetry is the
     wrong shape here.
 
+16. **Frontend rebuild + container recreate is a mandatory build-pass
+    step for any sub-phase that touches frontend code.** The frontend
+    is an nginx-served static build (`docker-compose.override.yml`
+    builds locally but is NOT hot-reloaded — see the comment in the
+    override file). Source-file edits do NOT propagate to the running
+    container; `docker compose build frontend` + `docker compose up -d
+    --force-recreate frontend` is required, and the observable-end-
+    state verification must include confirming the live deployment
+    runs the new code (grep the served bundle for a known-new string,
+    or compare bundle hash to a known-old one). Caught live during
+    §C.1 verification: hooks + filter logic were correct, automated
+    tests (test_47, test_48) passed against the Shape API directly,
+    and the user's browser screenshot still showed the pre-§C.1 build
+    rendering identical content for both regions — because the user's
+    browser was loading the stale image. Same trip hazard exists for
+    §C.2 (maintainer pulldown is also frontend), §C.3 (animation),
+    and any future sub-phase touching `openddil-demo/frontend/`. The
+    principled version of this rule lives in ADR-0025 (build-pass
+    deployment verification discipline).
+
 ## Future phases
 
 **Distinct category from tracked follow-ups.** Follow-ups are code-level
