@@ -375,19 +375,36 @@ item: add it here, even if it isn't a test-runner item.
           the maintainer view (HQ / regional views may stay
           unfiltered). Atlas migration + frontend rewire. Estimated
           size: similar to §C.2's hook addition (~0.2× §C.1).
+          STILL PENDING.
       (b) If logistics-shared → document why in
           `openddil-stack/schema/schema.hcl` near the
           `inventory_items` table (one-paragraph comment naming the
           deployment model). No code change required; the visible
           unfiltered behavior is correct.
+          STILL PENDING.
+      (c) **IMPLEMENTED — §C.2 follow-up commit.** Replace the
+          hardcoded mock-fallback (`Coolant Pumps` / `T/R Modules`
+          rows that rendered whenever `inventory_items` had zero rows)
+          with an honest empty-state: "No FOB inventory data —
+          inventory_items table not yet populated. Per follow-up #17."
+          Also gates the rose stale-cached banner on `hasCachedData` —
+          banner is meaningful when there's real data going stale,
+          misleading when there's no real data at all. Pre-§C.2
+          combination of mock-fallback + stale-banner read as "real
+          data that's gone wrong" when it was actually "feature not
+          built yet." Same family as ADR-0017's no-orphan-mocks rule,
+          applied to the empty-state path. Caught during §C.2's
+          maintainer-view eyeball walkthrough. Does NOT preempt the
+          (a)-vs-(b) decision — it just stops misleading users while
+          the question stays open.
 
-    **Until decided** (during §C.2 demo or any §C.2-onwards
-    maintainer walkthrough), the visible discrepancy stands. Not a
-    blocker; flagged so it doesn't read as a §C.2 bug or get
-    discovered late under deadline pressure. Same shape as #11
-    (sustainment-data fixture) and #14 (region-unspecified residuals)
-    — name the decision, name the resolution paths, name the visible-
-    during-deferred consequence.
+    **Until (a) or (b) decides**, the maintainer view's Inventory
+    panel shows the honest empty-state regardless of edge scope. Not
+    a blocker; flagged so the per-FOB-vs-shared question doesn't
+    get rediscovered under deadline pressure. Same shape as #11
+    (sustainment-data fixture) and #14 (region-unspecified
+    residuals) — name the decision, name the resolution paths, name
+    the visible-during-deferred consequence.
 
 ## Future phases
 

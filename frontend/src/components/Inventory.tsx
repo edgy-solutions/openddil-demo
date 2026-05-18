@@ -16,15 +16,26 @@ function InitialLoadSpinner() {
   );
 }
 
-function InventoryTable({ rows }: { rows: any[] }) {
-  const items = rows && rows.length > 0 ? rows : [
-    { id: "1", name: "Coolant Pumps", available_count: 0, allocated_count: 10 },
-    { id: "2", name: "T/R Modules", available_count: 14, allocated_count: 16 }
-  ];
+function InventoryEmptyState() {
+  // Honest empty-state. Replaces a pre-§C.2 mock fallback that rendered
+  // hardcoded "Coolant Pumps / T/R Modules" rows whenever inventory_items
+  // had zero rows — combined with the stale-cached banner that fired
+  // after 30s, the panel read as "real data that's gone stale" when it
+  // was actually "feature not built yet." Same family as ADR-0017's
+  // no-orphan-mocks rule, applied to the empty-state path. The
+  // follow-up reference makes the deferral findable from the rendered
+  // UI itself, not just from tests/hero_scenario_v3/README.md.
+  return (
+    <div className="text-xs text-slate-500 mt-3 border border-slate-700 bg-slate-800/50 p-2 rounded-sm">
+      No FOB inventory data — <code className="text-slate-400">inventory_items</code> table not yet populated. Per follow-up #17.
+    </div>
+  );
+}
 
+function InventoryTable({ rows }: { rows: any[] }) {
   return (
     <div className="space-y-3 mt-3">
-        {items.map((item: any) => {
+        {rows.map((item: any) => {
            // Electric returns numeric columns as STRINGS (precision-
            // conservative) — coerce before any arithmetic, or "12" + "4"
            // silently becomes "124" and "0" === 0 is false.
@@ -74,7 +85,10 @@ export default function Inventory() {
 
   // Stale-data banner: rendered ON TOP of cached data, never replacing it.
   // This is the offline-first contract: visibility of data > visibility of error.
-  const isStale = lastSyncedAt && (Date.now() - lastSyncedAt > 30_000);
+  // §C.2 follow-up: GATED on hasCachedData — meaningless when there's no
+  // real data to be stale about, and pre-§C.2 it combined with the mock
+  // fallback to read as "real data that's gone wrong."
+  const isStale = hasCachedData && lastSyncedAt && (Date.now() - lastSyncedAt > 30_000);
 
   return (
     <div className="panel shrink-0 p-3">
@@ -82,10 +96,10 @@ export default function Inventory() {
           <div className="flex items-center">
             <Package className="w-4 h-4 mr-2 text-emerald-500" /> Local FOB Inventory
           </div>
-          {!isLoading && !isStale && <span className="text-[10px] text-emerald-500 flex items-center">SYNCED</span>}
+          {!isLoading && hasCachedData && !isStale && <span className="text-[10px] text-emerald-500 flex items-center">SYNCED</span>}
           {isLoading && hasCachedData && <span className="text-[10px] text-amber-500 flex items-center animate-pulse">SYNCING</span>}
       </h2>
-      
+
       {isStale && (
         <div className="mt-2 text-[10px] bg-rose-900/30 text-rose-400 border border-rose-800 p-1 flex items-center rounded">
           <WifiOff size={12} className="mr-1" />
@@ -93,7 +107,7 @@ export default function Inventory() {
         </div>
       )}
 
-      <InventoryTable rows={data} />
+      {hasCachedData ? <InventoryTable rows={data} /> : <InventoryEmptyState />}
     </div>
   );
 }
