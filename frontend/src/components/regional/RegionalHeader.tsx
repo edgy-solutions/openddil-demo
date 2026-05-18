@@ -54,6 +54,24 @@ export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen }:
           <span className="text-xs font-bold tracking-wider text-emerald-300">REGIONAL HUB <span className="bg-emerald-500/20 px-1 py-0.5 rounded text-[8px] ml-1">THIS NODE</span></span>
         </div>
 
+        {/* Link bar between REGIONAL HUB and CENTRAL HQ — mirrors the
+            HqHeader pattern (TACTICAL EDGE → REGIONAL HUBS uses a
+            static green-dot link bar; this is the same visual for the
+            regional→HQ hop). Reflects the SAME `severed` state as the
+            edge↔hub link bar above because the demo's hq-link is
+            shared (one toxiproxy proxy; severing the link severs both
+            hops from this view's perspective). No second toggle — the
+            existing toggle drives the shared sever. Without this, the
+            CENTRAL HQ icon sat visually disconnected after the
+            REGIONAL HUB node. */}
+        <div className="flex-1 flex flex-col items-center relative">
+          <div className={`absolute w-full h-[2px] top-3 -z-10 ${severed ? 'bg-rose-900' : 'bg-slate-700'}`}></div>
+          <div className={`w-3 h-3 rounded-full mt-1.5 ${severed ? 'bg-rose-500' : 'bg-emerald-500 shadow-[0_0_10px_#10b981]'}`}></div>
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
+            {probeDown ? 'REGIONAL↔HQ: PROBE DOWN' : severed ? 'REGIONAL↔HQ: SEVERED' : 'REGIONAL↔HQ: LINK UP'}
+          </span>
+        </div>
+
         <div className="flex flex-col items-center text-slate-400 mr-8">
           <Building2 className="w-6 h-6 mb-1 text-slate-200" />
           <span className="text-xs font-bold tracking-wider">CENTRAL HQ</span>

@@ -28,8 +28,19 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
   }
   const familyList = [...families.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 
+  /*
+   * Sizing: shrink-0 + max-h on the panel, overflow-y-auto on the
+   * tree list. The previous flex-1 in the HQ right column (which is
+   * a flex-col with overflow-y-auto) collapsed to header-only because
+   * the parent doesn't define a height for flex-1 to fill — the tree
+   * content rendered with effectively zero height and the Enterprise
+   * Fleet Tree appeared "buried" under its header. Cap at 500px so
+   * the tree shows multiple platform families on first arrival
+   * without scrolling-and-hunting; the family details elements
+   * scroll within.
+   */
   return (
-    <div className={`panel flex-1 flex flex-col overflow-hidden p-3 transition-colors duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`}>
+    <div className={`panel shrink-0 flex flex-col max-h-[500px] overflow-hidden p-3 transition-colors duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`}>
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-3 flex items-center shrink-0 border-b border-slate-700 pb-2">
         <Globe className={`w-4 h-4 mr-2 transition-colors ${wanActive ? 'text-emerald-400' : 'text-rose-500'}`} />
         Enterprise Fleet Tree
@@ -38,7 +49,7 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
         </span>
       </h2>
 
-      <div className="flex-1 overflow-y-auto text-xs font-mono space-y-1 pr-2 pb-2 select-none">
+      <div className="overflow-y-auto text-xs font-mono space-y-1 pr-2 pb-2 select-none">
         {familyList.length === 0 && (
           <div className="text-slate-500">No assets in the pipeline.</div>
         )}

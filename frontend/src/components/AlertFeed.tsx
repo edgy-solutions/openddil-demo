@@ -35,13 +35,27 @@ function formatTime(iso: string): string {
     : d.toLocaleTimeString('en-US', { hour12: false });
 }
 
+/**
+ * Sizing: shrink-0 + max-h on the outer panel, overflow-y-auto on the
+ * inner events list. Empty state collapses to header + empty-state
+ * text. The previous flex-grow + min-height combination reserved
+ * ~250px of dark blank space in the maintainer view's right column
+ * (which is a flex-col with overflow-y-auto where flex-grow doesn't
+ * fill — collapses to min-content or worse) and pushed Inventory
+ * below the viewport. Populated state grows up to the max, then
+ * scrolls internally.
+ *
+ * Word the rationale without literal Tailwind class names — the
+ * content scanner picks tokens like `min-h-bracket-150px-close` out
+ * of comments and bakes them into the bundle as unused utilities.
+ */
 export default function AlertFeed({ events, isLoading = false }: { events: TacticalEvent[]; isLoading?: boolean }) {
   return (
-    <div className="panel flex-1 flex flex-col min-h-[150px] p-3">
-      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center">
+    <div className="panel shrink-0 flex flex-col max-h-[400px] p-3">
+      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center shrink-0">
         <AlertTriangle className="w-4 h-4 mr-2" /> Tactical Event Feed
       </h2>
-      <div className="flex-1 overflow-y-auto space-y-2 text-xs font-mono pr-2">
+      <div className="overflow-y-auto space-y-2 text-xs font-mono pr-2">
         {/* syncing -> genuinely empty -> events; syncing never falls
             through to the empty copy (cold-start race). */}
         {isLoading && <SyncingNotice label="Syncing events…" />}
