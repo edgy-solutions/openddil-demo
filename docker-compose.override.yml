@@ -165,6 +165,9 @@ services:
   openddil-projector-03:
     <<: *projector_dev
 
+  openddil-projector-hq:
+    <<: *projector_dev
+
   # --------------------------------------------------------------------------
   # Frontend — local build (Phase 4b)
   # --------------------------------------------------------------------------

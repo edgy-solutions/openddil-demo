@@ -1,11 +1,22 @@
 # Restate server configuration for the openddil-demo stack.
-# Generated 2026-05-13 to register a Kafka cluster so AssetCM
-# subscriptions can use source URIs like kafka://openddil-edge/<topic>.
 #
-# Cluster name MUST match what the bootstrap script writes into the
-# subscription source URI (see openddil-cm-service/bootstrap/register_subscriptions.py
-# and KAFKA_CLUSTER_NAME env var).
+# ADR-0023 Phase 6b §A: 4 Kafka clusters defined statically so the bootstrap
+# scripts' subscription source URIs (kafka://openddil-<edge_id>/...) resolve
+# to a known cluster. cm-service and logistics-fusion-service register
+# subscriptions against all 3 edges; fusion also registers HQ for asset-cm-state.
 
 [[ingress.kafka-clusters]]
-name = "openddil-edge"
-brokers = ["redpanda-edge:9092"]
+name = "openddil-edge-01"
+brokers = ["redpanda-edge-01:9092"]
+
+[[ingress.kafka-clusters]]
+name = "openddil-edge-02"
+brokers = ["redpanda-edge-02:9092"]
+
+[[ingress.kafka-clusters]]
+name = "openddil-edge-03"
+brokers = ["redpanda-edge-03:9092"]
+
+[[ingress.kafka-clusters]]
+name = "openddil-hq"
+brokers = ["redpanda-hq:19092"]

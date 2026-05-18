@@ -148,6 +148,8 @@ services:
         condition: service_healthy
       redpanda-edge-03:
         condition: service_healthy
+      redpanda-hq:
+        condition: service_started
     restart: "no"
     entrypoint: /bin/sh
     command:
@@ -157,7 +159,7 @@ services:
         # ADR-0023 Phase 6a: each edge broker is its own Kafka cluster; the
         # same topic shapes are created on each so per-edge produce/consume
         # works identically across the 3 edges.
-        for B in redpanda-edge-01:9092 redpanda-edge-02:9092 redpanda-edge-03:9092; do
+        for B in redpanda-edge-01:9092 redpanda-edge-02:9092 redpanda-edge-03:9092 redpanda-hq:19092; do
           echo "INFO: Initializing topics on $$B..."
           rpk -X brokers=$$B topic create raw-sensor-stream \
               -p 1 -r 1 \
@@ -644,9 +646,11 @@ services:
     container_name: openddil-demo-cm-service
     environment:
       CM_BASELINES_DIR:       /baselines
-      # ADR-0023 Phase 6a: cm-service stays single-cluster (edge-01) in 6a;
-      # cross-edge cm-state production is 6b coordinated upgrade.
-      CM_KAFKA_BROKERS:       redpanda-edge-01:9092
+      # ADR-0023 Phase 6b §A: cm-service consumes per-edge via Restate
+      # (3 cluster registrations done by cm-service-bootstrap) but PRODUCES
+      # asset-cm-state to redpanda-hq. Single Producer; per-asset rows on
+      # hq carry edge_id from inbound provenance.
+      CM_KAFKA_BROKERS:       redpanda-hq:19092
       CM_HTTP_PORT:           "9080"
       CM_STALENESS_WINDOW_S:  "900"
       LOG_LEVEL:              INFO
@@ -683,9 +687,11 @@ services:
     pull_policy: always
     container_name: openddil-demo-logistics-fusion-service
     environment:
-      # ADR-0023 Phase 6a: fusion stays single-cluster (edge-01) in 6a;
-      # cross-edge fusion is 6b coordinated upgrade.
-      FUSION_KAFKA_BROKERS:    redpanda-edge-01:9092
+      # ADR-0023 Phase 6b §A: fusion consumes per-edge via Restate (3
+      # cluster registrations + 1 HQ cluster for asset-cm-state) but
+      # PRODUCES asset-logistics-status to redpanda-hq. Single Producer;
+      # per-asset rows on hq carry edge_id from inbound via _KEY_ORIGIN.
+      FUSION_KAFKA_BROKERS:    redpanda-hq:19092
       FUSION_HTTP_PORT:        "9081"
       EMIT_INTERVAL_SECONDS:   "30"
       STALE_INPUT_SECONDS:     "300"
@@ -717,14 +723,12 @@ services:
     environment:
       RESTATE_ADMIN_URL:        http://restate-server:9070
       FUSION_SERVICE_ENDPOINT:  http://logistics-fusion-service:9081
-      KAFKA_CLUSTER_NAME:       openddil-edge
-      KAFKA_BROKERS:            redpanda-edge-01:9092
+      # ADR-0023 Phase 6b §A: per-edge clusters + HQ cluster for cm-state.
+      FUSION_EDGE_CLUSTERS:     "edge-01=redpanda-edge-01:9092,edge-02=redpanda-edge-02:9092,edge-03=redpanda-edge-03:9092"
+      FUSION_HQ_BROKERS:        redpanda-hq:19092
       LOG_LEVEL:                INFO
       PYTHONPATH:               /app
     volumes:
-      # Shared bootstrap library — cross-repo Python module, mounted rather
-      # than baked so updates to openddil-contracts/bootstrap propagate
-      # without rebuilding every service image.
       - ../openddil-contracts/bootstrap:/app/openddil_bootstrap:ro
     depends_on:
       logistics-fusion-service:
@@ -742,12 +746,9 @@ services:
     environment:
       RESTATE_ADMIN_URL:    http://restate-server:9070
       CM_SERVICE_ENDPOINT:  http://cm-service:9080
-      KAFKA_CLUSTER_NAME:   openddil-edge
-      KAFKA_BROKERS:        redpanda-edge-01:9092
+      # ADR-0023 Phase 6b §A: per-edge clusters.
+      CM_EDGE_CLUSTERS:     "edge-01=redpanda-edge-01:9092,edge-02=redpanda-edge-02:9092,edge-03=redpanda-edge-03:9092"
       LOG_LEVEL:            INFO
-      # The bootstrap wrapper does
-      #   from openddil_bootstrap.restate_subscriptions import ...
-      # which resolves via the shared library mount below.
       PYTHONPATH:           /app
     volumes:
       # Shared bootstrap library — cross-repo Python module, mounted rather
@@ -858,6 +859,41 @@ services:
     depends_on:
       redpanda-edge-03:
         condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres-hq:
+        condition: service_healthy
+      atlas-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ADR-0023 Phase 6b §A: cm-service and logistics-fusion-service produce
+  # asset-cm-state and asset-logistics-status to redpanda-hq (not per-edge,
+  # because both are HQ-tier aggregated outputs in 6b). This 4th projector
+  # instance consumes those HQ topics. Per-asset rows still UPSERT keyed by
+  # asset_id; edge_id is read from the message-field provenance by the
+  # cm_state / logistics_status handlers (Phase 6b §A switch).
+  # BUFFER_MONITOR_ENABLED=false — only projector-01 runs the buffer
+  # monitor.
+  openddil-projector-hq:
+    image: ghcr.io/edgy-solutions/openddil/projector:latest
+    pull_policy: always
+    container_name: openddil-demo-projector-hq
+    environment:
+      KAFKA_BROKERS:           redpanda-hq:19092
+      POSTGRES_DSN:            postgres://postgres:password@postgres-hq:5432/openddil
+      METRICS_PORT:            "8084"
+      RATE_LIMIT_PER_SEC:      "10"
+      LOG_LEVEL:               INFO
+      PYTHONPATH:              /proto:/app/src
+      OPENDDIL_EDGE_ID:        edge-unspecified
+      OPENDDIL_REGION_ID:      region-unspecified
+      BUFFER_MONITOR_ENABLED:  "false"
+    volumes:
+      - ../openddil-contracts/gen/python:/proto:ro
+    depends_on:
+      redpanda-hq:
+        condition: service_started
       redpanda-init:
         condition: service_completed_successfully
       postgres-hq:
