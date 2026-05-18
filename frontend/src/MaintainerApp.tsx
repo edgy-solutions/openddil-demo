@@ -152,6 +152,15 @@ function MaintainerApp() {
   // After first application, pendingDeepLinkAsset is cleared and this
   // collapses to the normal "auto-pick first; re-home on fleet change"
   // logic.
+  //
+  // ON "FIRST ASSET": fleet.data[0] is whichever asset the ElectricSQL
+  // Shape emits first — Shape-implementation order, NOT alphabetical
+  // or last_seen-sorted. Surfaced during §C.2 verification when the
+  // playbook predicted 2259 (alphabetical) but the actual fallback
+  // resolved to 2820 (Shape emit order). This is fine for the fallback
+  // purpose (any valid edge asset works) but future code that needs a
+  // stable / deterministic first-asset should `.sort()` explicitly
+  // before reading [0].
   useEffect(() => {
     if (fleet.data.length === 0) return;
 
