@@ -111,18 +111,30 @@ item: add it here, even if it isn't a test-runner item.
 
 ### Engine (Phase 5 prognostics)
 
-4. **Barrel-life is built but dormant pending Fire/Detonation PDU
-   ingestion.** The model has the shape and passes unit tests;
-   `_derive_barrel_life` correctly returns `None` while
-   `state.rounds_fired == 0`. The wiring side of this — DIS sidecar
-   extension to ingest Fire/Detonation PDUs, new Bloblang mapping, the
-   `prognostics.accumulators.record_round_fired()` call — is **scoped as
-   a separate future phase**, not a Phase 5 tail; see
+4. **Barrel-life is built but dormant pending round-fired input wiring.**
+   The model has the shape and passes unit tests; `_derive_barrel_life`
+   correctly returns `None` while `state.rounds_fired == 0`. The wiring
+   side of this — a new Bronze→Silver mapping that produces round-fired
+   events, plus the `prognostics.accumulators.record_round_fired()` call
+   — is **scoped as a separate future phase**, not a Phase 5 tail; see
    [Future phases](#future-phases) below. The follow-up here is the
    *code-level placeholder* that keeps the dormancy visible to future
    readers; the future phase is the work that closes the dormancy.
    `test_38_prognostics_barrel_life_dormant` asserts the dormancy on
    every run so a clean test suite cannot hide it.
+
+   **Source-path note (post-Phase-5 update):** the original framing
+   assumed DIS Fire/Detonation PDU ingestion as the input. Customer
+   inventory came back with only `StrikeCapabilityMessage` (a *capability
+   snapshot* carrying current Ammo counts per store — not an event
+   stream). Round-fired events will therefore be synthesized from
+   per-(asset, store-location) Ammo *deltas* between consecutive
+   snapshots. The DIS Fire/Detonation PDU path is **deferred** to a
+   future VRForces/AFSim integration phase (no real DIS Fire feed exists
+   today). The model itself is source-agnostic — it takes a `rounds_fired`
+   int and doesn't care whether the int came from event-counting or
+   delta-synthesis. See the two future-phase entries below for the
+   activation path and the deferred-DIS path respectively.
 5. **Find or define an engine-on signal; replace the observed-time
    stand-in.** Phase 5's engine-hours model uses *observed time* (first
    to last sample) as a stand-in — a deliberate overestimate that
@@ -473,34 +485,91 @@ larger blocks of work with their own scope, their own dependencies, and
 their own demonstration story. Listed here so a future reader does not
 mistake them for "small things we forgot to finish."
 
-### Fire/Detonation + barrel-life activation
+### Capability-snapshot delta wiring + barrel-life activation
 
-Activates follow-up #4 (the dormant `wear.barrel` model). New work
-spanning:
+Activates follow-up #4 (the dormant `wear.barrel` model) via the
+customer's actual feed shape — the `StrikeCapabilityMessage` capability
+snapshot (carries per-store Ammo counts on a stable cadence). This is
+the **first** of two phases that follow-up #4 spawned; the second is
+the deferred DIS Fire/Detonation path below.
 
-- the DIS sidecar (`dis_ingestor.py`): extend the PDU-type allowlist
-  beyond Entity State to include Fire (type 2) and Detonation (type 3),
-- a new Bloblang mapping (`sim-dis-mapping.yaml`): Fire/Detonation case
-  emitting onto `raw-sensor-stream` (or a sibling topic) in a shape the
-  prognostics engine can consume,
-- the prognostics engine: route the round-fired event through
-  `accumulators.record_round_fired()` — that single call activates the
-  dormant model end-to-end.
+New work spanning:
 
-**Blocked on**: customer ammo / shot / round-fired message inventory.
-Before this phase can be scoped, we need to know what the customer's
-ammo message actually looks like — payload shape, timing semantics, what
-counts as a "round" vs. an "event," whether entity-id correlation
-matches DIS. Without that input the DIS-side work would be built against
-an LLM-reconstructed sample — repeating the customer-overlay / Sensor mistake
-(see `feedback_artifact_provenance` — "wire outranks schema").
+- the customer overlay (`openddil-customer-bundle-customer-overlay/`): new
+  Bronze→Silver Bloblang mapping that lifts `StrikeCapabilityMessage`
+  into an intermediate `AssetCapabilitySnapshot` Silver topic. Schema
+  for `StrikeCapabilityMessage` lives in
+  `openddil-customer-bundle-customer-overlay/schemas/strike_capability_message
+  .schema.json` (LLM reconstruction; treat as hypothesis, verify against
+  wire — same discipline as `sensor_message.schema.json`),
+- a new stateful delta tracker (faust agent or Bloblang processor) that
+  holds per-(`asset_id`, `store_location`) last-seen Ammo, emits a
+  `rounds_fired_delta` event per snapshot on Ammo-decrease,
+- the prognostics engine: subscribe to the delta stream, route each
+  delta of N through N calls to `accumulators.record_round_fired()` —
+  that activation flips `_derive_barrel_life` from `None` to a populated
+  `WearState`.
+
+**Pre-recipe gate (provenance discipline)**: `StrikeCapabilityMessage`
+schema is currently an LLM reconstruction from the customer's producer
+code, NOT a wire-verified contract. Same risk class as the original
+`sensor_message.schema.json` mistake (`feedback_artifact_provenance` —
+"wire outranks schema"). Before recipe-pass, confirm via wire capture:
+
+1. **Emission cadence** — stable interval (every N seconds regardless
+   of change) vs only-on-change. The delta tracker design simplifies
+   meaningfully if every message *is* an Ammo-decrease event.
+2. **Field shapes on the wire vs the LLM schema** — repeat the
+   sensor-message-style falsification check (units presence, scalar vs
+   array, etc.) before committing to the Bloblang shape.
+3. **Cold-start / reload / restart semantics** — first-seen-Ammo treated
+   as baseline (no synthesis)? Ammo *increase* between messages (reload)
+   handled as silent re-baseline? Edge restart with cold RocksDB —
+   re-baseline from next snapshot? These are aggregator design points,
+   not wire questions, but they need decisions at recipe time.
 
 **What this phase would deliver**: an active `wear.barrel` model
-emitting on `derived-sustainment`, a flight test asserting non-empty
-barrel-life for a fired entity, and the same `origin = ORIGIN_DERIVED`
-`ConstrainingFactor` treatment that Phase 5 step 2 established for the
-kinematics-only wear models. `test_38_prognostics_barrel_life_dormant`
-gets inverted to `_active`.
+emitting on `derived-sustainment` for assets whose ammo decreases over
+time, a flight test asserting non-empty barrel-life after a synthesized
+fire sequence, and the same `origin = ORIGIN_DERIVED` `ConstrainingFactor`
+treatment that Phase 5 step 2 established for the kinematics-only wear
+models. `test_38_prognostics_barrel_life_dormant` gets inverted to
+`_active`.
+
+### DIS Fire/Detonation PDU ingestion (deferred — VRForces/AFSim phase)
+
+The original framing for follow-up #4 assumed the customer would emit
+real DIS Fire (PDU type 2) and Detonation (PDU type 3) PDUs. Customer
+inventory came back with only `StrikeCapabilityMessage` (handled by the
+phase above). No DIS Fire/Detonation feed exists in the current customer
+stack. This phase is **deferred** until a VRForces or AFSim integration
+phase introduces a real DIS fire-event source.
+
+Work this phase would still do, if/when activated:
+
+- DIS sidecar (`dis_ingestor.py`): extend the PDU-type allowlist beyond
+  Entity State to include Fire (type 2) and Detonation (type 3). Today
+  the sidecar *counts* both via Prometheus (`dis_ingestor.py:312-318`)
+  but drops them before Kafka — observability exists, extraction does
+  not.
+- New Bloblang case for Fire/Detonation in `sim-dis-mapping.yaml`,
+  emitting onto `raw-sensor-stream` (or a sibling topic) in a shape the
+  prognostics engine can consume.
+- The prognostics engine: route the round-fired event through
+  `accumulators.record_round_fired()` — the same one-line activation as
+  the capability-snapshot path above.
+
+**Why this stays parked, not merged into the capability-snapshot phase**:
+DIS Fire/Detonation PDUs are *event* shapes (timestamped, entity-paired,
+event-id-bearing) and would extend the OSS DIS path, not the customer
+overlay. Merging the two would mix OSS work with customer-overlay work
+in one phase. Keeping them split lets the capability-snapshot phase
+ship cleanly inside the customer overlay, and the DIS-path phase can
+be a clean OSS extension when VRForces/AFSim lands.
+
+**Activation trigger**: a VRForces or AFSim integration phase introduces
+a real DIS Fire/Detonation feed (or the customer's source code is
+extended to emit them).
 
 ## Phase 5 close note
 
@@ -520,8 +589,11 @@ any downstream consumer. The demo does **not** claim that the derived
 values are accurate, that engine-hours reflects engine-on time (it is
 observed time — a deliberate overestimate, named in ADR-0020), that
 barrel-life is active (the model is built but dormant pending
-Fire/Detonation PDU ingestion — promoted to its own future phase,
-blocked on customer ammo-message inventory), or that the coefficient
+round-fired input wiring — split post-Phase-5 into two future phases:
+capability-snapshot delta wiring against the customer's actual
+`StrikeCapabilityMessage` feed, and a deferred DIS Fire/Detonation path
+that activates if/when a VRForces or AFSim integration introduces a
+real DIS fire-event source), or that the coefficient
 values represent real platform life (defaults in `coefficients.py` are
 honest-authored at order-of-magnitude reasonable values; the demo
 overrides via `PROGNOSTICS_*` env vars in
