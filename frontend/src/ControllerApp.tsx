@@ -111,7 +111,7 @@ export default function ControllerApp() {
   };
 
   return (
-    <div className="font-mono h-screen flex flex-col overflow-hidden bg-slate-950 text-slate-300">
+    <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-300">
       <header className="panel flex items-center justify-between p-4 m-4 shrink-0 z-10 border-b-2 border-b-slate-700">
         <div className="flex items-center space-x-4">
           <Settings className="w-8 h-8 text-cyan-400" />

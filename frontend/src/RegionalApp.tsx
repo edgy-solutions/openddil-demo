@@ -314,7 +314,7 @@ export default function RegionalApp() {
   );
 
   return (
-    <div className="font-mono h-screen flex flex-col overflow-hidden bg-slate-950 text-slate-200">
+    <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <RegionalHeader
         link1={link1} setLink1={setLink1}
         setIsRuleEditorOpen={setIsRuleEditorOpen}
@@ -340,10 +340,13 @@ export default function RegionalApp() {
         {/* Explicit viewport-bounded max-h on the scroll pane: the grid-
             rows + min-h-0 chain empirically did not constrain it to the
             viewport on its own (panels overflowed past the fold with no
-            scrollbar). The calc bypasses the chain — 140px ≈ RegionalHeader
-            panel+m-2+p-3+border-b-2 + content (~92px) + EdgePulldown bar
-            (px-4 py-1 + select ~37px) with slop. */}
-        <div className="col-span-1 flex flex-col gap-4 overflow-hidden min-h-0 max-h-[calc(100vh-140px)]">
+            scrollbar). The calc bypasses the chain — 180px = Root dev
+            nav bar (h-10 = 40px) + RegionalHeader (~92px) + EdgePulldown
+            bar (~37px) with slop. 100vh inside the calc references the
+            actual viewport, NOT the role-view's allocated space, so the
+            nav bar must be subtracted here even though RegionalApp
+            itself doesn't render it. */}
+        <div className="col-span-1 flex flex-col gap-4 overflow-hidden min-h-0 max-h-[calc(100vh-180px)]">
           {selectedAssetId ? (
             <AssetDeepDive assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
           ) : (

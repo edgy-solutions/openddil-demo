@@ -322,7 +322,7 @@ export default function HqApp() {
   };
 
   return (
-    <div className={`font-mono h-screen flex flex-col overflow-hidden transition-colors duration-500 ${severed ? 'freeze-active' : ''}`}>
+    <div className={`font-mono h-full flex flex-col overflow-hidden transition-colors duration-500 ${severed ? 'freeze-active' : ''}`}>
       <HqHeader wanActive={wanActive} setWanActive={toggleWan} />
 
       {severed && (
@@ -342,9 +342,13 @@ export default function HqApp() {
         {/* Explicit viewport-bounded max-h: the grid-rows + min-h-0 chain
             empirically did not constrain the column to viewport on its
             own (panels overflowed past the fold with no scrollbar). The
-            calc bypasses the chain — 100px ≈ HqHeader panel+m-2+p-3+
-            border-b-2 + content (~92px) with slop. */}
-        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-100px)]">
+            calc bypasses the chain — 140px = Root dev nav bar (h-10 =
+            40px) + HqHeader (panel + m-2 + p-3 + border-b-2 + content,
+            ~92px) with slop. 100vh inside the calc references the actual
+            viewport, NOT the role-view's allocated space, so the nav
+            bar must be subtracted here even though MaintainerApp/
+            RegionalApp/HqApp themselves don't render it. */}
+        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-140px)]">
           <EdgeAttribution />
           <RegionFleetSummary />
           <FleetReadiness fleetSummary={regionFleet.data} />

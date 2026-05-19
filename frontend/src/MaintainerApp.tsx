@@ -251,7 +251,7 @@ function MaintainerApp() {
   }));
 
   return (
-    <div className="font-mono h-screen flex flex-col overflow-hidden bg-slate-950 text-slate-200">
+    <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <Header
         link1={link1} setLink1={setLink1}
         fleet={fleet.data}
@@ -310,9 +310,13 @@ function MaintainerApp() {
         {/* Explicit viewport-bounded max-h: the grid-rows + min-h-0 chain
             empirically did not constrain the column to viewport on its
             own (panels overflowed past the fold with no scrollbar). The
-            calc bypasses the chain — 100px ≈ Header panel+m-2+p-3+
-            border-b-2 + content (~92px) with slop. */}
-        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-100px)]">
+            calc bypasses the chain — 140px = Root dev nav bar (h-10 =
+            40px) + Header (panel + m-2 + p-3 + border-b-2 + content,
+            ~92px) with slop. 100vh inside the calc references the actual
+            viewport, NOT the role-view's allocated space, so the nav
+            bar must be subtracted here even though MaintainerApp itself
+            doesn't render it. */}
+        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-140px)]">
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
           <LogisticsStatusCard logistics={logiState} isLoading={logistics.isLoading} />
           <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} isLoading={telemetry.isLoading} />

@@ -55,8 +55,11 @@ function Root() {
         </div>
       </div>
 
-      {/* Main View Container */}
-      <div className="flex-1 relative">
+      {/* Main View Container. min-h-0 + overflow-hidden propagate the
+          height constraint down — without min-h-0, this flex item's
+          default `min-height: auto` lets it grow past parent if children
+          (role views, which use h-full) try to size to it. */}
+      <div className="flex-1 relative min-h-0 overflow-hidden">
         {view === 'maintainer' && <MaintainerApp />}
         {view === 'regional' && <RegionalApp />}
         {view === 'hq' && <HqApp />}
