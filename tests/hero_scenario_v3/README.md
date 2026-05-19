@@ -123,18 +123,41 @@ item: add it here, even if it isn't a test-runner item.
    `test_38_prognostics_barrel_life_dormant` asserts the dormancy on
    every run so a clean test suite cannot hide it.
 
-   **Source-path note (post-Phase-5 update):** the original framing
+   **Source-path note (recipe v3, 2026-05-19):** the original framing
    assumed DIS Fire/Detonation PDU ingestion as the input. Customer
-   inventory came back with only `StrikeCapabilityMessage` (a *capability
-   snapshot* carrying current Ammo counts per store — not an event
-   stream). Round-fired events will therefore be synthesized from
-   per-(asset, store-location) Ammo *deltas* between consecutive
-   snapshots. The DIS Fire/Detonation PDU path is **deferred** to a
-   future VRForces/AFSim integration phase (no real DIS Fire feed exists
-   today). The model itself is source-agnostic — it takes a `rounds_fired`
-   int and doesn't care whether the int came from event-counting or
-   delta-synthesis. See the two future-phase entries below for the
-   activation path and the deferred-DIS path respectively.
+   inventory walked through three reframes:
+
+   1. **Recipe v1** — capability-snapshot delta synthesis: assume the
+      only available source is `StrikeCapabilityMessage` (1 Hz Ammo
+      snapshots from the customer feed); derive round-fired events
+      from per-(asset, store) Ammo *decreases* between snapshots.
+   2. **Recipe v2** — dual-source: `shot_msg` (per-shot fire events
+      from the same producer, routing key `customer_overlay_shot_msg`) surfaced
+      as a parallel input; recipe expanded to ship both with a
+      cross-validation comparator catching schema-drift bugs.
+   3. **Recipe v3 (current)** — **engagement-worthiness reframe**: the
+      producer is sending capability snapshots so that OpenDDIL can
+      answer "can this asset still engage?" — i.e. capability-snapshot
+      is fundamentally an **inventory state input**, not a barrel-life
+      delta source. Recipe pivots: engagement-worthiness becomes the
+      PRIMARY deliverable (capability snapshots → inventory_items /
+      `asset_capability_state` table → `AMMO_LOW`/`AMMO_EXHAUSTED`
+      `ConstrainingFactor`s on `asset_logistics_status` → readiness
+      badges on UI), and barrel-life rides along as a SECONDARY surface
+      (the delta tracker still emits round-fired events, prognostics
+      still activates, but the UI surface is a single
+      `platformChartConfig` line, not a dedicated chart family).
+      `shot_msg` work is **parked** alongside the DIS Fire/Detonation
+      path — schema is saved on disk in the private customer bundle,
+      but no wire sample exists and the engagement-worthiness story
+      doesn't depend on shot_msg.
+
+   The model itself remains source-agnostic — it takes a `rounds_fired`
+   int and doesn't care whether that int came from event-counting
+   (parked: `shot_msg`, deferred: DIS Fire/Detonation) or delta-synthesis
+   (recipe v3 secondary path). See the three future-phase entries below:
+   the active v3 phase, the deferred DIS path, and the newly-named
+   `shot_msg` parked path.
 5. **Find or define an engine-on signal; replace the observed-time
    stand-in.** Phase 5's engine-hours model uses *observed time* (first
    to last sample) as a stand-in — a deliberate overestimate that
@@ -562,65 +585,151 @@ larger blocks of work with their own scope, their own dependencies, and
 their own demonstration story. Listed here so a future reader does not
 mistake them for "small things we forgot to finish."
 
-### Capability-snapshot delta wiring + barrel-life activation
+### Engagement-worthiness ingest + inventory state (primary) + barrel-life activation (secondary)
 
-Activates follow-up #4 (the dormant `wear.barrel` model) via the
-customer's actual feed shape — the `StrikeCapabilityMessage` capability
-snapshot (carries per-store Ammo counts on a stable cadence). This is
-the **first** of two phases that follow-up #4 spawned; the second is
-the deferred DIS Fire/Detonation path below.
+**Active phase as of 2026-05-19; recipe v3 — supersedes the earlier
+"capability-snapshot delta wiring" framing entirely.** The customer's
+`StrikeCapabilityMessage` feed is the operational source of "can this
+asset still engage?" — i.e. an inventory state input — not just a
+derivation source for barrel-life. Recipe v3 ships both, with the
+operational story (engagement-worthiness) as primary and barrel-life
+derivation as secondary.
 
-New work spanning:
+Pre-recipe gates confirmed at recipe-write time (2026-05-19):
+- Transport: AMQP/RabbitMQ (confirmed from producer-source routing-key
+  table; see `openddil-customer-bundle-customer-overlay/schemas/amqp_routing
+  _keys.md` in the private bundle for the full table).
+- Queue topology: separate queue `strike_capability_q`, routing key
+  `bmc2-node-a-uci-in`. Distinct from the existing SensorMessage feed
+  on `sensor_q`/`customer_overlay_sensor_msg`.
+- Schema: 1-sample wire-confirmed (sample provided by project owner
+  2026-05-19; every documented field shape matches). `DescriptiveLabel`
+  pattern: hierarchical underscore-separated names like
+  `SITE_***_MRAD1_Launcher1`; use as-is for `asset_id` keying.
+- Cadence: 1 Hz stated assumption from producer source-code reading;
+  NOT wire-verified beyond the single sample.
+- Multi-snapshot stability, multi-store scenarios: stated assumptions;
+  bail conditions in Sub-phase B handle the disagreement cases.
 
-- the customer overlay (`openddil-customer-bundle-customer-overlay/`): new
-  Bronze→Silver Bloblang mapping that lifts `StrikeCapabilityMessage`
-  into an intermediate `AssetCapabilitySnapshot` Silver topic. Schema
-  for `StrikeCapabilityMessage` lives in
-  `openddil-customer-bundle-customer-overlay/schemas/strike_capability_message
-  .schema.json` (LLM reconstruction; treat as hypothesis, verify against
-  wire — same discipline as `sensor_message.schema.json`),
-- a new stateful delta tracker (faust agent or Bloblang processor) that
-  holds per-(`asset_id`, `store_location`) last-seen Ammo, emits a
-  `rounds_fired_delta` event per snapshot on Ammo-decrease,
-- the prognostics engine: subscribe to the delta stream, route each
-  delta of N through N calls to `accumulators.record_round_fired()` —
-  that activation flips `_derive_barrel_life` from `None` to a populated
-  `WearState`.
+**Sub-phases**:
 
-**Pre-recipe gate (provenance discipline)**: `StrikeCapabilityMessage`
-schema is currently an LLM reconstruction from the customer's producer
-code, NOT a wire-verified contract. Same risk class as the original
-`sensor_message.schema.json` mistake (`feedback_artifact_provenance` —
-"wire outranks schema"). Before recipe-pass, confirm via wire capture:
+- **A — Bronze→Silver** (customer overlay): new
+  `connect/connect-strike-capability-amqp.yaml` (amqp_0_9 on
+  `strike_capability_q`) + new `dynamic-mappings/strike-capability-
+  mapping.yaml` lifting to `AssetCapabilitySnapshot` Silver shape on
+  `asset-capability-snapshot` topic. New Bronze topic
+  `ingress-strike-capability-raw`. Test mirrors the existing
+  `test_17_proprietary_end_to_end.py` pattern.
 
-1. **Emission cadence** — stable interval (every N seconds regardless
-   of change) vs only-on-change. The delta tracker design simplifies
-   meaningfully if every message *is* an Ammo-decrease event.
-2. **Field shapes on the wire vs the LLM schema** — repeat the
-   sensor-message-style falsification check (units presence, scalar vs
-   array, etc.) before committing to the Bloblang shape.
-3. **Cold-start / reload / restart semantics** — first-seen-Ammo treated
-   as baseline (no synthesis)? Ammo *increase* between messages (reload)
-   handled as silent re-baseline? Edge restart with cold RocksDB —
-   re-baseline from next snapshot? These are aggregator design points,
-   not wire questions, but they need decisions at recipe time.
+- **E — capability-snapshot projector → DB** (OSS, primary): new
+  handler in `openddil-projector/` subscribing to
+  `asset-capability-snapshot`, projecting to a new
+  `asset_capability_state` table (per-asset, per-store-location).
+  Atlas migration in `openddil-stack/schema/`. Closes tracked
+  follow-up #17 as a side effect (the real producer answers per-FOB
+  vs shared question: per-asset, kept distinct from `inventory_items`
+  which stays for FOB-level stocks).
 
-**What this phase would deliver**: an active `wear.barrel` model
-emitting on `derived-sustainment` for assets whose ammo decreases over
-time, a flight test asserting non-empty barrel-life after a synthesized
-fire sequence, and the same `origin = ORIGIN_DERIVED` `ConstrainingFactor`
-treatment that Phase 5 step 2 established for the kinematics-only wear
-models. `test_38_prognostics_barrel_life_dormant` gets inverted to
-`_active`.
+- **F — engagement-worthiness `ConstrainingFactor`** (OSS, primary):
+  extend `openddil-logistics-fusion-service` with a new
+  `_eval_inventory` method paralleling `_eval_wear`. Emits
+  `AMMO_LOW` / `AMMO_EXHAUSTED` factors with `origin = ORIGIN_DERIVED`
+  routed through existing `asset-logistics-status` topic. UI status
+  badges automatically reflect new factors (no frontend rewire for
+  the badge surface; that surface predates this phase).
+
+- **B — capability-snapshot delta tracker** (customer overlay,
+  SECONDARY for barrel-life): new stateful Faust agent holding
+  per-(`asset_id`, `store_location`) last-seen Ammo, emits
+  `rounds_fired_delta` events on Ammo-decrease to `cap-rounds-fired`
+  topic. Three semantic decisions (cold-start baseline, reload
+  silent re-baseline + structured emit to `customer-reload-events`,
+  restart cold re-baseline). Provenance-disciplined bail conditions
+  at individual-decision and sub-phase levels.
+
+- **C — prognostics activation + barrel-life UI** (OSS, SECONDARY):
+  faust-edge subscribes to `cap-rounds-fired`, calls
+  `record_round_fired()` per delta. ONE line in
+  `platformChartConfig.ts` adds barrel-life as a chart per relevant
+  platform variant. `test_38_prognostics_barrel_life_dormant`
+  inverts to `_active`.
+
+- **G — Inventory UI rewire + engagement-readiness surfaces** (OSS,
+  primary): the existing Inventory panel rewires from honest-empty-
+  state to real `asset_capability_state` data via new ElectricSQL
+  shape `useAssetCapabilityState`. NEW per-asset engagement-readiness
+  badge on Maintainer asset-strip header (green=capable, yellow=low,
+  red=exhausted). Optional: `RegionFleetSummary` + equivalent HQ
+  rollup gains "% of fleet engagement-capable" counter.
+
+**Dependency graph**: A is the foundation; E + B parallelize after A;
+F depends on E; C depends on B; G depends on E and F. Critical path
+A→E→F→G (~5 days serialized); side path A→B→C (~2.5 days parallel
+after A). Total ~6 days.
+
+**What this phase delivers**:
+- Real customer producer feed wired end-to-end into the COP.
+- Real engagement-worthiness signal on the UI status badges.
+- Real inventory panel rendering per-asset stores (closes
+  follow-up #17).
+- Active `wear.barrel` model emitting on `derived-sustainment` for
+  assets whose ammo decreases over time.
+- `test_38_prognostics_barrel_life_dormant` flipped to `_active`.
+
+**What this phase makes concrete for future ALCS/EAGLE egress**:
+engagement-worthiness is now a real computed value with a real shape
+(an `asset_logistics_status` row with `AMMO_*` `ConstrainingFactor`s);
+the egress phase becomes "send these rows + factors back to BMC2 over
+AMQP" rather than "egress something, doesn't matter what." The ALCS-
+labeled HQ panel (renamed to "Enterprise CM Recommendations" in
+`d7b8fc1`) becomes the precursor visualization for what the egress
+phase will eventually surface as a real ALCS-bound recommendation
+queue.
+
+### `shot_msg` per-shot fire-event ingestion (parked — recipe v3 reframe)
+
+Surfaced 2026-05-19 from the customer producer's routing-key table
+(see `openddil-customer-bundle-customer-overlay/schemas/amqp_routing_keys.md`).
+`shot_msg` is a per-shot event message emitted on routing key
+`customer_overlay_shot_msg` / consumer queue `shot_q` from the same producer that
+emits `StrikeCapabilityMessage`. Schema LLM-reconstructed at
+`openddil-customer-bundle-customer-overlay/schemas/shot_message.schema.json`.
+
+This would be a third independent input path to barrel-life — direct
+event-counting (each `shot_msg` carries `salvo_size` = rounds fired)
+instead of:
+- DIS Fire/Detonation PDU ingestion (deferred — see next entry),
+- capability-snapshot delta synthesis (active in v3 phase above).
+
+**Parked, not active, because**:
+- Zero wire samples exist for `shot_msg`; schema is LLM-only. Risk
+  profile higher than `StrikeCapabilityMessage` (which has 1-sample
+  confirmation).
+- Engagement-worthiness primary framing means the operational demo
+  story doesn't *need* shot_msg — capability snapshots cover inventory
+  state.
+- Adding shot_msg would either:
+  (a) double the input paths in the v3 phase (cross-validation
+       comparator, schema-falsification risk, more sub-phases) — the
+       option the project owner explicitly chose NOT to take when
+       reframing v2 → v3, OR
+  (b) live as its own future phase once a wire sample is available.
+
+**Activation triggers (when this phase opens)**:
+- A wire sample of `shot_msg` arrives, AND
+- The team decides shot_msg's value (direct event-counting,
+  per-weapon-class data via `weapon_type`, target/effectiveness data,
+  idempotency via `shot_pk`) outweighs the LLM-schema risk.
 
 ### DIS Fire/Detonation PDU ingestion (deferred — VRForces/AFSim phase)
 
 The original framing for follow-up #4 assumed the customer would emit
 real DIS Fire (PDU type 2) and Detonation (PDU type 3) PDUs. Customer
-inventory came back with only `StrikeCapabilityMessage` (handled by the
-phase above). No DIS Fire/Detonation feed exists in the current customer
-stack. This phase is **deferred** until a VRForces or AFSim integration
-phase introduces a real DIS fire-event source.
+inventory came back with `StrikeCapabilityMessage` (handled by the v3
+phase above) and `shot_msg` (parked, see entry above). No DIS Fire/
+Detonation feed exists in the current customer stack. This phase is
+**deferred** until a VRForces or AFSim integration phase introduces a
+real DIS fire-event source.
 
 Work this phase would still do, if/when activated:
 
@@ -666,11 +775,15 @@ any downstream consumer. The demo does **not** claim that the derived
 values are accurate, that engine-hours reflects engine-on time (it is
 observed time — a deliberate overestimate, named in ADR-0020), that
 barrel-life is active (the model is built but dormant pending
-round-fired input wiring — split post-Phase-5 into two future phases:
-capability-snapshot delta wiring against the customer's actual
-`StrikeCapabilityMessage` feed, and a deferred DIS Fire/Detonation path
-that activates if/when a VRForces or AFSim integration introduces a
-real DIS fire-event source), or that the coefficient
+round-fired input wiring — post-Phase-5 the activation path went
+through three reframes ending at recipe v3 2026-05-19: engagement-
+worthiness primary via `StrikeCapabilityMessage` capability snapshots
+(inventory state input feeding the COP), with barrel-life riding along
+as a secondary derivation surface via a delta tracker on the same feed.
+Two other input paths are parked: `shot_msg` per-shot fire events from
+the same customer producer — schema known, no wire sample — and DIS
+Fire/Detonation PDUs deferred to a VRForces/AFSim integration phase),
+or that the coefficient
 values represent real platform life (defaults in `coefficients.py` are
 honest-authored at order-of-magnitude reasonable values; the demo
 overrides via `PROGNOSTICS_*` env vars in
