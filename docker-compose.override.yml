@@ -203,6 +203,13 @@ services:
     build:
       context: ../openddil-demo/frontend
       dockerfile: Dockerfile
+      args:
+        # Compose preserves the prior "browser hits electric-sync directly
+        # on the host port" behavior — overrides the Dockerfile default of
+        # /electric/v1/shape (which is what helm-built images bake in for
+        # in-cluster ingress routing). See frontend/Dockerfile ARG +
+        # frontend/nginx.conf /electric/ block for the helm path.
+        VITE_ELECTRIC_URL: http://localhost:5133/v1/shape
     pull_policy: build
 
   # --------------------------------------------------------------------------
