@@ -213,6 +213,26 @@ services:
               -c retention.ms=86400000 \
               -c compression.type=zstd \
               || true
+          # Customer-bundle StrikeCapabilityMessage feed (Sub-phase A of
+          # recipe v3, 2026-05-19): Bronze raw JSON + Silver normalized
+          # AssetCapabilitySnapshot. The customer-overlay overlay's connect
+          # pair (connect-strike-capability-amqp.yaml + connect-strike-
+          # capability.yaml) produces to these topics; downstream (yet
+          # to land in this pre-Sub-phase-E commit) will be a projector
+          # to postgres-hq plus a delta-tracker for barrel-life rounds-
+          # fired derivation.
+          rpk -X brokers=$$B topic create ingress-strike-capability-raw \
+              -p 8 -r 1 \
+              -c retention.ms=86400000 \
+              -c compression.type=zstd \
+              || true
+          rpk -X brokers=$$B topic create asset-capability-snapshot \
+              -p 8 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              || true
           rpk -X brokers=$$B topic create asset-telemetry-windows \
               -p 8 -r 1 \
               -c retention.ms=86400000 \
