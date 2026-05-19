@@ -307,7 +307,7 @@ function MaintainerApp() {
             panel shows a syncing state on cold start instead of flashing
             its genuinely-empty copy before the where-filtered shape has
             completed its first sync. */}
-        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2 min-h-0">
+        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0">
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
           <LogisticsStatusCard logistics={logiState} isLoading={logistics.isLoading} />
           <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} isLoading={telemetry.isLoading} />

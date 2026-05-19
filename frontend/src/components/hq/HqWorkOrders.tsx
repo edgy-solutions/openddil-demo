@@ -41,7 +41,7 @@ export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
     .sort((a, b) => (CM_RANK[b.overall_status] ?? 0) - (CM_RANK[a.overall_status] ?? 0));
 
   return (
-    <div className={`panel h-[35%] shrink-0 flex flex-col overflow-hidden p-3 relative transition-colors duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`}>
+    <div className={`panel shrink-0 flex flex-col max-h-[280px] overflow-hidden p-3 relative transition-colors duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`}>
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-3 flex items-center shrink-0 border-b border-slate-700 pb-2">
         <Layers className={`w-4 h-4 mr-2 transition-colors ${wanActive ? 'text-cyan-400' : 'text-rose-500'}`} />
         ALCS Enterprise Logistics

@@ -46,8 +46,16 @@
   box-shadow: 0 0 20px -5px rgba(220, 38, 38, 0.4);
 }
 
+/* Bumped from 4px to 8px (Phase-6 post-polish): the 4px scrollbar was
+ * so thin that users couldn't tell the right-column scroll containers
+ * were scrollable, and assumed bottom panels were clipped when they
+ * actually just needed to be scrolled into view. 8px is wide enough
+ * to read as a scroll affordance without dominating the chrome.
+ * Track color matches the page bg so the scrollbar reads as the
+ * thumb on a barely-visible track rather than a thick stripe. */
 ::-webkit-scrollbar {
-  width: 4px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -55,8 +63,12 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
+  background: #3f3f46;
   border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
 }
 
 /* =============================================================================

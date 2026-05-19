@@ -51,7 +51,7 @@ function formatTime(iso: string): string {
  */
 export default function AlertFeed({ events, isLoading = false }: { events: TacticalEvent[]; isLoading?: boolean }) {
   return (
-    <div className="panel shrink-0 flex flex-col max-h-[400px] p-3">
+    <div className="panel shrink-0 flex flex-col max-h-[280px] p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center shrink-0">
         <AlertTriangle className="w-4 h-4 mr-2" /> Tactical Event Feed
       </h2>

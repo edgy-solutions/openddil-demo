@@ -339,7 +339,7 @@ export default function HqApp() {
       <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden relative z-0">
         <TheaterReadinessPosture wanActive={!severed} linksUp={severed ? 0 : 1} linksDown={severed ? 1 : 0} />
 
-        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-2 min-h-0">
+        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0">
           <EdgeAttribution />
           <RegionFleetSummary />
           <FleetReadiness fleetSummary={regionFleet.data} />
