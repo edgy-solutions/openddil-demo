@@ -1,11 +1,20 @@
 // =============================================================================
-// WorkOrders — actionable maintenance items, derived from CM discrepancies
+// WorkOrders — regional CM recommendations panel (rendered as "Regional CM
+// Recommendations"; file/component name retains "WorkOrders" for git-blame
+// continuity)
 // =============================================================================
 // Phase 4c rewrite. Was a hardcoded WO list passed in as a prop. There is
 // no work-orders table in the pipeline — but cm-service's CM discrepancies
 // each carry a `recommended_action`, which IS the actionable maintenance
 // item. This panel rolls those up across the fleet from asset_cm_state
 // (useAllCmState): one row per discrepancy that has a recommended action.
+//
+// Rendered title was "Regional Work Orders" through Phase 6c. Renamed per
+// ADR-0017 honesty discipline (mock components self-identify): the panel
+// does not talk to a work-order system; the data is CM-derived. The "Work
+// Orders" framing will be earned back when the ALCS/EAGLE egress phase
+// delivers a real work-orders topic — at that point this component (or a
+// successor) reads from that topic and the title becomes accurate again.
 //
 // The "system freeze" overlay is driven by the REAL hq-link state
 // (useEdgeBuffer().hq_link_severed) as of Phase 4c.5 — when the edge->HQ
@@ -62,7 +71,7 @@ export default function WorkOrders() {
   return (
     <div className="panel h-64 shrink-0 flex flex-col overflow-hidden p-3 relative">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-3 flex items-center shrink-0 border-b border-slate-700 pb-2">
-        <ClipboardList className="w-4 h-4 mr-2 text-cyan-400" /> Regional Work Orders
+        <ClipboardList className="w-4 h-4 mr-2 text-cyan-400" /> Regional CM Recommendations
         <span className="ml-auto text-[10px] text-slate-500 normal-case tracking-normal">
           from CM discrepancies
         </span>

@@ -1,10 +1,20 @@
 // =============================================================================
-// HqWorkOrders — enterprise actionable items from CM discrepancies
+// HqWorkOrders — enterprise CM recommendations panel (rendered as
+// "Enterprise CM Recommendations"; file/component name retains "WorkOrders"
+// for git-blame continuity)
 // =============================================================================
 // Phase 4c rewrite. Was a hardcoded WO list. Like the regional WorkOrders,
 // there is no work-orders table in the pipeline — but CM discrepancies
 // carry a `recommended_action`. This panel rolls those up enterprise-wide
 // from asset_cm_state (useAllCmState), worst CM status first.
+//
+// Rendered title was "ALCS Enterprise Logistics" through Phase 6c. Renamed
+// per ADR-0017 honesty discipline (mock components self-identify): the
+// panel does not talk to an ALCS work-order system; the data is CM-derived.
+// The "ALCS" / "Work Orders" titles will be earned back when the ALCS/
+// EAGLE egress phase delivers real enterprise work-order propagation —
+// at that point this component (or a successor) reads from a real
+// work-orders topic, and the title becomes accurate again.
 import { Layers } from 'lucide-react';
 import { useAllCmState } from '../../hooks';
 
@@ -44,7 +54,7 @@ export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
     <div className={`panel shrink-0 flex flex-col max-h-[280px] overflow-hidden p-3 relative transition-colors duration-500 ${!wanActive ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`}>
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-3 flex items-center shrink-0 border-b border-slate-700 pb-2">
         <Layers className={`w-4 h-4 mr-2 transition-colors ${wanActive ? 'text-cyan-400' : 'text-rose-500'}`} />
-        ALCS Enterprise Logistics
+        Enterprise CM Recommendations
         <span className="ml-auto text-[10px] text-slate-500 normal-case tracking-normal">
           from CM discrepancies
         </span>
