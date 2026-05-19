@@ -477,6 +477,83 @@ item: add it here, even if it isn't a test-runner item.
     residuals) — name the decision, name the resolution paths, name
     the visible-during-deferred consequence.
 
+18. **`restate_hub.py` vs `hub_restate_projector.py` script divergence
+    between published image and live runtime — image hygiene smell.**
+    The published
+    `ghcr.io/edgy-solutions/openddil/hub-restate-projector:latest`
+    image's Dockerfile (`openddil-tactical-agents/hub/projector/
+    Dockerfile`) bakes `hub_restate_projector.py` as the production
+    entry. But `openddil-demo/docker-compose.yml` overrides the
+    `restate-hub` service entrypoint to
+    `["/opt/venv/bin/python", "/app/restate_hub.py"]` and bind-mounts
+    `../openddil-tactical-agents/hub/restate_hub.py` over `/app/
+    restate_hub.py` (lines ~735–744). So the image as published and
+    the script that actually runs in compose are DIFFERENT files. The
+    openddil-helm chart preserves this compose runtime behavior by
+    mounting `restate_hub.py` from the bundle image's `agents/hub/`
+    subtree at `/app/restate_hub.py` (see `openddil-helm/openddil-
+    demo/templates/hub.yaml` restate-hub Deployment and the README's
+    known-smells section).
+
+    Compounding: `restate_hub.py` itself contains an "Enterprise Saga
+    (ALCS API)" function (lines 63–81) that POSTs to
+    `http://hq-alcs-api:8080/work-orders` — no such service exists in
+    any compose or helm topology, so this code path is decorative
+    narrative scaffolding for the Hero Demo story, not wired-up work.
+
+    Visible consequence today: **none in compose** (bind-mount supplies
+    the file; Restate's "Enterprise Saga" is never triggered in normal
+    demo flow, so the dead ALCS endpoint is never called). **None in
+    helm** (the bundle init-container supplies the file the same way).
+    The smell becomes a real failure mode only if someone deploys
+    `hub-restate-projector:latest` without the compose-bind-mount or
+    the helm bundle-init pattern — the image alone runs
+    `hub_restate_projector.py`, not the `restate_hub.py` that the demo
+    narrative + docker-compose entrypoint assume.
+
+    **Decision needed**: which script is canonical?
+
+    **Resolution paths**:
+      (a) **`hub_restate_projector.py` is canonical** (what the image
+          bakes). Delete `restate_hub.py` from the repo; remove the
+          docker-compose bind-mount + entrypoint override; remove the
+          helm bundle-init copy of `agents/hub/restate_hub.py` (drop
+          the `agents/` subtree from the bundle entirely if nothing
+          else references it). The "Enterprise Saga (ALCS API)" code
+          gets lost — recoverable from git history if the ALCS/EAGLE
+          egress phase wants to revive it.
+      (b) **`restate_hub.py` is canonical** (what compose actually
+          runs). Update `openddil-tactical-agents/hub/projector/
+          Dockerfile` to COPY `restate_hub.py` instead of (or
+          alongside) `hub_restate_projector.py`; republish the image;
+          remove the compose bind-mount + entrypoint override;
+          remove the helm bundle-init `restate_hub.py` copy. Image
+          and runtime converge on the script that actually demos.
+      (c) **Both serve distinct purposes** (e.g. `hub_restate_projector
+          .py` is the projector half, `restate_hub.py` is the saga
+          half, both meant to run together via different processes).
+          Document the intentional divergence in both files' headers
+          and in the Dockerfile + compose service definitions. No
+          code change; eliminate the smell by making the divergence
+          explicit.
+
+    **Pre-resolution tasks regardless of (a)/(b)/(c) choice**:
+      * Read both files end-to-end and verify whether they implement
+        the same surface area or distinct ones. Comment block at top
+        of each currently doesn't make this clear.
+      * Decide whether the "Enterprise Saga (ALCS API)" dead-endpoint
+        code is keep-as-narrative-scaffolding-with-a-clarifying-
+        comment OR delete-until-ALCS/EAGLE-egress-phase-arrives. Pairs
+        with the broader ALCS/EAGLE-egress-phase scoping question.
+
+    Discovered while writing the openddil-helm chart (the bundle init-
+    container needed an explicit decision about which script to copy
+    into the runtime). Logged here so it doesn't get rediscovered
+    under deadline pressure; not blocking the helm work (chart
+    preserves compose behavior) but worth resolving before the
+    ALCS/EAGLE egress phase opens, since that phase will touch this
+    same code surface.
+
 ## Future phases
 
 **Distinct category from tracked follow-ups.** Follow-ups are code-level

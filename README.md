@@ -51,21 +51,41 @@ Run these tests to verify the integrity of the architecture:
 
 ## 🗺 Tactical Roadmap
 
-Done (Phases 2, 2.5, 3):
+Done:
 - ✅ Binary DIS PDU decoder + DIS Entity Type ontology (Phase 2)
 - ✅ Quantity-everywhere schema migration (Phase 2.5, ADR-0013)
 - ✅ Configuration Management service on Restate (Phase 3, ADR-0014)
 - ✅ Proprietary feed shim — SensorMessage → Silver via Bloblang (Phase 3, ADR-0010)
 - ✅ Asset identity reconciliation across feeds via `asset_identity_aliases.yaml`
+- ✅ COP UI views (Phase 4): Maintainer / Regional / HQ over `asset-cm-state` via ElectricSQL
+- ✅ Phase 5 prognostics derivation (ADR-0020): track / engine / suspension wear models
+  emitting `derived-sustainment`; logistics-fusion `_eval_wear` percent-aware branch
+  stamps `origin = ORIGIN_DERIVED` on resulting `ConstrainingFactor`s. Phase 5 closed
+  at step 2; barrel-life model built but dormant (see future phases below)
+- ✅ Phase 6 hierarchical-aggregation restoration (ADRs 0021–0024):
+  6a per-edge clusters, 6b regional aggregator + rollup tables, 6c UI rewiring
+  to three-tier role views with per-edge scope on the maintainer side
 
-Up next:
+Future phases (no committed sequencing — `tests/hero_scenario_v3/README.md` is the
+detailed source of truth for tracked follow-ups and named future phases):
 
-1. **COP UI views (Phase 4)**: Maintainer / Regional / HQ perspectives over `asset-cm-state` via ElectricSQL.
-2. **ALCS / EAGLE bridges (Phase 5)**: Mock egress closing the loop from anomaly to enterprise work order.
-3. **VR-Forces integration testing (Phase 6)**: The contractual milestone.
-4. **Dead Reckoning [Sprint 2]**: DR algorithms in faust-edge for sparse (~5Hz) DIS updates.
-5. **Egress (OpenDDIL → DIS) [Deferred]**: Enable bidirectional simulation feedback.
-6. **CI tracking / cm-items topic** (Phase 3.5): Serialized component instances + bill-of-materials hierarchy.
+- **Capability-snapshot delta wiring + barrel-life activation** — activates the
+  dormant `wear.barrel` model via the customer's `StrikeCapabilityMessage` feed;
+  Ammo deltas synthesize `rounds_fired` events. Recipe written 2026-05-19; gated
+  on transport + queue topology confirmation.
+- **ALCS / EAGLE egress bridges** — mock egress closing the loop from anomaly to
+  enterprise work order. The HQ "Enterprise CM Recommendations" panel currently
+  surfaces CM-derived recommendations as a placeholder; real egress wiring is
+  ADR-0022-constrained future work.
+- **DIS Fire/Detonation PDU ingestion** — deferred to a VRForces / AFSim
+  integration phase (the customer's existing feed does not include DIS Fire/
+  Detonation events; this path activates when a real DIS fire-event source
+  arrives).
+- **VR-Forces / AFSim integration** — the contractual milestone.
+- **Dead Reckoning** — DR algorithms in faust-edge for sparse (~5 Hz) DIS updates.
+- **Egress (OpenDDIL → DIS)** — bidirectional simulation feedback.
+- **CI tracking / cm-items topic** — serialized component instances + bill-of-
+  materials hierarchy.
 
 ---
 **Status**: Production-ready for Windows/Linux dev. Qualified for Linux Edge deployment.
