@@ -336,10 +336,15 @@ export default function HqApp() {
         </div>
       )}
 
-      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden relative z-0">
+      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden relative z-0 min-h-0">
         <TheaterReadinessPosture wanActive={!severed} linksUp={severed ? 0 : 1} linksDown={severed ? 1 : 0} />
 
-        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0">
+        {/* Explicit viewport-bounded max-h: the grid-rows + min-h-0 chain
+            empirically did not constrain the column to viewport on its
+            own (panels overflowed past the fold with no scrollbar). The
+            calc bypasses the chain — 100px ≈ HqHeader panel+m-2+p-3+
+            border-b-2 + content (~92px) with slop. */}
+        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-100px)]">
           <EdgeAttribution />
           <RegionFleetSummary />
           <FleetReadiness fleetSummary={regionFleet.data} />

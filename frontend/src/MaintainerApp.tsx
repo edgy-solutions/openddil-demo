@@ -269,7 +269,7 @@ function MaintainerApp() {
           transitTriggerKey; the schematic animates in place; everything
           else snaps. See EdgeTransit.tsx + DiagnosticCanvas's
           contentClassName seam through HudFrame. */}
-      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden">
+      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden min-h-0">
         {/* Left + center: identity strip + 3D schematic */}
         <div className="col-span-2 flex flex-col gap-4 overflow-hidden">
           <div className="panel flex items-center justify-between shrink-0 p-3">
@@ -307,7 +307,12 @@ function MaintainerApp() {
             panel shows a syncing state on cold start instead of flashing
             its genuinely-empty copy before the where-filtered shape has
             completed its first sync. */}
-        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0">
+        {/* Explicit viewport-bounded max-h: the grid-rows + min-h-0 chain
+            empirically did not constrain the column to viewport on its
+            own (panels overflowed past the fold with no scrollbar). The
+            calc bypasses the chain — 100px ≈ Header panel+m-2+p-3+
+            border-b-2 + content (~92px) with slop. */}
+        <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-100px)]">
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
           <LogisticsStatusCard logistics={logiState} isLoading={logistics.isLoading} />
           <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} isLoading={telemetry.isLoading} />

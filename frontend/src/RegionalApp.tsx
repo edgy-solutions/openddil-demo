@@ -330,14 +330,20 @@ export default function RegionalApp() {
         />
       </div>
 
-      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden">
+      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden min-h-0">
         <RegionalSustainmentPosture
           link1={link1}
           selectedAssetId={selectedAssetId}
           onAssetSelect={(id) => setSelectedAssetId(id)}
         />
 
-        <div className="col-span-1 flex flex-col gap-4 overflow-hidden min-h-0">
+        {/* Explicit viewport-bounded max-h on the scroll pane: the grid-
+            rows + min-h-0 chain empirically did not constrain it to the
+            viewport on its own (panels overflowed past the fold with no
+            scrollbar). The calc bypasses the chain — 140px ≈ RegionalHeader
+            panel+m-2+p-3+border-b-2 + content (~92px) + EdgePulldown bar
+            (px-4 py-1 + select ~37px) with slop. */}
+        <div className="col-span-1 flex flex-col gap-4 overflow-hidden min-h-0 max-h-[calc(100vh-140px)]">
           {selectedAssetId ? (
             <AssetDeepDive assetId={selectedAssetId} onClose={() => setSelectedAssetId(null)} />
           ) : (
