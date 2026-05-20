@@ -323,16 +323,22 @@ def clear_asset_logistics_state(asset_id: str, timeout_s: int = 15) -> bool:
 def consume_asset_logistics_updates(
     asset_id: str | None = None,
     *, timeout_s: int = 30,
-    max_records: int = 50,
+    max_records: int = 4000,
     per_partition_tail: int = 200,
 ) -> list[dict]:
     """Consume recent records from asset-logistics-status. Decode each into a
     plain dict via the generated AssetLogisticsStatusUpdate proto.
 
-    If `asset_id` is given, filter to that asset. `per_partition_tail`
-    defaults to 200 so callers can find the latest emission for a specific
-    asset even when the topic is hot with cadenced updates for other assets.
-    """
+    If `asset_id` is given, filter to that asset. asset-logistics-status is
+    a hot topic — cadenced updates every ~30s for the whole fleet, and since
+    Phase 6b §A all three edges' logistics are consolidated onto one
+    redpanda-hq topic. `consume_topic_recent` reads FORWARD from
+    `high - per_partition_tail` and stops at `max_records`, so to actually
+    reach a specific asset's latest emission `max_records` must exceed
+    `per_partition_tail x partition_count` (8 partitions today = 1600) —
+    otherwise it stops ~50-deep at the OLD end of the tail window and never
+    sees the recent records. The large `max_records` default drains the
+    whole window; `out` is then filtered by asset_id."""
     from openddil.logistics.v1 import logistics_status_pb2 as ls
     from openddil.telemetry.v1 import telemetry_pb2 as tel
 
