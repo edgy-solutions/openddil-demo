@@ -586,17 +586,52 @@ item: add it here, even if it isn't a test-runner item.
         `projector_config.yaml` mapping in `openddil-projector`
         (commit 033f9db). Verified by
         `test_44_strike_capability_projected_to_db`.
-      - **Sub-phase F — engagement-worthiness factor (PENDING).**
-        Extend `logistics-fusion-service` with an `_eval_inventory`
-        method paralleling `_eval_wear`: read the capability snapshot,
-        emit `AMMO_LOW` / `AMMO_EXHAUSTED` `ConstrainingFactor`s
-        stamped `origin = ORIGIN_DERIVED`, routed through the
-        `asset-logistics-status` topic.
-    **This follow-up closes when Sub-phase F lands.** It does **not**
-    close #17 — `asset_capability_state` (per-asset loaded-store
-    capability) is a distinct table from `inventory_items` (FOB
-    inventory), and the per-FOB-vs-shared inventory decision in #17 is
-    orthogonal to it.
+      - **Sub-phase F — engagement-worthiness factor (DONE).**
+        `logistics-fusion-service` gained an `_eval_inventory` evaluator
+        (paralleling `_eval_wear`): a new `on_capability_snapshot`
+        Restate handler stores the latest capability snapshot per asset,
+        `_eval_inventory` emits `AMMO_LOW` / `AMMO_EXHAUSTED`
+        `ConstrainingFactor`s stamped `origin = ORIGIN_DERIVED` on the
+        existing `asset-logistics-status` output, and `_eval_staleness`
+        was extended so a capability-only asset (no DIS / sustainment
+        telemetry) is not false-flagged "no telemetry". A
+        `fusion-service-capability-*` Restate subscription per edge
+        feeds the handler. Verified by
+        `test_45_strike_capability_engagement_worthiness` (AMQP → Bronze
+        → Silver → fusion → projector → `asset_logistics_status`) plus
+        10 `_eval_inventory` unit tests in the fusion service's
+        `test_rules`.
+    **CLOSED — A + E + F all landed.** Sub-phase G (surfacing the factor
+    on the COP UI) is separate frontend work, not part of this follow-up.
+    This follow-up never closed #17 — `asset_capability_state` (per-asset
+    loaded-store capability) is a distinct table from `inventory_items`
+    (FOB inventory), and the per-FOB-vs-shared inventory decision in #17
+    is orthogonal to it.
+
+20. **Stale `_cm_helpers.KAFKA_BOOTSTRAP` — hq-resident topics
+    unreachable from the test consumer.** `tests/hero_scenario_v3/
+    _cm_helpers.py` pins `KAFKA_BOOTSTRAP = "localhost:9093"`, the
+    OUTSIDE listener of `redpanda-edge-01`. Phase 6b §A moved several
+    topics off the edge brokers onto `redpanda-hq`:
+    `logistics-fusion-service` PRODUCES `asset-logistics-status` to
+    `redpanda-hq:19092` (host OUTSIDE listener `localhost:19093`), and
+    `asset-cm-state` likewise lands on hq. `consume_topic_recent` /
+    `consume_asset_logistics_updates` therefore connect to a broker that
+    does not carry those topics and silently return zero records.
+    Found while building Sub-phase F: `test_45` first verified via
+    `consume_asset_logistics_updates` and false-failed even though the
+    fusion service had demonstrably emitted (confirmed in its logs AND
+    in the projected `asset_logistics_status` row). test_45 was rewritten
+    to verify via `query_postgres` against the projected table instead —
+    the same pattern as test_44. **Audit needed:** every consumer of
+    `consume_topic_recent` for an hq-resident topic (`asset-logistics-
+    status`, `asset-cm-state`, `tactical-events`, the `region-*`
+    rollups) — `test_39` in particular consumes `asset-logistics-status`
+    this way and is likely affected. Fix is either a per-topic broker
+    map in `_cm_helpers.py` or a second `HQ_KAFKA_BOOTSTRAP =
+    "localhost:19093"` constant selected by topic. Deliberately not
+    fixed inline — it is cross-cutting test infrastructure and a broad
+    change wants its own verification pass.
 
 ## Future phases
 
