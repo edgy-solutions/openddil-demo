@@ -715,6 +715,63 @@ item: add it here, even if it isn't a test-runner item.
     stakeholder-question magnet; status-colored spheres at least don't
     claim to be tanks.
 
+24. **DIS position layer is format-complete but wire-empty.** The
+    per-asset position path is plumbed end to end — DIS Entity State PDU
+    ECEF → `dis_ingestor` → `sim-dis-mapping` → `raw-sensor-stream` →
+    projector `telemetry_latest` handler → `telemetry_latest_state
+    .kinematics` (jsonb) → `electric_publication` → `HqApp`'s
+    `useFleetAssets()`. But the values are empty: of 31 DIS rows in
+    `telemetry_latest_state`, 29 carry ECEF `(0,0,0)` (proto3 omits the
+    zero `value`s — only `unit` survives) and 2 are straight-line test
+    artifacts — `dis:1:1:9994` at `x=5000` (test_39's terrain ramp) and
+    `dis:1:1:1880` at `x=400`. `build_entity_state_pdu` defaults
+    `location_ecef=(0,0,0)`; every DIS PDU in the demo is
+    test-generated. `position.quality.source` is honestly stamped
+    `POS_SRC_SIMULATED`, and the simulator service was removed in Phase
+    4b — no live feed (newest non-test row is 2026-05-18). The only real
+    DIS position source would be a VRForces / AFSim integration — the
+    SAME dependency as #4b (fire-event ingestion). Also absent: any
+    ECEF→WGS84 conversion utility (`wgs84` is null on every row). Net: a
+    future reader must NOT read "we have asset positions" off the schema
+    — the schema is complete, the wire is zero. Surfaced during the HQ
+    map-honesty scoping. Real customer-asset geography does exist on a
+    different feed — see #25.
+
+25. **Customer Unit-message WGS84 is real and already lifted to Silver
+    — the viable A-derived-partial source for map honesty.** The
+    investigation prompted as "revisit the dropped customer
+    `parentLat/parentLon`" found the premise slightly mis-aimed, and a
+    better answer underneath:
+      - `parentLat/parentLon` lives on the customer-overlay proprietary feed's
+        **Sensor** message (a fixed sensor ARRAY). The whole Sensor
+        message is deliberately dropped at Silver
+        (`proprietary-mapping.yaml:56-60`, `deleted()`) — OpenDDIL
+        Silver has no sensor-coverage type and OpenDDIL is a logistics
+        COP. That is a data-model scoping decision, NOT "nothing needed
+        it yet" — so it is NOT cheaply revisitable; reviving it means
+        modeling fixed sensor installations as first-class entities
+        (Large). Do not do that for the map.
+      - The same feed's **Unit** message (a mobile asset) carries
+        top-level `lat`/`lon`/`alt`, and `proprietary-mapping.yaml:125-
+        136` ALREADY lifts them into Silver
+        `kinematics.position.wgs84.{lat,lon,alt}` (unit `deg` —
+        LLM-inferred label per `units.md`, values real-captured from
+        live wire traffic). When the customer-overlay proprietary overlay runs,
+        customer Unit assets land in
+        `telemetry_latest_state.kinematics.position.wgs84` with real
+        decimal-degree positions — no ECEF→WGS84 conversion needed (that
+        is a DIS-only problem, #24). Lifting work: **zero, already
+        done.** Frontend consumption: Small.
+    So **A-derived-partial is viable now** for customer Unit assets,
+    gated only on the customer-overlay proprietary overlay running (it is not
+    in the current running stack) and the customer emitting Unit
+    messages. Caveats: (1) the customer-overlay overlay is single-edge
+    (edge-01), so real positions cover edge-01 customer assets only —
+    edge-02 / edge-03 stay DIS-only zeros (#24); (2) customer lat/lon is
+    private-bundle data — fine as runtime DB data the OSS frontend
+    reads, but absent from the public example bundle. Cross-ref #24;
+    feeds the route-A-vs-B map-honesty decision.
+
 ## Future phases
 
 **Distinct category from tracked follow-ups.** Follow-ups are code-level
