@@ -58,10 +58,11 @@ PITCH_DEG = 10.0
 
 
 def _consumer_group_stable(group: str) -> bool:
-    """True if `group` exists and its STATE is Stable on redpanda-edge.
-    The integration test gates on this — without `fusion-service-derived`
-    Stable, the derived-sustainment subscription isn't live and the test
-    would race fusion's startup."""
+    """True if `group` exists and its STATE is Stable on the edge-01 broker.
+    The integration test gates on this — without the derived-sustainment
+    consumer group Stable, the subscription isn't live and the test would
+    race fusion's startup. Phase 6b §A made the group names edge-suffixed
+    (`fusion-service-derived-edge-01`)."""
     cmd = _docker_compose_cmd() + [
         "exec", "-T", REDPANDA_SVC, "rpk", "group", "describe", group,
     ]
@@ -84,11 +85,11 @@ def main() -> None:
     # key on the fusion subscription being Stable, NOT on the eventual
     # asset-logistics-status topic having records for our entity (that
     # would be a result, not readiness).
-    if not _consumer_group_stable("fusion-service-derived"):
-        skip_(NAME, "consumer group `fusion-service-derived` not Stable — "
-                    "logistics-fusion-service Phase 5 step-2 subscription not "
-                    "yet deployed (restart fusion with the new register_"
-                    "subscriptions list)")
+    if not _consumer_group_stable("fusion-service-derived-edge-01"):
+        skip_(NAME, "consumer group `fusion-service-derived-edge-01` not "
+                    "Stable — logistics-fusion-service Phase 5 step-2 "
+                    "subscription not yet deployed (restart fusion with the "
+                    "new register_subscriptions list)")
 
     pitch_rad = math.radians(PITCH_DEG)
     for i in range(SEGMENTS + 1):

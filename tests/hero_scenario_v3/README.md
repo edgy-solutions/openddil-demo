@@ -608,30 +608,78 @@ item: add it here, even if it isn't a test-runner item.
     (FOB inventory), and the per-FOB-vs-shared inventory decision in #17
     is orthogonal to it.
 
-20. **Stale `_cm_helpers.KAFKA_BOOTSTRAP` — hq-resident topics
-    unreachable from the test consumer.** `tests/hero_scenario_v3/
-    _cm_helpers.py` pins `KAFKA_BOOTSTRAP = "localhost:9093"`, the
-    OUTSIDE listener of `redpanda-edge-01`. Phase 6b §A moved several
-    topics off the edge brokers onto `redpanda-hq`:
-    `logistics-fusion-service` PRODUCES `asset-logistics-status` to
-    `redpanda-hq:19092` (host OUTSIDE listener `localhost:19093`), and
-    `asset-cm-state` likewise lands on hq. `consume_topic_recent` /
-    `consume_asset_logistics_updates` therefore connect to a broker that
-    does not carry those topics and silently return zero records.
-    Found while building Sub-phase F: `test_45` first verified via
-    `consume_asset_logistics_updates` and false-failed even though the
-    fusion service had demonstrably emitted (confirmed in its logs AND
-    in the projected `asset_logistics_status` row). test_45 was rewritten
-    to verify via `query_postgres` against the projected table instead —
-    the same pattern as test_44. **Audit needed:** every consumer of
-    `consume_topic_recent` for an hq-resident topic (`asset-logistics-
-    status`, `asset-cm-state`, `tactical-events`, the `region-*`
-    rollups) — `test_39` in particular consumes `asset-logistics-status`
-    this way and is likely affected. Fix is either a per-topic broker
-    map in `_cm_helpers.py` or a second `HQ_KAFKA_BOOTSTRAP =
-    "localhost:19093"` constant selected by topic. Deliberately not
-    fixed inline — it is cross-cutting test infrastructure and a broad
-    change wants its own verification pass.
+20. **Stale Phase-6b broker references in `_cm_helpers.py` — AUDITED
+    AND FIXED (2026-05-20).** Phase 6b §A moved `asset-cm-state`,
+    `tactical-events`, and `asset-logistics-status` off the per-edge
+    brokers onto `redpanda-hq` (cm-service and logistics-fusion-service
+    both target `redpanda-hq:19092`); the per-edge brokers keep empty
+    topic-init-parity copies only. Three references in `_cm_helpers.py`
+    still pointed at the old edge topology:
+      - `KAFKA_BOOTSTRAP = "localhost:9093"` (redpanda-edge-01 OUTSIDE
+        listener) — every `consume_topic_recent` call read an empty
+        edge copy. **Fixed → `localhost:19093`** (redpanda-hq OUTSIDE).
+      - `submit_cm_event_via_cli` passed `--brokers redpanda-edge:9092`;
+        the bare `redpanda-edge` host has not resolved since the Phase
+        6a rename to `redpanda-edge-0N`, so every CmEvent submit
+        silently no-op'd (the CLI exits 0 without verifying delivery).
+        **Fixed → `redpanda-edge-01:9092`** (cm-events is a per-edge
+        topic).
+      - `REDPANDA_SVC = "redpanda-edge"` — same dead bare name; the
+        copy in `_helpers.py` was updated to `redpanda-edge-01` at
+        rename time but this one drifted. **Fixed → `redpanda-edge-01`.**
+    **Assertion-polarity finding:** all six affected tests (12, 13, 14,
+    15, 16, 39) FAIL HONESTLY with the stale config — none passed
+    spuriously. The two with absence-style assertions (test_15
+    no-realert, test_16 resolved-alert) each guard the absence check
+    behind an explicit presence check on the first consume, so a broken
+    broker is caught before the vacuous assertion is reached. Good
+    defensive design — worth preserving the pattern in new tests.
+    **Verified post-fix:** tests 12 / 13 / 14 / 15 / 16 PASS. test_39
+    had been silently SKIPping since Phase 6b (its
+    `_consumer_group_stable` precondition was double-stale — dead
+    `REDPANDA_SVC` *and* a pre-edge-suffix group name
+    `fusion-service-derived`); both fixed, so it now runs — and reveals
+    a genuine failure underneath, split out as #22.
+
+21. **helm-test `connectivity.yaml` checks the wrong publication name.**
+    `openddil-helm/openddil-demo/templates/tests/connectivity.yaml`'s
+    `test-postgres-hq` pod asserts the Electric publication exists by
+    querying `pg_publication WHERE pubname =
+    'electric_publication_default'`. The publication created by
+    `openddil-stack/electric/electrify.sql` is named
+    `electric_publication` (no `_default` suffix). The check
+    false-fails: `helm test` reports the postgres pod failed even when
+    the publication is correctly in place. ONE-LINE FIX — change the
+    pubname literal. Affects `helm test` only; chart install and the
+    data path are unaffected. Already recorded in
+    `openddil-helm/README.md`'s known-smells section; mirrored here so
+    this canonical follow-up list is complete. Deliberately not fixed
+    inline to avoid bumping the chart version mid-deploy-cycle — fold
+    into the next natural chart change.
+
+22. **test_39 prognostics→fusion integration FAILS once un-SKIP'd —
+    needs diagnosis.** With #20's broker + precondition fixes,
+    `test_39_prognostics_to_fusion_integration` no longer SKIPs (it had
+    SKIP'd unconditionally since Phase 6b). It now runs and FAILS
+    consistently: "no asset-logistics-status updates for dis:1:1:9994".
+    The prognostics engine IS producing — `derived-sustainment` carries
+    121 records on redpanda-edge-01 — and the
+    `fusion-service-derived-edge-01` consumer group is Stable, so the
+    gap is downstream: derived-sustainment → fusion
+    `on_derived_sustainment` → asset-logistics-status for the test's
+    specific asset, OR the test's consume window. Strong candidate:
+    `consume_asset_logistics_updates` uses `per_partition_tail=200`, but
+    `asset-logistics-status` on hq is now far hotter than any single
+    pre-Phase-6b edge copy — all three edges' logistics consolidated
+    onto one hq topic (~86k records, one partition at 26k). 200-from-
+    tail may simply not reach back to the test asset's update. Needs a
+    real diagnosis pass: confirm a derived event for `dis:1:1:9994`
+    reaches fusion, confirm `on_derived_sustainment` emits, then either
+    widen `per_partition_tail` or have the consume seek by key. Distinct
+    from #20 (broker config) — a test-window / pipeline question the
+    audit surfaced rather than caused. Same shape as Sub-phase F's
+    test_45, whose first cut hit a related new-consumer cold-start
+    timing miss on this same hot topic.
 
 ## Future phases
 

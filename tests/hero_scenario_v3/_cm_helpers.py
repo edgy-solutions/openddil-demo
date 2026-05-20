@@ -1,12 +1,18 @@
 """
 Helpers for Hero Scenario v3 OSS tests (DIS + cm-service + fusion-rules).
 
-Kafka access uses confluent-kafka directly against the host-mapped OUTSIDE
-listener (`localhost:9093` per docker-compose). This replaced the earlier
-`docker compose exec ... rpk topic consume` approach, which intermittently
-hung on Windows because subprocess.run's timeout did not propagate through
-the docker exec pipe. Direct Kafka is faster, has predictable timeouts, and
-removes the docker pipe from the critical path.
+Kafka access uses confluent-kafka directly against a host-mapped OUTSIDE
+listener. This replaced the earlier `docker compose exec ... rpk topic
+consume` approach, which intermittently hung on Windows because
+subprocess.run's timeout did not propagate through the docker exec pipe.
+Direct Kafka is faster, has predictable timeouts, and removes the docker
+pipe from the critical path.
+
+Broker: every topic this file consumes — asset-cm-state, tactical-events,
+asset-logistics-status — is produced to redpanda-hq (cm-service and
+logistics-fusion-service both target redpanda-hq:19092 since Phase 6b §A;
+the per-edge brokers carry empty topic-init-parity copies only). So
+KAFKA_BOOTSTRAP points at redpanda-hq's OUTSIDE listener, localhost:19093.
 
 Customer-feed helpers (proprietary HTTP, sim-a AMQP, battle-mgmt egress,
 plus their sample-message builders) live in the customer overlay at
@@ -26,7 +32,10 @@ from confluent_kafka import Consumer, KafkaError, KafkaException, TopicPartition
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE_DIR = REPO_ROOT / "openddil-demo"
-REDPANDA_SVC = "redpanda-edge"
+# Phase 6a renamed the edge broker service redpanda-edge -> redpanda-edge-0N.
+# The bare name no longer resolves; edge-01 is the canonical edge. (The copy
+# in _helpers.py was updated at the time; this one drifted.)
+REDPANDA_SVC = "redpanda-edge-01"
 
 # Make the generated protobuf bindings importable from host pytest runs.
 # Containers get them via the /proto mount; host tests need this manual
@@ -35,9 +44,10 @@ _GEN_PYTHON = REPO_ROOT / "openddil-contracts" / "gen" / "python"
 if _GEN_PYTHON.is_dir() and str(_GEN_PYTHON) not in sys.path:
     sys.path.insert(0, str(_GEN_PYTHON))
 
-# Host-mapped Redpanda listener (see docker-compose.yml advertise-kafka-addr
-# → OUTSIDE://localhost:9093).
-KAFKA_BOOTSTRAP = "localhost:9093"
+# Host-mapped redpanda-hq OUTSIDE listener (docker-compose.yml maps
+# redpanda-hq 19093 -> host 19093). All topics consumed here live on
+# redpanda-hq since Phase 6b §A — see the module docstring.
+KAFKA_BOOTSTRAP = "localhost:19093"
 
 CM_SERVICE_HOST = "http://127.0.0.1:9080"
 
@@ -243,7 +253,12 @@ def submit_cm_event_via_cli(
 ) -> int:
     args = [
         "exec", "-T", "cm-service", "python", "/app/cli/submit_cm_event.py",
-        "--brokers", "redpanda-edge:9092",
+        # cm-events is a per-edge topic (cm-service-bootstrap registers the
+        # subscription on each edge cluster). The CLI runs inside the
+        # cm-service container, so this is the internal listener. Phase 6b §A
+        # renamed redpanda-edge -> redpanda-edge-0N; the bare name no longer
+        # resolves (submit silently no-op'd until this was fixed).
+        "--brokers", "redpanda-edge-01:9092",
         "--asset-id", asset_id,
     ]
     if mod_applied:
