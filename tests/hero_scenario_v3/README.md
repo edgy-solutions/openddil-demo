@@ -216,23 +216,32 @@ item: add it here, even if it isn't a test-runner item.
    up on `*-from-9999` traffic.
 
 10. **Restore per-asset 3D model rendering in regional / HQ / zoom-in
-   views.** Phase 4c removed `AssetSpawner` (the GLB-model renderer)
-   when the simulator plumbing was deleted; the regional and HQ 3D maps
-   currently render every asset as a status-colored sphere (a "dome"
-   from the top-down camera). The `DdilNetworkLink` comm lines and
-   `LogisticsHubNode` markers survived; the per-platform tank / radar /
-   launcher / UGV silhouettes did not. The status badges that used to
-   float on lines above each asset are also gone. **When this work
-   lands, the deliverable starts with a survey** — exactly which models
-   disappeared, where they were rendered (regional map / HQ theater /
-   AssetDeepDive zoom-in / floating status labels), why each was
-   removed, and what's still wired vs. what needs reconstruction.
-   User-provided GLBs go in `frontend/public/models/`; loader is
-   `@react-three/drei`'s `useGLTF` with `<Suspense>` boundaries.
-   Status-color treatment likely lives on an emissive base ring under
-   each model rather than recoloring baked GLB materials. Eye-candy
-   pass (2026-05-15) deliberately left this out as "model fidelity,"
-   not "frame parity."
+   views — FIDELITY follow-up (enhancement, honesty-neutral).** Phase
+   4c removed `AssetSpawner` (the GLB-model renderer) when the simulator
+   plumbing was deleted; the regional and HQ 3D maps now render every
+   asset as a status-colored sphere (a "dome" from the top-down camera)
+   — see `RegionalSustainmentPosture.tsx`'s `AssetMarker`. The
+   `DdilNetworkLink` comm lines and `LogisticsHubNode` markers survived;
+   the per-platform tank / radar / launcher / UGV silhouettes and the
+   floating status badges did not.
+
+   **Staged-GLB inventory (verified 2026-05-20):** three model files are
+   already present in `frontend/public/models/` — `stryker.glb`,
+   `himars.glb`, `ugv.glb` — but nothing loads them (`useGLTF` appears
+   nowhere in `src`). They cover 3 of the 4 mock platform types; a
+   radar / LTAMDS GLB is missing and must be sourced.
+
+   **Implementation:** a `useGLTF` + `<Suspense>` renderer replacing
+   `AssetMarker`; status color on an emissive base ring under each model
+   rather than recoloring baked GLB materials. Covers the regional map,
+   the HQ theater view, and the AssetDeepDive zoom-in.
+
+   This is **enhancement** — it makes the demo prettier and does NOT
+   change honesty. The separate question of WHERE the rendered asset
+   list comes from (today a hardcoded mock) is the honesty follow-up
+   **#23** — do not bundle the two; see #23 for the sequencing rationale.
+   Eye-candy pass (2026-05-15) deliberately deferred this as "model
+   fidelity," not "frame parity."
 
 11. **Sustainment-data test fixtures for the windowed-path end-to-end
     exercise.** Phase 6b §A added `WindowedTelemetry.provenance` (proto
@@ -675,6 +684,36 @@ item: add it here, even if it isn't a test-runner item.
     PASSES (12 updates for `dis:1:1:9994`, `wear.suspension` factor with
     `origin = ORIGIN_DERIVED`). **All six tests in #20's set
     (12, 13, 14, 15, 16, 39) now confirmed passing.**
+
+23. **Drive the regional 3D view's asset list from the real pipeline —
+    HONESTY follow-up (never-was-real).** Split out of #10 along the
+    fidelity-vs-honesty axis. `RegionalSustainmentPosture.tsx` renders
+    its 3D map from a hardcoded `DISCOVERED_FLEET` array (4 invented
+    assets — LTAMDS-04, STRYKER-DE-09, HIMARS-ALPHA, GHOST-UGV-1 — with
+    synthetic positions and statuses), `DEMO_MOCK = true`. This is the
+    same fabricated-entity problem as the HQ theater map's `REGIONS`
+    array (see the map-honesty scoping read): the *entities* don't exist
+    in the pipeline, not merely their positions. RegionalApp ALREADY
+    holds the real AOR asset list — the component header notes asset
+    *selection* is driven by it — the 3D view simply doesn't use it for
+    *rendering*. Fix: render from that real list (a
+    `useFleetAssetsForRegion`-style subscription, the regional analog of
+    `useFleetAssetsForEdge`), retiring `DISCOVERED_FLEET`. ADR-0017
+    discipline applies.
+
+    **Sequencing:** rides with the broader map-honesty phase (which
+    scopes BOTH the HQ `TheaterReadinessPosture` and this regional view)
+    and is gated on the route-A-vs-B decision — map with notional
+    positions vs. abstract topology diagram — pending the DIS-position
+    investigation. **Do NOT bundle with #10.** Different completion
+    criteria, different discipline: the honesty fix can land first and
+    render real assets as plain spheres (honest but visually weak —
+    better than mock-but-visually-rich); #10's fidelity fix lands later
+    when GLB sourcing is done. Bundling risks one blocking the other.
+    For demo readiness the honesty fix is the higher priority —
+    fabricated assets that don't match the rest of the demo are a
+    stakeholder-question magnet; status-colored spheres at least don't
+    claim to be tanks.
 
 ## Future phases
 
