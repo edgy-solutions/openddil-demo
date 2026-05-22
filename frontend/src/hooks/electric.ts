@@ -13,8 +13,17 @@
 // =============================================================================
 import { useShape } from '@electric-sql/react';
 
-export const ELECTRIC_URL =
+// VITE_ELECTRIC_URL is relative ("/electric/v1/shape") for same-origin Helm
+// deploys so it works behind any ingress host. The Electric client runs
+// `new URL()` on this value, which rejects a relative URL — resolve it
+// against the page origin here. An already-absolute value (docker-compose's
+// http://localhost:5133/...) passes through unchanged.
+const rawElectricUrl =
   import.meta.env.VITE_ELECTRIC_URL ?? 'http://localhost:5133/v1/shape';
+export const ELECTRIC_URL = new URL(
+  rawElectricUrl,
+  window.location.origin,
+).toString();
 
 /** Uniform return shape for every OpenDDIL shape hook. */
 export interface ShapeResult<T> {
