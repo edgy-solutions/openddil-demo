@@ -33,6 +33,11 @@ FROM nginx:alpine AS production
 # Copy custom nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Fill the nginx `resolver` from /etc/resolv.conf at container start. The
+# nginx image runs /docker-entrypoint.d/*.sh before launching nginx.
+COPY docker-entrypoint.d/40-resolver.sh /docker-entrypoint.d/40-resolver.sh
+RUN chmod +x /docker-entrypoint.d/40-resolver.sh
+
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
 

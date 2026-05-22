@@ -4,6 +4,7 @@ import RegionalApp from './RegionalApp';
 import HqApp from './HqApp';
 import ControllerApp from './ControllerApp';
 import { Wrench, Server, Building2, SlidersHorizontal } from 'lucide-react';
+import { branding } from './branding';
 
 // Phase 4c: three role-aware views (maintainer / regional / HQ) plus the
 // DDIL controller. The Phase 4b SIMULATOR tab is gone. A dev-only ?role=
@@ -20,6 +21,8 @@ function initialView(): View {
 
 function Root() {
   const [view, setView] = useState<View>(initialView);
+  // Branding is loaded once before render (see main.tsx), so this is stable.
+  const { title, logo } = branding();
 
   // Keep ?role= in sync so a reload / shared link lands on the same view.
   useEffect(() => {
@@ -40,7 +43,8 @@ function Root() {
       {/* Dev Navigation Bar (not part of the role UIs — just for switching) */}
       <div className="h-10 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 shrink-0 z-50 relative">
         <div className="flex items-center gap-2 text-cyan-500 font-orbitron font-bold tracking-widest text-sm">
-          <span className="text-white">OpenDDIL</span> DEMO
+          {logo && <img src={logo} alt="" className="h-6 w-auto object-contain" />}
+          {title}
         </div>
         <div className="flex gap-2">
           {tabs.map(({ id, label, icon: Icon }) => (
