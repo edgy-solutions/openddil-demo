@@ -29,6 +29,7 @@ import RegionalSustainmentPosture from './components/regional/RegionalSustainmen
 import WorkOrders from './components/regional/WorkOrders';
 import TacticalRuleBuilder from './components/regional/TacticalRuleBuilder';
 import AssetDeepDive from './components/regional/AssetDeepDive';
+import EngagementWatchlist from './components/regional/EngagementWatchlist';
 import AlertFeed from './components/AlertFeed';
 import {
   useFleetAssetsForRegion,
@@ -333,6 +334,7 @@ export default function RegionalApp() {
       <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden min-h-0">
         <RegionalSustainmentPosture
           link1={link1}
+          regionId={selectedRegion}
           selectedAssetId={selectedAssetId}
           onAssetSelect={(id) => setSelectedAssetId(id)}
         />
@@ -358,6 +360,7 @@ export default function RegionalApp() {
                 onSelect={setSelectedAssetId}
               />
               <RegionFleetBuckets row={scopedFleetSummary} />
+              <EngagementWatchlist regionId={selectedRegion} />
               <TopFactors row={scopedTopFactors} />
               <WearTrends row={scopedWearTrends} />
               <WorkOrders />
