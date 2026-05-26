@@ -8,7 +8,7 @@
 //                                            pulldown region.
 //   * useAllLogisticsStatus()             — overall_severity per asset, used
 //                                            to color the markers.
-//   * branding().fobs                     — deployment-supplied FOB list
+//   * deployment().fobs                   — deployment-supplied FOB list
 //                                            (positions + region mapping).
 //
 // Asset placement:
@@ -28,7 +28,7 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import DdilNetworkLink from '../DdilNetworkLink';
-import { branding, type Fob } from '../../branding';
+import { deployment, type Fob } from '../../deployment';
 import {
   useFleetAssetsForRegion,
   useAllLogisticsStatus,
@@ -181,7 +181,7 @@ export default function RegionalSustainmentPosture({
 }) {
   const fleet = useFleetAssetsForRegion(regionId);
   const logistics = useAllLogisticsStatus();
-  const { fobs } = branding();
+  const { fobs } = deployment();
 
   // Project around the active region's FOBs so the camera bbox is the
   // region's geographic extent, not the whole theater.

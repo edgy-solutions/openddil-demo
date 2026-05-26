@@ -14,7 +14,7 @@
 // gets a regional-centered projection automatically — no per-component
 // constants need re-tuning when the FOB list moves.
 // =============================================================================
-import type { Fob } from '../branding';
+import type { Fob } from '../deployment';
 
 export interface Projection {
   /** Project (lat, lon) -> (x, z) in scene units. */

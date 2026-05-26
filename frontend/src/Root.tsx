@@ -4,7 +4,7 @@ import RegionalApp from './RegionalApp';
 import HqApp from './HqApp';
 import ControllerApp from './ControllerApp';
 import { Wrench, Server, Building2, SlidersHorizontal } from 'lucide-react';
-import { branding } from './branding';
+import { deployment } from './deployment';
 
 // Phase 4c: three role-aware views (maintainer / regional / HQ) plus the
 // DDIL controller. The Phase 4b SIMULATOR tab is gone. A dev-only ?role=
@@ -21,8 +21,8 @@ function initialView(): View {
 
 function Root() {
   const [view, setView] = useState<View>(initialView);
-  // Branding is loaded once before render (see main.tsx), so this is stable.
-  const { title, logo } = branding();
+  // Deployment config is loaded once before render (see main.tsx).
+  const { title, logo } = deployment();
 
   // Keep ?role= in sync so a reload / shared link lands on the same view.
   useEffect(() => {

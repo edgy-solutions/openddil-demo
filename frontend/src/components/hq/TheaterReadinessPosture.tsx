@@ -5,7 +5,7 @@
 // fabricated regions and 17 Math.random()-scattered "radar" nodes, all
 // DDIL link statuses driven by one global boolean. Now reads:
 //
-//   * branding().fobs                — deployment-supplied FOB list. Each
+//   * deployment().fobs              — deployment-supplied FOB list. Each
 //                                       FOB is rendered as a hub node at
 //                                       its real geographic position.
 //   * useFleetAssets()               — every asset in the pipeline; counted
@@ -29,7 +29,7 @@ import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
-import { branding, type Fob } from '../../branding';
+import { deployment, type Fob } from '../../deployment';
 import { useFleetAssets, useAllLogisticsStatus } from '../../hooks';
 import { makeProjection } from '../../lib/geoProjection';
 
@@ -135,7 +135,7 @@ export default function TheaterReadinessPosture({
    *  Drives the per-FOB DDIL link color and the GLOBAL LINK STATUS overlay. */
   severed: boolean;
 }) {
-  const { fobs } = branding();
+  const { fobs } = deployment();
   const fleet = useFleetAssets();
   const logistics = useAllLogisticsStatus();
 
@@ -214,7 +214,7 @@ export default function TheaterReadinessPosture({
 
           <AbstractContinents />
 
-          {/* FOB hub nodes — one per branding.fobs. */}
+          {/* FOB hub nodes — one per deployment().fobs. */}
           {metrics.map((m) => (
             <LogisticsHubNode key={`hub-${m.fob.edge_id}`} position={[m.scenePos[0], 0, m.scenePos[1]]} />
           ))}

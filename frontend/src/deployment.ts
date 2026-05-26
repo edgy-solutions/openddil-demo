@@ -1,11 +1,17 @@
 // =============================================================================
-// Runtime branding
+// Runtime deployment config
 // =============================================================================
-// The demo defaults to OpenDDIL branding. A customer deployment can
-// white-label it WITHOUT rebuilding this image: an overlay bundle mounts a
-// ConfigMap of branding.json (+ a logo image) into the frontend pod, which
-// the nginx `/branding/` location serves. loadBranding() fetches it once at
-// startup; if it is absent or malformed, the OpenDDIL defaults stand.
+// Per-deployment configuration the OSS defaults can't carry: customer
+// branding (title, logo), FOB topology (lat/lons used by the 3D maps), and
+// anything else that varies by who's deploying. Lives in /deployment/
+// deployment.json — mounted into the frontend pod by the overlay bundle,
+// served by nginx, fetched here at startup.
+//
+// Renamed from "branding" once it grew past title+logo to also carry the
+// FOB list — same lifecycle ("things that change when you deploy for a
+// different customer"), same delivery mechanism, more honest name. The
+// Deployment type is the union of those concerns; a future split into
+// `branding:` and `topology:` sub-blocks is possible if it gets bigger.
 // =============================================================================
 
 /** Forward Operating Base — an OpenDDIL edge's geographic anchor.
@@ -24,7 +30,7 @@ export interface Fob {
   label?: string;
 }
 
-export interface Branding {
+export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
   /** Logo shown in the nav bar and used as the favicon. '' = none. */
@@ -35,12 +41,13 @@ export interface Branding {
   fobs: Fob[];
 }
 
-const DEFAULT: Branding = { title: 'OpenDDIL DEMO', logo: '', fobs: [] };
+const DEFAULT: Deployment = { title: 'OpenDDIL DEMO', logo: '', fobs: [] };
 
-let active: Branding = DEFAULT;
+let active: Deployment = DEFAULT;
 
-/** Current branding. Meaningful only after loadBranding() has resolved. */
-export function branding(): Branding {
+/** Current deployment config. Meaningful only after loadDeployment() has
+ *  resolved. */
+export function deployment(): Deployment {
   return active;
 }
 
@@ -56,15 +63,15 @@ function isValidFob(x: unknown): x is Fob {
 }
 
 /**
- * Fetch optional overlay branding, then apply document.title and the
- * favicon. Call once before the first render. Any failure (no overlay,
+ * Fetch optional overlay deployment config, then apply document.title and
+ * the favicon. Call once before the first render. Any failure (no overlay,
  * 404, bad JSON) leaves the OpenDDIL defaults in place — it never throws.
  */
-export async function loadBranding(): Promise<void> {
+export async function loadDeployment(): Promise<void> {
   try {
-    const res = await fetch('/branding/branding.json', { cache: 'no-store' });
+    const res = await fetch('/deployment/deployment.json', { cache: 'no-store' });
     if (res.ok) {
-      const j = (await res.json()) as Partial<Branding>;
+      const j = (await res.json()) as Partial<Deployment>;
       active = {
         title: j.title?.trim() || DEFAULT.title,
         logo: j.logo?.trim() || DEFAULT.logo,
@@ -72,7 +79,7 @@ export async function loadBranding(): Promise<void> {
       };
     }
   } catch {
-    // No overlay branding reachable — keep the OpenDDIL defaults.
+    // No overlay reachable — keep the OpenDDIL defaults.
   }
   document.title = active.title;
   if (active.logo) {

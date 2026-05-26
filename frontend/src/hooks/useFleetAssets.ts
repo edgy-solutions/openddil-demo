@@ -19,7 +19,7 @@ export interface FleetAsset {
   /** WGS84 position extracted from kinematics.position.wgs84. Null when
    *  the asset has no telemetry row (e.g. strike-only assets like the
    *  customer-overlay launchers). The 3D maps fall back to the assigned FOB's
-   *  coordinates in that case — see Fob in src/branding.ts. */
+   *  coordinates in that case — see Fob in src/deployment.ts. */
   position: { lat: number; lon: number } | null;
 }
 
