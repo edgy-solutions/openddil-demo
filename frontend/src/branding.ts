@@ -8,20 +8,51 @@
 // startup; if it is absent or malformed, the OpenDDIL defaults stand.
 // =============================================================================
 
+/** Forward Operating Base — an OpenDDIL edge's geographic anchor.
+ *  The HQ and Regional 3D maps use these as markers and as the projection
+ *  center; positionless assets (e.g. strike-only launchers) are placed at
+ *  their assigned FOB's coordinates rather than dropped. */
+export interface Fob {
+  /** Edge identifier this FOB anchors (e.g. "edge-01"). */
+  edge_id: string;
+  /** Region the FOB rolls up into (e.g. "region-east"). */
+  region_id: string;
+  /** Geographic anchor (decimal degrees, WGS84). */
+  lat: number;
+  lon: number;
+  /** Human-readable label for the map marker. */
+  label?: string;
+}
+
 export interface Branding {
   /** Nav-bar text and document.title. */
   title: string;
   /** Logo shown in the nav bar and used as the favicon. '' = none. */
   logo: string;
+  /** Optional FOB list — populated by a deployment overlay. The 3D maps
+   *  use this to place edge markers and to home positionless assets.
+   *  Empty in the OSS default; the maps render an empty theater. */
+  fobs: Fob[];
 }
 
-const DEFAULT: Branding = { title: 'OpenDDIL DEMO', logo: '' };
+const DEFAULT: Branding = { title: 'OpenDDIL DEMO', logo: '', fobs: [] };
 
 let active: Branding = DEFAULT;
 
 /** Current branding. Meaningful only after loadBranding() has resolved. */
 export function branding(): Branding {
   return active;
+}
+
+function isValidFob(x: unknown): x is Fob {
+  if (!x || typeof x !== 'object') return false;
+  const f = x as Record<string, unknown>;
+  return (
+    typeof f.edge_id === 'string' && f.edge_id.length > 0 &&
+    typeof f.region_id === 'string' && f.region_id.length > 0 &&
+    typeof f.lat === 'number' && Number.isFinite(f.lat) &&
+    typeof f.lon === 'number' && Number.isFinite(f.lon)
+  );
 }
 
 /**
@@ -37,6 +68,7 @@ export async function loadBranding(): Promise<void> {
       active = {
         title: j.title?.trim() || DEFAULT.title,
         logo: j.logo?.trim() || DEFAULT.logo,
+        fobs: Array.isArray(j.fobs) ? j.fobs.filter(isValidFob) : DEFAULT.fobs,
       };
     }
   } catch {

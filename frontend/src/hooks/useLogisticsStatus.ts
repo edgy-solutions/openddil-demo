@@ -17,6 +17,11 @@ export interface ConstrainingFactor {
 
 export interface LogisticsStatus {
   asset_id: string;
+  /** Per-asset edge attribution stamped by the projector (DIS path: from
+   *  the upstream Provenance; customer path: derived via the projector's
+   *  edge_assignment strategy). */
+  edge_id: string | null;
+  region_id: string | null;
   platform_variant: string | null;
   /** LOGISTICS_SEVERITY_OK | _DEGRADED | _CRITICAL | _NON_OPERATIONAL | _UNSPECIFIED */
   overall_severity: string;
@@ -39,6 +44,8 @@ function nullableNum(v: unknown): number | null {
 function mapLogistics(row: Record<string, any>): LogisticsStatus {
   return {
     asset_id: row.asset_id,
+    edge_id: row.edge_id ?? null,
+    region_id: row.region_id ?? null,
     platform_variant: row.platform_variant ?? null,
     overall_severity: row.overall_severity ?? 'LOGISTICS_SEVERITY_UNSPECIFIED',
     previous_severity: row.previous_severity ?? null,

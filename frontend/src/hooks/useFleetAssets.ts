@@ -16,6 +16,24 @@ export interface FleetAsset {
   // EDGE ATTRIBUTION panel on the HQ view.
   edge_id: string | null;
   region_id: string | null;
+  /** WGS84 position extracted from kinematics.position.wgs84. Null when
+   *  the asset has no telemetry row (e.g. strike-only assets like the
+   *  customer-overlay launchers). The 3D maps fall back to the assigned FOB's
+   *  coordinates in that case — see Fob in src/branding.ts. */
+  position: { lat: number; lon: number } | null;
+}
+
+function extractPosition(kinematics: any): { lat: number; lon: number } | null {
+  // Tolerant of proto-JSON variants: camelCase from the proto encoder OR
+  // short keys from compose-era hand-rolled JSON. Mirrors the projector's
+  // edge_assignment.extract_wgs84 logic.
+  const wgs84 = kinematics?.position?.wgs84;
+  if (!wgs84 || typeof wgs84 !== 'object') return null;
+  const lat = wgs84.latitude ?? wgs84.lat;
+  const lon = wgs84.longitude ?? wgs84.lon;
+  if (typeof lat !== 'number' || typeof lon !== 'number') return null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return { lat, lon };
 }
 
 function mapFleetAsset(row: Record<string, any>): FleetAsset {
@@ -28,6 +46,7 @@ function mapFleetAsset(row: Record<string, any>): FleetAsset {
     schema_revision: num(row.schema_revision),
     edge_id: row.edge_id ?? null,
     region_id: row.region_id ?? null,
+    position: extractPosition(row.kinematics),
   };
 }
 
