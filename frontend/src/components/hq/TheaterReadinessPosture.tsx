@@ -228,6 +228,14 @@ export default function TheaterReadinessPosture({
   const fleet = useFleetAssets();
   const logistics = useAllLogisticsStatus();
 
+  // Projection is computed once here and shared with both the FOB metrics
+  // (for marker positions) and the TacticalMapUnderlay (so a deployment-
+  // configured map image lines up with the FOBs geographically).
+  const proj = useMemo(
+    () => makeProjection(fobs, HQ_SCENE_SCALE_UNITS_PER_DEG),
+    [fobs],
+  );
+
   const metrics = useMemo(
     () => buildFobMetrics(fobs, fleet.data, logistics.data, HQ_SCENE_SCALE_UNITS_PER_DEG),
     [fobs, fleet.data, logistics.data],
@@ -362,7 +370,7 @@ export default function TheaterReadinessPosture({
           ))}
 
           <React.Suspense fallback={null}>
-            <TacticalMapUnderlay />
+            <TacticalMapUnderlay projection={proj} />
           </React.Suspense>
 
           <EffectComposer>

@@ -36,6 +36,29 @@ export interface Fob {
   label?: string;
 }
 
+/** Deployment-supplied tactical map underlay configuration. When set, the
+ *  HQ 3D view places this map image under the FOBs so the geographic
+ *  context is real (rather than the OSS-default decorative texture).
+ *
+ *  `image` is a path the frontend can GET (typically the overlay path
+ *  `/deployment/<name>.png` mounted from the deployment ConfigMap).
+ *
+ *  `bounds` describes the geographic rectangle the image covers (WGS84
+ *  decimal degrees). The component projects these bounds into scene
+ *  coordinates via the same projection used for FOBs + assets, so the
+ *  texture's geography aligns with where the assets are placed.
+ *
+ *  Standard north-up map imagery is assumed (image top = north). */
+export interface DeploymentMap {
+  image: string;
+  bounds: {
+    lat_min: number;
+    lat_max: number;
+    lon_min: number;
+    lon_max: number;
+  };
+}
+
 export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
@@ -45,6 +68,10 @@ export interface Deployment {
    *  use this to place edge markers and to home positionless assets.
    *  Empty in the OSS default; the maps render an empty theater. */
   fobs: Fob[];
+  /** Optional tactical map underlay. When set, the HQ view shows the
+   *  real geography under the FOBs. Absent => decorative fallback
+   *  texture (`/map_base.png`) with low opacity. */
+  map?: DeploymentMap;
 }
 
 const DEFAULT: Deployment = { title: 'OpenDDIL DEMO', logo: '', fobs: [] };
@@ -68,6 +95,21 @@ function isValidFob(x: unknown): x is Fob {
   );
 }
 
+function isValidDeploymentMap(x: unknown): x is DeploymentMap {
+  if (!x || typeof x !== 'object') return false;
+  const m = x as Record<string, unknown>;
+  if (typeof m.image !== 'string' || m.image.length === 0) return false;
+  const b = m.bounds as Record<string, unknown> | undefined;
+  if (!b || typeof b !== 'object') return false;
+  return (
+    typeof b.lat_min === 'number' && Number.isFinite(b.lat_min) &&
+    typeof b.lat_max === 'number' && Number.isFinite(b.lat_max) &&
+    typeof b.lon_min === 'number' && Number.isFinite(b.lon_min) &&
+    typeof b.lon_max === 'number' && Number.isFinite(b.lon_max) &&
+    b.lat_max > b.lat_min && b.lon_max > b.lon_min
+  );
+}
+
 /**
  * Fetch optional overlay deployment config, then apply document.title and
  * the favicon. Call once before the first render. Any failure (no overlay,
@@ -82,6 +124,7 @@ export async function loadDeployment(): Promise<void> {
         title: j.title?.trim() || DEFAULT.title,
         logo: j.logo?.trim() || DEFAULT.logo,
         fobs: Array.isArray(j.fobs) ? j.fobs.filter(isValidFob) : DEFAULT.fobs,
+        map: isValidDeploymentMap(j.map) ? j.map : undefined,
       };
     }
   } catch {
