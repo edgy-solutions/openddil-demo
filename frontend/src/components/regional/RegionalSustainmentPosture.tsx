@@ -267,7 +267,16 @@ function FogController({ isZoomed }: { isZoomed: boolean }) {
   const { scene } = useThree();
   useFrame(() => {
     if (scene.fog instanceof THREE.FogExp2) {
-      scene.fog.density = THREE.MathUtils.lerp(scene.fog.density, isZoomed ? 0.08 : 0.005, 0.05);
+      // Zoomed-in fog density tuned to "fade distant context, not erase it."
+      // Previously 0.08 was so dense that the entire scene went dark on
+      // asset click — exponential fog at that density makes anything past
+      // ~30 units invisible, including the surrounding terrain + map
+      // underlay + sibling assets. Now 0.018 keeps the selected asset and
+      // its near neighbors crisp, fades far context to atmospheric grey
+      // without making it disappear. Selected-asset focus is handled by
+      // the brighter base-ring on the AssetVisual `selected` path, not by
+      // erasing everything else.
+      scene.fog.density = THREE.MathUtils.lerp(scene.fog.density, isZoomed ? 0.018 : 0.005, 0.05);
     }
   });
   return null;

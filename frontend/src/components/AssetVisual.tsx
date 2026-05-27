@@ -114,6 +114,58 @@ const COLOR_DEGRADED  = '#f59e0b'; // amber — matches schematic indicator-DEGR
 const COLOR_CRITICAL  = '#ef4444'; // red — matches schematic indicator-CRITICAL
 const COLOR_UNKNOWN   = '#64748b'; // slate-500 — no claim
 
+// =============================================================================
+// Per-platform ground-baseline offset
+// =============================================================================
+// The maintainer-view schematics were authored at "single-asset close-up"
+// scale with the asset centered around the origin (some geometry above
+// Y=0, some below). At maintainer scale that's fine — the camera looks at
+// origin and the framing centers vertically.
+//
+// On regional/HQ maps, every asset sits ON the ground plane (Y=0). If a
+// schematic has geometry extending below Y=0 (e.g. Artillery's hinge at
+// Y=-2, M1A2's hull bottom at Y=-0.8), that geometry passes through the
+// terrain and the asset reads as "half buried."
+//
+// Fix: per-schematic ground-baseline offset. Each value is the schematic's
+// native lowest-point Y (negative), so we wrap the schematic in a
+// `<group position={[0, -lowestY, 0]}>` to lift it. Scale is applied AFTER
+// the offset so it stays in sync at any zoom level.
+//
+// Native Y bounds (eyeballed from each schematic's geometry):
+//   LaserShorad   cylinder [-4, +4]              ground_offset = 4
+//   Artillery     hinge -2.5, pod top +5.5       ground_offset = 2.5
+//   M1A2          hull -0.8, turret +2           ground_offset = 0.8
+//   SensorRadar   base -1.1, dish ~+2.5          ground_offset = 1.1
+//   Quadruped     legs reach Y≈-0.5 below origin ground_offset = 0.5
+//   Facilities    pad at -0.85, building above   ground_offset = 1.0
+//   UnknownBadge  octahedron centered at origin  ground_offset = 1.6
+const GROUND_OFFSET: Record<string, number> = {
+    // ORBAT sensors — all use SensorRadarSchematic; base at Y=-1.1
+    'CUAS_Sensor':    1.1,
+    'VSHORAD_Sensor': 1.1,
+    'SHORAD_Sensor':  1.1,
+    'MRAD_Sensor':    1.1,
+    // ORBAT interceptors + launcher — Artillery schematic; hinge at Y=-2.5
+    'CUAS_Interceptor':    2.5,
+    'VSHORAD_Interceptor': 2.5,
+    'SHORAD_Interceptor':  2.5,
+    'MRAD_Interceptor':    2.5,
+    'MISSILE_LAUNCHER':    2.5,
+    // ORBAT facilities — pad bottom around Y=-1.0
+    'AIR_DEFENSE_SITE':              1.0,
+    'HEADQUARTER_COMPLEX':           1.0,
+    'INSTALLATION_FACILITY_CIVILIAN': 1.0,
+    // Legacy DIS variants
+    'M1A2-SEPv3': 0.8,
+    'M1A2-SEPv2': 0.8,
+    'AH-64E':     0.5,
+};
+// Default when no entry matches (UnknownPlatformBadge or any other
+// rendered fallback). Picks the octahedron's radius so the wireframe
+// doesn't punch through the ground plane.
+const DEFAULT_GROUND_OFFSET = 1.6;
+
 function ringColor(
     severity: AssetVisualProps['severity'],
     forceId: AssetVisualProps['forceId'],
@@ -146,12 +198,32 @@ function SeverityBaseRing({ color, radius, selected }: {
                 <ringGeometry args={[radius * 0.85, radius, 32]} />
                 <meshBasicMaterial color={color} transparent opacity={0.85} side={THREE.DoubleSide} />
             </mesh>
-            {/* Selected — additional bright outer ring for picker emphasis */}
+            {/* Selected — bright cyan halo ring + faint solid disc + vertical
+                spotlight cylinder. The Regional view dims fog on click; this
+                triple-stack makes the selected asset POP through the fog so
+                "focus here" reads instantly. Without it, the asset blurred
+                in with sibling assets and only the topology lines stayed
+                bright. */}
             {selected && (
-                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
-                    <ringGeometry args={[radius * 1.15, radius * 1.35, 32]} />
-                    <meshBasicMaterial color="#22d3ee" transparent opacity={0.6} side={THREE.DoubleSide} />
-                </mesh>
+                <>
+                    {/* Outer halo — wider + brighter than the severity ring */}
+                    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.02, 0]}>
+                        <ringGeometry args={[radius * 1.2, radius * 1.5, 32]} />
+                        <meshBasicMaterial color="#22d3ee" transparent opacity={0.9} side={THREE.DoubleSide} />
+                    </mesh>
+                    {/* Faint disc inside the ring — makes the base glow */}
+                    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.015, 0]}>
+                        <circleGeometry args={[radius * 0.85, 32]} />
+                        <meshBasicMaterial color="#22d3ee" transparent opacity={0.15} side={THREE.DoubleSide} />
+                    </mesh>
+                    {/* Vertical spotlight cylinder — beam-up effect drawing
+                        the eye to the selected asset even when surrounding
+                        context is faded by fog */}
+                    <mesh position={[0, radius * 2, 0]}>
+                        <cylinderGeometry args={[radius * 0.6, radius * 0.6, radius * 4, 16, 1, true]} />
+                        <meshBasicMaterial color="#22d3ee" transparent opacity={0.08} side={THREE.DoubleSide} depthWrite={false} />
+                    </mesh>
+                </>
             )}
         </>
     );
@@ -204,11 +276,21 @@ export default function AssetVisual({
 
     const ring = ringColor(severity, forceId);
 
+    // Lift the schematic so its geometric bottom sits at Y=0 (ground
+    // plane). Without this, schematics extending below Y=0 in their
+    // native frame (Artillery hinge, M1A2 hull, etc.) render half-buried
+    // in the terrain at regional/HQ scale. Multiply by `scale` since the
+    // inner schematic group is scaled — the offset has to scale with it.
+    const groundOffset = platformVariant
+        ? (GROUND_OFFSET[platformVariant] ?? DEFAULT_GROUND_OFFSET)
+        : DEFAULT_GROUND_OFFSET;
+    const liftedY = groundOffset * scale;
+
     // Fallback used by both Suspense (GLB load) and ErrorBoundary (render
     // crash). One source of truth so a GLB swap-out vs a buggy schematic
     // look identical to the operator.
     const fallback = (
-        <group scale={scale}>
+        <group position={[0, DEFAULT_GROUND_OFFSET * scale, 0]} scale={scale}>
             <UnknownPlatformBadge degraded={false} variant={platformVariant ?? 'UNKNOWN'} />
         </group>
     );
@@ -219,11 +301,11 @@ export default function AssetVisual({
             <SchematicErrorBoundary fallback={fallback}>
                 <Suspense fallback={fallback}>
                     {glbUrl ? (
-                        <group scale={scale}>
+                        <group position={[0, liftedY, 0]} scale={scale}>
                             <GlbModel url={glbUrl} scale={1} />
                         </group>
                     ) : SchematicComp ? (
-                        <group scale={scale}>
+                        <group position={[0, liftedY, 0]} scale={scale}>
                             <SchematicComp degraded={schematicDegraded} />
                         </group>
                     ) : (
