@@ -36,7 +36,12 @@ import { platformClass } from './config/platformChartConfig';
 // edge_ids (symmetric with §C.1's region-from-summary pattern). The
 // regex below pins the URL-param shape so a malformed value (?edge=foo)
 // is rejected rather than passed to the Shape API as a where-clause.
-const EDGE_ID_PATTERN = /^edge-[a-zA-Z0-9-]+$/;
+//
+// Accepts any kebab-case identifier — keeps URL-injection protection
+// while supporting FOB-coded edge_ids (`fob-alpha`, `***`, ...)
+// alongside legacy `edge-XX` values. The maintainer picker is the
+// operator view; FOB is the operator's mental model, not "edge."
+const EDGE_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 // Asset-id deep-link pattern. Conservative — covers the dis:1:1:NNNN
 // shape the demo uses; expand if other producers introduce other
 // asset-id shapes.

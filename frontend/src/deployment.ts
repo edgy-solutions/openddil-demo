@@ -19,9 +19,15 @@
  *  center; positionless assets (e.g. strike-only launchers) are placed at
  *  their assigned FOB's coordinates rather than dropped. */
 export interface Fob {
-  /** Edge identifier this FOB anchors (e.g. "edge-01"). */
+  /** Edge identifier this FOB anchors (the operator-facing grouping key —
+   *  a FOB-coded slug like "fob-alpha", or a legacy "edge-NN" form).
+   *  Maintainer view's edge picker shows distinct values of this string;
+   *  the picker UI labels it as "FOB" since that's the operator concept.
+   *  Distinct from the chart's processing-edge names (redpanda-edge-NN
+   *  Kafka clusters) — the data plane scales independently. */
   edge_id: string;
-  /** Region the FOB rolls up into (e.g. "region-east"). */
+  /** Region the FOB rolls up into (e.g. "region-north", "region-south").
+   *  Drives the Regional view's region dropdown. */
   region_id: string;
   /** Geographic anchor (decimal degrees, WGS84). */
   lat: number;
