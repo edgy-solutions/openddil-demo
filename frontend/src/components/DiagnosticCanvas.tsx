@@ -1,88 +1,101 @@
 // =============================================================================
-// DiagnosticCanvas — 3D asset diagnostic schematics (maintainer-tier view)
+// DiagnosticCanvas — 3D asset diagnostic schematic (maintainer-tier view)
 // =============================================================================
-// Routes by assetType to the matching 3D schematic. Visual chrome (cyan
-// bezel, scanning-line drift, glitch-text headers) comes from HudFrame so
-// every maintainer-tier 3D surface reads as the same family.
+// Routes by platform_variant to the matching 3D schematic, using the same
+// SCHEMATIC_REGISTRY as Regional/HQ. Single source of truth for which
+// silhouette a platform gets — new ORBAT entries (radar tiers, interceptor
+// tiers, launchers, facilities) just register there and this view picks
+// them up automatically.
 //
-// DEMO_MOCK: synthetic 3D schematics. None are wired to per-platform
-// telemetry yet — the RADAR branch delegates to SensorArrayView (which
-// carries its own banner via the LTAMDS config); the other branches
-// render synthetic schematics with no data input. Full rewiring to the
-// pipeline's per-platform telemetry is future work once schemas for
-// those platforms are flowing. See ADR-0017.
+// Visual chrome (cyan bezel, scanning-line drift, glitch-text headers)
+// comes from HudFrame so every maintainer-tier 3D surface reads as the
+// same family.
+//
+// Earlier this component dispatched on a coarse `assetType` ('RADAR' |
+// 'GROUND' | 'AIR' | 'UGV' | 'UNKNOWN' from platformClass()) and had a
+// hardcoded KNOWN_SCHEMATICS list using stale legacy class names
+// (LASER_SHORAD / ARTILLERY / QUADRUPED). Those legacy strings never
+// matched what platformClass() actually returns, so EVERY non-RADAR asset
+// fell through to VehicleClassSchematic (the M1A2 tank). The customer's
+// SHORAD/MRAD sensors + interceptors + launchers all rendered as tanks.
+// Now we dispatch by platform_variant via the registry — variants and
+// schematics stay in lockstep across all three views.
+//
+// The RADAR override path (?force=radar URL param in dev) routes to
+// SensorArrayView for LTAMDS-style detailed view; that's a richer view
+// than the cascade's SensorRadarSchematic and stays as a maintainer-only
+// special case.
+//
+// ADR-0017: schematics carry DEMO_MOCK markers in their own modules
+// (pure-3D primitives can't host a DOM banner). HudFrame provides the
+// view-level banner.
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import SensorArrayView, { LTAMDS_CONFIG } from './SensorArrayView';
 import HudFrame from './HudFrame';
 import { useTransitPhase, transitClass } from './EdgeTransit';
-// Schematics extracted to platform-schematics/. Imported by legacy names
-// here; the new module exports them under both legacy and canonical names.
-// AssetVisual (regional/HQ 3D maps) consumes the same module via its
-// SCHEMATIC_REGISTRY dispatcher.
 import {
-    LaserShorad,
-    Artillery,
-    Quadruped,
-    VehicleClassSchematic,
+    SCHEMATIC_REGISTRY,
+    UnknownPlatformBadge,
 } from './platform-schematics';
 
 const DEMO_MOCK = true;
 
-
-const KNOWN_SCHEMATICS = ['LASER_SHORAD', 'ARTILLERY', 'QUADRUPED'];
-
-// Headers track the maintainer-tier framing: "Ground Diagnostics" for the
-// ground-vehicle class (the VehicleClassSchematic fallback), and the
-// existing `{assetType} DIAGNOSTICS` pattern for the dedicated schematics.
-// LTAMDS keeps its own title from LTAMDS_CONFIG (renders via SensorArrayView).
-function headerForAsset(assetType: string, hasDedicatedSchematic: boolean): { title: string, subtitle: string } {
-    if (hasDedicatedSchematic) {
-        return {
-            title: `${assetType} DIAGNOSTICS`,
-            subtitle: 'ENGINEERING SCHEMATIC // SYNTHETIC',
-        };
+// Header strings derive from the platform_variant when known. Underscores
+// become spaces for readability ("SHORAD Sensor DIAGNOSTICS" vs
+// "SHORAD_Sensor DIAGNOSTICS"). Falls back to generic when no variant.
+function titleForVariant(platformVariant: string | null | undefined): { title: string, subtitle: string } {
+    if (!platformVariant) {
+        return { title: 'DIAGNOSTICS', subtitle: 'no platform variant selected' };
     }
+    const pretty = platformVariant.replace(/_/g, ' ');
     return {
-        title: 'GROUND DIAGNOSTICS',
-        subtitle: `${assetType} // SYNTHETIC PLACEHOLDER`,
+        title: `${pretty} DIAGNOSTICS`,
+        subtitle: 'ENGINEERING SCHEMATIC // SYNTHETIC',
     };
 }
 
+interface DiagnosticCanvasProps {
+    /** Canonical platform_variant from the fleet asset. Drives the schematic
+     *  dispatch via SCHEMATIC_REGISTRY. Null/undefined => no asset selected
+     *  yet, render an empty placeholder. */
+    platformVariant: string | null | undefined;
+    /** Legacy/dev-override class. When 'RADAR' (set via ?force=radar URL
+     *  param in dev, or by a future RADAR-class asset routing), routes to
+     *  the LTAMDS SensorArrayView instead of the registry. */
+    assetType?: string;
+    degraded: boolean;
+    coreTemp: number;
+    /** Phase 6c.3 — when this key changes (the selectedEdge from
+     *  MaintainerApp), the schematic Canvas runs a transit animation.
+     *  First-mount and same-key re-renders do NOT trigger. */
+    transitTriggerKey?: string | null;
+}
+
 export default function DiagnosticCanvas({
+    platformVariant,
     assetType,
     degraded,
     coreTemp,
     transitTriggerKey,
-}: {
-    assetType: string,
-    degraded: boolean,
-    coreTemp: number,
-    // Phase 6c.3 — when this key changes (the selectedEdge from
-    // MaintainerApp), the schematic Canvas runs a transit animation.
-    // First-mount and same-key re-renders do NOT trigger. Asset
-    // changes within an edge don't trigger because the parent passes
-    // the edge id, not the asset id.
-    transitTriggerKey?: string | null,
-}) {
+}: DiagnosticCanvasProps) {
     // Hook runs on every render; gating is internal (first-mount + same-
     // key checks). Safe to call before the RADAR-branch early-return.
     const transitPhase = useTransitPhase(transitTriggerKey ?? null);
 
     if (assetType === 'RADAR') {
-        // Sensor-array class. LTAMDS is the only config shipped today; the
-        // claim that this could carry other arrays becomes provable when a
-        // second config arrives.
-        // §C.3 TODO: SensorArrayView bypasses HudFrame so cycle-1
-        // animation does NOT apply to RADAR-class schematics. Acceptable
-        // for now — the demo's M1A2-SEPv3 fleet renders via the
-        // VehicleClassSchematic path below (HudFrame-wrapped). If a
-        // RADAR-class asset becomes demo-relevant later, lift the
-        // contentClassName seam into SensorArrayView too.
+        // LTAMDS detailed-array view. Special-case maintainer rendering
+        // for sensor arrays — richer than the cascade's per-tier
+        // SensorRadarSchematic. Retained as a maintainer-only debug aid;
+        // ORBAT-named radar tiers (CUAS/VSHORAD/SHORAD/MRAD_Sensor) go
+        // through the registry path below.
         return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={LTAMDS_CONFIG} />;
     }
-    const hasDedicatedSchematic = KNOWN_SCHEMATICS.includes(assetType);
-    const { title, subtitle } = headerForAsset(assetType, hasDedicatedSchematic);
+
+    const { title, subtitle } = titleForVariant(platformVariant);
+    const SchematicComp = platformVariant
+        ? SCHEMATIC_REGISTRY[platformVariant]
+        : undefined;
 
     return (
         <HudFrame
@@ -99,10 +112,9 @@ export default function DiagnosticCanvas({
 
                 <OrbitControls enableDamping dampingFactor={0.05} />
 
-                {assetType === 'LASER_SHORAD' && <LaserShorad degraded={degraded} />}
-                {assetType === 'ARTILLERY' && <Artillery degraded={degraded} />}
-                {assetType === 'QUADRUPED' && <Quadruped degraded={degraded} />}
-                {!hasDedicatedSchematic && <VehicleClassSchematic degraded={degraded} />}
+                {SchematicComp
+                    ? <SchematicComp degraded={degraded} />
+                    : <UnknownPlatformBadge degraded={degraded} variant={platformVariant ?? 'UNKNOWN'} />}
             </Canvas>
         </HudFrame>
     );

@@ -31,6 +31,40 @@ import {
 } from './hooks';
 import { platformClass } from './config/platformChartConfig';
 
+// =============================================================================
+// Maintainer-actionable platform variants
+// =============================================================================
+// The fleet hook (useFleetAssetsForEdge) correctly returns ALL entities at
+// the FOB — mobile tactical equipment AND stationary infrastructure
+// (facilities, headquarters, civilian sites). HQ and Regional views show
+// all of them as operational context.
+//
+// But "asset is at this FOB" and "maintainer can work on this asset" are
+// different questions. Tactical maintainers work on Category 1 (mobile
+// equipment) and Category 2 (stationary tactical equipment — sensors,
+// interceptors, launchers). Category 3 (real estate — facility buildings,
+// HQ complexes, civilian installations) is base ops / facilities
+// engineering, NOT a tactical-maintainer scope.
+//
+// This set is the maintainer-dropdown filter ONLY. The map, fleet count,
+// and HQ/Regional views all use the unfiltered fleet from the same hook.
+// Same architectural pattern as platform_variant_aliases.yaml — explicit
+// registry of which variants belong in a given context.
+//
+// Edge case: AIR_DEFENSE_SITE is named like a facility (parallel with
+// HEADQUARTER_COMPLEX and INSTALLATION_FACILITY_CIVILIAN). Treated as
+// real estate here. If the ORBAT data ever uses it as a leaf-level
+// asset (rather than a parent grouping with sensors/interceptors as
+// children), revisit this filter.
+const MAINTAINER_ACTIONABLE_VARIANTS = new Set<string>([
+  // Category 1 — mobile tactical equipment
+  'M1A2-SEPv3', 'M1A2-SEPv2', 'AH-64E', 'AH-64E-V6',
+  // Category 2 — stationary tactical equipment
+  'CUAS_Sensor', 'VSHORAD_Sensor', 'SHORAD_Sensor', 'MRAD_Sensor',
+  'CUAS_Interceptor', 'VSHORAD_Interceptor', 'SHORAD_Interceptor', 'MRAD_Interceptor',
+  'MISSILE_LAUNCHER',
+]);
+
 // Phase 6c.2: edge-scope mechanism (pulldown + ?edge= URL param). The
 // available-edges list is derived from useFleetAssets().data distinct
 // edge_ids (symmetric with §C.1's region-from-summary pattern). The
@@ -255,11 +289,21 @@ function MaintainerApp() {
     node_id: '',
   }));
 
+  // Maintainer asset dropdown filter: scope to maintainer-actionable
+  // variants only (see MAINTAINER_ACTIONABLE_VARIANTS above). The
+  // unfiltered fleet still drives the rest of the view + HQ/Regional.
+  const fleetForPicker = useMemo(
+    () => fleet.data.filter((a) =>
+      a.platform_variant != null && MAINTAINER_ACTIONABLE_VARIANTS.has(a.platform_variant),
+    ),
+    [fleet.data],
+  );
+
   return (
     <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <Header
         link1={link1} setLink1={setLink1}
-        fleet={fleet.data}
+        fleet={fleetForPicker}
         selectedAsset={selectedAssetId}
         setSelectedAsset={setSelectedAssetId}
         availableEdges={availableEdges}
@@ -299,7 +343,8 @@ function MaintainerApp() {
 
           <div className="panel flex-1 relative overflow-hidden font-rajdhani font-semibold">
             <DiagnosticCanvas
-              assetType={assetClass === 'RADAR' ? 'RADAR' : assetClass}
+              platformVariant={variant}
+              assetType={assetClass === 'RADAR' ? 'RADAR' : undefined}
               degraded={degraded}
               coreTemp={coreTemp}
               transitTriggerKey={selectedEdge}
