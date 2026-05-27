@@ -32,12 +32,12 @@ export default function DdilNetworkLink({ start, end, status }: DdilNetworkLinkP
       <Line
         points={points}
         color={color}
-        lineWidth={status === 'NOMINAL' ? 1 : 3}
+        lineWidth={status === 'NOMINAL' ? 1.5 : 3}
         dashed={dashed}
         dashSize={5}
         gapSize={5}
         transparent
-        opacity={status === 'NOMINAL' ? 0.2 : 1}
+        opacity={status === 'NOMINAL' ? 0.6 : 1}
       />
       
       {status === 'SEVERED' && (

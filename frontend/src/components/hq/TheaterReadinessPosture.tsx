@@ -165,8 +165,10 @@ export default function TheaterReadinessPosture({
         <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
           <div className="text-[10px] text-slate-500 mb-1">GLOBAL LINK STATUS</div>
           <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-            <span className="text-emerald-400 mr-4">{linksUp} UP</span>
-            <span className="text-rose-400">{linksDown} DOWN</span>
+            <span className="text-emerald-400">{linksUp} UP</span>
+            {linksDown > 0 && (
+              <span className="text-rose-400 ml-4">{linksDown} DOWN</span>
+            )}
           </div>
         </div>
       </div>

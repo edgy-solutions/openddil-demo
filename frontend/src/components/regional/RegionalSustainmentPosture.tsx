@@ -220,8 +220,10 @@ export default function RegionalSustainmentPosture({
           {/* One edge->HQ DDIL link in this topology — count kept
               consistent with TheaterReadinessPosture's 1/0. */}
           <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-            <span className="text-emerald-400 mr-4">{link1 ? 1 : 0} UP</span>
-            <span className="text-rose-400">{link1 ? 0 : 1} DOWN</span>
+            <span className="text-emerald-400">{link1 ? 1 : 0} UP</span>
+            {!link1 && (
+              <span className="text-rose-400 ml-4">1 DOWN</span>
+            )}
           </div>
         </div>
       </div>
