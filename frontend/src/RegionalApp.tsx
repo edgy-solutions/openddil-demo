@@ -49,11 +49,16 @@ import {
 } from './lib/fleetAggregates';
 import { assetCallsign } from './lib/assetLabel';
 
-const VALID_REGIONS = ['region-east', 'region-west'];
+// URL-param shape check. The region picker itself is data-driven (built
+// from distinct region_ids observed in fleet data); this regex only gates
+// the ?region= deep-link param against URL injection. Accepts any kebab-
+// case identifier so deployments that name regions geographically (e.g.
+// "region-north", "regional-south") work without code changes.
+const REGION_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 
 function initialRegion(): string | null {
   const param = new URLSearchParams(window.location.search).get('region');
-  if (param && VALID_REGIONS.includes(param)) return param;
+  if (param && REGION_ID_PATTERN.test(param)) return param;
   return null;
 }
 
@@ -264,7 +269,7 @@ export default function RegionalApp() {
     if (selectedRegion) return;
     const observed = fleetSummary.data
       .map((r) => r.region_id)
-      .filter((r) => VALID_REGIONS.includes(r))
+      .filter((r): r is string => !!r && r !== 'region-unspecified')
       .sort();
     if (observed.length > 0) setSelectedRegion(observed[0]);
   }, [fleetSummary.data, selectedRegion]);
@@ -295,7 +300,7 @@ export default function RegionalApp() {
   const availableRegions = useMemo(
     () => fleetSummary.data
       .map((r) => r.region_id)
-      .filter((r) => VALID_REGIONS.includes(r))
+      .filter((r): r is string => !!r && r !== 'region-unspecified')
       .sort(),
     [fleetSummary.data],
   );

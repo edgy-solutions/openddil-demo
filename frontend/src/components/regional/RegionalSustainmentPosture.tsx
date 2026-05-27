@@ -157,15 +157,16 @@ const SCENE_ASSET_SCALE = 0.35;
 function CameraRig({ targetPos, isZoomed }: { targetPos: THREE.Vector3 | null, isZoomed: boolean }) {
   const { camera, controls } = useThree();
   useFrame(() => {
+    // Only auto-lerp when zoomed to a specific asset. When unzoomed,
+    // OrbitControls owns the camera and the user can pan/orbit/zoom freely.
+    // Earlier this branch ran every frame regardless, snapping the camera
+    // back to default and making it impossible to interact with 100+
+    // assets in the AOR. Initial camera position comes from <Canvas
+    // camera={{ position: ... }}> on first mount.
     if (isZoomed && targetPos) {
       camera.position.lerp(new THREE.Vector3(targetPos.x + 15, targetPos.y + 10, targetPos.z + 15), 0.05);
       if (controls) {
         (controls as any).target.lerp(new THREE.Vector3(targetPos.x, targetPos.y + 4, targetPos.z), 0.05);
-      }
-    } else {
-      camera.position.lerp(new THREE.Vector3(0, 150, 180), 0.05);
-      if (controls) {
-        (controls as any).target.lerp(new THREE.Vector3(0, 0, 0), 0.05);
       }
     }
   });
@@ -284,14 +285,13 @@ export default function RegionalSustainmentPosture({
             />
           ))}
 
-          {renderables.map((a) => (
-            <DdilNetworkLink
-              key={`link-${a.asset_id}`}
-              start={new THREE.Vector3(0, 0, -80)}
-              end={new THREE.Vector3(...a.position)}
-              status={link1 ? 'NOMINAL' : 'SEVERED'}
-            />
-          ))}
+          {/* DDIL links per-asset removed. The Regional view shows AOR
+              detail; with hundreds of assets, drawing one line from origin
+              to every asset reads as a laser swarm and tanks rendering
+              perf. WAN-topology DDIL links live on the HQ view (theater
+              tier), where the per-FOB count is small enough to read.
+              Link state for THIS region is reflected in the header's
+              status indicators (severed -> tinted border + status badge). */}
         </Canvas>
       </div>
 
