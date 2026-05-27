@@ -65,14 +65,34 @@ export default function TacticalMapUnderlay({ projection }: TacticalMapUnderlayP
   const cx = (xMinW + xMaxE) / 2;
   const cz = (zMinN + zMaxS) / 2;
 
+  // Material tuning notes:
+  //
+  //   * color="#10b981" (emerald) — keeps the tactical green/blue
+  //     visual identity. Earlier this tint was lost in a refactor; pure
+  //     white texture at high opacity strobed against AbstractContinents
+  //     underneath (z-fighting). The tint is part of the COP aesthetic,
+  //     not just decoration.
+  //
+  //   * opacity 0.20 — geography visible but quiet; doesn't overwhelm
+  //     FOBs/assets/topology. Higher (0.4+) competes for visual weight;
+  //     lower (0.05) loses the geographic-context value.
+  //
+  //   * polygonOffset / depthWrite=false — defensive against z-fighting
+  //     with other ground-plane meshes (AbstractContinents at Y=-5,
+  //     concentric rings at Y=-1.9). depthWrite=false alone wasn't enough
+  //     when the underlay grew to globe-scale dimensions.
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, -2.1, cz]}>
       <planeGeometry args={[width, height]} />
       <meshBasicMaterial
         map={texture}
         transparent
-        opacity={0.55}
+        opacity={0.20}
+        color="#10b981"
         depthWrite={false}
+        polygonOffset
+        polygonOffsetFactor={-1}
+        polygonOffsetUnits={-1}
       />
     </mesh>
   );
