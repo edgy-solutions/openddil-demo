@@ -30,6 +30,7 @@ import {
   useTacticalEvents,
 } from './hooks';
 import { platformClass } from './config/platformChartConfig';
+import { deployment } from './deployment';
 
 // =============================================================================
 // Maintainer-actionable platform variants
@@ -283,11 +284,31 @@ function MaintainerApp() {
   const assetClass = forceClass === 'radar' ? 'RADAR' : platformClass(variant);
   const coreTemp = tel?.sustainment?.thermal?.component_temperature?.value ?? 32.0;
 
-  const radarAssets = fleet.data.map((a) => ({
-    id: a.asset_id,
-    type: a.platform_variant ?? '',
-    node_id: '',
-  }));
+  // Radar plots real lat/lon (via FleetAsset.position from
+  // telemetry_latest_state) projected to a 2D frame centered on the
+  // currently-selected edge's FOB. Earlier the radar placed assets at
+  // synthetic circular positions by array index; now it shows real
+  // geographic relationships at radar scale (<100km neighborhood).
+  const radarAssets = useMemo(
+    () => fleet.data.map((a) => ({
+      id: a.asset_id,
+      type: a.platform_variant ?? '',
+      node_id: '',
+      lat: a.position?.lat ?? null,
+      lon: a.position?.lon ?? null,
+    })),
+    [fleet.data],
+  );
+
+  // Radar center — the FOB hosting the selected edge. Maintainer's
+  // "you are here" anchor for the radar projection. Falls back to null
+  // when no edge is selected (cold start); the radar then uses its
+  // synthetic-placement fallback so the view doesn't go blank.
+  const radarCenter = useMemo(() => {
+    if (!selectedEdge) return { lat: null, lon: null };
+    const fob = deployment().fobs.find((f) => f.edge_id === selectedEdge);
+    return fob ? { lat: fob.lat, lon: fob.lon } : { lat: null, lon: null };
+  }, [selectedEdge]);
 
   // Maintainer asset dropdown filter: scope to maintainer-actionable
   // variants only (see MAINTAINER_ACTIONABLE_VARIANTS above). The
@@ -349,7 +370,12 @@ function MaintainerApp() {
               coreTemp={coreTemp}
               transitTriggerKey={selectedEdge}
             />
-            <LocalFleetRadar degraded={degraded} localAssets={radarAssets} />
+            <LocalFleetRadar
+              degraded={degraded}
+              localAssets={radarAssets}
+              centerLat={radarCenter.lat}
+              centerLon={radarCenter.lon}
+            />
           </div>
         </div>
 
