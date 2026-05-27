@@ -29,8 +29,12 @@ function extractPosition(kinematics: any): { lat: number; lon: number } | null {
   // edge_assignment.extract_wgs84 logic.
   const wgs84 = kinematics?.position?.wgs84;
   if (!wgs84 || typeof wgs84 !== 'object') return null;
-  const lat = wgs84.latitude ?? wgs84.lat;
-  const lon = wgs84.longitude ?? wgs84.lon;
+  let lat = wgs84.latitude ?? wgs84.lat;
+  let lon = wgs84.longitude ?? wgs84.lon;
+  // Unwrap {unit, value} objects emitted by sensor-ingest's unit-aware
+  // encoder. Mirrors projector's extract_wgs84.
+  if (lat && typeof lat === 'object' && 'value' in lat) lat = (lat as any).value;
+  if (lon && typeof lon === 'object' && 'value' in lon) lon = (lon as any).value;
   if (typeof lat !== 'number' || typeof lon !== 'number') return null;
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   return { lat, lon };
