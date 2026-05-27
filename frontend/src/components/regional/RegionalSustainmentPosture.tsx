@@ -28,6 +28,7 @@ import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import DdilNetworkLink from '../DdilNetworkLink';
+import AssetVisual from '../AssetVisual';
 import { deployment, type Fob } from '../../deployment';
 import {
   useFleetAssetsForRegion,
@@ -42,22 +43,21 @@ import { makeProjection, type Projection } from '../../lib/geoProjection';
 // without crowding the legend or the link source point at z=-80.
 const SCENE_SCALE_UNITS_PER_DEG = 80;
 
-// Severity -> Three.js color (matches the regional view's existing palette).
-const SEVERITY_COLOR: Record<string, number> = {
-  LOGISTICS_SEVERITY_OK:              0x10b981, // emerald
-  LOGISTICS_SEVERITY_DEGRADED:        0xf59e0b, // amber
-  LOGISTICS_SEVERITY_CRITICAL:        0xf43f5e, // rose
-  LOGISTICS_SEVERITY_NON_OPERATIONAL: 0xb91c1c, // dark red
-  LOGISTICS_SEVERITY_UNSPECIFIED:     0x64748b, // slate
-};
-const DEFAULT_COLOR = 0x64748b;
+// Severity color tables previously lived here. Removed when AssetMarker's
+// sphereGeometry was replaced with AssetVisual (Phase 3 of the cascade
+// work) — the cascade owns ring color now via its own internal palette
+// keyed on both severity AND force_id.
 
 interface RenderableAsset {
   asset_id: string;
   /** [x, y, z] in scene units. */
   position: [number, number, number];
-  color: number;
   severity: string;
+  /** Drives the AssetVisual cascade. Null/empty -> UnknownPlatformBadge. */
+  platform_variant: string | null;
+  /** Force affiliation for the AssetVisual base ring (overrides severity
+   *  color for FORCE_OPPOSING / FORCE_NEUTRAL entities). */
+  force_id: string | null;
   /** True if the position came from the asset's FOB instead of from
    *  real telemetry — informational only (Phase B may visually mark it). */
   homedAtFob: boolean;
@@ -94,8 +94,9 @@ function buildRenderables(
     out.push({
       asset_id: a.asset_id,
       position: [x, 0, z],
-      color: SEVERITY_COLOR[sev] ?? DEFAULT_COLOR,
       severity: sev,
+      platform_variant: a.platform_variant,
+      force_id: a.force_id,
       homedAtFob: homed,
     });
   }
@@ -114,29 +115,44 @@ function Terrain() {
 }
 
 function AssetMarker({
-  assetId, position, color, selected, onClick,
+  assetId, position, severity, platformVariant, forceId, selected, onClick,
 }: {
   assetId: string;
   position: [number, number, number];
-  color: number;
+  severity: string;
+  platformVariant: string | null;
+  forceId: string | null;
   selected: boolean;
   onClick: (e: ThreeEvent<MouseEvent>) => void;
 }) {
+  // Hit-target is an invisible sphere sized to roughly match the schematic
+  // footprint at SCENE_ASSET_SCALE (~3 units). AssetVisual renders the actual
+  // platform silhouette + severity ring; the hit-target lets the operator
+  // click anywhere near the asset without having to land precisely on a
+  // schematic mesh (especially important for thin radar-dish silhouettes).
   return (
     <group position={position} userData={{ assetId }}>
-      <mesh onClick={onClick}>
-        <sphereGeometry args={[2.5, 16, 16]} />
-        <meshBasicMaterial color={color} />
+      <mesh onClick={onClick} visible={false}>
+        <sphereGeometry args={[3.5, 8, 8]} />
+        <meshBasicMaterial />
       </mesh>
-      {selected && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.2, 0]}>
-          <ringGeometry args={[4, 4.6, 32]} />
-          <meshBasicMaterial color={0x22d3ee} side={THREE.DoubleSide} />
-        </mesh>
-      )}
+      <AssetVisual
+        platformVariant={platformVariant}
+        severity={severity}
+        forceId={forceId}
+        scale={SCENE_ASSET_SCALE}
+        selected={selected}
+      />
     </group>
   );
 }
+
+// Wrapping scale applied to each schematic / GLB inside an AssetVisual.
+// Schematics were authored at "single-asset close-up" scale (~5-10 units
+// across); regional view has multiple assets in a ~400-unit canvas with
+// the camera at ~150 units back. 0.3-0.4 is the starting estimate;
+// tune during visual QA.
+const SCENE_ASSET_SCALE = 0.35;
 
 function CameraRig({ targetPos, isZoomed }: { targetPos: THREE.Vector3 | null, isZoomed: boolean }) {
   const { camera, controls } = useThree();
@@ -260,7 +276,9 @@ export default function RegionalSustainmentPosture({
               key={a.asset_id}
               assetId={a.asset_id}
               position={a.position}
-              color={a.color}
+              severity={a.severity}
+              platformVariant={a.platform_variant}
+              forceId={a.force_id}
               selected={a.asset_id === selectedAssetId}
               onClick={(e) => { e.stopPropagation(); onAssetSelect(a.asset_id, a.severity); }}
             />
