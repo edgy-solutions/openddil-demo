@@ -25,10 +25,12 @@
 // =============================================================================
 import { useMemo } from 'react';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { OrbitControls } from '@react-three/drei';
+import { Html, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import DdilNetworkLink from '../DdilNetworkLink';
 import AssetVisual from '../AssetVisual';
+import LogisticsHubNode from '../LogisticsHubNode';
+import TacticalMapUnderlay from '../TacticalMapUnderlay';
 import { deployment, type Fob } from '../../deployment';
 import {
   useFleetAssetsForRegion,
@@ -154,6 +156,94 @@ function AssetMarker({
 // tune during visual QA.
 const SCENE_ASSET_SCALE = 0.35;
 
+// =============================================================================
+// Topology nodes — RegionalAggregator + HQ marker
+// =============================================================================
+// FOB <-> regional aggregator <-> HQ is the real hub-and-spoke OpenDDIL
+// implements (per-edge bridges aggregate to a region; regions roll up to HQ).
+// These visual elements make that topology readable.
+//
+// RegionalAggregator and HQ are LOGICAL nodes — they don't have lat/lon in
+// the deployment metadata. RegionalAggregator is placed at the centroid of
+// the region's FOBs (defensible "logically central to the region"); HQ is
+// stacked above the regional centroid (vertical stem reads as "up the
+// chain"). Both choices are deployment-configurable extensions for later —
+// see ADR-0023 + the project's strategy-resolver discipline for the
+// architectural family.
+//
+// Severance state is read from the same `link1` boolean the rest of the
+// view uses (which comes from edge_buffer_status.hq_link_severed). When
+// severed, line styling + node coloring shift to red/dashed — matches the
+// DdilNetworkLink convention.
+
+const REGIONAL_AGGREGATOR_Y = 8;   // slightly elevated above FOB markers (Y=0)
+const HQ_MARKER_Y = 40;             // stacked above the regional aggregator
+
+function RegionalAggregatorNode({ position, label, severed }: {
+  position: [number, number, number];
+  label: string;
+  severed: boolean;
+}) {
+  const color = severed ? 0xf43f5e : 0x22d3ee;
+  return (
+    <group position={position}>
+      {/* Solid octahedron core — logical node visual. Octahedron is
+          deliberately not a shape any FOB or platform schematic uses, so
+          it reads as "different category of thing." */}
+      <mesh>
+        <octahedronGeometry args={[3.5, 0]} />
+        <meshBasicMaterial color={color} transparent opacity={0.65} />
+      </mesh>
+      {/* Wireframe outer shell — gives the node a halo without solidifying */}
+      <mesh>
+        <octahedronGeometry args={[4.5, 0]} />
+        <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
+      </mesh>
+      <Html
+        position={[0, 6, 0]}
+        center
+        style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
+      >
+        <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+          <div className="text-[9px] text-slate-400">REGIONAL AGGREGATOR</div>
+          <div className="text-slate-200 font-bold">{label}</div>
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+function HqMarker({ position, severed }: {
+  position: [number, number, number];
+  severed: boolean;
+}) {
+  const color = severed ? 0xf43f5e : 0x10b981;
+  return (
+    <group position={position}>
+      {/* Pyramid form — distinct from FOB hubs and regional octahedron.
+          Cone with 4 radial segments approximates a pyramid. */}
+      <mesh>
+        <coneGeometry args={[5, 10, 4]} />
+        <meshBasicMaterial color={color} transparent opacity={0.7} />
+      </mesh>
+      <mesh>
+        <coneGeometry args={[5.5, 10.5, 4]} />
+        <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
+      </mesh>
+      <Html
+        position={[0, 8, 0]}
+        center
+        style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
+      >
+        <div className="font-mono text-[10px] tracking-widest text-emerald-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+          <div className="text-[9px] text-slate-400">UP-CHAIN</div>
+          <div className="text-slate-200 font-bold">HQ THEATER</div>
+        </div>
+      </Html>
+    </group>
+  );
+}
+
 function CameraRig({ targetPos, isZoomed }: { targetPos: THREE.Vector3 | null, isZoomed: boolean }) {
   const { camera, controls } = useThree();
   useFrame(() => {
@@ -222,6 +312,19 @@ export default function RegionalSustainmentPosture({
   );
   const targetPos = targetAsset ? new THREE.Vector3(...targetAsset.position) : null;
 
+  // Regional aggregator position — centroid of the region's FOBs in scene
+  // coordinates. Default placement for the logical aggregator node (no
+  // lat/lon in deployment metadata today; a future field on the region
+  // could override this). Null when no FOBs in the region — the topology
+  // overlay simply doesn't render.
+  const regionalCentroid = useMemo(() => {
+    if (regionFobs.length === 0) return null;
+    const lat = regionFobs.reduce((s, f) => s + f.lat, 0) / regionFobs.length;
+    const lon = regionFobs.reduce((s, f) => s + f.lon, 0) / regionFobs.length;
+    const [x, z] = proj.project(lat, lon);
+    return { x, z };
+  }, [regionFobs, proj]);
+
   return (
     <div className="col-span-2 panel flex flex-col relative overflow-hidden">
       <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
@@ -272,6 +375,27 @@ export default function RegionalSustainmentPosture({
           <gridHelper args={[400, 100, 0x1e293b, 0x0f172a]} position={[0, -2, 0]} />
           <Terrain />
 
+          {/* Geographic context — real map under the assets when a
+              deployment.json map block is configured. Fallback decorative
+              ambient when not. Geography matters MORE at AOR scope than at
+              HQ (sensor coverage, terrain, towns), per ADR-0017's
+              context-honesty discipline. */}
+          <TacticalMapUnderlay projection={proj} />
+
+          {/* FOB hub markers — endpoints for the topology lines below.
+              Without these, the per-FOB-to-aggregator lines would
+              terminate "in midair" at FOB lat/lons (where assets
+              cluster) with no visible node. */}
+          {regionFobs.map((fob) => {
+            const [x, z] = proj.project(fob.lat, fob.lon);
+            return (
+              <LogisticsHubNode
+                key={`hub-${fob.edge_id}`}
+                position={[x, 0, z]}
+              />
+            );
+          })}
+
           {renderables.map((a) => (
             <AssetMarker
               key={a.asset_id}
@@ -285,13 +409,53 @@ export default function RegionalSustainmentPosture({
             />
           ))}
 
-          {/* DDIL links per-asset removed. The Regional view shows AOR
-              detail; with hundreds of assets, drawing one line from origin
-              to every asset reads as a laser swarm and tanks rendering
-              perf. WAN-topology DDIL links live on the HQ view (theater
-              tier), where the per-FOB count is small enough to read.
-              Link state for THIS region is reflected in the header's
-              status indicators (severed -> tinted border + status badge). */}
+          {/* Topology overlay: real OpenDDIL network shape (per-FOB bridge
+              -> regional aggregator -> HQ theater).
+              ============================================================
+              Earlier this view drew one DdilNetworkLink per asset, from a
+              fixed origin to each asset's position. That was a category
+              error, not just visual chaos: per-asset network links don't
+              exist in OpenDDIL's data model (the connection is AMQP ->
+              projector -> ElectricSQL, which isn't a per-asset thing).
+              Same family as the REGIONS-array and DISCOVERED_FLEET
+              removals — abstract visuals making claims the data model
+              didn't support.
+              The lines below DO represent real topology: FOBs are real
+              network endpoints (per-edge bridges), regional aggregators
+              are real logical infrastructure, HQ is the up-chain. Link
+              state comes from the same edge_buffer_status flag the
+              header uses, so severance toggling is consistent across
+              the view. Future: per-edge bridge health would let each
+              FOB->aggregator line carry its own state independently. */}
+          {regionalCentroid && (
+            <>
+              {regionFobs.map((fob) => {
+                const [fx, fz] = proj.project(fob.lat, fob.lon);
+                return (
+                  <DdilNetworkLink
+                    key={`fob-link-${fob.edge_id}`}
+                    start={new THREE.Vector3(fx, 0, fz)}
+                    end={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
+                    status={link1 ? 'NOMINAL' : 'SEVERED'}
+                  />
+                );
+              })}
+              <DdilNetworkLink
+                start={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
+                end={new THREE.Vector3(regionalCentroid.x, HQ_MARKER_Y, regionalCentroid.z)}
+                status={link1 ? 'NOMINAL' : 'SEVERED'}
+              />
+              <RegionalAggregatorNode
+                position={[regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z]}
+                label={(regionId ?? '').toUpperCase()}
+                severed={!link1}
+              />
+              <HqMarker
+                position={[regionalCentroid.x, HQ_MARKER_Y, regionalCentroid.z]}
+                severed={!link1}
+              />
+            </>
+          )}
         </Canvas>
       </div>
 
