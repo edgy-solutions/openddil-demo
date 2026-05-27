@@ -23,7 +23,13 @@
 import type { ComponentType } from 'react';
 import type { SchematicProps } from './types';
 
-import { LaserShoradSchematic } from './LaserShoradSchematic';
+// Top-level imports are only those actually referenced by SCHEMATIC_REGISTRY
+// below. LaserShoradSchematic is re-exported for maintainer-view consumers
+// (see the `export { ... } from './LaserShoradSchematic'` block lower down)
+// but isn't keyed to any ORBAT platform_variant, so it isn't imported here.
+// Keeping registry-using imports separate from re-only-export ones keeps
+// strict-TS happy (noUnusedLocals would flag any imported-but-not-used
+// local binding even when it's re-exported via a separate statement).
 import { ArtillerySchematic } from './ArtillerySchematic';
 import { QuadrupedSchematic } from './QuadrupedSchematic';
 import { M1A2Schematic } from './M1A2Schematic';
