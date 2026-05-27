@@ -48,18 +48,40 @@ import {
   shortSeverity,
 } from './lib/fleetAggregates';
 import { assetCallsign } from './lib/assetLabel';
+import { deployment } from './deployment';
 
 // URL-param shape check. The region picker itself is data-driven (built
-// from distinct region_ids observed in fleet data); this regex only gates
-// the ?region= deep-link param against URL injection. Accepts any kebab-
-// case identifier so deployments that name regions geographically (e.g.
-// "region-north", "regional-south") work without code changes.
+// from FOB-declared region_ids + aggregator-observed region_ids); this
+// regex only gates the ?region= deep-link param against URL injection.
+// Accepts any kebab-case identifier so deployments that name regions
+// geographically (e.g. "region-north", "regional-south") work without
+// code changes.
 const REGION_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 
+/** Pick the initial selected region on first mount.
+ *
+ * Priority order:
+ *   1. ?region= URL param (deep-link / shared-link case)
+ *   2. First FOB-declared region alphabetically (always available since
+ *      loadDeployment() awaits before mount — see main.tsx)
+ *   3. null (only when no FOBs are configured — OSS default install)
+ *
+ * #2 is the key change: pre-fix the picker defaulted from
+ * region_fleet_summary which the aggregator populates asynchronously,
+ * leaving cold-start with an empty dropdown AND a null-selectedRegion
+ * fallback that fetches all assets. Using FOBs means the dropdown lands
+ * on a real region from the first paint, no "show everything" window.
+ */
 function initialRegion(): string | null {
   const param = new URLSearchParams(window.location.search).get('region');
   if (param && REGION_ID_PATTERN.test(param)) return param;
-  return null;
+
+  const fobRegions = Array.from(new Set(
+    deployment().fobs
+      .map((f) => f.region_id)
+      .filter((r): r is string => !!r && r !== 'region-unspecified'),
+  )).sort();
+  return fobRegions[0] ?? null;
 }
 
 // --- panels ----------------------------------------------------------------
@@ -261,10 +283,11 @@ export default function RegionalApp() {
   const logistics = useAllLogisticsStatus();
   const events = useTacticalEvents(50);
 
-  // Default region on first load (decision 2): first region from the
-  // aggregator's observed list, sorted alphabetically. Cold-start tolerant:
-  // if no regions observed yet, stays null and panels show their cold
-  // states.
+  // Late-arriving default — safety net for the case where deployment.fobs
+  // was empty at mount (OSS default install) and selectedRegion stayed
+  // null. If the aggregator later produces a region_id, lock the picker
+  // onto that. When FOBs are configured (typical), initialRegion() already
+  // resolved selectedRegion at mount and this useEffect is dormant.
   useEffect(() => {
     if (selectedRegion) return;
     const observed = fleetSummary.data
@@ -296,14 +319,21 @@ export default function RegionalApp() {
     return events.data.filter((e) => (e.severity ?? '').toUpperCase().includes(severityFilter));
   }, [events.data, severityFilter]);
 
-  // Pulldown options come from what the aggregator has actually observed.
-  const availableRegions = useMemo(
-    () => fleetSummary.data
+  // Pulldown options: union of FOB-declared regions (always available
+  // immediately on mount via deployment().fobs) and aggregator-observed
+  // regions (might surface region_ids not declared in deployment.json —
+  // defensive against config drift). FOB list is the dominant source on
+  // cold start; aggregator list catches up asynchronously and is merged
+  // in once available.
+  const availableRegions = useMemo(() => {
+    const fobRegions = deployment().fobs
+      .map((f) => f.region_id)
+      .filter((r): r is string => !!r && r !== 'region-unspecified');
+    const observedRegions = fleetSummary.data
       .map((r) => r.region_id)
-      .filter((r): r is string => !!r && r !== 'region-unspecified')
-      .sort(),
-    [fleetSummary.data],
-  );
+      .filter((r): r is string => !!r && r !== 'region-unspecified');
+    return Array.from(new Set([...fobRegions, ...observedRegions])).sort();
+  }, [fleetSummary.data]);
 
   // Per-region rows (extracted once, fed to panels).
   const scopedFleetSummary = useMemo(
