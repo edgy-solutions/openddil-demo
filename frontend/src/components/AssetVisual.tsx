@@ -177,6 +177,46 @@ const GROUND_OFFSET: Record<string, number> = {
 const DEFAULT_GROUND_OFFSET = 1.6;
 
 // =============================================================================
+// Per-platform visible height
+// =============================================================================
+// Top-of-asset extent in the schematic's NATIVE (unscaled) frame, used to
+// size the selected-asset spotlight cylinder so it just barely envelops
+// the silhouette — slightly taller and slightly wider than the asset, so
+// the operator sees a faint glow surrounding the selection rather than a
+// disembodied prop next to it. Without this, the cylinder used a fixed
+// `radius * 4` height that dwarfed sensors and looked detached from
+// launchers.
+//
+// Values are top-of-visible-geometry in each schematic's native frame
+// (the schematic's bottom is already at Y=0 in world space after the
+// GROUND_OFFSET lift, so this is also the schematic's world-Y top
+// before scale-multiplication).
+const ASSET_HEIGHT: Record<string, number> = {
+    // Sensors: base (-1.1) to dish/rim top (~+2.5). Slightly larger for
+    // the bigger-dish tiers so the cylinder grows with the radar tier.
+    'CUAS_Sensor':    3.4,
+    'VSHORAD_Sensor': 3.6,
+    'SHORAD_Sensor':  3.9,
+    'MRAD_Sensor':    4.2,
+    // Interceptors + launcher: ArtillerySchematic hinge (-2.5) to pod top
+    // (~+3.75 with peak tilt). Picked to envelop the animated pod cycle.
+    'CUAS_Interceptor':    6.5,
+    'VSHORAD_Interceptor': 6.5,
+    'SHORAD_Interceptor':  6.5,
+    'MRAD_Interceptor':    6.5,
+    'MISSILE_LAUNCHER':    6.5,
+    // Facilities: pad/building stacked, conservative envelope
+    'AIR_DEFENSE_SITE':              3.5,
+    'HEADQUARTER_COMPLEX':           4.5,
+    'INSTALLATION_FACILITY_CIVILIAN': 3.5,
+    // Legacy DIS
+    'M1A2-SEPv3': 3.0,
+    'M1A2-SEPv2': 3.0,
+    'AH-64E':     2.5,
+};
+const DEFAULT_ASSET_HEIGHT = 3.2;
+
+// =============================================================================
 // LAUNCH_PADS — visible platform pad rendered beneath animated launchers
 // =============================================================================
 // Real launcher batteries sit on a concrete pad — the schematic with no
@@ -237,11 +277,20 @@ function ringColor(
     }
 }
 
-function SeverityBaseRing({ color, radius, selected }: {
+function SeverityBaseRing({ color, radius, selected, selectedHeight }: {
     color: string;
     radius: number;
     selected?: boolean;
+    /** When selected, the spotlight cylinder is sized to envelop the
+     *  schematic — slightly taller and slightly wider than the asset.
+     *  Without this, the cylinder used a fixed radius * 4 height that
+     *  dwarfed sensors and looked detached from launchers. */
+    selectedHeight?: number;
 }) {
+    // Cylinder envelope: 15% taller and at the ring's outer radius. The
+    // operator sees a faint cyan glow that just barely surrounds the
+    // schematic instead of a disembodied prop next to it.
+    const cylHeight = (selectedHeight ?? radius * 2) * 1.15;
     return (
         <>
             {/* Primary ring — flat on ground plane (Y up), thin annulus */}
@@ -267,11 +316,14 @@ function SeverityBaseRing({ color, radius, selected }: {
                         <circleGeometry args={[radius * 0.85, 32]} />
                         <meshBasicMaterial color="#22d3ee" transparent opacity={0.15} side={THREE.DoubleSide} />
                     </mesh>
-                    {/* Vertical spotlight cylinder — beam-up effect drawing
-                        the eye to the selected asset even when surrounding
-                        context is faded by fog */}
-                    <mesh position={[0, radius * 2, 0]}>
-                        <cylinderGeometry args={[radius * 0.6, radius * 0.6, radius * 4, 16, 1, true]} />
+                    {/* Vertical spotlight cylinder — envelope-sized so it
+                        just surrounds the asset's silhouette. Radius matches
+                        the severity ring's outer edge; height is the asset's
+                        own height + 15%. Open-ended cylinder + low opacity
+                        gives the glow effect without obscuring the schematic
+                        inside. */}
+                    <mesh position={[0, cylHeight / 2, 0]}>
+                        <cylinderGeometry args={[radius, radius, cylHeight, 24, 1, true]} />
                         <meshBasicMaterial color="#22d3ee" transparent opacity={0.08} side={THREE.DoubleSide} depthWrite={false} />
                     </mesh>
                 </>
@@ -342,6 +394,13 @@ export default function AssetVisual({
     // larger GROUND_OFFSET lifts the pod above the pad surface.
     const padHeight = platformVariant ? LAUNCH_PADS[platformVariant] : undefined;
 
+    // Selected-asset spotlight cylinder height — sized per asset so the
+    // glow envelops the silhouette rather than dwarfing or undersizing it.
+    const assetHeightNative = platformVariant
+        ? (ASSET_HEIGHT[platformVariant] ?? DEFAULT_ASSET_HEIGHT)
+        : DEFAULT_ASSET_HEIGHT;
+    const selectedCylHeight = assetHeightNative * scale;
+
     // Fallback used by both Suspense (GLB load) and ErrorBoundary (render
     // crash). One source of truth so a GLB swap-out vs a buggy schematic
     // look identical to the operator.
@@ -353,7 +412,12 @@ export default function AssetVisual({
 
     return (
         <group>
-            <SeverityBaseRing color={ring} radius={Math.max(1, 3 * scale)} selected={selected} />
+            <SeverityBaseRing
+                color={ring}
+                radius={Math.max(1, 3 * scale)}
+                selected={selected}
+                selectedHeight={selectedCylHeight}
+            />
             {padHeight !== undefined && (
                 <LaunchPad height={padHeight * scale} radius={Math.max(0.9, 2.5 * scale)} />
             )}
