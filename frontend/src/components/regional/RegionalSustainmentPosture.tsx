@@ -20,8 +20,13 @@
 //     scene (rendered nowhere — the case shouldn't happen in a healthy
 //     deployment but the panel still degrades gracefully).
 //
-// Phase B (post-Monday eyeball iteration) owns: visual polish, co-located
-// asset stacking, per-edge labels, honesty badges, color/style tuning.
+// Co-located assets (sensors + launchers at the same FOB lat/lon) are
+// staggered in a ring around their shared point in `buildRenderables`
+// below. Without that, ArtillerySchematic launcher pods occlude the
+// smaller SensorRadarSchematic dishes at the same point. See COLOC_*
+// constants for the bucket grain and minimum spacing.
+//
+// Phase B remaining: per-edge labels, honesty badges, color/style tuning.
 // =============================================================================
 import { useMemo } from 'react';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
@@ -65,6 +70,18 @@ interface RenderableAsset {
   homedAtFob: boolean;
 }
 
+// Co-location ring radius — minimum spacing so adjacent assets in a ring
+// don't visually overlap. With ArtillerySchematic at scale 0.35 the
+// launcher footprint is ~2 units wide; with SensorRadarSchematic it's
+// ~0.6 units. 2.5 is the minimum that keeps adjacent launchers clear.
+const COLOC_MIN_SPACING = 2.5;
+// Bucket size for "same point" detection. Sensors emitted as parentLat/
+// parentLon land at FOB-centroid coordinates; launchers without
+// telemetry positions fall back to the same FOB lat/lon via homedAtFob.
+// 0.5 scene-units is well below COLOC_MIN_SPACING (no spurious bucket
+// merges) and above floating-point lat/lon-projection noise.
+const COLOC_BUCKET = 0.5;
+
 function buildRenderables(
   fleet: FleetAsset[],
   logistics: LogisticsStatus[],
@@ -74,7 +91,17 @@ function buildRenderables(
   const fobByEdge = new Map(fobs.map((f) => [f.edge_id, f]));
   const sevByAsset = new Map(logistics.map((l) => [l.asset_id, l.overall_severity]));
 
-  const out: RenderableAsset[] = [];
+  // First pass — project to scene coords. Track real (x,z) per asset
+  // before applying co-location stagger, so the stagger can spread them
+  // in a ring around their shared centroid.
+  type Stage1 = {
+    asset: FleetAsset;
+    x: number;
+    z: number;
+    homed: boolean;
+    sev: string;
+  };
+  const stage1: Stage1[] = [];
   for (const a of fleet) {
     let lat: number | null = null;
     let lon: number | null = null;
@@ -93,13 +120,69 @@ function buildRenderables(
     if (lat === null || lon === null) continue;
     const [x, z] = proj.project(lat, lon);
     const sev = sevByAsset.get(a.asset_id) ?? 'LOGISTICS_SEVERITY_UNSPECIFIED';
-    out.push({
-      asset_id: a.asset_id,
-      position: [x, 0, z],
-      severity: sev,
-      platform_variant: a.platform_variant,
-      force_id: a.force_id,
-      homedAtFob: homed,
+    stage1.push({ asset: a, x, z, homed, sev });
+  }
+
+  // Second pass — bucket assets by their projected (x,z) and lay co-located
+  // groups out in a ring around the cell centroid. Without this, sensors and
+  // launchers at the same FOB stack at the same point and the larger
+  // silhouettes (Artillery launcher pods) completely occlude the smaller
+  // ones (sensor radar dishes). This was flagged as Phase B work in the
+  // file header — surfacing now that the customer ORBAT has 5–14 assets
+  // per FOB rather than the 3-FOB demo's handful.
+  const buckets = new Map<string, Stage1[]>();
+  for (const s of stage1) {
+    const key = `${Math.round(s.x / COLOC_BUCKET)}|${Math.round(s.z / COLOC_BUCKET)}`;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+    }
+    bucket.push(s);
+  }
+
+  const out: RenderableAsset[] = [];
+  for (const bucket of buckets.values()) {
+    if (bucket.length === 1) {
+      const s = bucket[0];
+      out.push({
+        asset_id: s.asset.asset_id,
+        position: [s.x, 0, s.z],
+        severity: s.sev,
+        platform_variant: s.asset.platform_variant,
+        force_id: s.asset.force_id,
+        homedAtFob: s.homed,
+      });
+      continue;
+    }
+    // Ring radius — keep adjacent entries >= COLOC_MIN_SPACING apart so
+    // schematics don't overlap. Arc length per slot = 2πR/N, solve for R.
+    const radius = Math.max(COLOC_MIN_SPACING, (bucket.length * COLOC_MIN_SPACING) / (2 * Math.PI));
+    // Stable ordering within the ring — sort by platform_variant + asset_id
+    // so the layout doesn't shuffle when ElectricSQL reorders the shape on
+    // a row update. (Adjacent assets stay adjacent across re-renders.)
+    bucket.sort((a, b) => {
+      const va = (a.asset.platform_variant ?? '') + a.asset.asset_id;
+      const vb = (b.asset.platform_variant ?? '') + b.asset.asset_id;
+      return va < vb ? -1 : va > vb ? 1 : 0;
+    });
+    // Centroid of the bucket — the bucket key rounds to one cell but
+    // individual assets within can land slightly off-centroid; centroid is
+    // the honest "shared point" they cluster around.
+    const cx = bucket.reduce((s, b) => s + b.x, 0) / bucket.length;
+    const cz = bucket.reduce((s, b) => s + b.z, 0) / bucket.length;
+    bucket.forEach((s, i) => {
+      const angle = (i / bucket.length) * Math.PI * 2;
+      const px = cx + Math.cos(angle) * radius;
+      const pz = cz + Math.sin(angle) * radius;
+      out.push({
+        asset_id: s.asset.asset_id,
+        position: [px, 0, pz],
+        severity: s.sev,
+        platform_variant: s.asset.platform_variant,
+        force_id: s.asset.force_id,
+        homedAtFob: s.homed,
+      });
     });
   }
   return out;
