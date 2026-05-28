@@ -48,6 +48,12 @@ interface LocalFleetRadarProps {
    *  cold start. */
   centerLat?: number | null;
   centerLon?: number | null;
+  /** Currently-selected asset_id from the Maintainer picker. The radar
+   *  highlights this asset with a brighter color + larger dot so the
+   *  operator can tell which dot is the one they're inspecting in the
+   *  detail panels (otherwise all dots at the FOB center stack and the
+   *  radar reads as "indistinguishable cluster"). */
+  selectedAssetId?: string | null;
 }
 
 // Short radar label — the last id segment, capped. Full asset_ids
@@ -68,6 +74,7 @@ export default function LocalFleetRadar({
   localAssets = [],
   centerLat,
   centerLon,
+  selectedAssetId,
 }: LocalFleetRadarProps) {
   const hasCenter =
     typeof centerLat === 'number' && typeof centerLon === 'number' &&
@@ -102,8 +109,12 @@ export default function LocalFleetRadar({
       <div className="bg-slate-800 text-[10px] px-2 py-1 text-slate-300 font-bold font-mono border-b border-slate-700 flex justify-between items-center">
         <div className="flex flex-col">
           <span className="tracking-wider">LOCAL FLEET RADAR</span>
-          <span className="text-[8px] text-slate-500 tracking-normal">
-            {hasCenter ? `${maxDistKm.toFixed(0)}KM RING` : 'centerless'}
+          {/* KM-ring label legibility — bumped from text-[8px] slate-500
+              (illegibly faint on slate-900) to text-[9px] slate-300
+              tracking-wider. Still subordinate to the LOCAL FLEET RADAR
+              header but actually readable now. */}
+          <span className="text-[9px] text-slate-300 tracking-wider">
+            {hasCenter ? `${maxDistKm.toFixed(0)} KM RING` : 'CENTERLESS'}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -143,23 +154,42 @@ export default function LocalFleetRadar({
           ).map(({ asset, x, y }, i) => {
             // If degraded, mock one as COMM_LOST
             const isCommLost = degraded && i === 0;
+            const isSelected = !!selectedAssetId && asset.id === selectedAssetId;
             // Place the label outward of the dot and anchor it on the
             // side away from center, so labels don't stack over each
             // other or the crosshairs.
             const onLeft = x < 0;
             const labelX = x + (onLeft ? -9 : 9);
+            // Selected asset stands out: amber dot + larger radius +
+            // amber label. With most assets at the FOB center stacking
+            // at the same point, the color shift is the operator's only
+            // cue to "this is the one I picked in the panel."
+            const dotFill = isCommLost ? '#64748b'
+              : isSelected ? '#f59e0b'
+              : '#22d3ee';
+            const labelFill = isCommLost ? '#64748b'
+              : isSelected ? '#fbbf24'
+              : '#94a3b8';
             return (
               <g key={asset.id}>
                 {!isCommLost && (
-                  <line x1="0" y1="0" x2={x} y2={y} stroke="#22d3ee" strokeWidth="1.5" strokeDasharray="4 2" opacity="0.6" />
+                  <line x1="0" y1="0" x2={x} y2={y}
+                        stroke={isSelected ? '#f59e0b' : '#22d3ee'}
+                        strokeWidth={isSelected ? '2' : '1.5'}
+                        strokeDasharray="4 2"
+                        opacity={isSelected ? '0.95' : '0.6'} />
                 )}
-                <circle cx={x} cy={y} r="5" fill={isCommLost ? '#64748b' : '#22d3ee'} />
+                <circle cx={x} cy={y} r={isSelected ? 7 : 5} fill={dotFill} />
+                {isSelected && (
+                  <circle cx={x} cy={y} r="11" fill="none" stroke="#f59e0b" strokeWidth="1" opacity="0.7" />
+                )}
                 <text
                   x={labelX}
                   y={y + 3}
                   textAnchor={onLeft ? 'end' : 'start'}
-                  fill={isCommLost ? '#64748b' : '#94a3b8'}
-                  fontSize="7"
+                  fill={labelFill}
+                  fontSize={isSelected ? '8' : '7'}
+                  fontWeight={isSelected ? 'bold' : 'normal'}
                   fontFamily="monospace"
                 >
                   {radarLabel(asset.id)}

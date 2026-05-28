@@ -82,6 +82,23 @@ const COLOC_MIN_SPACING = 2.5;
 // merges) and above floating-point lat/lon-projection noise.
 const COLOC_BUCKET = 0.5;
 
+// Parent-facility platform_variants. When a co-location bucket contains
+// one of these, the facility is placed at the bucket centroid and the
+// other assets (its sensors, interceptors, launchers) ring around it.
+// This matches the ORBAT hierarchy: an AIR_DEFENSE_SITE is the parent
+// battery containing the sensors + effectors; placing it at center
+// reads as "this is the site, those are the things at it."
+const FACILITY_VARIANTS = new Set([
+    'AIR_DEFENSE_SITE',
+    'HEADQUARTER_COMPLEX',
+    'INSTALLATION_FACILITY_CIVILIAN',
+]);
+
+// Minimum ring radius when a facility is at center. MilitaryFacilitySchematic
+// has a 5×6 native pad (half-diagonal ~1.37 world at scale 0.35); the ring
+// must clear that plus the ring-asset's own footprint plus a small buffer.
+const FACILITY_RING_MIN_RADIUS = 4.0;
+
 function buildRenderables(
   fleet: FleetAsset[],
   logistics: LogisticsStatus[],
@@ -155,12 +172,9 @@ function buildRenderables(
       });
       continue;
     }
-    // Ring radius — keep adjacent entries >= COLOC_MIN_SPACING apart so
-    // schematics don't overlap. Arc length per slot = 2πR/N, solve for R.
-    const radius = Math.max(COLOC_MIN_SPACING, (bucket.length * COLOC_MIN_SPACING) / (2 * Math.PI));
-    // Stable ordering within the ring — sort by platform_variant + asset_id
-    // so the layout doesn't shuffle when ElectricSQL reorders the shape on
-    // a row update. (Adjacent assets stay adjacent across re-renders.)
+    // Stable ordering within the bucket — sort by platform_variant +
+    // asset_id so the layout doesn't shuffle when ElectricSQL reorders
+    // the shape on a row update.
     bucket.sort((a, b) => {
       const va = (a.asset.platform_variant ?? '') + a.asset.asset_id;
       const vb = (b.asset.platform_variant ?? '') + b.asset.asset_id;
@@ -171,8 +185,41 @@ function buildRenderables(
     // the honest "shared point" they cluster around.
     const cx = bucket.reduce((s, b) => s + b.x, 0) / bucket.length;
     const cz = bucket.reduce((s, b) => s + b.z, 0) / bucket.length;
-    bucket.forEach((s, i) => {
-      const angle = (i / bucket.length) * Math.PI * 2;
+
+    // Split bucket into facility (parent) vs leaf (sensors/effectors).
+    // When a facility is present, it sits at the centroid and the other
+    // assets ring around it — matches the ORBAT hierarchy and prevents
+    // the wider facility schematic from visually overlapping ring-mates.
+    const facilities = bucket.filter((s) =>
+      FACILITY_VARIANTS.has(s.asset.platform_variant ?? ''));
+    const others = bucket.filter((s) =>
+      !FACILITY_VARIANTS.has(s.asset.platform_variant ?? ''));
+
+    // Facilities at centroid (rare to have more than one — multiple
+    // facilities at the same point stack visually, acceptable as it's
+    // a deployment-data anomaly).
+    for (const s of facilities) {
+      out.push({
+        asset_id: s.asset.asset_id,
+        position: [cx, 0, cz],
+        severity: s.sev,
+        platform_variant: s.asset.platform_variant,
+        force_id: s.asset.force_id,
+        homedAtFob: s.homed,
+      });
+    }
+
+    // Ring radius. With a facility at center, push the ring out past
+    // the facility's footprint so leaf schematics don't overlap it.
+    // Arc-length-per-slot = 2πR/N constraint gives the second term;
+    // FACILITY_RING_MIN_RADIUS is the first.
+    if (others.length === 0) continue;
+    const minRadius = facilities.length > 0
+      ? FACILITY_RING_MIN_RADIUS
+      : COLOC_MIN_SPACING;
+    const radius = Math.max(minRadius, (others.length * COLOC_MIN_SPACING) / (2 * Math.PI));
+    others.forEach((s, i) => {
+      const angle = (i / others.length) * Math.PI * 2;
       const px = cx + Math.cos(angle) * radius;
       const pz = cz + Math.sin(angle) * radius;
       out.push({

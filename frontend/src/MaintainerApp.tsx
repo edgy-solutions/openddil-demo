@@ -375,6 +375,7 @@ function MaintainerApp() {
               localAssets={radarAssets}
               centerLat={radarCenter.lat}
               centerLon={radarCenter.lon}
+              selectedAssetId={selectedAssetId}
             />
           </div>
         </div>
