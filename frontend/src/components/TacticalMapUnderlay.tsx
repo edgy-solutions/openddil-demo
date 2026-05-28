@@ -1,92 +1,88 @@
 // =============================================================================
-// TacticalMapUnderlay — geographic ground-plane underlay
+// TacticalMapUnderlay — geographic / decorative ground-plane underlay
 // =============================================================================
-// Renders a north-up equirectangular map at its true geographic bounds,
-// projected through the scene's lat/lon -> (x, z) transform. regional
-// FOBs naturally end up over the regional portion of the texture; a Korea
-// deployment would land over Korea; an Arctic deployment over the Arctic.
-// The map doesn't "move" — the projection puts the camera where the FOBs
-// are, and that part of the texture renders under them.
+// Two modes, picked by the deployment overlay:
 //
-// Default texture: /map_base.png, a global equirectangular world map
-// shipped with the OSS distribution. Lat range -90 to +90, lon range
-// -180 to +180. deployment().map can override with a higher-resolution
-// regional PNG (different image + tighter bounds) when finer detail
-// matters than a globe-scale texture sampled at one region.
+//   * REAL GEOGRAPHY  — when deployment().map is set, loads the deployment-
+//                       supplied PNG (e.g. an OSM screenshot of the FOB
+//                       region) and SIZES + POSITIONS the plane so its
+//                       lat/lon bounds align with the scene's projection.
+//                       Texture's geography appears under the assets at
+//                       roughly the right place.
 //
-// Earlier this component had two modes: real-geography (deployment.map
-// configured) and decorative-fallback (no deployment.map, slapped a
-// 2000x2000 texture at scene origin with no projection). The fallback's
-// Africa-shaped continents reading as "assets are over Africa" was a
-// BOUNDS bug, not a map bug. With the default bounds applied (the globe
-// IS at -90..90, -180..180), the geography lines up automatically. No
-// fallback needed; map is always correct.
+//   * DECORATIVE      — fallback for the OSS default (no overlay). Loads
+//                       /map_base.png at very low opacity so it functions
+//                       as ambient terrain noise without claiming to
+//                       represent specific geography. (Was 0.15 originally;
+//                       dropped to 0.03 once we noticed the texture's
+//                       Africa-shaped continents read as a misalignment
+//                       when the scene is centered on regional.)
 //
 // Standard map-image conventions: north at the top of the image, west at
 // the left. The scene projection has north = -Z, west = -X (per
 // lib/geoProjection.ts), so a standard north-up PNG plus a -π/2 X rotation
 // produces a correctly-oriented underlay. No UV remapping needed.
 //
-// Resolution note: at regional/HQ camera zooms the visible map area is
-// small (regional is ~0.5% of a world map). At a 2k-pixel texture that
-// works out to ~50px sampled across the visible camera frustum — readable
-// for continents/coastlines, pixelated for road-level detail. If a
-// deployment wants road-level detail, override via deployment.map with a
-// regional PNG at higher resolution.
+// ADR-0017 marker: pure-3D primitive, no DOM banner possible. The
+// decorative mode is the DEMO_MOCK case; geo mode is real-data.
 import { useTexture } from '@react-three/drei';
-import { deployment, type DeploymentMap } from '../deployment';
+import { deployment } from '../deployment';
 import type { Projection } from '../lib/geoProjection';
 
-// Global-extent default: the entire equirectangular globe. Works
-// correctly for any FOB list anywhere on Earth without further config.
-const GLOBAL_MAP_DEFAULT: DeploymentMap = {
-  image: '/map_base.png',
-  bounds: { lat_min: -90, lat_max: 90, lon_min: -180, lon_max: 180 },
-};
+const DEMO_MOCK = true;
+void DEMO_MOCK; // decorative-fallback path is the DEMO_MOCK case; geo path is real
 
 interface TacticalMapUnderlayProps {
-  /** Scene projection — required. Without it we can't size the plane to
-   *  align with FOB/asset positions in the same scene. Callers (HQ +
-   *  Regional) always have one. */
-  projection: Projection;
+  /** When provided AND deployment().map is set, the underlay is positioned
+   *  + sized to align with the projection's coordinate system. Without a
+   *  projection, the component falls back to the decorative texture even
+   *  if a deployment map is configured. */
+  projection?: Projection;
 }
 
-export default function TacticalMapUnderlay({ projection }: TacticalMapUnderlayProps) {
-  const mapCfg = deployment().map ?? GLOBAL_MAP_DEFAULT;
-  const texture = useTexture(mapCfg.image);
+export default function TacticalMapUnderlay({ projection }: TacticalMapUnderlayProps = {}) {
+  const dep = deployment();
+  const mapCfg = dep.map;
 
-  // Project the four lat/lon corners into scene space, then size + place
-  // the plane to span them. Sign convention from geoProjection.ts: north
-  // = -Z, west = -X, so lat_max -> z_min, lon_min -> x_min.
-  const [xMinW, zMaxS] = projection.project(mapCfg.bounds.lat_min, mapCfg.bounds.lon_min);
-  const [xMaxE, zMinN] = projection.project(mapCfg.bounds.lat_max, mapCfg.bounds.lon_max);
-  const width = Math.abs(xMaxE - xMinW);
-  const height = Math.abs(zMaxS - zMinN);
-  const cx = (xMinW + xMaxE) / 2;
-  const cz = (zMinN + zMaxS) / 2;
+  // Hooks must run unconditionally — load both textures (the geo one if
+  // configured, the decorative fallback otherwise). useTexture suspends so
+  // the path it gets is what's fetched; we pick the right path here.
+  const texturePath = mapCfg && projection ? mapCfg.image : '/map_base.png';
+  const texture = useTexture(texturePath);
 
-  // Material is exactly the geography-branch material from the original
-  // bb824ed implementation, which the operator reports worked flawlessly
-  // at HQ and Regional scale. The only structural change vs. that
-  // version is the default bounds path above — when deployment.map is
-  // unset, the global PNG renders at -90..90/-180..180 instead of the
-  // unprojected 2000x2000 decorative fallback at scene origin (which is
-  // what produced the Africa-under-regional misalignment).
-  //
-  // Do NOT add a color tint, polygonOffset, or extra opacity tuning
-  // here. Earlier attempts to "improve" this material with a tactical
-  // green tint + polygonOffsetFactor=-1 produced strobing at HQ scale:
-  // polygonOffset shifts the plane's depth per-frame in a way the GPU
-  // re-evaluates against AbstractContinents and the concentric range
-  // rings, which produces the visible flashing on circles + map. The
-  // original material's depthWrite=false alone is the correct posture.
+  if (mapCfg && projection) {
+    // Project the four lat/lon corners into scene space, then size + place
+    // the plane to span them. Use absolute extents because the projection's
+    // sign convention (north=-Z, west=-X) means lat_max -> z_min, lon_min -> x_min.
+    const [xMinW, zMaxS] = projection.project(mapCfg.bounds.lat_min, mapCfg.bounds.lon_min);
+    const [xMaxE, zMinN] = projection.project(mapCfg.bounds.lat_max, mapCfg.bounds.lon_max);
+    const width = Math.abs(xMaxE - xMinW);
+    const height = Math.abs(zMaxS - zMinN);
+    const cx = (xMinW + xMaxE) / 2;
+    const cz = (zMinN + zMaxS) / 2;
+
+    return (
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, -2.1, cz]}>
+        <planeGeometry args={[width, height]} />
+        <meshBasicMaterial
+          map={texture}
+          transparent
+          opacity={0.55}
+          depthWrite={false}
+        />
+      </mesh>
+    );
+  }
+
+  // Decorative fallback. See header comment for the opacity rationale.
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, -2.1, cz]}>
-      <planeGeometry args={[width, height]} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.1, 0]}>
+      <planeGeometry args={[2000, 2000]} />
       <meshBasicMaterial
         map={texture}
         transparent
-        opacity={0.55}
+        opacity={0.03}
+        color="#10b981"
         depthWrite={false}
       />
     </mesh>
