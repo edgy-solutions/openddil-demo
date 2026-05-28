@@ -308,7 +308,17 @@ export default function TheaterReadinessPosture({
       <div className="absolute inset-0 cursor-move">
         <Canvas camera={{ position: [0, 150, 600], fov: 45 }}>
           <color attach="background" args={[0x020617]} />
-          <fog attach="fog" args={[0x020617, 200, 1500]} />
+          {/* Linear fog: starts at 200 (close-range depth cue stays the
+              same as before) and reaches full opacity at 4000. Earlier
+              the far value was 1500, which is below the OrbitControls
+              maxDistance of 1200 + the scene's lateral extent (~600
+              units across) — so at max zoom-out, far points of the
+              ground plane were at ~1400-1500 distance from camera and
+              hit the fog wall, blanking the view as "horizon dropping
+              into the haze." 4000 keeps depth cueing for the FOB region
+              while leaving headroom for the user to zoom out and still
+              see the scene. */}
+          <fog attach="fog" args={[0x020617, 200, 4000]} />
           <ambientLight intensity={0.8} />
           <directionalLight position={[200, 500, 200]} intensity={1.5} color={0x22d3ee} />
           <hemisphereLight groundColor={0x020617} intensity={0.5} />

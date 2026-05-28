@@ -272,6 +272,20 @@ const LAUNCH_PADS: Record<string, number> = {
     'MISSILE_LAUNCHER':    2.0,
 };
 
+// Per-platform pad radius in native units. Sized to the schematic's
+// BASE element (the hinge for ArtillerySchematic), not its overall
+// footprint. ArtillerySchematic hinge is a 4×4 native square, so
+// pad radius 2.0 inscribes it (pad just covers the hinge's outer
+// edge mid-side). Pod sweeps freely past the pad during peak tilt
+// rather than merging into the pad mesh.
+const PAD_RADIUS_NATIVE: Record<string, number> = {
+    'CUAS_Interceptor':    2.0,
+    'VSHORAD_Interceptor': 2.0,
+    'SHORAD_Interceptor':  2.0,
+    'MRAD_Interceptor':    2.0,
+    'MISSILE_LAUNCHER':    2.0,
+};
+
 function LaunchPad({ height, radius }: { height: number; radius: number }) {
     return (
         <group>
@@ -444,13 +458,19 @@ export default function AssetVisual({
     const ringRadius = footprintFromTable !== undefined
         ? Math.max(1, footprintFromTable * scale)
         : Math.max(1, 3 * scale);
-    // Pad radius — wider than the pod's top-down half-diagonal so the
-    // peak-tilt dip lands within the pad's volume (visually hidden by
-    // pad mesh) rather than punching out the side. 0.7 of footprint
-    // gives ~1.5 world for launchers at scale 0.35 (just larger than
-    // pod half-diagonal of 1.46).
-    const padRadius = footprintFromTable !== undefined
-        ? Math.max(0.9, footprintFromTable * scale * 0.7)
+    // Pad radius — sized to the launcher's HINGE base (4 native wide
+    // square), NOT its pod footprint. Earlier this was tied to footprint
+    // and grew with the pod, but the operator observed two issues:
+    //   * the pad looked oversized relative to the launcher silhouette
+    //   * during the pod's peak tilt the front edge dipped INTO the wide
+    //     pad mesh, reading as "the launcher is sinking into its base"
+    // Sizing the pad to the hinge instead means the pod's tilt sweeps
+    // freely past the pad edges (the front tip momentarily appears
+    // below pad-top level in open air — visually preferable to the
+    // pod-merging-into-pad effect).
+    const padRadiusFromTable = platformVariant ? PAD_RADIUS_NATIVE[platformVariant] : undefined;
+    const padRadius = padRadiusFromTable !== undefined
+        ? padRadiusFromTable * scale
         : Math.max(0.9, 2.5 * scale);
 
     // Fallback used by both Suspense (GLB load) and ErrorBoundary (render
