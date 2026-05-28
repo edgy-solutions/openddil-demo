@@ -198,13 +198,16 @@ const ASSET_HEIGHT: Record<string, number> = {
     'VSHORAD_Sensor': 3.6,
     'SHORAD_Sensor':  3.9,
     'MRAD_Sensor':    4.2,
-    // Interceptors + launcher: ArtillerySchematic hinge (-2.5) to pod top
-    // (~+3.75 with peak tilt). Picked to envelop the animated pod cycle.
-    'CUAS_Interceptor':    6.5,
-    'VSHORAD_Interceptor': 6.5,
-    'SHORAD_Interceptor':  6.5,
-    'MRAD_Interceptor':    6.5,
-    'MISSILE_LAUNCHER':    6.5,
+    // Interceptors + launcher: ArtillerySchematic hinge (-2.5) to pod
+    // back-top corner at peak X-rotation (asset Y ~ +4.1, computed as
+    // pod_center_Y + half_height*cos(0.7) + half_depth*sin(0.7)). Plus
+    // the LAUNCH_PADS pad height (2.0) the schematic sits on. 8.0 envelops
+    // the whole stack with a small buffer.
+    'CUAS_Interceptor':    8.0,
+    'VSHORAD_Interceptor': 8.0,
+    'SHORAD_Interceptor':  8.0,
+    'MRAD_Interceptor':    8.0,
+    'MISSILE_LAUNCHER':    8.0,
     // Facilities: pad/building stacked, conservative envelope
     'AIR_DEFENSE_SITE':              3.5,
     'HEADQUARTER_COMPLEX':           4.5,
@@ -217,6 +220,32 @@ const ASSET_HEIGHT: Record<string, number> = {
 const DEFAULT_ASSET_HEIGHT = 3.2;
 
 // =============================================================================
+// Per-platform horizontal footprint (native, unscaled)
+// =============================================================================
+// Selection visuals (severity ring + outer halo + spotlight cylinder) AND
+// the launch pad all want to envelop the asset's top-down extent. The
+// default `Math.max(1, 3*scale)` ring radius (~1.0 world) is fine for
+// sensors and vehicles, but ArtillerySchematic's pod is 4.5 wide × 7 deep
+// (top-down half-diagonal ≈ 4.16 native) — the default ring is much
+// smaller than the launcher pod, the cylinder sits inside the pod, and
+// the outer halo doesn't quite reach the pod's extent. Per-variant
+// footprint radius makes the envelope scale with each asset.
+//
+// Only entries that DIVERGE from the default Math.max(1, 3*scale) are
+// listed here. Sensors / M1A2 / facilities use the default.
+const ASSET_FOOTPRINT_RADIUS: Record<string, number> = {
+    // Launchers: 6.0 native → 2.1 world at scale 0.35. Outer halo
+    // (1.5x = 3.15 world) is then larger than the pod's top-down
+    // diagonal (~2.92 world). Wider than the pod so the selection
+    // halo + pad envelop the silhouette.
+    'CUAS_Interceptor':    6.0,
+    'VSHORAD_Interceptor': 6.0,
+    'SHORAD_Interceptor':  6.0,
+    'MRAD_Interceptor':    6.0,
+    'MISSILE_LAUNCHER':    6.0,
+};
+
+// =============================================================================
 // LAUNCH_PADS — visible platform pad rendered beneath animated launchers
 // =============================================================================
 // Real launcher batteries sit on a concrete pad — the schematic with no
@@ -225,16 +254,22 @@ const DEFAULT_ASSET_HEIGHT = 3.2;
 // gives that motion something to dip TOWARD instead of dipping into the
 // terrain. Visual + functional fix in one mesh.
 //
-// Pad height of 0.8 (unscaled) was tuned against ArtillerySchematic's
-// peak tilt dip (~1.5 below hinge bottom). With GROUND_OFFSET=4.5 the
-// schematic origin sits at Y=4.5 in asset frame; pod-front-bottom at peak
-// tilt lands around Y=0.8 — exactly on the pad surface.
+// Pad height must equal the schematic's native hinge offset under the
+// GROUND_OFFSET lift so the hinge bottom sits ON the pad top (no float).
+// ArtillerySchematic hinge bottom is at asset-frame Y=-2.5; with
+// GROUND_OFFSET=4.5 the lifted hinge bottom lands at world
+// (4.5-2.5)*scale = 2.0*scale. So pad_height = 2.0 native, putting the
+// pad top at the same world Y as the hinge bottom. The pod's peak-tilt
+// dip (asset Y ~-3.56) lands BELOW pad top — that's intentional, the
+// pad's width is sized via ASSET_FOOTPRINT_RADIUS so the pod tip's
+// momentary dip is contained within the pad's volume (reads as the pod
+// "loading" into the pad surface, which is appropriate for a launcher).
 const LAUNCH_PADS: Record<string, number> = {
-    'CUAS_Interceptor':    0.8,
-    'VSHORAD_Interceptor': 0.8,
-    'SHORAD_Interceptor':  0.8,
-    'MRAD_Interceptor':    0.8,
-    'MISSILE_LAUNCHER':    0.8,
+    'CUAS_Interceptor':    2.0,
+    'VSHORAD_Interceptor': 2.0,
+    'SHORAD_Interceptor':  2.0,
+    'MRAD_Interceptor':    2.0,
+    'MISSILE_LAUNCHER':    2.0,
 };
 
 function LaunchPad({ height, radius }: { height: number; radius: number }) {
@@ -401,6 +436,23 @@ export default function AssetVisual({
         : DEFAULT_ASSET_HEIGHT;
     const selectedCylHeight = assetHeightNative * scale;
 
+    // Effective ring/halo/cylinder radius. Per-variant footprint overrides
+    // the default `Math.max(1, 3*scale)` baseline so large assets
+    // (launchers) get an envelope big enough to surround their pod, and
+    // small assets (sensors, vehicles) keep the existing tight ring.
+    const footprintFromTable = platformVariant ? ASSET_FOOTPRINT_RADIUS[platformVariant] : undefined;
+    const ringRadius = footprintFromTable !== undefined
+        ? Math.max(1, footprintFromTable * scale)
+        : Math.max(1, 3 * scale);
+    // Pad radius — wider than the pod's top-down half-diagonal so the
+    // peak-tilt dip lands within the pad's volume (visually hidden by
+    // pad mesh) rather than punching out the side. 0.7 of footprint
+    // gives ~1.5 world for launchers at scale 0.35 (just larger than
+    // pod half-diagonal of 1.46).
+    const padRadius = footprintFromTable !== undefined
+        ? Math.max(0.9, footprintFromTable * scale * 0.7)
+        : Math.max(0.9, 2.5 * scale);
+
     // Fallback used by both Suspense (GLB load) and ErrorBoundary (render
     // crash). One source of truth so a GLB swap-out vs a buggy schematic
     // look identical to the operator.
@@ -414,12 +466,12 @@ export default function AssetVisual({
         <group>
             <SeverityBaseRing
                 color={ring}
-                radius={Math.max(1, 3 * scale)}
+                radius={ringRadius}
                 selected={selected}
                 selectedHeight={selectedCylHeight}
             />
             {padHeight !== undefined && (
-                <LaunchPad height={padHeight * scale} radius={Math.max(0.9, 2.5 * scale)} />
+                <LaunchPad height={padHeight * scale} radius={padRadius} />
             )}
             <SchematicErrorBoundary fallback={fallback}>
                 <Suspense fallback={fallback}>
