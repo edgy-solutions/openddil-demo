@@ -132,9 +132,18 @@ const COLOR_UNKNOWN   = '#64748b'; // slate-500 — no claim
 // `<group position={[0, -lowestY, 0]}>` to lift it. Scale is applied AFTER
 // the offset so it stays in sync at any zoom level.
 //
+// Static-bounds offset is enough for non-animated schematics. ArtillerySchematic
+// (interceptors + MISSILE_LAUNCHER) animates its pod on X-axis ±0.2 rad
+// around a 0.5 rad bias — the pod's front edge sweeps ~3 units BELOW the
+// schematic's static lower bound during the tilt cycle. Static offset
+// alone leaves the front of the pod dipping into the terrain on every
+// scan. Fix has two parts: (1) raise their GROUND_OFFSET to clear the
+// animated dip, (2) render a visible launching pad beneath them so the
+// dip lands ON a platform surface (see LAUNCH_PADS below).
+//
 // Native Y bounds (eyeballed from each schematic's geometry):
 //   LaserShorad   cylinder [-4, +4]              ground_offset = 4
-//   Artillery     hinge -2.5, pod top +5.5       ground_offset = 2.5
+//   Artillery     hinge -2.5, animated dip ~-4.5 ground_offset = 4.5 (+pad)
 //   M1A2          hull -0.8, turret +2           ground_offset = 0.8
 //   SensorRadar   base -1.1, dish ~+2.5          ground_offset = 1.1
 //   Quadruped     legs reach Y≈-0.5 below origin ground_offset = 0.5
@@ -146,12 +155,13 @@ const GROUND_OFFSET: Record<string, number> = {
     'VSHORAD_Sensor': 1.1,
     'SHORAD_Sensor':  1.1,
     'MRAD_Sensor':    1.1,
-    // ORBAT interceptors + launcher — Artillery schematic; hinge at Y=-2.5
-    'CUAS_Interceptor':    2.5,
-    'VSHORAD_Interceptor': 2.5,
-    'SHORAD_Interceptor':  2.5,
-    'MRAD_Interceptor':    2.5,
-    'MISSILE_LAUNCHER':    2.5,
+    // ORBAT interceptors + launcher — Artillery schematic; clears animated
+    // pod tilt dip when combined with the LAUNCH_PADS pad height
+    'CUAS_Interceptor':    4.5,
+    'VSHORAD_Interceptor': 4.5,
+    'SHORAD_Interceptor':  4.5,
+    'MRAD_Interceptor':    4.5,
+    'MISSILE_LAUNCHER':    4.5,
     // ORBAT facilities — pad bottom around Y=-1.0
     'AIR_DEFENSE_SITE':              1.0,
     'HEADQUARTER_COMPLEX':           1.0,
@@ -165,6 +175,47 @@ const GROUND_OFFSET: Record<string, number> = {
 // rendered fallback). Picks the octahedron's radius so the wireframe
 // doesn't punch through the ground plane.
 const DEFAULT_GROUND_OFFSET = 1.6;
+
+// =============================================================================
+// LAUNCH_PADS — visible platform pad rendered beneath animated launchers
+// =============================================================================
+// Real launcher batteries sit on a concrete pad — the schematic with no
+// base reads as "floating equipment." More importantly, the Artillery pod
+// animation sweeps below the schematic's static lower bound; the pad
+// gives that motion something to dip TOWARD instead of dipping into the
+// terrain. Visual + functional fix in one mesh.
+//
+// Pad height of 0.8 (unscaled) was tuned against ArtillerySchematic's
+// peak tilt dip (~1.5 below hinge bottom). With GROUND_OFFSET=4.5 the
+// schematic origin sits at Y=4.5 in asset frame; pod-front-bottom at peak
+// tilt lands around Y=0.8 — exactly on the pad surface.
+const LAUNCH_PADS: Record<string, number> = {
+    'CUAS_Interceptor':    0.8,
+    'VSHORAD_Interceptor': 0.8,
+    'SHORAD_Interceptor':  0.8,
+    'MRAD_Interceptor':    0.8,
+    'MISSILE_LAUNCHER':    0.8,
+};
+
+function LaunchPad({ height, radius }: { height: number; radius: number }) {
+    return (
+        <group>
+            {/* Slab body — dark slate, matches schematic palette so the pad
+                reads as part of the same visual lineage rather than terrain */}
+            <mesh position={[0, height / 2, 0]}>
+                <cylinderGeometry args={[radius, radius * 1.05, height, 24]} />
+                <meshStandardMaterial color={0x1e293b} metalness={0.5} roughness={0.5} />
+            </mesh>
+            {/* Cyan accent ring at the pad's top edge — same family as
+                SensorRadar's base-cyan accent so launchers and sensors share
+                the visual grammar */}
+            <mesh position={[0, height + 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+                <ringGeometry args={[radius * 0.82, radius * 0.95, 24]} />
+                <meshBasicMaterial color={0x22d3ee} transparent opacity={0.5} side={THREE.DoubleSide} />
+            </mesh>
+        </group>
+    );
+}
 
 function ringColor(
     severity: AssetVisualProps['severity'],
@@ -286,6 +337,11 @@ export default function AssetVisual({
         : DEFAULT_GROUND_OFFSET;
     const liftedY = groundOffset * scale;
 
+    // Launcher platform pad — visible base under animated launchers. Renders
+    // at Y=0..padHeight (scaled) so it sits ON the ground; the schematic's
+    // larger GROUND_OFFSET lifts the pod above the pad surface.
+    const padHeight = platformVariant ? LAUNCH_PADS[platformVariant] : undefined;
+
     // Fallback used by both Suspense (GLB load) and ErrorBoundary (render
     // crash). One source of truth so a GLB swap-out vs a buggy schematic
     // look identical to the operator.
@@ -298,6 +354,9 @@ export default function AssetVisual({
     return (
         <group>
             <SeverityBaseRing color={ring} radius={Math.max(1, 3 * scale)} selected={selected} />
+            {padHeight !== undefined && (
+                <LaunchPad height={padHeight * scale} radius={Math.max(0.9, 2.5 * scale)} />
+            )}
             <SchematicErrorBoundary fallback={fallback}>
                 <Suspense fallback={fallback}>
                     {glbUrl ? (
