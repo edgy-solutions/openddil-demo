@@ -65,34 +65,29 @@ export default function TacticalMapUnderlay({ projection }: TacticalMapUnderlayP
   const cx = (xMinW + xMaxE) / 2;
   const cz = (zMinN + zMaxS) / 2;
 
-  // Material tuning notes:
+  // Material is exactly the geography-branch material from the original
+  // bb824ed implementation, which the operator reports worked flawlessly
+  // at HQ and Regional scale. The only structural change vs. that
+  // version is the default bounds path above — when deployment.map is
+  // unset, the global PNG renders at -90..90/-180..180 instead of the
+  // unprojected 2000x2000 decorative fallback at scene origin (which is
+  // what produced the Africa-under-regional misalignment).
   //
-  //   * color="#10b981" (emerald) — keeps the tactical green/blue
-  //     visual identity. Earlier this tint was lost in a refactor; pure
-  //     white texture at high opacity strobed against AbstractContinents
-  //     underneath (z-fighting). The tint is part of the COP aesthetic,
-  //     not just decoration.
-  //
-  //   * opacity 0.20 — geography visible but quiet; doesn't overwhelm
-  //     FOBs/assets/topology. Higher (0.4+) competes for visual weight;
-  //     lower (0.05) loses the geographic-context value.
-  //
-  //   * polygonOffset / depthWrite=false — defensive against z-fighting
-  //     with other ground-plane meshes (AbstractContinents at Y=-5,
-  //     concentric rings at Y=-1.9). depthWrite=false alone wasn't enough
-  //     when the underlay grew to globe-scale dimensions.
+  // Do NOT add a color tint, polygonOffset, or extra opacity tuning
+  // here. Earlier attempts to "improve" this material with a tactical
+  // green tint + polygonOffsetFactor=-1 produced strobing at HQ scale:
+  // polygonOffset shifts the plane's depth per-frame in a way the GPU
+  // re-evaluates against AbstractContinents and the concentric range
+  // rings, which produces the visible flashing on circles + map. The
+  // original material's depthWrite=false alone is the correct posture.
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[cx, -2.1, cz]}>
       <planeGeometry args={[width, height]} />
       <meshBasicMaterial
         map={texture}
         transparent
-        opacity={0.20}
-        color="#10b981"
+        opacity={0.55}
         depthWrite={false}
-        polygonOffset
-        polygonOffsetFactor={-1}
-        polygonOffsetUnits={-1}
       />
     </mesh>
   );
