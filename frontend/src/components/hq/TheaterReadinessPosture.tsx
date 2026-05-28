@@ -306,7 +306,16 @@ export default function TheaterReadinessPosture({
       </div>
 
       <div className="absolute inset-0 cursor-move">
-        <Canvas camera={{ position: [0, 150, 600], fov: 45 }}>
+        {/* Camera far plane lifted from default 2000 → 8000. AbstractContinents
+            is a 2000×2000 plane at Y=-5 with material color 0x020617 (same as
+            background + fog far color). At max zoom (OrbitControls maxDistance
+            1200) on a 45° angle, the far edge of AbstractContinents lands at
+            ~2030 units from camera — past the default far plane. It gets
+            clipped, blends into the background, and reads as "horizon dropping
+            into solid color and blanking the screen" on zoom-out. 8000 leaves
+            comfortable headroom for any camera position the OrbitControls
+            permits + the full scene extent. */}
+        <Canvas camera={{ position: [0, 150, 600], fov: 45, near: 0.1, far: 8000 }}>
           <color attach="background" args={[0x020617]} />
           {/* Linear fog: starts at 200 (close-range depth cue stays the
               same as before) and reaches full opacity at 4000. Earlier
@@ -334,7 +343,17 @@ export default function TheaterReadinessPosture({
             sectionThickness={1.5}
             cellColor="#22d3ee"
             sectionColor="#10b981"
-            fadeDistance={1500}
+            /* drei's Grid fadeDistance is the camera-distance over which
+             * the grid lines fade to transparent (default 100). Earlier
+             * fadeDistance=1500 meant the grid was nearly invisible when
+             * the user zoomed out to OrbitControls maxDistance=1200 — the
+             * fade factor at that distance was (1500-1200)/1500 = 0.2,
+             * leaving only 20% of the grid intensity. Combined with the
+             * AbstractContinents clipping past the camera far plane,
+             * this read as "scene blanks on zoom-out." 5000 keeps the
+             * grid visible at any camera position the OrbitControls
+             * permits. */
+            fadeDistance={5000}
           />
 
           {/* Concentric rings — visual scale reference, unchanged. */}
