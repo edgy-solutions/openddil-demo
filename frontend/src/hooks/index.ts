@@ -10,6 +10,7 @@ export {
 export {
   useTelemetryLatest,
   type TelemetryLatest,
+  type OperationalState,
   type Quantity,
 } from './useTelemetryLatest';
 export { useCmState, useAllCmState, type CmState } from './useCmState';
