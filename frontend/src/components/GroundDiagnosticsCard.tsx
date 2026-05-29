@@ -41,48 +41,9 @@
 import { Activity } from 'lucide-react';
 import type { OperationalState } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
-
-/** Pill class table — drives the colored badge for one enum value.
- *  Per-axis lookup so each axis can map the same suffix to different
- *  semantics (e.g. "ACTIVE" only exists on functional_mode). */
-const PILL_OK       = 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50';
-const PILL_AMBER    = 'bg-amber-500/20 text-amber-400 border-amber-500/50';
-const PILL_RED      = 'bg-rose-500/20 text-rose-400 border-rose-500/50';
-const PILL_CYAN     = 'bg-cyan-500/20 text-cyan-400 border-cyan-500/50';
-const PILL_SLATE    = 'bg-slate-700/40 text-slate-400 border-slate-600';
-
-function powerPill(value: string | null): { label: string; cls: string } {
-  switch (value) {
-    case 'POWER_STATE_OFF':           return { label: 'OFF',          cls: PILL_RED };
-    case 'POWER_STATE_SHUTTING_DOWN': return { label: 'SHUTTING DOWN',cls: PILL_RED };
-    case 'POWER_STATE_MAINTENANCE':   return { label: 'MAINTENANCE',  cls: PILL_AMBER };
-    case 'POWER_STATE_STANDBY':       return { label: 'STANDBY',      cls: PILL_SLATE };
-    case 'POWER_STATE_ON':            return { label: 'ON',           cls: PILL_OK };
-    default:                          return { label: '—',            cls: PILL_SLATE };
-  }
-}
-
-function modePill(value: string | null): { label: string; cls: string } {
-  switch (value) {
-    case 'FUNCTIONAL_MODE_IDLE':           return { label: 'IDLE',         cls: PILL_SLATE };
-    case 'FUNCTIONAL_MODE_ACTIVE':         return { label: 'ACTIVE',       cls: PILL_OK };
-    case 'FUNCTIONAL_MODE_RECEIVE_ONLY':   return { label: 'RECEIVE ONLY', cls: PILL_CYAN };
-    case 'FUNCTIONAL_MODE_TRANSMIT_ONLY':  return { label: 'TRANSMIT ONLY',cls: PILL_CYAN };
-    case 'FUNCTIONAL_MODE_SCAN':           return { label: 'SCAN',         cls: PILL_OK };
-    case 'FUNCTIONAL_MODE_TRACK':          return { label: 'TRACK',        cls: PILL_OK };
-    default:                               return { label: '—',            cls: PILL_SLATE };
-  }
-}
-
-function healthPill(value: string | null): { label: string; cls: string } {
-  switch (value) {
-    case 'HEALTH_STATE_NOMINAL':  return { label: 'NOMINAL',  cls: PILL_OK };
-    case 'HEALTH_STATE_DEGRADED': return { label: 'DEGRADED', cls: PILL_AMBER };
-    case 'HEALTH_STATE_FAULT':    return { label: 'FAULT',    cls: PILL_RED };
-    case 'HEALTH_STATE_FAILED':   return { label: 'FAILED',   cls: PILL_RED };
-    default:                      return { label: '—',        cls: PILL_SLATE };
-  }
-}
+// Pure enum-name → pill-color mappings live in lib/ so they can be
+// unit-tested without React rendering. See operationalStatePills.test.ts.
+import { powerPill, modePill, healthPill } from '../lib/operationalStatePills';
 
 function Pill({ label, cls }: { label: string; cls: string }) {
   return (

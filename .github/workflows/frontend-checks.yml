@@ -1,0 +1,77 @@
+name: Frontend checks
+
+# Runs on every push and PR to catch the unit-testable regression classes
+# that have bitten this codebase before:
+#   * Enum-name mismatches (commit a96a226 fixed POWER_STATE_OPERATE that
+#     should have been POWER_STATE_ON; tests in src/lib/__tests__/
+#     operationalStatePills.test.ts now pin every enum case)
+#   * Type drift across the cascade (tsc --noEmit catches it)
+#   * Lint regressions (eslint)
+#
+# Three lightweight jobs. Total CI runtime should stay under 2 minutes;
+# none of this needs Docker, a cluster, or Chromium.
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-checks.yml"
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-checks.yml"
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      # vite 8 + vitest 3 have a peer-deps overlap that npm 10 refuses to
+      # resolve without explicit consent; legacy-peer-deps trades strict
+      # peer-deps for lenient resolution. Same flag is documented in
+      # package.json's local-install instructions.
+      - run: npm ci --legacy-peer-deps
+      - run: npx tsc --noEmit
+
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --legacy-peer-deps
+      - run: npm test
+
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    # ESLint is informational — don't fail CI on lint warnings, but surface
+    # the output. Failures in tsc + tests are the actual gates.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --legacy-peer-deps
+      - run: npm run lint
