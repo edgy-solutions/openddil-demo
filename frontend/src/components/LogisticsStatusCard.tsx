@@ -8,6 +8,7 @@
 // view.
 import { Fuel } from 'lucide-react';
 import type { LogisticsStatus, ConstrainingFactor, OperationalState } from '../hooks';
+import { opStateBackfill } from '../lib/opStateBackfill';
 import { SyncingNotice } from './SyncingNotice';
 
 export function severityBadge(sev: string | undefined): { label: string; cls: string } {
@@ -62,51 +63,10 @@ function FactorRow({ factor }: { factor: ConstrainingFactor }) {
   );
 }
 
-/** Phase 5: derive a "would have been" constraint label from operational_state
- *  when fusion hasn't produced a real factor yet. Used for the backfill row
- *  rendered when severity is UNSPECIFIED but the op_state axes say the asset
- *  is non-nominal. Honest framing: this is an INFERRED row, not a fusion
- *  verdict — labelled as such in the UI so the operator can tell. */
-function opStateBackfill(op: OperationalState | null): {
-  label: string;
-  cls: string;
-  rationale: string;
-} | null {
-  if (!op) return null;
-  // Mirrors the precedence in logistics-fusion-service _eval_operational_state:
-  // CRITICAL wins over DEGRADED; HealthState wins over PowerState on ties.
-  if (op.health_state === 'HEALTH_STATE_FAILED' ||
-      op.health_state === 'HEALTH_STATE_FAULT') {
-    return {
-      label: 'CRITICAL (inferred)',
-      cls: 'bg-rose-500/20 text-rose-400 border-rose-500/50',
-      rationale: `health_state = ${op.health_state.replace('HEALTH_STATE_', '')} — fusion hasn't produced a verdict yet`,
-    };
-  }
-  if (op.power_state === 'POWER_STATE_OFF' ||
-      op.power_state === 'POWER_STATE_SHUTTING_DOWN') {
-    return {
-      label: 'CRITICAL (inferred)',
-      cls: 'bg-rose-500/20 text-rose-400 border-rose-500/50',
-      rationale: `power_state = ${op.power_state.replace('POWER_STATE_', '')} — fusion hasn't produced a verdict yet`,
-    };
-  }
-  if (op.health_state === 'HEALTH_STATE_DEGRADED') {
-    return {
-      label: 'DEGRADED (inferred)',
-      cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50',
-      rationale: 'health_state = DEGRADED — fusion hasn\'t produced a verdict yet',
-    };
-  }
-  if (op.power_state === 'POWER_STATE_MAINTENANCE') {
-    return {
-      label: 'DEGRADED (inferred)',
-      cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50',
-      rationale: 'power_state = MAINTENANCE — fusion hasn\'t produced a verdict yet',
-    };
-  }
-  return null;
-}
+// opStateBackfill lives in lib/ — see opStateBackfill.ts and its
+// __tests__/. The precedence policy (HEALTH_FAILED > HEALTH_FAULT >
+// POWER_OFF > POWER_SHUTTING_DOWN > HEALTH_DEGRADED > POWER_MAINTENANCE)
+// is pinned by unit tests there.
 
 export default function LogisticsStatusCard({
   logistics, opState = null, isLoading = false,

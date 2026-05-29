@@ -111,15 +111,11 @@ export interface AssetVisualProps {
 // ---------------------------------------------------------------------------
 // Internal: ring + GLB renderer
 // ---------------------------------------------------------------------------
-
-const COLOR_FRIENDLY  = '#22d3ee'; // cyan — distinct from severity green
-const COLOR_OPPOSING  = '#f43f5e'; // rose
-const COLOR_NEUTRAL   = '#94a3b8'; // slate
-
-const COLOR_OK        = '#10b981'; // emerald — matches schematic indicator-OK
-const COLOR_DEGRADED  = '#f59e0b'; // amber — matches schematic indicator-DEGRADED
-const COLOR_CRITICAL  = '#ef4444'; // red — matches schematic indicator-CRITICAL
-const COLOR_UNKNOWN   = '#64748b'; // slate-500 — no claim
+// Color constants + the severity × force-affiliation policy live in
+// lib/ringColor.ts so the contract is testable without three.js.
+// Re-export them here for in-file readability; tests in
+// __tests__/ringColor.test.ts pin every branch.
+import { ringColor } from '../lib/ringColor';
 
 // =============================================================================
 // Per-platform ground-baseline offset
@@ -311,26 +307,6 @@ function LaunchPad({ height, radius }: { height: number; radius: number }) {
             </mesh>
         </group>
     );
-}
-
-function ringColor(
-    severity: AssetVisualProps['severity'],
-    forceId: AssetVisualProps['forceId'],
-): string {
-    // Force affiliation overrides severity. An enemy SHORAD reads red even
-    // if its logistics severity is OK; a neutral civilian facility reads
-    // slate even if degraded.
-    if (forceId === 'FORCE_OPPOSING') return COLOR_OPPOSING;
-    if (forceId === 'FORCE_NEUTRAL')  return COLOR_NEUTRAL;
-    // Otherwise severity drives color. FRIENDLY entities use severity tint;
-    // unset force_id same.
-    switch (severity) {
-        case 'LOGISTICS_SEVERITY_OK':            return COLOR_OK;
-        case 'LOGISTICS_SEVERITY_DEGRADED':      return COLOR_DEGRADED;
-        case 'LOGISTICS_SEVERITY_CRITICAL':
-        case 'LOGISTICS_SEVERITY_NON_OPERATIONAL': return COLOR_CRITICAL;
-        default:                                 return forceId === 'FORCE_FRIENDLY' ? COLOR_FRIENDLY : COLOR_UNKNOWN;
-    }
 }
 
 function SeverityBaseRing({ color, radius, selected, selectedHeight }: {
