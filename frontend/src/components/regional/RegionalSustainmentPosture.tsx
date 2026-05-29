@@ -75,34 +75,18 @@ interface RenderableAsset {
   operational_state: OperationalState;
 }
 
-// Co-location ring radius — minimum spacing so adjacent assets in a ring
-// don't visually overlap. With ArtillerySchematic at scale 0.35 the
-// launcher footprint is ~2 units wide; with SensorRadarSchematic it's
-// ~0.6 units. 2.5 is the minimum that keeps adjacent launchers clear.
-const COLOC_MIN_SPACING = 2.5;
-// Bucket size for "same point" detection. Sensors emitted as parentLat/
-// parentLon land at FOB-centroid coordinates; launchers without
-// telemetry positions fall back to the same FOB lat/lon via homedAtFob.
-// 0.5 scene-units is well below COLOC_MIN_SPACING (no spurious bucket
-// merges) and above floating-point lat/lon-projection noise.
-const COLOC_BUCKET = 0.5;
-
-// Parent-facility platform_variants. When a co-location bucket contains
-// one of these, the facility is placed at the bucket centroid and the
-// other assets (its sensors, interceptors, launchers) ring around it.
-// This matches the ORBAT hierarchy: an AIR_DEFENSE_SITE is the parent
-// battery containing the sensors + effectors; placing it at center
-// reads as "this is the site, those are the things at it."
-const FACILITY_VARIANTS = new Set([
-    'AIR_DEFENSE_SITE',
-    'HEADQUARTER_COMPLEX',
-    'INSTALLATION_FACILITY_CIVILIAN',
-]);
-
-// Minimum ring radius when a facility is at center. MilitaryFacilitySchematic
-// has a 5×6 native pad (half-diagonal ~1.37 world at scale 0.35); the ring
-// must clear that plus the ring-asset's own footprint plus a small buffer.
-const FACILITY_RING_MIN_RADIUS = 4.0;
+// Co-location layout — the geometric stagger that prevents asset
+// schematics from stacking at FOB centroids. Constants + formulas
+// live in lib/coLocationLayout.ts so the math is unit-testable.
+// See that file + __tests__/coLocationLayout.test.ts for the
+// load-bearing arithmetic. The reads here are just selecting from
+// the policy module.
+import {
+  colocationBucketKey,
+  colocationRingRadius,
+  colocationRingSlot,
+  isFacilityVariant,
+} from '../../lib/coLocationLayout';
 
 function buildRenderables(
   fleet: FleetAsset[],
@@ -154,7 +138,7 @@ function buildRenderables(
   // per FOB rather than the 3-FOB demo's handful.
   const buckets = new Map<string, Stage1[]>();
   for (const s of stage1) {
-    const key = `${Math.round(s.x / COLOC_BUCKET)}|${Math.round(s.z / COLOC_BUCKET)}`;
+    const key = colocationBucketKey(s.x, s.z);
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
@@ -196,10 +180,8 @@ function buildRenderables(
     // When a facility is present, it sits at the centroid and the other
     // assets ring around it — matches the ORBAT hierarchy and prevents
     // the wider facility schematic from visually overlapping ring-mates.
-    const facilities = bucket.filter((s) =>
-      FACILITY_VARIANTS.has(s.asset.platform_variant ?? ''));
-    const others = bucket.filter((s) =>
-      !FACILITY_VARIANTS.has(s.asset.platform_variant ?? ''));
+    const facilities = bucket.filter((s) => isFacilityVariant(s.asset.platform_variant));
+    const others = bucket.filter((s) => !isFacilityVariant(s.asset.platform_variant));
 
     // Facilities at centroid (rare to have more than one — multiple
     // facilities at the same point stack visually, acceptable as it's
@@ -216,19 +198,13 @@ function buildRenderables(
       });
     }
 
-    // Ring radius. With a facility at center, push the ring out past
-    // the facility's footprint so leaf schematics don't overlap it.
-    // Arc-length-per-slot = 2πR/N constraint gives the second term;
-    // FACILITY_RING_MIN_RADIUS is the first.
+    // Ring radius + per-slot positions delegated to lib/coLocationLayout.
+    // Geometry is pinned by unit tests there; comments at the
+    // declaration site describe the formula trade-offs.
     if (others.length === 0) continue;
-    const minRadius = facilities.length > 0
-      ? FACILITY_RING_MIN_RADIUS
-      : COLOC_MIN_SPACING;
-    const radius = Math.max(minRadius, (others.length * COLOC_MIN_SPACING) / (2 * Math.PI));
+    const radius = colocationRingRadius(others.length, facilities.length > 0);
     others.forEach((s, i) => {
-      const angle = (i / others.length) * Math.PI * 2;
-      const px = cx + Math.cos(angle) * radius;
-      const pz = cz + Math.sin(angle) * radius;
+      const { x: px, z: pz } = colocationRingSlot(cx, cz, radius, i, others.length);
       out.push({
         asset_id: s.asset.asset_id,
         position: [px, 0, pz],
