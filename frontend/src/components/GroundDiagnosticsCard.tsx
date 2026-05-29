@@ -13,18 +13,26 @@
 //     OFF / SHUTTING_DOWN  -> red    "entity not running or going down"
 //     MAINTENANCE          -> amber  "planned offline state"
 //     STANDBY              -> slate  "initialized, no claim of activity"
-//     OPERATE              -> green  "doing its job"
+//     ON                   -> green  "powered up and running"  (proto: POWER_STATE_ON)
 //
 //   MODE:
 //     IDLE                 -> slate  "ready but not engaged"
 //     ACTIVE               -> green  "fully engaged"
 //     RECEIVE_ONLY /
 //       TRANSMIT_ONLY      -> cyan   "asymmetric activity (e.g. EW posture)"
+//     SCAN / TRACK         -> green  "engaged sensor postures"
 //
 //   HEALTH:
-//     OK                   -> green  "no fault"
+//     NOMINAL              -> green  "no fault"   (proto: HEALTH_STATE_NOMINAL)
 //     DEGRADED             -> amber  "non-critical anomaly"
 //     FAULT / FAILED       -> red    "active fault / hard failure"
+//
+// Enum string values are the proto's full name (POWER_STATE_ON,
+// HEALTH_STATE_NOMINAL, etc.) — that's what the JSON proto decoder
+// emits and what the projector writes to the column. Earlier this
+// file mistakenly checked POWER_STATE_OPERATE / HEALTH_STATE_OK which
+// don't exist in the proto; the resulting fall-through rendered
+// healthy sensors as "—" (UNSPECIFIED) pills.
 //
 // UNSPECIFIED on any axis (or NULL from postgres for producers that don't
 // emit operational_state) renders as a "—" placeholder, NOT a slate pill
@@ -49,7 +57,7 @@ function powerPill(value: string | null): { label: string; cls: string } {
     case 'POWER_STATE_SHUTTING_DOWN': return { label: 'SHUTTING DOWN',cls: PILL_RED };
     case 'POWER_STATE_MAINTENANCE':   return { label: 'MAINTENANCE',  cls: PILL_AMBER };
     case 'POWER_STATE_STANDBY':       return { label: 'STANDBY',      cls: PILL_SLATE };
-    case 'POWER_STATE_OPERATE':       return { label: 'OPERATE',      cls: PILL_OK };
+    case 'POWER_STATE_ON':            return { label: 'ON',           cls: PILL_OK };
     default:                          return { label: '—',            cls: PILL_SLATE };
   }
 }
@@ -60,13 +68,15 @@ function modePill(value: string | null): { label: string; cls: string } {
     case 'FUNCTIONAL_MODE_ACTIVE':         return { label: 'ACTIVE',       cls: PILL_OK };
     case 'FUNCTIONAL_MODE_RECEIVE_ONLY':   return { label: 'RECEIVE ONLY', cls: PILL_CYAN };
     case 'FUNCTIONAL_MODE_TRANSMIT_ONLY':  return { label: 'TRANSMIT ONLY',cls: PILL_CYAN };
+    case 'FUNCTIONAL_MODE_SCAN':           return { label: 'SCAN',         cls: PILL_OK };
+    case 'FUNCTIONAL_MODE_TRACK':          return { label: 'TRACK',        cls: PILL_OK };
     default:                               return { label: '—',            cls: PILL_SLATE };
   }
 }
 
 function healthPill(value: string | null): { label: string; cls: string } {
   switch (value) {
-    case 'HEALTH_STATE_OK':       return { label: 'OK',       cls: PILL_OK };
+    case 'HEALTH_STATE_NOMINAL':  return { label: 'NOMINAL',  cls: PILL_OK };
     case 'HEALTH_STATE_DEGRADED': return { label: 'DEGRADED', cls: PILL_AMBER };
     case 'HEALTH_STATE_FAULT':    return { label: 'FAULT',    cls: PILL_RED };
     case 'HEALTH_STATE_FAILED':   return { label: 'FAILED',   cls: PILL_RED };
