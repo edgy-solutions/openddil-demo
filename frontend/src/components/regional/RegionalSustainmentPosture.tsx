@@ -42,6 +42,7 @@ import {
   useAllLogisticsStatus,
   type FleetAsset,
   type LogisticsStatus,
+  type OperationalState,
 } from '../../hooks';
 import { makeProjection, type Projection } from '../../lib/geoProjection';
 
@@ -68,6 +69,10 @@ interface RenderableAsset {
   /** True if the position came from the asset's FOB instead of from
    *  real telemetry — informational only (Phase B may visually mark it). */
   homedAtFob: boolean;
+  /** Phase 5: per-asset operational_state surfaced to the schematic so it
+   *  can react to POWER_STATE_OFF / MAINTENANCE / HEALTH_STATE_FAULT etc.
+   *  beyond the rolled-up severity-driven `degraded` boolean. */
+  operational_state: OperationalState;
 }
 
 // Co-location ring radius — minimum spacing so adjacent assets in a ring
@@ -169,6 +174,7 @@ function buildRenderables(
         platform_variant: s.asset.platform_variant,
         force_id: s.asset.force_id,
         homedAtFob: s.homed,
+        operational_state: s.asset.operational_state,
       });
       continue;
     }
@@ -206,6 +212,7 @@ function buildRenderables(
         platform_variant: s.asset.platform_variant,
         force_id: s.asset.force_id,
         homedAtFob: s.homed,
+        operational_state: s.asset.operational_state,
       });
     }
 
@@ -229,6 +236,7 @@ function buildRenderables(
         platform_variant: s.asset.platform_variant,
         force_id: s.asset.force_id,
         homedAtFob: s.homed,
+        operational_state: s.asset.operational_state,
       });
     });
   }
@@ -247,7 +255,7 @@ function Terrain() {
 }
 
 function AssetMarker({
-  assetId, position, severity, platformVariant, forceId, selected, onClick,
+  assetId, position, severity, platformVariant, forceId, selected, opState, onClick,
 }: {
   assetId: string;
   position: [number, number, number];
@@ -255,6 +263,7 @@ function AssetMarker({
   platformVariant: string | null;
   forceId: string | null;
   selected: boolean;
+  opState: OperationalState;
   onClick: (e: ThreeEvent<MouseEvent>) => void;
 }) {
   // Hit-target is an invisible sphere sized to roughly match the schematic
@@ -274,6 +283,7 @@ function AssetMarker({
         forceId={forceId}
         scale={SCENE_ASSET_SCALE}
         selected={selected}
+        operationalState={opState}
       />
     </group>
   );
@@ -544,6 +554,7 @@ export default function RegionalSustainmentPosture({
               platformVariant={a.platform_variant}
               forceId={a.force_id}
               selected={a.asset_id === selectedAssetId}
+              opState={a.operational_state}
               onClick={(e) => { e.stopPropagation(); onAssetSelect(a.asset_id, a.severity); }}
             />
           ))}

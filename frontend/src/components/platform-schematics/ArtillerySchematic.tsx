@@ -21,33 +21,64 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { SchematicProps } from './types';
 
-export function ArtillerySchematic({ degraded }: SchematicProps) {
+export function ArtillerySchematic({ degraded, operationalState }: SchematicProps) {
     const hingeRef = useRef<THREE.Mesh>(null);
     const podRef = useRef<THREE.Group>(null);
     const indicatorRefs = useRef<THREE.Mesh[]>([]);
     indicatorRefs.current = [];
 
+    // Phase 5: op-state visual modifiers. Null-safe: pre-ADR-0026
+    // producers fall through to nominal-vs-degraded.
+    const powerOff = operationalState?.power_state === 'POWER_STATE_OFF'
+                  || operationalState?.power_state === 'POWER_STATE_SHUTTING_DOWN';
+    const maintenance = operationalState?.power_state === 'POWER_STATE_MAINTENANCE';
+    const healthFault = operationalState?.health_state === 'HEALTH_STATE_FAULT'
+                     || operationalState?.health_state === 'HEALTH_STATE_FAILED';
+
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
+        // Pod animation: scans only when fully nominal. POWER_OFF settles
+        // pod to a level pose (rotation.x = 0); MAINTENANCE holds the
+        // bias-tilt without oscillation (pod is "parked" mid-stowing); the
+        // existing `degraded` path also pauses the scan.
         if (podRef.current) {
-            if (!degraded) {
+            if (powerOff) {
+                podRef.current.rotation.x = 0;
+            } else if (maintenance) {
+                podRef.current.rotation.x = 0.5;  // static bias-tilt, no sin()
+            } else if (!degraded) {
                 podRef.current.rotation.x = Math.sin(time * 0.5) * 0.2 + 0.5;
             }
         }
-        if (hingeRef.current && degraded) {
-            (hingeRef.current.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
-        } else if (hingeRef.current) {
-            (hingeRef.current.material as THREE.MeshBasicMaterial).color.setHex(0x334155);
+        if (hingeRef.current) {
+            const mat = hingeRef.current.material as THREE.MeshBasicMaterial;
+            if (powerOff) {
+                mat.color.setHex(0x0f172a);   // darker than nominal slate
+            } else if (degraded || healthFault) {
+                mat.color.setHex(0xf59e0b);
+            } else {
+                mat.color.setHex(0x334155);
+            }
         }
 
         indicatorRefs.current.forEach((mesh, i) => {
             if (mesh) {
-                if (degraded && i < 2) {
-                    (mesh.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
-                    (mesh.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.sin(time * 8) * 0.5;
+                const mat = mesh.material as THREE.MeshBasicMaterial;
+                if (powerOff) {
+                    // All tubes go dark — launcher is "powered down".
+                    mat.color.setHex(0x334155);
+                    mat.opacity = 0.3;
+                } else if (healthFault && i < 2) {
+                    // Active fault: red strobe on the first two tubes,
+                    // faster than amber degraded strobe.
+                    mat.color.setHex(0xef4444);
+                    mat.opacity = 0.4 + Math.sin(time * 12) * 0.6;
+                } else if (degraded && i < 2) {
+                    mat.color.setHex(0xf59e0b);
+                    mat.opacity = 0.5 + Math.sin(time * 8) * 0.5;
                 } else {
-                    (mesh.material as THREE.MeshBasicMaterial).color.setHex(0x10b981);
-                    (mesh.material as THREE.MeshBasicMaterial).opacity = 0.8;
+                    mat.color.setHex(0x10b981);
+                    mat.opacity = 0.8;
                 }
             }
         });

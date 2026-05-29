@@ -37,6 +37,7 @@ import { useTransitPhase, transitClass } from './EdgeTransit';
 import {
     SCHEMATIC_REGISTRY,
     UnknownPlatformBadge,
+    type SchematicProps,
 } from './platform-schematics';
 
 const DEMO_MOCK = true;
@@ -70,6 +71,11 @@ interface DiagnosticCanvasProps {
      *  MaintainerApp), the schematic Canvas runs a transit animation.
      *  First-mount and same-key re-renders do NOT trigger. */
     transitTriggerKey?: string | null;
+    /** Phase 5 (ADR-0026): per-axis operational posture for the selected
+     *  asset. Threaded into the schematic so close-up visualization can
+     *  react to POWER_STATE_OFF / MAINTENANCE / HEALTH_STATE_FAULT etc.
+     *  beyond the rolled-up `degraded` boolean. */
+    operationalState?: SchematicProps['operationalState'];
 }
 
 export default function DiagnosticCanvas({
@@ -78,6 +84,7 @@ export default function DiagnosticCanvas({
     degraded,
     coreTemp,
     transitTriggerKey,
+    operationalState,
 }: DiagnosticCanvasProps) {
     // Hook runs on every render; gating is internal (first-mount + same-
     // key checks). Safe to call before the RADAR-branch early-return.
@@ -113,7 +120,7 @@ export default function DiagnosticCanvas({
                 <OrbitControls enableDamping dampingFactor={0.05} />
 
                 {SchematicComp
-                    ? <SchematicComp degraded={degraded} />
+                    ? <SchematicComp degraded={degraded} operationalState={operationalState} />
                     : <UnknownPlatformBadge degraded={degraded} variant={platformVariant ?? 'UNKNOWN'} />}
             </Canvas>
         </HudFrame>

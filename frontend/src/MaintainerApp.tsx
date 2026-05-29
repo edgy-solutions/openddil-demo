@@ -370,6 +370,7 @@ function MaintainerApp() {
               degraded={degraded}
               coreTemp={coreTemp}
               transitTriggerKey={selectedEdge}
+              operationalState={tel?.operational_state ?? null}
             />
             <LocalFleetRadar
               degraded={degraded}

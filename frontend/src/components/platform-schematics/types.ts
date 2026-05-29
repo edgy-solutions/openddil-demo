@@ -24,10 +24,35 @@
 // `<Canvas>`). The parent component that mounts the `<Canvas>` is
 // responsible for any view-level mock-status banner.
 
+/** Phase 5 ADR-0026: operational_state 3-axis posture surfaced into
+ *  schematic rendering. Schematics can react to specific power / health
+ *  states beyond the rolled-up `degraded` boolean — e.g. POWER_STATE_OFF
+ *  kills all indicator activity (asset reads as "powered down" even when
+ *  fusion hasn't said it's degraded). Optional and additive: schematics
+ *  that don't read it stay nominal-vs-degraded only. */
+export interface OperationalStatePosture {
+  power_state: string | null;
+  functional_mode: string | null;
+  health_state: string | null;
+  actively_receiving: boolean | null;
+  actively_transmitting: boolean | null;
+}
+
 export interface SchematicProps {
   /** Drives indicator-strip color cycling on the schematic. true = warning
-   *  amber / red; false = nominal emerald. */
+   *  amber / red; false = nominal emerald. Computed from logistics severity
+   *  at the AssetVisual cascade level. */
   degraded: boolean;
+  /** Phase 5 (ADR-0026): per-axis operational posture. Optional — when
+   *  absent or null axes, the schematic falls back to the nominal-vs-
+   *  degraded behavior driven by `degraded` alone. When present and
+   *  non-null, schematics interpret specific values:
+   *    POWER_STATE_OFF / SHUTTING_DOWN  -> all indicators dark
+   *    POWER_STATE_MAINTENANCE           -> animation paused / neutral pose
+   *    HEALTH_STATE_FAULT / FAILED       -> indicators strobe red
+   *  Individual schematics implement only the subset relevant to their
+   *  silhouette; unimplemented axes are ignored. */
+  operationalState?: OperationalStatePosture | null;
 }
 
 /** Tier discriminator for sensor and interceptor schematics. Drives visual

@@ -32,23 +32,46 @@ const DISH_RADIUS_BY_TIER: Record<SensorTier, number> = {
     MRAD:     1.8,
 };
 
-export function SensorRadarSchematic({ degraded, tier = 'SHORAD' }: SensorRadarSchematicProps) {
+export function SensorRadarSchematic({ degraded, tier = 'SHORAD', operationalState }: SensorRadarSchematicProps) {
     const yawRef = useRef<THREE.Group>(null);
     const indicatorRef = useRef<THREE.Mesh>(null);
     const dishRadius = DISH_RADIUS_BY_TIER[tier];
 
+    // Phase 5: derive op-state visual modifiers. Each check is null-safe so
+    // pre-ADR-0026 producers (operationalState undefined or all-null) fall
+    // through to the original nominal-vs-degraded behavior driven by
+    // `degraded` alone.
+    const powerOff = operationalState?.power_state === 'POWER_STATE_OFF'
+                  || operationalState?.power_state === 'POWER_STATE_SHUTTING_DOWN';
+    const maintenance = operationalState?.power_state === 'POWER_STATE_MAINTENANCE';
+    const healthFault = operationalState?.health_state === 'HEALTH_STATE_FAULT'
+                     || operationalState?.health_state === 'HEALTH_STATE_FAILED';
+
     useFrame((state) => {
         const time = state.clock.getElapsedTime();
-        if (yawRef.current && !degraded) {
+        // Dish rotation: pauses on POWER_STATE_OFF, MAINTENANCE, or degraded.
+        // POWER_OFF and MAINTENANCE communicate "intentionally not scanning"
+        // — distinct from the wobble that `degraded` might suggest. The mesh
+        // is the same; the absence of motion is the signal.
+        if (yawRef.current && !degraded && !powerOff && !maintenance) {
             yawRef.current.rotation.y = time * 0.4;  // gentle scan
         }
         if (indicatorRef.current) {
-            if (degraded) {
-                (indicatorRef.current.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
-                (indicatorRef.current.material as THREE.MeshBasicMaterial).opacity = 0.5 + Math.sin(time * 8) * 0.5;
+            const mat = indicatorRef.current.material as THREE.MeshBasicMaterial;
+            if (powerOff) {
+                // All-off: indicator goes dark slate, no strobe.
+                mat.color.setHex(0x334155);
+                mat.opacity = 0.3;
+            } else if (healthFault) {
+                // Active fault: red strobe, faster than degraded amber.
+                mat.color.setHex(0xef4444);
+                mat.opacity = 0.4 + Math.sin(time * 12) * 0.6;
+            } else if (degraded) {
+                mat.color.setHex(0xf59e0b);
+                mat.opacity = 0.5 + Math.sin(time * 8) * 0.5;
             } else {
-                (indicatorRef.current.material as THREE.MeshBasicMaterial).color.setHex(0x10b981);
-                (indicatorRef.current.material as THREE.MeshBasicMaterial).opacity = 0.8;
+                mat.color.setHex(0x10b981);
+                mat.opacity = 0.8;
             }
         }
     });

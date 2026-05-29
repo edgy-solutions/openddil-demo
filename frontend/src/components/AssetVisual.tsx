@@ -99,6 +99,13 @@ export interface AssetVisualProps {
     /** When true, the base ring renders a brighter highlight indicating
      *  the asset is currently selected in the picker. */
     selected?: boolean;
+
+    /** Phase 5 (ADR-0026): per-axis operational posture passed through to
+     *  the schematic. Allows schematics to react to specific values (e.g.
+     *  POWER_STATE_OFF dims all indicators) beyond the rolled-up `degraded`
+     *  boolean. Optional — schematics that don't read it stay
+     *  nominal-vs-degraded only. */
+    operationalState?: SchematicProps['operationalState'];
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +418,7 @@ export default function AssetVisual({
     forceId,
     scale = 0.4,
     selected,
+    operationalState,
 }: AssetVisualProps) {
     const glbUrl = platformVariant ? GLB_REGISTRY[platformVariant] : undefined;
     const SchematicComp: ComponentType<SchematicProps> | undefined =
@@ -501,7 +509,7 @@ export default function AssetVisual({
                         </group>
                     ) : SchematicComp ? (
                         <group position={[0, liftedY, 0]} scale={scale}>
-                            <SchematicComp degraded={schematicDegraded} />
+                            <SchematicComp degraded={schematicDegraded} operationalState={operationalState} />
                         </group>
                     ) : (
                         fallback

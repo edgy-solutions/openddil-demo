@@ -1,6 +1,7 @@
 // useFleetAssets — every asset the pipeline has seen telemetry for.
 // Backs the fleet picker / asset list. Source: telemetry_latest_state.
 import { num, sqlLiteral, useTableShape, type ShapeResult } from './electric';
+import type { OperationalState } from './useTelemetryLatest';
 
 export interface FleetAsset {
   asset_id: string;
@@ -21,6 +22,12 @@ export interface FleetAsset {
    *  customer-overlay launchers). The 3D maps fall back to the assigned FOB's
    *  coordinates in that case — see Fob in src/deployment.ts. */
   position: { lat: number; lon: number } | null;
+  /** Phase 5 (ADR-0026): 3-axis operational posture, surfaced for the
+   *  Regional 3D map's per-asset schematic rendering — schematics react
+   *  to specific values (e.g. POWER_STATE_OFF dims all indicators).
+   *  Always present on the returned object; individual axis fields
+   *  default to null when the producer didn't emit operational_state. */
+  operational_state: OperationalState;
 }
 
 function extractPosition(kinematics: any): { lat: number; lon: number } | null {
@@ -51,6 +58,13 @@ function mapFleetAsset(row: Record<string, any>): FleetAsset {
     edge_id: row.edge_id ?? null,
     region_id: row.region_id ?? null,
     position: extractPosition(row.kinematics),
+    operational_state: {
+      power_state:           row.power_state ?? null,
+      functional_mode:       row.functional_mode ?? null,
+      health_state:          row.health_state ?? null,
+      actively_receiving:    row.actively_receiving ?? null,
+      actively_transmitting: row.actively_transmitting ?? null,
+    },
   };
 }
 
