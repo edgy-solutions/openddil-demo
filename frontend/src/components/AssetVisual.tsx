@@ -117,177 +117,20 @@ export interface AssetVisualProps {
 // __tests__/ringColor.test.ts pin every branch.
 import { ringColor } from '../lib/ringColor';
 
-// =============================================================================
-// Per-platform ground-baseline offset
-// =============================================================================
-// The maintainer-view schematics were authored at "single-asset close-up"
-// scale with the asset centered around the origin (some geometry above
-// Y=0, some below). At maintainer scale that's fine — the camera looks at
-// origin and the framing centers vertically.
-//
-// On regional/HQ maps, every asset sits ON the ground plane (Y=0). If a
-// schematic has geometry extending below Y=0 (e.g. Artillery's hinge at
-// Y=-2, M1A2's hull bottom at Y=-0.8), that geometry passes through the
-// terrain and the asset reads as "half buried."
-//
-// Fix: per-schematic ground-baseline offset. Each value is the schematic's
-// native lowest-point Y (negative), so we wrap the schematic in a
-// `<group position={[0, -lowestY, 0]}>` to lift it. Scale is applied AFTER
-// the offset so it stays in sync at any zoom level.
-//
-// Static-bounds offset is enough for non-animated schematics. ArtillerySchematic
-// (interceptors + MISSILE_LAUNCHER) animates its pod on X-axis ±0.2 rad
-// around a 0.5 rad bias — the pod's front edge sweeps ~3 units BELOW the
-// schematic's static lower bound during the tilt cycle. Static offset
-// alone leaves the front of the pod dipping into the terrain on every
-// scan. Fix has two parts: (1) raise their GROUND_OFFSET to clear the
-// animated dip, (2) render a visible launching pad beneath them so the
-// dip lands ON a platform surface (see LAUNCH_PADS below).
-//
-// Native Y bounds (eyeballed from each schematic's geometry):
-//   LaserShorad   cylinder [-4, +4]              ground_offset = 4
-//   Artillery     hinge -2.5, animated dip ~-4.5 ground_offset = 4.5 (+pad)
-//   M1A2          hull -0.8, turret +2           ground_offset = 0.8
-//   SensorRadar   base -1.1, dish ~+2.5          ground_offset = 1.1
-//   Quadruped     legs reach Y≈-0.5 below origin ground_offset = 0.5
-//   Facilities    pad at -0.85, building above   ground_offset = 1.0
-//   UnknownBadge  octahedron centered at origin  ground_offset = 1.6
-const GROUND_OFFSET: Record<string, number> = {
-    // ORBAT sensors — all use SensorRadarSchematic; base at Y=-1.1
-    'CUAS_Sensor':    1.1,
-    'VSHORAD_Sensor': 1.1,
-    'SHORAD_Sensor':  1.1,
-    'MRAD_Sensor':    1.1,
-    // ORBAT interceptors + launcher — Artillery schematic; clears animated
-    // pod tilt dip when combined with the LAUNCH_PADS pad height
-    'CUAS_Interceptor':    4.5,
-    'VSHORAD_Interceptor': 4.5,
-    'SHORAD_Interceptor':  4.5,
-    'MRAD_Interceptor':    4.5,
-    'MISSILE_LAUNCHER':    4.5,
-    // ORBAT facilities — pad bottom around Y=-1.0
-    'AIR_DEFENSE_SITE':              1.0,
-    'HEADQUARTER_COMPLEX':           1.0,
-    'INSTALLATION_FACILITY_CIVILIAN': 1.0,
-    // Legacy DIS variants
-    'M1A2-SEPv3': 0.8,
-    'M1A2-SEPv2': 0.8,
-    'AH-64E':     0.5,
-};
-// Default when no entry matches (UnknownPlatformBadge or any other
-// rendered fallback). Picks the octahedron's radius so the wireframe
-// doesn't punch through the ground plane.
-const DEFAULT_GROUND_OFFSET = 1.6;
-
-// =============================================================================
-// Per-platform visible height
-// =============================================================================
-// Top-of-asset extent in the schematic's NATIVE (unscaled) frame, used to
-// size the selected-asset spotlight cylinder so it just barely envelops
-// the silhouette — slightly taller and slightly wider than the asset, so
-// the operator sees a faint glow surrounding the selection rather than a
-// disembodied prop next to it. Without this, the cylinder used a fixed
-// `radius * 4` height that dwarfed sensors and looked detached from
-// launchers.
-//
-// Values are top-of-visible-geometry in each schematic's native frame
-// (the schematic's bottom is already at Y=0 in world space after the
-// GROUND_OFFSET lift, so this is also the schematic's world-Y top
-// before scale-multiplication).
-const ASSET_HEIGHT: Record<string, number> = {
-    // Sensors: base (-1.1) to dish/rim top (~+2.5). Slightly larger for
-    // the bigger-dish tiers so the cylinder grows with the radar tier.
-    'CUAS_Sensor':    3.4,
-    'VSHORAD_Sensor': 3.6,
-    'SHORAD_Sensor':  3.9,
-    'MRAD_Sensor':    4.2,
-    // Interceptors + launcher: ArtillerySchematic hinge (-2.5) to pod
-    // back-top corner at peak X-rotation (asset Y ~ +4.1, computed as
-    // pod_center_Y + half_height*cos(0.7) + half_depth*sin(0.7)). Plus
-    // the LAUNCH_PADS pad height (2.0) the schematic sits on. 8.0 envelops
-    // the whole stack with a small buffer.
-    'CUAS_Interceptor':    8.0,
-    'VSHORAD_Interceptor': 8.0,
-    'SHORAD_Interceptor':  8.0,
-    'MRAD_Interceptor':    8.0,
-    'MISSILE_LAUNCHER':    8.0,
-    // Facilities: pad/building stacked, conservative envelope
-    'AIR_DEFENSE_SITE':              3.5,
-    'HEADQUARTER_COMPLEX':           4.5,
-    'INSTALLATION_FACILITY_CIVILIAN': 3.5,
-    // Legacy DIS
-    'M1A2-SEPv3': 3.0,
-    'M1A2-SEPv2': 3.0,
-    'AH-64E':     2.5,
-};
-const DEFAULT_ASSET_HEIGHT = 3.2;
-
-// =============================================================================
-// Per-platform horizontal footprint (native, unscaled)
-// =============================================================================
-// Selection visuals (severity ring + outer halo + spotlight cylinder) AND
-// the launch pad all want to envelop the asset's top-down extent. The
-// default `Math.max(1, 3*scale)` ring radius (~1.0 world) is fine for
-// sensors and vehicles, but ArtillerySchematic's pod is 4.5 wide × 7 deep
-// (top-down half-diagonal ≈ 4.16 native) — the default ring is much
-// smaller than the launcher pod, the cylinder sits inside the pod, and
-// the outer halo doesn't quite reach the pod's extent. Per-variant
-// footprint radius makes the envelope scale with each asset.
-//
-// Only entries that DIVERGE from the default Math.max(1, 3*scale) are
-// listed here. Sensors / M1A2 / facilities use the default.
-const ASSET_FOOTPRINT_RADIUS: Record<string, number> = {
-    // Launchers: 6.0 native → 2.1 world at scale 0.35. Outer halo
-    // (1.5x = 3.15 world) is then larger than the pod's top-down
-    // diagonal (~2.92 world). Wider than the pod so the selection
-    // halo + pad envelop the silhouette.
-    'CUAS_Interceptor':    6.0,
-    'VSHORAD_Interceptor': 6.0,
-    'SHORAD_Interceptor':  6.0,
-    'MRAD_Interceptor':    6.0,
-    'MISSILE_LAUNCHER':    6.0,
-};
-
-// =============================================================================
-// LAUNCH_PADS — visible platform pad rendered beneath animated launchers
-// =============================================================================
-// Real launcher batteries sit on a concrete pad — the schematic with no
-// base reads as "floating equipment." More importantly, the Artillery pod
-// animation sweeps below the schematic's static lower bound; the pad
-// gives that motion something to dip TOWARD instead of dipping into the
-// terrain. Visual + functional fix in one mesh.
-//
-// Pad height must equal the schematic's native hinge offset under the
-// GROUND_OFFSET lift so the hinge bottom sits ON the pad top (no float).
-// ArtillerySchematic hinge bottom is at asset-frame Y=-2.5; with
-// GROUND_OFFSET=4.5 the lifted hinge bottom lands at world
-// (4.5-2.5)*scale = 2.0*scale. So pad_height = 2.0 native, putting the
-// pad top at the same world Y as the hinge bottom. The pod's peak-tilt
-// dip (asset Y ~-3.56) lands BELOW pad top — that's intentional, the
-// pad's width is sized via ASSET_FOOTPRINT_RADIUS so the pod tip's
-// momentary dip is contained within the pad's volume (reads as the pod
-// "loading" into the pad surface, which is appropriate for a launcher).
-const LAUNCH_PADS: Record<string, number> = {
-    'CUAS_Interceptor':    2.0,
-    'VSHORAD_Interceptor': 2.0,
-    'SHORAD_Interceptor':  2.0,
-    'MRAD_Interceptor':    2.0,
-    'MISSILE_LAUNCHER':    2.0,
-};
-
-// Per-platform pad radius in native units. Sized to the schematic's
-// BASE element (the hinge for ArtillerySchematic), not its overall
-// footprint. ArtillerySchematic hinge is a 4×4 native square, so
-// pad radius 2.0 inscribes it (pad just covers the hinge's outer
-// edge mid-side). Pod sweeps freely past the pad during peak tilt
-// rather than merging into the pad mesh.
-const PAD_RADIUS_NATIVE: Record<string, number> = {
-    'CUAS_Interceptor':    2.0,
-    'VSHORAD_Interceptor': 2.0,
-    'SHORAD_Interceptor':  2.0,
-    'MRAD_Interceptor':    2.0,
-    'MISSILE_LAUNCHER':    2.0,
-};
+// Per-platform geometry — GROUND_OFFSET, ASSET_HEIGHT,
+// ASSET_FOOTPRINT_RADIUS, LAUNCH_PADS, PAD_RADIUS_NATIVE — live in
+// lib/assetGeometry.ts so the tables + invariants are unit-testable.
+// __tests__/assetGeometry.test.ts pins them: every variant in
+// ASSET_HEIGHT has a GROUND_OFFSET entry; launcher pad height equals
+// (groundOffset - hinge_native_bottom); launcher ASSET_HEIGHT covers
+// peak-tilt pod corner; pad radius sized to hinge, ring sized to pod.
+import {
+    resolveGroundOffset,
+    resolveAssetHeight,
+    resolvePadHeight,
+    resolvePadWorldRadius,
+    resolveRingRadius,
+} from '../lib/assetGeometry';
 
 function LaunchPad({ height, radius }: { height: number; radius: number }) {
     return (
@@ -412,56 +255,23 @@ export default function AssetVisual({
 
     const ring = ringColor(severity, forceId);
 
-    // Lift the schematic so its geometric bottom sits at Y=0 (ground
-    // plane). Without this, schematics extending below Y=0 in their
-    // native frame (Artillery hinge, M1A2 hull, etc.) render half-buried
-    // in the terrain at regional/HQ scale. Multiply by `scale` since the
-    // inner schematic group is scaled — the offset has to scale with it.
-    const groundOffset = platformVariant
-        ? (GROUND_OFFSET[platformVariant] ?? DEFAULT_GROUND_OFFSET)
-        : DEFAULT_GROUND_OFFSET;
-    const liftedY = groundOffset * scale;
-
-    // Launcher platform pad — visible base under animated launchers. Renders
-    // at Y=0..padHeight (scaled) so it sits ON the ground; the schematic's
-    // larger GROUND_OFFSET lifts the pod above the pad surface.
-    const padHeight = platformVariant ? LAUNCH_PADS[platformVariant] : undefined;
-
-    // Selected-asset spotlight cylinder height — sized per asset so the
-    // glow envelops the silhouette rather than dwarfing or undersizing it.
-    const assetHeightNative = platformVariant
-        ? (ASSET_HEIGHT[platformVariant] ?? DEFAULT_ASSET_HEIGHT)
-        : DEFAULT_ASSET_HEIGHT;
-    const selectedCylHeight = assetHeightNative * scale;
-
-    // Effective ring/halo/cylinder radius. Per-variant footprint overrides
-    // the default `Math.max(1, 3*scale)` baseline so large assets
-    // (launchers) get an envelope big enough to surround their pod, and
-    // small assets (sensors, vehicles) keep the existing tight ring.
-    const footprintFromTable = platformVariant ? ASSET_FOOTPRINT_RADIUS[platformVariant] : undefined;
-    const ringRadius = footprintFromTable !== undefined
-        ? Math.max(1, footprintFromTable * scale)
-        : Math.max(1, 3 * scale);
-    // Pad radius — sized to the launcher's HINGE base (4 native wide
-    // square), NOT its pod footprint. Earlier this was tied to footprint
-    // and grew with the pod, but the operator observed two issues:
-    //   * the pad looked oversized relative to the launcher silhouette
-    //   * during the pod's peak tilt the front edge dipped INTO the wide
-    //     pad mesh, reading as "the launcher is sinking into its base"
-    // Sizing the pad to the hinge instead means the pod's tilt sweeps
-    // freely past the pad edges (the front tip momentarily appears
-    // below pad-top level in open air — visually preferable to the
-    // pod-merging-into-pad effect).
-    const padRadiusFromTable = platformVariant ? PAD_RADIUS_NATIVE[platformVariant] : undefined;
-    const padRadius = padRadiusFromTable !== undefined
-        ? padRadiusFromTable * scale
-        : Math.max(0.9, 2.5 * scale);
+    // All per-platform geometry comes from lib/assetGeometry. See
+    // __tests__/assetGeometry.test.ts for the load-bearing invariants
+    // (every variant in ASSET_HEIGHT also has GROUND_OFFSET; launcher
+    // pad height = groundOffset - hinge_native_bottom; etc.).
+    const liftedY = resolveGroundOffset(platformVariant) * scale;
+    const padHeight = resolvePadHeight(platformVariant);
+    const selectedCylHeight = resolveAssetHeight(platformVariant) * scale;
+    const ringRadius = resolveRingRadius(platformVariant, scale);
+    const padRadius = resolvePadWorldRadius(platformVariant, scale);
 
     // Fallback used by both Suspense (GLB load) and ErrorBoundary (render
     // crash). One source of truth so a GLB swap-out vs a buggy schematic
-    // look identical to the operator.
+    // look identical to the operator. Uses the default ground offset
+    // (UnknownPlatformBadge is centered at origin and the default value
+    // is the octahedron's radius).
     const fallback = (
-        <group position={[0, DEFAULT_GROUND_OFFSET * scale, 0]} scale={scale}>
+        <group position={[0, resolveGroundOffset(null) * scale, 0]} scale={scale}>
             <UnknownPlatformBadge degraded={false} variant={platformVariant ?? 'UNKNOWN'} />
         </group>
     );
