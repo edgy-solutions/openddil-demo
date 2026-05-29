@@ -1,0 +1,141 @@
+name: Playwright integration (manual)
+
+# Live-cluster UI integration tests via Playwright. Triggered MANUALLY
+# only (workflow_dispatch); NOT run on push or PR. The setup is heavy
+# (~10 min runtime), the failure modes are infrastructure-flaky, and
+# the failure surface area is downstream of every other CI workflow
+# in this repo — pinning master red because Chromium couldn't paint
+# a div in time is exactly the worst feedback signal.
+#
+# Tests covered when this is run successfully:
+#   tests/hero_scenario_v3/test_29_ui_maintainer_view_loads.py
+#   tests/hero_scenario_v3/test_30_ui_regional_aggregation.py
+#   tests/hero_scenario_v3/test_31_ui_hq_aggregate_metrics.py
+#   tests/hero_scenario_v3/test_32_ui_ddil_disconnect_banner.py
+#   tests/hero_scenario_v3/test_33_ui_ddil_reconnect_clears.py
+#   tests/hero_scenario_v3/test_34_ui_demo_mock_banners.py
+#
+# These are full-stack-required tests: they assert on rendered DOM,
+# they verify real ElectricSQL shapes synced, they exercise toxiproxy
+# severance for the disconnect/reconnect cases. Without a live
+# pipeline, every test SKIPs with "frontend not reachable" or
+# "no real asset_id in identity strip."
+#
+# This workflow is a SKELETON — the steps below describe what's
+# needed; the actual implementation is left for a focused infra
+# investment because doing it right (with cache, isolation, fast
+# teardown) is a multi-hour effort and was correctly deferred from
+# the per-push lane.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: "Optional runtime-bundle image tag to test against (default: latest)"
+        required: false
+        default: "latest"
+
+jobs:
+  playwright-integration:
+    runs-on: ubuntu-latest
+    # Disabled by default. To enable, remove the `if: false` and
+    # complete the steps marked TODO.
+    if: false
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- 1. Bring up a kubernetes cluster ----
+      # k3d is faster to start than kind on github runners (~30s vs
+      # ~60s). Pin a recent k3d release tag to keep behavior stable.
+      - name: Set up k3d
+        uses: nolar/setup-k3d-k3s@v1
+        with:
+          version: v1.30
+          k3d-args: '--no-lb'  # no need for a loadbalancer in CI
+
+      # ---- 2. Install the openddil stack via helm ----
+      # The chart lives in openddil-helm/openddil-demo and depends on
+      # a docker-registry secret for the runtime-bundle. The bundle
+      # image must exist on GHCR for the tag the user specified.
+      - name: Install openddil-demo chart
+        run: |
+          helm repo add openddil https://edgy-solutions.github.io/openddil-helm
+          helm install openddil openddil/openddil-demo \
+            --set bundle.image.tag=${{ github.event.inputs.release-tag }} \
+            --wait --timeout 5m
+
+      # ---- 3. Wait for the pipeline to be ready ----
+      # All projector pods Running, ElectricSQL syncing, frontend up.
+      # TODO: write a wait-for-ready script that polls
+      # `kubectl get pods` until everything is `Ready 1/1`.
+      - name: Wait for stack ready
+        run: |
+          echo "TODO: poll kubectl get pods until all Ready"
+          exit 1
+
+      # ---- 4. Seed data ----
+      # The UI tests assert on REAL telemetry. Seed via the customer-overlay
+      # bundle's seed_orbat.py (if available in CI) or via the demo's
+      # built-in sample data. The shape of "what data should be
+      # present for test_29 to pass" needs spelling out.
+      - name: Seed pipeline data
+        run: |
+          echo "TODO: kubectl port-forward + seed_orbat.py --mock-status"
+          exit 1
+
+      # ---- 5. Port-forward the frontend + toxiproxy ----
+      # _ui_helpers.py expects http://127.0.0.1:3017 (frontend) and
+      # http://127.0.0.1:8475 (toxiproxy admin). Forward both in the
+      # background.
+      - name: Port-forward services
+        run: |
+          kubectl port-forward svc/openddil-frontend 3017:80 &
+          kubectl port-forward svc/openddil-toxiproxy 8475:8474 &
+          # Give the forwards a beat to settle
+          sleep 5
+
+      # ---- 6. Set up Python + Playwright + Chromium ----
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Playwright + Chromium
+        run: |
+          pip install pytest playwright
+          playwright install --with-deps chromium
+
+      # ---- 7. Run the UI tests ----
+      - name: Run hero_scenario_v3 UI tests
+        working-directory: tests/hero_scenario_v3
+        run: |
+          pytest test_29_ui_maintainer_view_loads.py \
+                 test_30_ui_regional_aggregation.py \
+                 test_31_ui_hq_aggregate_metrics.py \
+                 test_32_ui_ddil_disconnect_banner.py \
+                 test_33_ui_ddil_reconnect_clears.py \
+                 test_34_ui_demo_mock_banners.py \
+                 -v --junitxml=ui_results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: tests/hero_scenario_v3/ui_results.xml
+
+  # ---------------------------------------------------------------------------
+  # Lightweight alternative — frontend-only Playwright with mocked shapes
+  # ---------------------------------------------------------------------------
+  # If the full-stack path is too heavy for routine use, a lighter
+  # alternative is to:
+  #   1. Build the frontend with VITE preview server
+  #   2. Mock the ElectricSQL shape responses via msw-style intercept
+  #      (extend _ui_helpers to install a route handler before
+  #      navigation, returning canned fleet / logistics / op_state
+  #      payloads)
+  #   3. Run Playwright against the mocked frontend
+  # This catches DOM-level regressions (selected-asset spotlight, pill
+  # colors, schematic dispatch) without standing up the full pipeline.
+  # Tests need to be authored as offline-runnable for this to work.
+  # Punted to a separate effort.
