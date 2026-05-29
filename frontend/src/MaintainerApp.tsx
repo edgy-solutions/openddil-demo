@@ -20,6 +20,7 @@ import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
 import CmStateCard from './components/CmStateCard';
+import GroundDiagnosticsCard from './components/GroundDiagnosticsCard';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
   useFleetAssets,
@@ -395,7 +396,19 @@ function MaintainerApp() {
             doesn't render it. */}
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-140px)]">
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
-          <LogisticsStatusCard logistics={logiState} isLoading={logistics.isLoading} />
+          {/* Phase 5: ADR-0026 operational_state surfaced per-asset.
+              Sits between CmStateCard (config-management compliance) and
+              LogisticsStatusCard (rolled-up severity from fusion) — the
+              3-axis posture is orthogonal to both. */}
+          <GroundDiagnosticsCard
+            opState={tel?.operational_state ?? null}
+            isLoading={telemetry.isLoading}
+          />
+          <LogisticsStatusCard
+            logistics={logiState}
+            opState={tel?.operational_state ?? null}
+            isLoading={logistics.isLoading}
+          />
           <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} isLoading={telemetry.isLoading} />
           <AlertFeed events={events.data} isLoading={events.isLoading} />
           <Inventory />

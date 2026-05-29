@@ -7,7 +7,7 @@
 // projected mission-capable-remaining estimate. Reused by the maintainer
 // view.
 import { Fuel } from 'lucide-react';
-import type { LogisticsStatus, ConstrainingFactor } from '../hooks';
+import type { LogisticsStatus, ConstrainingFactor, OperationalState } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
 
 export function severityBadge(sev: string | undefined): { label: string; cls: string } {
@@ -62,9 +62,75 @@ function FactorRow({ factor }: { factor: ConstrainingFactor }) {
   );
 }
 
-export default function LogisticsStatusCard({ logistics, isLoading = false }: { logistics: LogisticsStatus | null; isLoading?: boolean }) {
+/** Phase 5: derive a "would have been" constraint label from operational_state
+ *  when fusion hasn't produced a real factor yet. Used for the backfill row
+ *  rendered when severity is UNSPECIFIED but the op_state axes say the asset
+ *  is non-nominal. Honest framing: this is an INFERRED row, not a fusion
+ *  verdict — labelled as such in the UI so the operator can tell. */
+function opStateBackfill(op: OperationalState | null): {
+  label: string;
+  cls: string;
+  rationale: string;
+} | null {
+  if (!op) return null;
+  // Mirrors the precedence in logistics-fusion-service _eval_operational_state:
+  // CRITICAL wins over DEGRADED; HealthState wins over PowerState on ties.
+  if (op.health_state === 'HEALTH_STATE_FAILED' ||
+      op.health_state === 'HEALTH_STATE_FAULT') {
+    return {
+      label: 'CRITICAL (inferred)',
+      cls: 'bg-rose-500/20 text-rose-400 border-rose-500/50',
+      rationale: `health_state = ${op.health_state.replace('HEALTH_STATE_', '')} — fusion hasn't produced a verdict yet`,
+    };
+  }
+  if (op.power_state === 'POWER_STATE_OFF' ||
+      op.power_state === 'POWER_STATE_SHUTTING_DOWN') {
+    return {
+      label: 'CRITICAL (inferred)',
+      cls: 'bg-rose-500/20 text-rose-400 border-rose-500/50',
+      rationale: `power_state = ${op.power_state.replace('POWER_STATE_', '')} — fusion hasn't produced a verdict yet`,
+    };
+  }
+  if (op.health_state === 'HEALTH_STATE_DEGRADED') {
+    return {
+      label: 'DEGRADED (inferred)',
+      cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50',
+      rationale: 'health_state = DEGRADED — fusion hasn\'t produced a verdict yet',
+    };
+  }
+  if (op.power_state === 'POWER_STATE_MAINTENANCE') {
+    return {
+      label: 'DEGRADED (inferred)',
+      cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50',
+      rationale: 'power_state = MAINTENANCE — fusion hasn\'t produced a verdict yet',
+    };
+  }
+  return null;
+}
+
+export default function LogisticsStatusCard({
+  logistics, opState = null, isLoading = false,
+}: {
+  logistics: LogisticsStatus | null;
+  /** Phase 5 backfill: when fusion hasn't emitted a row yet but the
+   *  per-asset operational_state shows the asset is non-nominal, surface
+   *  an INFERRED severity row so the operator sees the signal that's
+   *  already in the data. Labelled "(inferred)" so the rendered row is
+   *  honest about its provenance — not a fusion verdict. */
+  opState?: OperationalState | null;
+  isLoading?: boolean;
+}) {
   const badge = severityBadge(logistics?.overall_severity);
   const factors = logistics?.constraining_factors ?? [];
+
+  // Only show the inferred row when fusion has nothing — once fusion
+  // emits a factor (even an `operational.*` one), it IS the source of
+  // truth and the inferred row would be redundant + confusing.
+  const showBackfill =
+    !logistics ||
+    logistics.overall_severity === 'LOGISTICS_SEVERITY_UNSPECIFIED' ||
+    !logistics.overall_severity;
+  const backfill = showBackfill ? opStateBackfill(opState) : null;
 
   return (
     <div className="panel shrink-0 p-3">
@@ -76,9 +142,21 @@ export default function LogisticsStatusCard({ logistics, isLoading = false }: { 
           fall through to the empty copy (cold-start race). */}
       {isLoading && <SyncingNotice label="Syncing logistics state…" />}
 
-      {!isLoading && !logistics && (
+      {!isLoading && !logistics && !backfill && (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
           No logistics state for this asset yet.
+        </div>
+      )}
+
+      {!isLoading && !logistics && backfill && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className={`text-xs font-bold px-2 py-0.5 rounded-sm border ${backfill.cls}`}>
+              {backfill.label}
+            </span>
+            <span className="text-[9px] text-slate-500 uppercase tracking-wider">no fusion row</span>
+          </div>
+          <div className="text-[11px] text-slate-400">{backfill.rationale}</div>
         </div>
       )}
 
@@ -111,6 +189,21 @@ export default function LogisticsStatusCard({ logistics, isLoading = false }: { 
                 Constraining factors ({factors.length})
               </div>
               {factors.map((f, i) => <FactorRow key={f.factor_id ?? i} factor={f} />)}
+            </div>
+          ) : backfill ? (
+            <div className="space-y-1">
+              <div className="text-[10px] text-slate-500 uppercase tracking-wider">
+                Inferred from operational state (no fusion factor yet)
+              </div>
+              <div className="border-l-2 border-amber-500/50 pl-2 py-0.5 text-[11px]">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-300">{backfill.label.toLowerCase().replace(' (inferred)', '')}</span>
+                  <span className={`text-[9px] font-bold px-1 py-px rounded-sm border ${backfill.cls}`}>
+                    {backfill.label}
+                  </span>
+                </div>
+                <div className="text-slate-500">{backfill.rationale}</div>
+              </div>
             </div>
           ) : (
             <div className="text-[11px] text-slate-500">No constraining factors.</div>
