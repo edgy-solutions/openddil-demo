@@ -20,6 +20,7 @@ import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
 import CmStateCard from './components/CmStateCard';
+import { StrikeCapabilityCard } from './components/StrikeCapabilityCard';
 import GroundDiagnosticsCard from './components/GroundDiagnosticsCard';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
@@ -410,6 +411,11 @@ function MaintainerApp() {
             opState={tel?.operational_state ?? null}
             isLoading={logistics.isLoading}
           />
+          {/* Strike-only card: renders nothing on non-strike-capable assets
+              (sensors, HQ, infrastructure) so the right-rail stays clean.
+              Shows ammo per weapon/store with LOW/DEPLETED banding once
+              levels cross the configured threshold. */}
+          <StrikeCapabilityCard assetId={selectedAssetId} />
           <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} isLoading={telemetry.isLoading} />
           <AlertFeed events={events.data} isLoading={events.isLoading} />
           <Inventory />

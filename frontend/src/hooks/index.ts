@@ -15,6 +15,12 @@ export {
 } from './useTelemetryLatest';
 export { useCmState, useAllCmState, type CmState } from './useCmState';
 export {
+  useCapabilityState,
+  useAllCapabilityState,
+  type CapabilityState,
+  type CapabilityStore,
+} from './useCapabilityState';
+export {
   useLogisticsStatus,
   useAllLogisticsStatus,
   type LogisticsStatus,
