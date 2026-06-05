@@ -24,6 +24,8 @@ import {
   PAD_RADIUS_NATIVE,
   DEFAULT_GROUND_OFFSET,
   DEFAULT_ASSET_HEIGHT,
+  ASSET_VARIANT_SCALE,
+  DEFAULT_VARIANT_SCALE,
   resolveGroundOffset,
   resolveAssetHeight,
   resolveFootprintRadius,
@@ -31,6 +33,7 @@ import {
   resolvePadRadius,
   resolveRingRadius,
   resolvePadWorldRadius,
+  resolveVariantScale,
 } from '../assetGeometry';
 
 // ArtillerySchematic native geometry — referenced in multiple tests.
@@ -244,5 +247,62 @@ describe('catalog — all expected ORBAT variants present', () => {
   });
   it.each(expected)('"%s" is in ASSET_HEIGHT', (v) => {
     expect(ASSET_HEIGHT).toHaveProperty(v);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// ASSET_VARIANT_SCALE -- per-variant visual-scale multiplier
+// ---------------------------------------------------------------------------
+
+describe("ASSET_VARIANT_SCALE -- per-variant visual scale", () => {
+  it("DEFAULT_VARIANT_SCALE is 1.0 (no implicit shrink/grow)", () => {
+    expect(DEFAULT_VARIANT_SCALE).toBe(1.0);
+  });
+
+  it("resolveVariantScale returns DEFAULT for variants with no entry", () => {
+    // Sensors are not in the table -- they look right at base scale.
+    expect(resolveVariantScale("CUAS_Sensor")).toBe(DEFAULT_VARIANT_SCALE);
+    expect(resolveVariantScale("MRAD_Sensor")).toBe(DEFAULT_VARIANT_SCALE);
+    expect(resolveVariantScale("M1A2-SEPv3")).toBe(DEFAULT_VARIANT_SCALE);
+    expect(resolveVariantScale("HEADQUARTER_COMPLEX")).toBe(DEFAULT_VARIANT_SCALE);
+  });
+
+  it("resolveVariantScale returns DEFAULT for null / undefined / unknown", () => {
+    expect(resolveVariantScale(null)).toBe(DEFAULT_VARIANT_SCALE);
+    expect(resolveVariantScale(undefined)).toBe(DEFAULT_VARIANT_SCALE);
+    expect(resolveVariantScale("UNKNOWN_FUTURE_VARIANT")).toBe(DEFAULT_VARIANT_SCALE);
+  });
+
+  // The five launcher entries shrink uniformly. If a future tuning
+  // changes them they should all change together -- assert that
+  // the launcher row is internally consistent.
+  it("all 5 launchers share the same visual-scale multiplier", () => {
+    const launcherVariants = [
+      "CUAS_Interceptor",
+      "VSHORAD_Interceptor",
+      "SHORAD_Interceptor",
+      "MRAD_Interceptor",
+      "MISSILE_LAUNCHER",
+    ];
+    const scales = launcherVariants.map((v) => resolveVariantScale(v));
+    expect(new Set(scales).size).toBe(1);
+  });
+
+  it("launchers shrink (< 1.0) -- their native footprint is ~3x sensors", () => {
+    // Floor at 0.4: anything smaller would make the launcher visibly
+    // smaller than a CUAS_Sensor at base scale, which is the opposite
+    // problem of the original bug. Ceiling at 0.95: tightly < 1 to
+    // confirm intentional shrink.
+    const s = resolveVariantScale("MRAD_Interceptor");
+    expect(s).toBeGreaterThanOrEqual(0.4);
+    expect(s).toBeLessThan(0.95);
+  });
+
+  it("ASSET_VARIANT_SCALE only contains entries that diverge from DEFAULT", () => {
+    // Hygiene: a 1.0 entry is a no-op and clutters the table.
+    for (const [variant, value] of Object.entries(ASSET_VARIANT_SCALE)) {
+      expect(value, `${variant} should be removed from ASSET_VARIANT_SCALE if equal to DEFAULT`).not.toBe(DEFAULT_VARIANT_SCALE);
+    }
   });
 });

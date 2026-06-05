@@ -39,6 +39,28 @@
 export const DEFAULT_GROUND_OFFSET = 1.6;
 export const DEFAULT_ASSET_HEIGHT = 3.2;
 
+// Per-variant visual-scale multiplier applied on top of the AssetVisual
+// `scale` prop. Use 1.0 (default) for variants that look correctly
+// proportioned at the scene-wide scale; smaller values shrink an
+// over-large schematic; larger values bump up an under-sized one.
+//
+// The launcher entries shrink the artillery silhouette because its
+// native footprint (pod 4.5x3.5x7, hinge 4x1x4) renders ~3x the on-
+// screen presence of a sensor (dish ~2.4x2.4) at the same scale prop,
+// dominating co-located scenes. 0.6 brings the launcher's visible
+// extent in line with sensor footprints without breaking the native-
+// unit invariants (LAUNCH_PADS, GROUND_OFFSET, etc. all multiply
+// through the same effective scale so the pad / ring / spotlight
+// stay coherent with the shrunken pod).
+export const DEFAULT_VARIANT_SCALE = 1.0;
+export const ASSET_VARIANT_SCALE: Readonly<Record<string, number>> = {
+  'CUAS_Interceptor':    0.6,
+  'VSHORAD_Interceptor': 0.6,
+  'SHORAD_Interceptor':  0.6,
+  'MRAD_Interceptor':    0.6,
+  'MISSILE_LAUNCHER':    0.6,
+};
+
 export const GROUND_OFFSET: Readonly<Record<string, number>> = {
   // ORBAT sensors — all use SensorRadarSchematic; base at Y=-1.1
   'CUAS_Sensor':    1.1,
@@ -131,6 +153,15 @@ export function resolveGroundOffset(platformVariant: string | null | undefined):
 export function resolveAssetHeight(platformVariant: string | null | undefined): number {
   if (!platformVariant) return DEFAULT_ASSET_HEIGHT;
   return ASSET_HEIGHT[platformVariant] ?? DEFAULT_ASSET_HEIGHT;
+}
+
+/** Per-variant visual-scale multiplier. Apply this on the caller's
+ *  base scale to derive an effective scale that shrinks/grows just
+ *  the over- or under-sized variants. Defaults to 1.0 so variants
+ *  with no entry render at their existing on-screen size. */
+export function resolveVariantScale(platformVariant: string | null | undefined): number {
+  if (!platformVariant) return DEFAULT_VARIANT_SCALE;
+  return ASSET_VARIANT_SCALE[platformVariant] ?? DEFAULT_VARIANT_SCALE;
 }
 
 /** Footprint radius — undefined when the variant uses the default

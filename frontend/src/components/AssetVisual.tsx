@@ -130,6 +130,7 @@ import {
     resolvePadHeight,
     resolvePadWorldRadius,
     resolveRingRadius,
+    resolveVariantScale,
 } from '../lib/assetGeometry';
 
 function LaunchPad({ height, radius }: { height: number; radius: number }) {
@@ -259,11 +260,18 @@ export default function AssetVisual({
     // __tests__/assetGeometry.test.ts for the load-bearing invariants
     // (every variant in ASSET_HEIGHT also has GROUND_OFFSET; launcher
     // pad height = groundOffset - hinge_native_bottom; etc.).
-    const liftedY = resolveGroundOffset(platformVariant) * scale;
+    //
+    // effectiveScale folds in the per-variant visual-scale multiplier
+    // so the schematic, pad, ring, footprint, and spotlight cylinder
+    // all shrink/grow uniformly. Launchers carry a 0.6 multiplier to
+    // bring their on-screen footprint in line with sensor schematics
+    // at the same caller-supplied base scale.
+    const effectiveScale = scale * resolveVariantScale(platformVariant);
+    const liftedY = resolveGroundOffset(platformVariant) * effectiveScale;
     const padHeight = resolvePadHeight(platformVariant);
-    const selectedCylHeight = resolveAssetHeight(platformVariant) * scale;
-    const ringRadius = resolveRingRadius(platformVariant, scale);
-    const padRadius = resolvePadWorldRadius(platformVariant, scale);
+    const selectedCylHeight = resolveAssetHeight(platformVariant) * effectiveScale;
+    const ringRadius = resolveRingRadius(platformVariant, effectiveScale);
+    const padRadius = resolvePadWorldRadius(platformVariant, effectiveScale);
 
     // Fallback used by both Suspense (GLB load) and ErrorBoundary (render
     // crash). One source of truth so a GLB swap-out vs a buggy schematic
@@ -271,7 +279,7 @@ export default function AssetVisual({
     // (UnknownPlatformBadge is centered at origin and the default value
     // is the octahedron's radius).
     const fallback = (
-        <group position={[0, resolveGroundOffset(null) * scale, 0]} scale={scale}>
+        <group position={[0, resolveGroundOffset(null) * effectiveScale, 0]} scale={effectiveScale}>
             <UnknownPlatformBadge degraded={false} variant={platformVariant ?? 'UNKNOWN'} />
         </group>
     );
@@ -285,16 +293,16 @@ export default function AssetVisual({
                 selectedHeight={selectedCylHeight}
             />
             {padHeight !== undefined && (
-                <LaunchPad height={padHeight * scale} radius={padRadius} />
+                <LaunchPad height={padHeight * effectiveScale} radius={padRadius} />
             )}
             <SchematicErrorBoundary fallback={fallback}>
                 <Suspense fallback={fallback}>
                     {glbUrl ? (
-                        <group position={[0, liftedY, 0]} scale={scale}>
+                        <group position={[0, liftedY, 0]} scale={effectiveScale}>
                             <GlbModel url={glbUrl} scale={1} />
                         </group>
                     ) : SchematicComp ? (
-                        <group position={[0, liftedY, 0]} scale={scale}>
+                        <group position={[0, liftedY, 0]} scale={effectiveScale}>
                             <SchematicComp degraded={schematicDegraded} operationalState={operationalState} />
                         </group>
                     ) : (
