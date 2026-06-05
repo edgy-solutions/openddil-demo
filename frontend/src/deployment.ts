@@ -59,6 +59,41 @@ export interface DeploymentMap {
   };
 }
 
+/** Asset-liveness thresholds — how long can an asset stop talking
+ *  before its tier degrades. All seconds. Drives the
+ *  ACTIVE/DEGRADED/STALE/COMM_LOST/LOST classification in lib/assetTier
+ *  which the 3D scene + pulldown read to dim, badge, or hide.
+ *
+ *  Going stale is a pure time threshold (a 1s blip can't fire a 30s
+ *  cutoff). Going back to ACTIVE requires `recovery_samples_n` distinct
+ *  recent samples within `recovery_window_s` to absorb single-sample
+ *  blips that would otherwise yank an asset out of STALE/LOST and back
+ *  to ACTIVE on every momentary reconnect.
+ *
+ *  Defaults are sized for ~1Hz sim cadence; tune per deployment. */
+export interface LivenessThresholds {
+  /** Seconds since last sample before tier downgrades to STALE
+   *  (or COMM_LOST when the asset's edge link is also severed). */
+  stale_after_s: number;
+  /** Seconds since last sample before tier downgrades to LOST (the
+   *  3D-scene-hidden tier; assets remain queryable for forensics). */
+  lost_after_s: number;
+  /** How many distinct recent samples are needed to recover back to
+   *  ACTIVE from STALE/COMM_LOST/LOST. 1 = immediate; >1 = wait for
+   *  consecutive heartbeats. */
+  recovery_samples_n: number;
+  /** Sliding window in seconds within which `recovery_samples_n`
+   *  samples must fall to count as a recovery. */
+  recovery_window_s: number;
+}
+
+export const DEFAULT_LIVENESS: LivenessThresholds = {
+  stale_after_s:      30,
+  lost_after_s:       300,
+  recovery_samples_n: 3,
+  recovery_window_s:  10,
+};
+
 export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
@@ -72,9 +107,18 @@ export interface Deployment {
    *  real geography under the FOBs. Absent => decorative fallback
    *  texture (`/map_base.png`) with low opacity. */
   map?: DeploymentMap;
+  /** Asset-liveness thresholds (per-deployment override). Defaults to
+   *  DEFAULT_LIVENESS when absent or any individual field is missing /
+   *  non-finite. */
+  liveness: LivenessThresholds;
 }
 
-const DEFAULT: Deployment = { title: 'OpenDDIL DEMO', logo: '', fobs: [] };
+const DEFAULT: Deployment = {
+  title: 'OpenDDIL DEMO',
+  logo: '',
+  fobs: [],
+  liveness: DEFAULT_LIVENESS,
+};
 
 let active: Deployment = DEFAULT;
 
@@ -93,6 +137,25 @@ function isValidFob(x: unknown): x is Fob {
     typeof f.lat === 'number' && Number.isFinite(f.lat) &&
     typeof f.lon === 'number' && Number.isFinite(f.lon)
   );
+}
+
+function mergeLiveness(x: unknown): LivenessThresholds {
+  // Per-field fallback: each missing / non-positive / non-finite knob falls
+  // back to DEFAULT_LIVENESS independently so a partial override doesn't
+  // accidentally zero out the others.
+  const d = DEFAULT_LIVENESS;
+  if (!x || typeof x !== 'object') return d;
+  const l = x as Record<string, unknown>;
+  const pickPos = (key: keyof LivenessThresholds): number => {
+    const v = l[key];
+    return (typeof v === 'number' && Number.isFinite(v) && v > 0) ? v : d[key];
+  };
+  return {
+    stale_after_s:      pickPos('stale_after_s'),
+    lost_after_s:       pickPos('lost_after_s'),
+    recovery_samples_n: Math.max(1, Math.floor(pickPos('recovery_samples_n'))),
+    recovery_window_s:  pickPos('recovery_window_s'),
+  };
 }
 
 function isValidDeploymentMap(x: unknown): x is DeploymentMap {
@@ -125,6 +188,7 @@ export async function loadDeployment(): Promise<void> {
         logo: j.logo?.trim() || DEFAULT.logo,
         fobs: Array.isArray(j.fobs) ? j.fobs.filter(isValidFob) : DEFAULT.fobs,
         map: isValidDeploymentMap(j.map) ? j.map : undefined,
+        liveness: mergeLiveness(j.liveness),
       };
     }
   } catch {
