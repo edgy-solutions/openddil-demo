@@ -83,9 +83,14 @@ export default function Header({
           </div>
         </div>
 
-        <div className="flex flex-col items-center text-slate-400">
-          <Laptop className="w-6 h-6 mb-1 text-slate-200" />
-          <span className="text-xs font-bold tracking-wider">TACTICAL EDGE</span>
+        {/* THIS NODE highlight: Maintainer view IS the tactical-edge tab,
+            so TACTICAL EDGE gets the same emerald THIS-NODE treatment
+            HqHeader gives CENTRAL HQ and RegionalHeader gives REGIONAL
+            HUB. Without this, the Maintainer tab visually contradicts
+            the other two -- the icon stays dim despite being "here". */}
+        <div className="flex flex-col items-center text-emerald-400">
+          <Laptop className="w-6 h-6 mb-1 glow-emerald" />
+          <span className="text-xs font-bold tracking-wider text-emerald-300">TACTICAL EDGE <span className="bg-emerald-500/20 px-1 py-0.5 rounded text-[8px] ml-1">THIS NODE</span></span>
         </div>
 
         {/* DDIL link — the toggle severs/restores the real toxiproxy hq-link */}
@@ -108,9 +113,12 @@ export default function Header({
           </span>
         </div>
 
-        <div className="flex flex-col items-center text-slate-400 mr-8">
-          <Building2 className="w-6 h-6 mb-1 text-slate-200" />
-          <span className="text-xs font-bold tracking-wider">CENTRAL HQ</span>
+        {/* CENTRAL HQ is NOT this node on the Maintainer tab -- dim it
+            so the THIS-NODE highlight on TACTICAL EDGE reads clearly.
+            Same dim-state styling HqHeader uses for TACTICAL EDGE. */}
+        <div className="flex flex-col items-center text-slate-500 mr-8">
+          <Building2 className="w-6 h-6 mb-1 text-slate-600" />
+          <span className="text-[10px] font-bold tracking-wider">CENTRAL HQ</span>
         </div>
 
         {/* Real edge-buffer depth: bridge-group consumer lag on redpanda-edge */}
