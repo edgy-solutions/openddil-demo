@@ -106,6 +106,14 @@ export interface AssetVisualProps {
      *  boolean. Optional — schematics that don't read it stay
      *  nominal-vs-degraded only. */
     operationalState?: SchematicProps['operationalState'];
+
+    /** 5-tier liveness classification (see lib/assetTier). When STALE or
+     *  COMM_LOST, the base ring overrides to slate / amber and drops its
+     *  opacity so the asset visibly recedes from the live fleet. When
+     *  ACTIVE/DEGRADED the standard severity ring color is used; LOST
+     *  isn't rendered (callers filter before constructing the marker).
+     *  Optional -- when absent the component renders as if ACTIVE. */
+    tier?: import('../lib/assetTier').AssetTier;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +161,7 @@ function LaunchPad({ height, radius }: { height: number; radius: number }) {
     );
 }
 
-function SeverityBaseRing({ color, radius, selected, selectedHeight }: {
+function SeverityBaseRing({ color, radius, selected, selectedHeight, opacityScale = 1 }: {
     color: string;
     radius: number;
     selected?: boolean;
@@ -162,6 +170,11 @@ function SeverityBaseRing({ color, radius, selected, selectedHeight }: {
      *  Without this, the cylinder used a fixed radius * 4 height that
      *  dwarfed sensors and looked detached from launchers. */
     selectedHeight?: number;
+    /** Multiplier on the primary-ring opacity (0..1). Drops to ~0.5 for
+     *  STALE / COMM_LOST tiers so the asset visibly recedes. Defaults to
+     *  1 for the live tiers. The selected-state cyan halo isn't scaled
+     *  by this — selection always pops. */
+    opacityScale?: number;
 }) {
     // Cylinder envelope: 15% taller and at the ring's outer radius. The
     // operator sees a faint cyan glow that just barely surrounds the
@@ -172,7 +185,7 @@ function SeverityBaseRing({ color, radius, selected, selectedHeight }: {
             {/* Primary ring — flat on ground plane (Y up), thin annulus */}
             <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
                 <ringGeometry args={[radius * 0.85, radius, 32]} />
-                <meshBasicMaterial color={color} transparent opacity={0.85} side={THREE.DoubleSide} />
+                <meshBasicMaterial color={color} transparent opacity={0.85 * opacityScale} side={THREE.DoubleSide} />
             </mesh>
             {/* Selected — bright cyan halo ring + faint solid disc + vertical
                 spotlight cylinder. The Regional view dims fog on click; this
@@ -239,6 +252,7 @@ export default function AssetVisual({
     scale = 0.4,
     selected,
     operationalState,
+    tier,
 }: AssetVisualProps) {
     const glbUrl = platformVariant ? GLB_REGISTRY[platformVariant] : undefined;
     const SchematicComp: ComponentType<SchematicProps> | undefined =
@@ -254,7 +268,27 @@ export default function AssetVisual({
          severity === 'LOGISTICS_SEVERITY_CRITICAL' ||
          severity === 'LOGISTICS_SEVERITY_NON_OPERATIONAL');
 
-    const ring = ringColor(severity, forceId);
+    // Severity-driven ring color is the default. The 5-tier liveness
+    // model overrides it on silent tiers: STALE -> slate (we expected
+    // to hear from it, we didn't), COMM_LOST -> amber (we know why,
+    // the edge link is down). Live tiers (ACTIVE/DEGRADED) keep the
+    // severity color so the operator's "is it healthy?" read stays
+    // intact. LOST is filtered upstream and shouldn't reach here.
+    const TIER_RING_SLATE = '#64748b';   // tailwind slate-500
+    const TIER_RING_AMBER = '#f59e0b';   // tailwind amber-500
+    const TIER_RING_OPACITY_DIM = 0.45;
+
+    let ring: string;
+    let ringOpacityScale = 1;
+    if (tier === 'STALE') {
+        ring = TIER_RING_SLATE;
+        ringOpacityScale = TIER_RING_OPACITY_DIM;
+    } else if (tier === 'COMM_LOST') {
+        ring = TIER_RING_AMBER;
+        ringOpacityScale = TIER_RING_OPACITY_DIM;
+    } else {
+        ring = ringColor(severity, forceId);
+    }
 
     // All per-platform geometry comes from lib/assetGeometry. See
     // __tests__/assetGeometry.test.ts for the load-bearing invariants
@@ -291,6 +325,7 @@ export default function AssetVisual({
                 radius={ringRadius}
                 selected={selected}
                 selectedHeight={selectedCylHeight}
+                opacityScale={ringOpacityScale}
             />
             {padHeight !== undefined && (
                 <LaunchPad height={padHeight * effectiveScale} radius={padRadius} />

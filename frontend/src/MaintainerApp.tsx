@@ -26,6 +26,7 @@ import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
   useFleetAssets,
   useFleetAssetsForEdge,
+  useFleetTiers,
   useTelemetryLatest,
   useCmState,
   useLogisticsStatus,
@@ -133,6 +134,15 @@ function MaintainerApp() {
   // empty during the brief cold-start window.
   const fleetScoped = useFleetAssetsForEdge(selectedEdge);
   const fleet = selectedEdge ? fleetScoped : fleetAll;
+
+  // 5-tier liveness per asset (see lib/assetTier). Drives the picker
+  // suffix + the dim styling in Header so the operator can still
+  // navigate to a STALE / COMM_LOST / LOST asset from this pulldown
+  // while seeing its current state at a glance. link1=false means
+  // the operator has flipped the DDIL toggle (severed link); we feed
+  // that into the classifier so silent assets read as COMM_LOST
+  // rather than generic STALE.
+  const tiers = useFleetTiers(fleet.data, !link1);
 
   const telemetry = useTelemetryLatest(selectedAssetId);
   const cm = useCmState(selectedAssetId);
@@ -327,6 +337,7 @@ function MaintainerApp() {
       <Header
         link1={link1} setLink1={setLink1}
         fleet={fleetForPicker}
+        fleetTiers={tiers}
         selectedAsset={selectedAssetId}
         setSelectedAsset={setSelectedAssetId}
         availableEdges={availableEdges}

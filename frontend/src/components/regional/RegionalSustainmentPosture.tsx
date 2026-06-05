@@ -40,10 +40,13 @@ import { deployment, type Fob } from '../../deployment';
 import {
   useFleetAssetsForRegion,
   useAllLogisticsStatus,
+  useFleetTiers,
   type FleetAsset,
+  type FleetTierMap,
   type LogisticsStatus,
   type OperationalState,
 } from '../../hooks';
+import { isTierVisibleIn3D, type AssetTier } from '../../lib/assetTier';
 import { makeProjection, type Projection } from '../../lib/geoProjection';
 
 // Scene scale: ~80 units per degree of latitude puts a regional-sized bbox
@@ -73,6 +76,11 @@ interface RenderableAsset {
    *  can react to POWER_STATE_OFF / MAINTENANCE / HEALTH_STATE_FAULT etc.
    *  beyond the rolled-up severity-driven `degraded` boolean. */
   operational_state: OperationalState;
+  /** Liveness tier (5-state model — see lib/assetTier). Drives the
+   *  per-asset ring color override (slate for STALE, amber for COMM_LOST)
+   *  + opacity damping so receding assets visibly recede. LOST assets are
+   *  filtered out before this struct is built. */
+  tier: AssetTier;
 }
 
 // Co-location layout — the geometric stagger that prevents asset
@@ -93,6 +101,7 @@ function buildRenderables(
   logistics: LogisticsStatus[],
   fobs: Fob[],
   proj: Projection,
+  tiers: FleetTierMap,
 ): RenderableAsset[] {
   const fobByEdge = new Map(fobs.map((f) => [f.edge_id, f]));
   const sevByAsset = new Map(logistics.map((l) => [l.asset_id, l.overall_severity]));
@@ -106,9 +115,17 @@ function buildRenderables(
     z: number;
     homed: boolean;
     sev: string;
+    tier: AssetTier;
   };
   const stage1: Stage1[] = [];
   for (const a of fleet) {
+    // LOST tier: hide from the 3D scene entirely. Still in postgres /
+    // still in the fleet pulldown for forensics; just out of the
+    // perf-sensitive WebGL render path. This is what makes the 2k+-
+    // assets-accumulated-across-sessions case viable.
+    const tier = tiers.get(a.asset_id) ?? 'ACTIVE';
+    if (!isTierVisibleIn3D(tier)) continue;
+
     let lat: number | null = null;
     let lon: number | null = null;
     let homed = false;
@@ -126,7 +143,7 @@ function buildRenderables(
     if (lat === null || lon === null) continue;
     const [x, z] = proj.project(lat, lon);
     const sev = sevByAsset.get(a.asset_id) ?? 'LOGISTICS_SEVERITY_UNSPECIFIED';
-    stage1.push({ asset: a, x, z, homed, sev });
+    stage1.push({ asset: a, x, z, homed, sev, tier });
   }
 
   // Second pass — bucket assets by their projected (x,z) and lay co-located
@@ -159,6 +176,7 @@ function buildRenderables(
         force_id: s.asset.force_id,
         homedAtFob: s.homed,
         operational_state: s.asset.operational_state,
+        tier: s.tier,
       });
       continue;
     }
@@ -195,6 +213,7 @@ function buildRenderables(
         force_id: s.asset.force_id,
         homedAtFob: s.homed,
         operational_state: s.asset.operational_state,
+        tier: s.tier,
       });
     }
 
@@ -213,6 +232,7 @@ function buildRenderables(
         force_id: s.asset.force_id,
         homedAtFob: s.homed,
         operational_state: s.asset.operational_state,
+        tier: s.tier,
       });
     });
   }
@@ -231,7 +251,7 @@ function Terrain() {
 }
 
 function AssetMarker({
-  assetId, position, severity, platformVariant, forceId, selected, opState, onClick,
+  assetId, position, severity, platformVariant, forceId, selected, opState, tier, onClick,
 }: {
   assetId: string;
   position: [number, number, number];
@@ -240,6 +260,7 @@ function AssetMarker({
   forceId: string | null;
   selected: boolean;
   opState: OperationalState;
+  tier: AssetTier;
   onClick: (e: ThreeEvent<MouseEvent>) => void;
 }) {
   // Hit-target is an invisible sphere sized to roughly match the schematic
@@ -260,6 +281,7 @@ function AssetMarker({
         scale={SCENE_ASSET_SCALE}
         selected={selected}
         operationalState={opState}
+        tier={tier}
       />
     </group>
   );
@@ -415,6 +437,13 @@ export default function RegionalSustainmentPosture({
   const logistics = useAllLogisticsStatus();
   const { fobs } = deployment();
 
+  // 5-tier liveness map. link1=false means the operator has flipped
+  // the DDIL toggle (severed); we feed that into the classifier so
+  // silent assets on a severed link read as COMM_LOST rather than
+  // generic STALE. In production this becomes a per-edge map from
+  // edge_buffer_status; today it's a single global boolean.
+  const tiers = useFleetTiers(fleet.data, !link1);
+
   // Project around the active region's FOBs so the camera bbox is the
   // region's geographic extent, not the whole theater.
   const regionFobs = useMemo(
@@ -427,8 +456,8 @@ export default function RegionalSustainmentPosture({
   );
 
   const renderables = useMemo(
-    () => buildRenderables(fleet.data, logistics.data, fobs, proj),
-    [fleet.data, logistics.data, fobs, proj],
+    () => buildRenderables(fleet.data, logistics.data, fobs, proj, tiers),
+    [fleet.data, logistics.data, fobs, proj, tiers],
   );
 
   const targetAsset = useMemo(
@@ -531,6 +560,7 @@ export default function RegionalSustainmentPosture({
               forceId={a.force_id}
               selected={a.asset_id === selectedAssetId}
               opState={a.operational_state}
+              tier={a.tier}
               onClick={(e) => { e.stopPropagation(); onAssetSelect(a.asset_id, a.severity); }}
             />
           ))}
