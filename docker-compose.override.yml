@@ -104,6 +104,7 @@ services:
     volumes:
       - ../openddil-tactical-agents/regional/faust_regional.py:/app/faust_regional.py
       - ../openddil-tactical-agents/regional/source_app.py:/app/source_app.py
+      - ../openddil-tactical-agents/regional/asset_registry_cache.py:/app/asset_registry_cache.py
       - ../openddil-tactical-agents/regional/aggregator_app.py:/app/aggregator_app.py
       - ../openddil-tactical-agents/regional/severity.py:/app/severity.py
       - ../openddil-contracts/gen/python/openddil:/app/openddil
@@ -135,6 +136,19 @@ services:
     volumes:
       # Source mount for the bootstrap wrapper (production bakes it in).
       - ../openddil-cm-service/bootstrap:/app/bootstrap:ro
+
+  # --------------------------------------------------------------------------
+  # Asset registry service (ADR-0028 Phase 1) -- local build + source mount.
+  # Same pattern as cm-service / logistics-fusion: image bakes a venv; this
+  # override mounts the source for hot-reload during demo development.
+  # --------------------------------------------------------------------------
+  asset-registry-service:
+    build:
+      context: ../openddil-stack/asset-registry-service
+      dockerfile: Dockerfile
+    pull_policy: build
+    volumes:
+      - ../openddil-stack/asset-registry-service/src:/app/src
 
   # --------------------------------------------------------------------------
   # Logistics fusion service — local build + source mount

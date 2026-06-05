@@ -276,6 +276,18 @@ services:
               -c segment.ms=60000 \
               -c retention.ms=-1 \
               || true
+          # ADR-0028: asset_id -> (edge_id, region_id) changelog. Produced
+          # by asset-registry-service on the hq broker; subscribed by the
+          # faust-regional HQ source App (and future projector / cm-service
+          # consumers per Phase 3+). Created on every broker for the same
+          # subscription-parity reason as the §B rollup topics above.
+          rpk -X brokers=$$B topic create asset-registry-events \
+              -p 8 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              || true
           echo "INFO: Topics initialized on $$B."
         done
         # ADR-0023 Phase 6b §B — per-region fan-in topics. Pipeline
@@ -704,6 +716,7 @@ services:
       REGIONAL_FAN_IN_TOPIC:            region-east-fan-in
       REGIONAL_HEARTBEAT_INTERVAL_S:    "30"
       REGIONAL_TOP_FACTORS_N:           "10"
+      REGIONAL_ASSET_REGISTRY_TOPIC:    asset-registry-events
       LOG_LEVEL:                        INFO
     depends_on:
       redpanda-init:
@@ -729,6 +742,7 @@ services:
       REGIONAL_FAN_IN_TOPIC:            region-west-fan-in
       REGIONAL_HEARTBEAT_INTERVAL_S:    "30"
       REGIONAL_TOP_FACTORS_N:           "10"
+      REGIONAL_ASSET_REGISTRY_TOPIC:    asset-registry-events
       LOG_LEVEL:                        INFO
     depends_on:
       redpanda-init:
@@ -805,6 +819,56 @@ services:
   # One-shot: registers cm-service with Restate and creates the Kafka
   # subscriptions for raw-sensor-stream and cm-events. Idempotent — safe
   # to re-run.
+  # =============================================================================
+  # Asset Registry Service (ADR-0028 Phase 1) -- canonical writer for
+  # public.asset_registry, the single source of truth for asset ->
+  # edge_id -> region_id. One pod, multi-broker Faust composition
+  # (one App per source edge), shared asyncpg pool, single HQ producer
+  # sidecar publishing asset-registry-events for consumer caches.
+  # =============================================================================
+  asset-registry-service:
+    image: ghcr.io/edgy-solutions/openddil/asset-registry-service:latest
+    pull_policy: always
+    container_name: openddil-demo-asset-registry-service
+    environment:
+      ASSET_REGISTRY_POSTGRES_DSN:   postgres://postgres:password@postgres-hq:5432/openddil
+      # One App per edge. Each App consumes telemetry-latest-state on
+      # its assigned broker; the shared HQ producer sidecar publishes
+      # asset-registry-events on redpanda-hq.
+      ASSET_REGISTRY_EDGES:          "edge-01=redpanda-edge-01:9092,edge-02=redpanda-edge-02:9092,edge-03=redpanda-edge-03:9092"
+      ASSET_REGISTRY_KAFKA_BROKERS:  redpanda-hq:19092
+      ASSET_REGISTRY_INPUT_TOPIC:    telemetry-latest-state
+      ASSET_REGISTRY_OUTPUT_TOPIC:   asset-registry-events
+      # Per-edge static region fallback (config.py:_parse_edge_regions).
+      # Used ONLY when edge_assignment.yaml is absent or returns the
+      # "unspecified" fallback -- the OSS/demo case. Mirrors the
+      # sensor-ingest OPENDDIL_REGION_ID stamping discipline so the
+      # registry produces the same (edge, region) mapping the rest of
+      # the demo system was built around.
+      ASSET_REGISTRY_EDGE_REGIONS:   "edge-01=region-east,edge-02=region-east,edge-03=region-west"
+      ASSET_REGISTRY_WEB_PORT:       "6070"
+      LOG_LEVEL:                     INFO
+      PYTHONPATH:                    /proto:/app/src
+    volumes:
+      # Proto bindings -- same mount pattern projector + cm-service use.
+      - ../openddil-contracts/gen/python:/proto:ro
+    depends_on:
+      redpanda-edge-01:
+        condition: service_healthy
+      redpanda-edge-02:
+        condition: service_healthy
+      redpanda-edge-03:
+        condition: service_healthy
+      redpanda-hq:
+        condition: service_started
+      redpanda-init:
+        condition: service_completed_successfully
+      postgres-hq:
+        condition: service_healthy
+      atlas-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # =============================================================================
   # Logistics Fusion Service (Phase 3.5, ADR-0014)
   # =============================================================================
