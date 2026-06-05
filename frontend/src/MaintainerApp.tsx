@@ -16,6 +16,7 @@ import { useState, useEffect, useMemo } from 'react';
 import Header from './components/Header';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
 import LocalFleetRadar from './components/LocalFleetRadar';
+import LostContactBanner from './components/LostContactBanner';
 import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
@@ -374,6 +375,18 @@ function MaintainerApp() {
               <div className="text-xl font-bold text-slate-200">{clock}</div>
             </div>
           </div>
+
+          {/* Phase 4c: forensics banner. Renders ONLY when the selected
+              asset's tier is STALE / COMM_LOST / LOST -- makes the
+              "this asset is silent, here's its last contact" narrative
+              explicit so the operator doesn't read the (frozen)
+              CmStateCard / TelemetryCharts below as current state.
+              Returns null for live (ACTIVE/DEGRADED) selections; layout
+              snaps tight. */}
+          <LostContactBanner
+            tier={selectedAssetId ? tiers.get(selectedAssetId) : undefined}
+            lastSampleAt={selectedAsset?.last_sample_at ?? null}
+          />
 
           <div className="panel flex-1 relative overflow-hidden font-rajdhani font-semibold">
             <DiagnosticCanvas
