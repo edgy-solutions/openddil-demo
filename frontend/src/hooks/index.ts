@@ -51,3 +51,8 @@ export {
   type RegionWearTrends,
   type ComponentWearTrend,
 } from './useRegionWearTrends';
+export {
+  useFleetTiers,
+  type FleetTierMap,
+  type EdgeLinkSeveredSource,
+} from './useFleetTiers';

@@ -4,6 +4,7 @@
 // operator sees in every view at once.
 import { describe, expect, it } from 'vitest';
 import {
+  applyRecoveryHysteresis,
   classifyAssetTier,
   isDegradedHealth,
   isTierVisibleIn3D,
@@ -265,6 +266,65 @@ describe('tierOpacity', () => {
   });
   it('LOST opacity is 0 (defense -- it should be filtered before render)', () => {
     expect(tierOpacity('LOST')).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Recovery hysteresis — the load-bearing "don't yank back to ACTIVE on
+// a single late sample" rule
+// ---------------------------------------------------------------------------
+
+describe('applyRecoveryHysteresis', () => {
+  it('first sighting (lastTier=null) always accepts candidate', () => {
+    // Even if we have no samples in window, a freshly-arrived asset
+    // shouldn't be held at the silent tier just because we lack history.
+    expect(applyRecoveryHysteresis(null, 'ACTIVE', 0, 3)).toBe('ACTIVE');
+    expect(applyRecoveryHysteresis(null, 'LOST', 0, 3)).toBe('LOST');
+    expect(applyRecoveryHysteresis(null, 'DEGRADED', 0, 3)).toBe('DEGRADED');
+  });
+
+  it('downgrade is always immediate (no hysteresis on the way down)', () => {
+    expect(applyRecoveryHysteresis('ACTIVE', 'STALE', 99, 3)).toBe('STALE');
+    expect(applyRecoveryHysteresis('ACTIVE', 'COMM_LOST', 99, 3)).toBe('COMM_LOST');
+    expect(applyRecoveryHysteresis('ACTIVE', 'LOST', 99, 3)).toBe('LOST');
+    expect(applyRecoveryHysteresis('DEGRADED', 'STALE', 99, 3)).toBe('STALE');
+  });
+
+  it('live <-> live transitions are free (ACTIVE <-> DEGRADED)', () => {
+    // Health-driven, not comms-driven. A FAULT report doesn't need
+    // hysteresis -- the asset is talking, just unhappy.
+    expect(applyRecoveryHysteresis('ACTIVE', 'DEGRADED', 0, 3)).toBe('DEGRADED');
+    expect(applyRecoveryHysteresis('DEGRADED', 'ACTIVE', 0, 3)).toBe('ACTIVE');
+  });
+
+  it('silent -> live with INSUFFICIENT samples holds previous silent tier', () => {
+    // The bug shape: one new sample after a long silence shouldn't
+    // pull a LOST asset back to ACTIVE. With recovery_samples_n=3 and
+    // only 1 sample observed, we hold LOST.
+    expect(applyRecoveryHysteresis('LOST', 'ACTIVE', 1, 3)).toBe('LOST');
+    expect(applyRecoveryHysteresis('COMM_LOST', 'ACTIVE', 2, 3)).toBe('COMM_LOST');
+    expect(applyRecoveryHysteresis('STALE', 'ACTIVE', 0, 3)).toBe('STALE');
+    expect(applyRecoveryHysteresis('STALE', 'DEGRADED', 0, 3)).toBe('STALE');
+  });
+
+  it('silent -> live with SUFFICIENT samples accepts candidate', () => {
+    expect(applyRecoveryHysteresis('LOST', 'ACTIVE', 3, 3)).toBe('ACTIVE');
+    expect(applyRecoveryHysteresis('COMM_LOST', 'ACTIVE', 5, 3)).toBe('ACTIVE');
+    expect(applyRecoveryHysteresis('STALE', 'DEGRADED', 3, 3)).toBe('DEGRADED');
+  });
+
+  it('threshold of 1 = no hysteresis (immediate recovery)', () => {
+    // Deployments that want a snappy recovery (or no hysteresis at
+    // all) can set recovery_samples_n: 1.
+    expect(applyRecoveryHysteresis('LOST', 'ACTIVE', 1, 1)).toBe('ACTIVE');
+    expect(applyRecoveryHysteresis('STALE', 'DEGRADED', 1, 1)).toBe('DEGRADED');
+  });
+
+  it('boundary: samples == n-1 holds, samples == n recovers', () => {
+    // Pin the >= comparator -- a future "off by one" refactor would
+    // surface here.
+    expect(applyRecoveryHysteresis('LOST', 'ACTIVE', 2, 3)).toBe('LOST');
+    expect(applyRecoveryHysteresis('LOST', 'ACTIVE', 3, 3)).toBe('ACTIVE');
   });
 });
 

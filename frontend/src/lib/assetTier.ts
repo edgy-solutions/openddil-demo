@@ -178,3 +178,40 @@ export function tierLabel(tier: AssetTier): string {
     case 'LOST':      return 'Lost';
   }
 }
+
+/** Recovery-hysteresis gate. Decides whether to ACCEPT the
+ *  classifier's candidate tier or HOLD the previous one.
+ *
+ *  Rules:
+ *    * First sighting (lastTier === null) -> always accept candidate.
+ *      The hook has no history yet; nothing to hysterese against.
+ *    * Candidate is silent (STALE/COMM_LOST/LOST) -> accept. Downgrades
+ *      fire immediately; we never delay a "you've gone quiet" signal.
+ *    * Was live (ACTIVE/DEGRADED), candidate is live -> accept.
+ *      ACTIVE <-> DEGRADED is health-driven, not comms-driven.
+ *    * Was silent, candidate is live -> HYSTERESIS: accept only when
+ *      `samplesInWindow >= recoverySamplesN`. Below that bar, hold the
+ *      previous silent tier so a momentary reconnect can't yank the
+ *      asset back to ACTIVE on a single sample.
+ *
+ *  Pure: same inputs => same output. State (the sample window count,
+ *  the previous tier) lives in the calling hook's per-asset tracker.
+ */
+export function applyRecoveryHysteresis(
+  lastTier: AssetTier | null,
+  candidate: AssetTier,
+  samplesInWindow: number,
+  recoverySamplesN: number,
+): AssetTier {
+  if (lastTier === null) return candidate;
+
+  const candidateIsLive = candidate === 'ACTIVE' || candidate === 'DEGRADED';
+  if (!candidateIsLive) return candidate;
+
+  const wasSilent =
+    lastTier === 'STALE' || lastTier === 'COMM_LOST' || lastTier === 'LOST';
+  if (!wasSilent) return candidate;
+
+  // Recovery transition. Gate on accumulated samples.
+  return samplesInWindow >= recoverySamplesN ? candidate : lastTier;
+}
