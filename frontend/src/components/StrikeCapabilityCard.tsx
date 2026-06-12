@@ -14,7 +14,6 @@
 // capabilities reported" line so the operator sees the row exists.
 import { Crosshair } from 'lucide-react';
 import { useCapabilityState, type CapabilityStore } from '../hooks';
-import { SyncingNotice } from './SyncingNotice';
 
 /** Default threshold matches logistics-fusion's ammo_low_count (thresholds.py).
  *  When AMMO_LOW_COUNT env on logistics-fusion is overridden, this client-side
@@ -91,7 +90,7 @@ interface Props {
 }
 
 export function StrikeCapabilityCard({ assetId, ammoLowThreshold }: Props) {
-  const { data, isLoading } = useCapabilityState(assetId);
+  const { data } = useCapabilityState(assetId);
   const lowThreshold = ammoLowThreshold ?? DEFAULT_AMMO_LOW;
   const row = data?.[0];
 
