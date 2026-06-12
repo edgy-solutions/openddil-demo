@@ -95,10 +95,19 @@ export function StrikeCapabilityCard({ assetId, ammoLowThreshold }: Props) {
   const lowThreshold = ammoLowThreshold ?? DEFAULT_AMMO_LOW;
   const row = data?.[0];
 
-  // No capability row at all => non-strike-capable asset (sensor, HQ, etc.).
-  // Render nothing rather than a "no data" empty card -- avoids visual clutter
-  // on assets where this card never applies.
-  if (!isLoading && !row) return null;
+  // No capability row => non-strike-capable asset (sensor, HQ, etc.). Hide.
+  //
+  // Important: gate on `!row` ONLY, not on `!isLoading && !row`. The latter
+  // form caused a visible flash on every initial mount for non-strike
+  // assets: during loading the outer card + <SyncingNotice> rendered,
+  // then after the load resolved to "no row" we returned null and the
+  // card disappeared. By keying off row alone, the card is invisible
+  // throughout the entire never-going-to-have-data lifecycle. For
+  // strike-capable assets the card pops in once the row arrives -- no
+  // loading skeleton, but no flicker either. Acceptable trade because
+  // useCapabilityState typically resolves quickly and a brief delay is
+  // less noisy than a flash-and-disappear.
+  if (!row) return null;
 
   return (
     <div className="bg-slate-900/60 border border-slate-700 rounded p-2 text-xs">
@@ -106,8 +115,6 @@ export function StrikeCapabilityCard({ assetId, ammoLowThreshold }: Props) {
         <Crosshair className="w-3 h-3 text-cyan-400" />
         <span className="text-cyan-400 font-bold tracking-wider text-[10px]">STRIKE CAPABILITY</span>
       </div>
-
-      {isLoading && !row && <SyncingNotice label="capability state" />}
 
       {row && (
         <>
