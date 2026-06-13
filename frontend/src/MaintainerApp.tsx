@@ -392,6 +392,7 @@ function MaintainerApp() {
             <DiagnosticCanvas
               platformVariant={variant}
               assetType={assetClass === 'RADAR' ? 'RADAR' : undefined}
+              assetId={selectedAssetId}
               degraded={degraded}
               coreTemp={coreTemp}
               transitTriggerKey={selectedEdge}

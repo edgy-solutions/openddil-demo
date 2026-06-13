@@ -31,7 +31,7 @@
 // view-level banner.
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import SensorArrayView, { LTAMDS_CONFIG } from './SensorArrayView';
+import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG } from './SensorArrayView';
 import HudFrame from './HudFrame';
 import { useTransitPhase, transitClass } from './EdgeTransit';
 import {
@@ -56,6 +56,19 @@ function titleForVariant(platformVariant: string | null | undefined): { title: s
     };
 }
 
+// platform_variant patterns that route to SensorArrayView with MRAD_CONFIG.
+// Set membership is faster + clearer than substring matching here. Any
+// MRAD-class variant (sensor/interceptor/radar tiers) gets the same
+// MRAD detailed-array maintainer view — operators don't have to remember
+// which sub-variant is "the MRAD". Add new MRAD-class variants here.
+const MRAD_VARIANTS: ReadonlySet<string> = new Set([
+    'MRAD_Sensor',
+    'MRAD_Radar',
+    'MRAD_Interceptor',
+    'MRAD2_radar',     // matches the asset-id token used by customer-overlay's NLD
+                       // proprietary feed (demo:*_MRAD2_radar)
+]);
+
 interface DiagnosticCanvasProps {
     /** Canonical platform_variant from the fleet asset. Drives the schematic
      *  dispatch via SCHEMATIC_REGISTRY. Null/undefined => no asset selected
@@ -65,6 +78,10 @@ interface DiagnosticCanvasProps {
      *  param in dev, or by a future RADAR-class asset routing), routes to
      *  the LTAMDS SensorArrayView instead of the registry. */
     assetType?: string;
+    /** Currently-selected asset id. Threaded into SensorArrayView so the
+     *  seeded-RNG (and, once wired, the live mrad-sim telemetry hook)
+     *  produces per-asset-stable, per-asset-independent element values. */
+    assetId?: string | null;
     degraded: boolean;
     coreTemp: number;
     /** Phase 6c.3 — when this key changes (the selectedEdge from
@@ -81,6 +98,7 @@ interface DiagnosticCanvasProps {
 export default function DiagnosticCanvas({
     platformVariant,
     assetType,
+    assetId,
     degraded,
     coreTemp,
     transitTriggerKey,
@@ -90,13 +108,21 @@ export default function DiagnosticCanvas({
     // key checks). Safe to call before the RADAR-branch early-return.
     const transitPhase = useTransitPhase(transitTriggerKey ?? null);
 
+    // MRAD-class variants get a dedicated detailed-array view. This is the
+    // production routing path -- any asset whose platform_variant matches
+    // an MRAD_VARIANTS entry renders the single-face MRAD detailed array
+    // for maintainer drill-down, regardless of the dev RADAR override.
+    if (platformVariant && MRAD_VARIANTS.has(platformVariant)) {
+        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} />;
+    }
+
     if (assetType === 'RADAR') {
         // LTAMDS detailed-array view. Special-case maintainer rendering
         // for sensor arrays — richer than the cascade's per-tier
         // SensorRadarSchematic. Retained as a maintainer-only debug aid;
         // ORBAT-named radar tiers (CUAS/VSHORAD/SHORAD/MRAD_Sensor) go
         // through the registry path below.
-        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={LTAMDS_CONFIG} />;
+        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} />;
     }
 
     const { title, subtitle } = titleForVariant(platformVariant);

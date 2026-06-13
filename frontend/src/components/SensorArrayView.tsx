@@ -3,22 +3,23 @@
 // =============================================================================
 // Generalized from the original LtamdsView. The 3D scene machinery (depth
 // drilling, element interrogation, scaling tweens, click-to-focus) is
-// preserved exactly — only the array-specific bits (face counts, depth
-// names, header text) are now config-driven. LTAMDS ships as the only
-// `SensorArrayConfig` today; the abstraction holds for any future radar /
-// sonar / IR / phased-array maintainer view that needs the same visual
-// drill-down treatment.
+// preserved exactly — the array-specific bits are now config-driven:
 //
-// PRESERVED per Phase 4 Decision 4 — data shape will change again when an
-// RTI / Cyber DDS feed lands. Visual lift only this pass; no refactor of
-// the 3D logic.
+//   * Face count + layout at depth 0 (LTAMDS = 3 faces, MRAD = 1 face, etc.)
+//   * Drill depth (how many internal layers you can drill into)
+//   * Per-layer grid (cols × rows) at every internal depth
+//   * Per-layer naming (breadcrumb label, element id prefix)
+//   * Per-layer element sizing + spacing
 //
-// DEMO_MOCK: renders against synthetic element data. There is no
-// RADAR/sensor-array platform_variant in the current pipeline (the OSS DIS
-// feed is M1A2-SEPv3 ground assets), so there is nothing real to wire to
-// yet. When a sensor-array asset appears in telemetry_latest_state, wire
-// the element grid to its sustainment.* fields; until then this stays
-// mock behind an explicit banner. See ADR-0017.
+// Health values are seeded per (assetId, depth, element_index) so each
+// discovered asset gets its OWN consistent set of telemetry values across
+// re-renders — no flicker between every frame, and each asset looks
+// independent (matches the "independent telemetry values for each asset
+// discovered" requirement for the MRAD sim). Pass `liveTelemetry` to
+// override the seeded values with real per-element data from the sim
+// service once that path is wired (see openddil-mrad-sim).
+//
+// ADR-0017: DEMO_MOCK marker carried on each config's bannerNote.
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -29,9 +30,8 @@ import HudFrame from './HudFrame';
 const COLORS = { nominal: 0x22d3ee, warning: 0xfacc15, critical: 0xef4444, bg: 0x020617, housing: 0x0f172a, card: 0x1e293b };
 
 // ---------------------------------------------------------------------------
-// Public config — the LTAMDS-specific values that used to be hardcoded.
-// Ship one config (LTAMDS_CONFIG, below) today; the type contract is what
-// makes future "a different array" work a config change, not a rewrite.
+// Public config — fully data-driven so a new sensor array (MRAD, future
+// AESAs, sonar, IR, whatever) is a config change, not a code change.
 // ---------------------------------------------------------------------------
 export interface FaceSpec {
     cols: number;
@@ -44,33 +44,86 @@ export interface FaceSpec {
     name: string;
 }
 
+export interface LayerSpec {
+    /** Breadcrumb label for this depth (top header trail). */
+    name: string;
+    /** Grid columns at this depth. Depth 0 ignores this — faces drive layout. */
+    cols: number;
+    /** Grid rows at this depth. Depth 0 ignores this — faces drive layout. */
+    rows: number;
+    /** Element id prefix at this depth (e.g. "TR", "BOARD", "MODULE"). */
+    prefix: string;
+    /** Element box size [w, h, d] at this depth. */
+    elementSize: [number, number, number];
+    /** Grid spacing (center-to-center) at this depth. */
+    spacing: number;
+    /** Whether elements at this depth render as wireframe overlays (depth>0). */
+    wireframe?: boolean;
+}
+
 export interface SensorArrayConfig {
     /** Top-left header — platform-specific identity. */
     title: string;
     /** Subtitle under the title. */
     subtitle: string;
-    /** Names for each drill-down depth, from outer housing inward. */
-    depthNames: [string, string, string, string];
-    /** Face specs for depth 0 (the outer housing). */
+    /** Face specs for depth 0 (the outer housing). One entry = single-face
+     *  array like MRAD. Multiple entries = multi-face array like LTAMDS. */
     faces: FaceSpec[];
-    /** Banner text passed to HudFrame (DEMO_MOCK status, per ADR-0017). */
+    /** Layers from depth 0 (outermost housing) to N (innermost). Length
+     *  determines maximum drill depth. layers[0] only uses `name` +
+     *  elementSize/spacing/wireframe (faces[] drives layout). layers[1..]
+     *  fully drive a centered grid. */
+    layers: LayerSpec[];
+    /** Banner text passed to HudFrame (e.g. "DEMO_MOCK -- synthetic data"). */
     bannerNote: string;
+    /** Outer housing bounding box [w, h, d] at depth 0. */
+    housingSize: [number, number, number];
 }
 
 // ---------------------------------------------------------------------------
-// LTAMDS_CONFIG — the only config shipped today. Values lifted verbatim
-// from the original LtamdsView so the visual output is identical.
+// LTAMDS_CONFIG — three-face AESA radar. Values lifted verbatim from the
+// original LtamdsView so visual output is identical.
 // ---------------------------------------------------------------------------
 export const LTAMDS_CONFIG: SensorArrayConfig = {
     title: 'LTAMDS Gen-4',
     subtitle: 'ARRAY DIAGNOSTIC INTERFACE @[//] SECTOR 7G',
-    depthNames: ['RADAR UNIT', 'PROCESSOR BANK', 'SIGNAL CONVERTER', 'GAN MMIC CHIP'],
     faces: [
         { cols: 8, rows: 14, pos: [0, 0, 2.51], rot: [0, 0, 0], name: 'PRIMARY NORTH' },
         { cols: 5, rows: 8,  pos: [-3.51, 0, -1], rot: [0, -Math.PI / 2, 0], name: 'SECTOR ALPHA' },
         { cols: 5, rows: 8,  pos: [3.51, 0, -1],  rot: [0,  Math.PI / 2, 0], name: 'SECTOR BETA'  },
     ],
+    layers: [
+        { name: 'RADAR UNIT',       cols: 0, rows: 0, prefix: 'TR',     elementSize: [0.5, 0.5, 0.15], spacing: 0.65 },
+        { name: 'PROCESSOR BANK',   cols: 2, rows: 2, prefix: 'BOARD',  elementSize: [6, 6, 0.5],     spacing: 8, wireframe: true },
+        { name: 'SIGNAL CONVERTER', cols: 2, rows: 2, prefix: 'MODULE', elementSize: [4, 4, 0.5],     spacing: 6, wireframe: true },
+        { name: 'GAN MMIC CHIP',    cols: 2, rows: 2, prefix: 'CHIP',   elementSize: [2, 2, 0.5],     spacing: 3, wireframe: true },
+    ],
     bannerNote: 'live data wiring pending RTI/Cyber DDS integration',
+    housingSize: [7, 12, 5],
+};
+
+// ---------------------------------------------------------------------------
+// MRAD_CONFIG — single-face Multi-Mission Radar variant. Same LTAMDS visual
+// family (grey/slate housing, cyan element highlights, glitch text), but
+// one face. Per-layer cols/rows/naming tuned for the MRAD's narrower drill
+// tree (backplane → processor → MMIC). The mrad-sim Python service
+// publishes per-element telemetry into mrad_element_telemetry; this
+// component falls back to seeded-RNG synthesis when no live data yet.
+// ---------------------------------------------------------------------------
+export const MRAD_CONFIG: SensorArrayConfig = {
+    title: 'MRAD Multi-Mission Radar',
+    subtitle: 'ARRAY DIAGNOSTIC INTERFACE @[//] FORWARD-DEPLOYED',
+    faces: [
+        { cols: 8, rows: 12, pos: [0, 0, 2.51], rot: [0, 0, 0], name: 'PRIMARY APERTURE' },
+    ],
+    layers: [
+        { name: 'RADAR UNIT',     cols: 0, rows: 0, prefix: 'TR',     elementSize: [0.5, 0.5, 0.15], spacing: 0.65 },
+        { name: 'BACKPLANE',      cols: 2, rows: 3, prefix: 'BOARD',  elementSize: [4, 4, 0.5],     spacing: 6, wireframe: true },
+        { name: 'PROCESSOR BANK', cols: 2, rows: 2, prefix: 'MODULE', elementSize: [3, 3, 0.5],     spacing: 5, wireframe: true },
+        { name: 'GAN MMIC CHIP',  cols: 3, rows: 3, prefix: 'CHIP',   elementSize: [1.5, 1.5, 0.4], spacing: 2.5, wireframe: true },
+    ],
+    bannerNote: 'DEMO_MOCK -- per-element telemetry from openddil-mrad-sim (synthesized when sim absent)',
+    housingSize: [6, 9, 5],
 };
 
 const tweenGroup = new TWEEN.Group();
@@ -95,65 +148,127 @@ interface ElementData {
     wireframe?: boolean;
 }
 
-function generateElements(depth: number, degraded: boolean, faces: FaceSpec[]): ElementData[] {
+// ---------------------------------------------------------------------------
+// Seeded RNG so each asset_id gets a STABLE set of element values across
+// re-renders (no jitter every frame) AND is independent from every other
+// asset (no two assets share the same "broken element" pattern). Replace
+// with live mrad-sim data via the `liveTelemetry` prop once the data
+// path is in place.
+// ---------------------------------------------------------------------------
+function hashStringToSeed(s: string): number {
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+    let a = seed | 0;
+    return function () {
+        a = (a + 0x6D2B79F5) | 0;
+        let t = a;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+/** Per-element telemetry from a live source (mrad-sim). Keyed by
+ *  the same element id this view generates (`<prefix>-<face>-<i>-<j>` for
+ *  face elements, `<prefix>-<i>-<j>` for internal layers). When provided,
+ *  these health/temp/load values override the seeded synthesis. */
+export interface LiveElementTelemetry {
+    [elementId: string]: {
+        health: number;
+        temp?: number;
+        load?: number;
+    };
+}
+
+function generateElements(
+    depth: number,
+    degraded: boolean,
+    faces: FaceSpec[],
+    layers: LayerSpec[],
+    assetId: string,
+    liveTelemetry?: LiveElementTelemetry,
+): ElementData[] {
     const elements: ElementData[] = [];
+    const layer = layers[depth];
+    if (!layer) return elements;
+
+    const rng = mulberry32(hashStringToSeed(`${assetId}|${depth}`));
+
+    const synthHealth = (degradedRoll: () => number): number => {
+        let health = rng();
+        // 15% degraded population becomes near-critical when the operational
+        // posture flags this asset as degraded — keeps the "everything red
+        // when broken" demo intuitive without inventing fake fault paths.
+        if (degraded && degradedRoll() > 0.85) health = 0.98;
+        return health;
+    };
 
     if (depth === 0) {
-        const addFace = (spec: FaceSpec) => {
+        // Depth 0 = outer housing surface. faces[] drives the layout; each
+        // face's cols/rows lay out a planar grid that's then transformed
+        // into the housing's frame.
+        for (const spec of faces) {
             const { cols, rows, pos, rot, name } = spec;
-            const spacing = 0.65;
+            const spacing = layer.spacing;
             for (let i = 0; i < cols; i++) {
                 for (let j = 0; j < rows; j++) {
-                    let health = Math.random();
-                    if (degraded && Math.random() > 0.85) health = 0.98;
+                    const elementId = `${layer.prefix}-${name.replace(/\s+/g, '')}-${i}-${j}`;
+                    const live = liveTelemetry?.[elementId];
+                    const health = live?.health ?? synthHealth(rng);
                     const status = getStatusFromHealth(health);
+                    const temp = live?.temp ?? (30 + health * 40);
+                    const load = live?.load ?? (rng() * 100);
 
                     const localPos = new THREE.Vector3((i - (cols - 1) / 2) * spacing, (j - (rows - 1) / 2) * spacing, 0);
                     localPos.applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(...rot)));
                     localPos.add(new THREE.Vector3(...pos));
 
                     elements.push({
-                        id: `TR-${Math.floor(Math.random() * 8999) + 1000}`,
+                        id: elementId,
                         face: name,
-                        temp: (30 + health * 40).toFixed(1),
-                        load: (Math.random() * 100).toFixed(0),
+                        temp: temp.toFixed(1),
+                        load: load.toFixed(0),
                         healthValue: health,
                         status,
                         pos: [localPos.x, localPos.y, localPos.z],
                         rot,
-                        size: [0.5, 0.5, 0.15],
+                        size: layer.elementSize,
                         color: status.color,
                     });
                 }
             }
-        };
-
-        for (const face of faces) addFace(face);
+        }
     } else {
-        let size: [number, number, number] = [6, 6, 0.5];
-        let spacing = 8;
-        let prefix = "BOARD";
-        if (depth === 2) { size = [4, 4, 0.5]; spacing = 6; prefix = "MODULE"; }
-        if (depth === 3) { size = [2, 2, 0.5]; spacing = 3; prefix = "CHIP"; }
-
-        for (let i = 0; i < 2; i++) {
-            for (let j = 0; j < 2; j++) {
-                let health = Math.random();
-                if (degraded && Math.random() > 0.85) health = 0.98;
+        // Internal layer — centered cols×rows grid in the housing's z=0 plane.
+        const { cols, rows, prefix, spacing, elementSize, wireframe } = layer;
+        for (let i = 0; i < cols; i++) {
+            for (let j = 0; j < rows; j++) {
+                const elementId = `${prefix}-${i}-${j}`;
+                const live = liveTelemetry?.[elementId];
+                const health = live?.health ?? synthHealth(rng);
                 const status = getStatusFromHealth(health);
+                const temp = live?.temp ?? (35 + health * 50);
+                const load = live?.load ?? (20 + rng() * 70);
 
                 elements.push({
-                    id: `${prefix}-${i}${j}`,
-                    face: "INTERNAL",
-                    temp: (35 + health * 50).toFixed(1),
-                    load: (20 + Math.random() * 70).toFixed(0),
+                    id: elementId,
+                    face: 'INTERNAL',
+                    temp: temp.toFixed(1),
+                    load: load.toFixed(0),
                     healthValue: health,
                     status,
-                    pos: [(i - 0.5) * spacing, (j - 0.5) * spacing, 0],
+                    pos: [(i - (cols - 1) / 2) * spacing, (j - (rows - 1) / 2) * spacing, 0],
                     rot: [0, 0, 0],
-                    size,
+                    size: elementSize,
                     color: COLORS.card,
-                    wireframe: true,
+                    wireframe: wireframe ?? true,
                 });
             }
         }
@@ -161,19 +276,22 @@ function generateElements(depth: number, degraded: boolean, faces: FaceSpec[]): 
     return elements;
 }
 
-function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitioning, setIsTransitioning, degraded, faces }: any) {
+function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitioning, setIsTransitioning, degraded, faces, layers, assetId, liveTelemetry, housingSize }: any) {
     const { camera } = useThree();
     const controlsRef = useRef<any>(null);
     const groupsRef = useRef<THREE.Group[]>([]);
 
     const [selectedMesh, setSelectedMesh] = useState<THREE.Mesh | null>(null);
 
-    const elements0 = useMemo(() => generateElements(0, degraded, faces), [degraded, faces]);
-    const elements1 = useMemo(() => generateElements(1, degraded, faces), [degraded, faces]);
-    const elements2 = useMemo(() => generateElements(2, degraded, faces), [degraded, faces]);
-    const elements3 = useMemo(() => generateElements(3, degraded, faces), [degraded, faces]);
-
-    const allElements = [elements0, elements1, elements2, elements3];
+    // One memoized element list per layer. Recomputes only when degraded /
+    // faces / layers / assetId / liveTelemetry actually change — element
+    // values stay rock-stable across the per-frame useFrame loop.
+    const elementsByDepth = useMemo(
+        () => layers.map((_: LayerSpec, d: number) =>
+            generateElements(d, degraded, faces, layers, assetId, liveTelemetry),
+        ),
+        [degraded, faces, layers, assetId, liveTelemetry],
+    );
 
     useFrame(() => {
         tweenGroup.update();
@@ -276,7 +394,6 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
         onInterrogate(null); // hide HUD
 
         if (selectedMesh) {
-            // Instantly reset scale instead of tweening since we removed all tweens
             selectedMesh.scale.set(1, 1, 1);
             setSelectedMesh(null);
         }
@@ -322,7 +439,7 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
                 enablePan={!isTransitioning}
             />
             <group onPointerMissed={handlePointerMissed}>
-                {allElements.map((elements, depth) => (
+                {elementsByDepth.map((elements: ElementData[], depth: number) => (
                     <group
                         key={depth}
                         ref={el => { if (el) groupsRef.current[depth] = el; }}
@@ -330,10 +447,10 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
                     >
                         {depth === 0 && (
                             <mesh>
-                                <boxGeometry args={[7, 12, 5]} />
+                                <boxGeometry args={housingSize} />
                                 <meshPhongMaterial color={COLORS.housing} transparent opacity={0.9} />
                                 <lineSegments>
-                                    <edgesGeometry args={[new THREE.BoxGeometry(7, 12, 5)]} />
+                                    <edgesGeometry args={[new THREE.BoxGeometry(...housingSize)]} />
                                     <lineBasicMaterial color={0x334155} transparent opacity={0.5} />
                                 </lineSegments>
                             </mesh>
@@ -392,17 +509,25 @@ interface SensorArrayViewProps {
     degraded: boolean;
     coreTemp: number;
     /** Config for the specific sensor array being rendered. Defaults to
-     *  LTAMDS_CONFIG — the only config shipped today. */
+     *  LTAMDS_CONFIG. Pass MRAD_CONFIG for MRAD variants. */
     config?: SensorArrayConfig;
+    /** Asset id used as the seed for per-element synthesis. Different
+     *  assets get different (consistent) telemetry sets. Default 'unknown'. */
+    assetId?: string;
+    /** Live per-element telemetry from openddil-mrad-sim. Optional — when
+     *  absent, the view falls back to seeded-RNG synthesis. */
+    liveTelemetry?: LiveElementTelemetry;
 }
 
-export default function SensorArrayView({ degraded, coreTemp, config = LTAMDS_CONFIG }: SensorArrayViewProps) {
+export default function SensorArrayView({ degraded, coreTemp, config = LTAMDS_CONFIG, assetId = 'unknown', liveTelemetry }: SensorArrayViewProps) {
     const [currentDepth, setCurrentDepth] = useState(0);
     const [selectedElement, setSelectedElement] = useState<ElementData | null>(null);
     const [isTransitioning, setIsTransitioning] = useState(false);
 
+    const maxDepth = config.layers.length;
+
     const handleDrillDown = () => {
-        setCurrentDepth(prev => (prev + 1) % 4);
+        setCurrentDepth(prev => (prev + 1) % maxDepth);
     };
 
     const handleInterrogate = (data: ElementData | null) => {
@@ -412,9 +537,9 @@ export default function SensorArrayView({ degraded, coreTemp, config = LTAMDS_CO
     const headerExtras = (
         <>
             <div className="mt-4 flex gap-2 text-[0.6rem] font-bold uppercase tracking-widest text-cyan-500/50">
-                {config.depthNames.slice(0, currentDepth + 1).map((name, i) => (
+                {config.layers.slice(0, currentDepth + 1).map((layer, i) => (
                     <span key={i} className="flex items-center gap-2">
-                        <span className={i === currentDepth ? 'text-cyan-400' : ''}>{name}</span>
+                        <span className={i === currentDepth ? 'text-cyan-400' : ''}>{layer.name}</span>
                         {i < currentDepth && <span className="opacity-30">/</span>}
                     </span>
                 ))}
@@ -454,12 +579,16 @@ export default function SensorArrayView({ degraded, coreTemp, config = LTAMDS_CO
                     setIsTransitioning={setIsTransitioning}
                     degraded={degraded}
                     faces={config.faces}
+                    layers={config.layers}
+                    assetId={assetId}
+                    liveTelemetry={liveTelemetry}
+                    housingSize={config.housingSize}
                 />
             </Canvas>
 
-            {/* Depth Indicator */}
+            {/* Depth indicator — one tick per configured layer. */}
             <div className="absolute bottom-6 right-6 z-10 flex gap-2 pointer-events-none">
-                {[0, 1, 2, 3].map(i => (
+                {config.layers.map((_, i) => (
                     <div key={i} className={`w-8 h-1 ${i <= currentDepth ? 'bg-cyan-400' : 'bg-slate-800'}`}></div>
                 ))}
             </div>
