@@ -3,6 +3,19 @@
 Captured 2026-06-12 EOD, after the long deploy-fragility + correctness session.
 Pick up cold from here when back on the cluster.
 
+> **Update 2026-06-13:** the MRAD maintainer view + sim work landed
+> three more commits — the sim was renamed `openddil-mrad-sim` →
+> `openddil-logistics-sim` (multi-profile so LTAMDS/Patriot can land
+> as config-only adds), now honors customer-sim `operational_state`
+> (POWER_STATE_OFF/SHUTTING_DOWN/MAINTENANCE +
+> HEALTH_STATE_DEGRADED/FAULT/FAILED → lifts elements into the
+> CRITICAL band), and propagates `actively_transmitting` /
+> `actively_receiving` per face element so what the maintainer
+> sees on the 3D drill-down stays synchronized with the customer
+> sim. Postgres table is `asset_element_telemetry`, topic
+> `asset-element-telemetry`, helm chart `0.1.26`. See
+> `docs/logistics-sim-rollout.md` for the rollout sequence.
+
 ## Shipped this session (for context)
 
 These are all in master on their respective repos. None of them require Monday

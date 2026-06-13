@@ -175,15 +175,21 @@ function mulberry32(seed: number): () => number {
     };
 }
 
-/** Per-element telemetry from a live source (mrad-sim). Keyed by
- *  the same element id this view generates (`<prefix>-<face>-<i>-<j>` for
- *  face elements, `<prefix>-<i>-<j>` for internal layers). When provided,
- *  these health/temp/load values override the seeded synthesis. */
+/** Per-element telemetry from a live source (logistics-sim). Keyed
+ *  by the same element id this view generates
+ *  (`<prefix>-<face>-<i>-<j>` for face elements, `<prefix>-<i>-<j>`
+ *  for internal layers). When provided, health/temp/load override the
+ *  seeded synthesis; txActive/rxActive reflect the customer-sim-
+ *  reported actively_transmitting / actively_receiving bits so the
+ *  interrogation panel can show "TX off" / "RX off" badges that match
+ *  the customer feed exactly. */
 export interface LiveElementTelemetry {
     [elementId: string]: {
         health: number;
         temp?: number;
         load?: number;
+        txActive?: boolean;
+        rxActive?: boolean;
     };
 }
 

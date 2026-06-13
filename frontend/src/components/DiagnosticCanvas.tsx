@@ -34,7 +34,7 @@ import { OrbitControls } from '@react-three/drei';
 import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG } from './SensorArrayView';
 import HudFrame from './HudFrame';
 import { useTransitPhase, transitClass } from './EdgeTransit';
-import { useMradElementTelemetry } from '../hooks';
+import { useAssetElementTelemetry } from '../hooks';
 import {
     SCHEMATIC_REGISTRY,
     UnknownPlatformBadge,
@@ -115,7 +115,7 @@ export default function DiagnosticCanvas({
     // undefined -- so the LTAMDS / cascade paths pay only the
     // hook-subscription cost, not the rendering cost.
     const transitPhase = useTransitPhase(transitTriggerKey ?? null);
-    const { liveTelemetry: mradLive } = useMradElementTelemetry(assetId);
+    const { liveTelemetry: mradLive } = useAssetElementTelemetry(assetId);
 
     // MRAD-class variants get a dedicated detailed-array view. This is the
     // production routing path -- any asset whose platform_variant matches
