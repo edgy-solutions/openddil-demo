@@ -56,3 +56,4 @@ export {
   type FleetTierMap,
   type EdgeLinkSeveredSource,
 } from './useFleetTiers';
+export { useMradElementTelemetry } from './useMradElementTelemetry';

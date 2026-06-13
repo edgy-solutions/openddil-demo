@@ -34,6 +34,7 @@ import { OrbitControls } from '@react-three/drei';
 import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG } from './SensorArrayView';
 import HudFrame from './HudFrame';
 import { useTransitPhase, transitClass } from './EdgeTransit';
+import { useMradElementTelemetry } from '../hooks';
 import {
     SCHEMATIC_REGISTRY,
     UnknownPlatformBadge,
@@ -104,16 +105,28 @@ export default function DiagnosticCanvas({
     transitTriggerKey,
     operationalState,
 }: DiagnosticCanvasProps) {
-    // Hook runs on every render; gating is internal (first-mount + same-
-    // key checks). Safe to call before the RADAR-branch early-return.
+    // Hooks run on every render -- React rules-of-hooks requires this
+    // ordering be stable across renders, so we call BOTH hooks here
+    // regardless of which dispatch branch fires below. The transit
+    // hook gates internally on first-mount + same-key. The MRAD
+    // telemetry hook returns liveTelemetry=undefined on non-MRAD
+    // assets (the SQL filter resolves to no rows) and the MRAD-
+    // SensorArrayView path falls back to seeded synthesis when
+    // undefined -- so the LTAMDS / cascade paths pay only the
+    // hook-subscription cost, not the rendering cost.
     const transitPhase = useTransitPhase(transitTriggerKey ?? null);
+    const { liveTelemetry: mradLive } = useMradElementTelemetry(assetId);
 
     // MRAD-class variants get a dedicated detailed-array view. This is the
     // production routing path -- any asset whose platform_variant matches
     // an MRAD_VARIANTS entry renders the single-face MRAD detailed array
     // for maintainer drill-down, regardless of the dev RADAR override.
+    // liveTelemetry is wired through; when openddil-mrad-sim has
+    // published a snapshot for this asset, those per-element values
+    // override the seeded-RNG fallback. Until the sim ships data the
+    // view renders the seeded values.
     if (platformVariant && MRAD_VARIANTS.has(platformVariant)) {
-        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} />;
+        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={mradLive} />;
     }
 
     if (assetType === 'RADAR') {
