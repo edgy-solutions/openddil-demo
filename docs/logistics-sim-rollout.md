@@ -62,28 +62,60 @@
 
 ## Rollout sequence
 
+**Standard 3-step deploy (mirror → OSS → overlay) covers everything.**
+No new manual steps for the sim. The pieces below run automatically:
+
+* `openddil-logistics-sim` push → GHA `docker-build` workflow rebuilds
+  and publishes `ghcr.io/edgy-solutions/openddil/logistics-sim:latest`.
+* `openddil-stack` push (this migration is already in the schema/
+  migrations directory) → `repository_dispatch` to openddil-helm →
+  helm rebuilds `runtime-bundle:latest` with the new migration baked
+  in.
+* `mirror-to-artifactory.ps1` → captures both new digests into
+  `values-pinned.yaml` (the `logisticsSim.image.digest` field plus
+  the runtime-bundle digest the schema-init Job reads).
+* `helm upgrade` → projectors roll (new handler entry in
+  projector_config.yaml), logistics-sim Deployment + ConfigMap are
+  created, `postgres-schema-init` post-upgrade hook fires
+  `atlas migrate apply` and the new `asset_element_telemetry` table
+  appears in postgres-hq.
+
 ```bash
 NS=drone-spotter-sandbox
 
-# 1. Build + push the sim image
-cd openddil-logistics-sim
-docker build -t ghcr.io/edgy-solutions/openddil/logistics-sim:latest .
-docker push ghcr.io/edgy-solutions/openddil/logistics-sim:latest
-
-# 2. Apply the migration
-kubectl -n $NS exec -i sts/openddil-postgres-hq -- \
-  psql -U openddil -d openddil < \
-  openddil-stack/schema/migrations/20260613000000_phase9_asset_element_telemetry.sql
-
-# 3. Re-mirror (picks up the new logistics-sim image digest into values-pinned.yaml)
+# 1. Re-mirror (picks up logistics-sim image + new bundle digest)
 pwsh openddil-helm/scripts/mirror-to-artifactory.ps1 -RepoBase artifactory.example/openddil
 
-# 4. helm upgrade to chart 0.1.26 (rolls projectors, deploys logistics-sim)
+# 2. helm upgrade to chart 0.1.26
 helm upgrade openddil openddil-demo -n $NS \
     -f defaults.yaml -f values-pinned.yaml \
     --set persistence.redpandaUseEmptyDir=true \
     --set persistence.restateUseEmptyDir=true
+
+# 3. Overlay deploy (your normal flow)
+bash deploy.sh
 ```
+
+### When the manual path IS needed
+
+If you're rolling out before CI has rebuilt the runtime-bundle (e.g.
+schema migration was just pushed and `openddil-helm`'s bundle-rebuild
+workflow hasn't completed yet), the schema-init Job will run against
+an old bundle that doesn't have the new migration, and the new table
+won't appear. Either:
+
+* Wait for the openddil-helm bundle-rebuild workflow to finish before
+  mirroring (check `gh run list` on openddil-helm; look for the most
+  recent `Build and publish runtime-bundle image` run to be green
+  AFTER the openddil-stack push that added the migration), or
+* Apply the migration manually as a one-shot:
+  ```bash
+  kubectl -n $NS exec -i sts/openddil-postgres-hq -- \
+    psql -U openddil -d openddil < \
+    openddil-stack/schema/migrations/20260613000000_phase9_asset_element_telemetry.sql
+  ```
+  Atlas's migration table will pick up the manual apply on the next
+  helm upgrade as already-applied.
 
 ## Verification
 
