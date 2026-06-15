@@ -1,0 +1,58 @@
+name: Notify openddil-helm to rebuild runtime-bundle
+
+# Mirrors the openddil-contracts / openddil-stack / openddil-tactical-agents
+# notify workflows. The runtime-bundle Dockerfile COPYs a specific subset of
+# this repo into the bundle image:
+#
+#   openddil-base-connect.yaml
+#   redpanda-connect-{edge-01,edge-02,edge-03}.yaml
+#   redpanda-connect.yaml
+#   restate-config.toml
+#   toxiproxy.json
+#   dynamic-mappings/
+#
+# Everything else (frontend/, docs/, tests/, the chart-side configs the
+# helm chart consumes directly, etc.) is NOT in the bundle and does not
+# need a bundle rebuild. The paths filter is intentionally narrow so a
+# frontend or doc change doesn't fire a bundle rebuild for no reason.
+#
+# Setup (one-time):
+#   1. Fine-grained PAT with Contents:write on edgy-solutions/openddil-helm,
+#      Metadata:read.
+#   2. Store as repo secret BUNDLE_REBUILD_PAT.
+#   3. openddil-helm's build-bundle.yml already listens on
+#      `repository_dispatch: types: [source-repo-changed]`.
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - "openddil-base-connect.yaml"
+      - "redpanda-connect.yaml"
+      - "redpanda-connect-edge-01.yaml"
+      - "redpanda-connect-edge-02.yaml"
+      - "redpanda-connect-edge-03.yaml"
+      - "restate-config.toml"
+      - "toxiproxy.json"
+      - "dynamic-mappings/**"
+      - ".github/workflows/notify-bundle-rebuild.yml"
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch source-repo-changed to openddil-helm
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.BUNDLE_REBUILD_PAT }}
+          repository: ${{ github.repository_owner }}/openddil-helm
+          event-type: source-repo-changed
+          client-payload: |
+            {
+              "source_repo":  "openddil-demo",
+              "ref":          "${{ github.ref }}",
+              "sha":          "${{ github.sha }}",
+              "actor":        "${{ github.actor }}",
+              "commit_url":   "${{ github.event.head_commit.url }}"
+            }
