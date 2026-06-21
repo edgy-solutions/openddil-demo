@@ -304,7 +304,18 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
     });
 
     useEffect(() => {
-        // Instantly reset camera on depth change
+        // Instantly reset camera on depth change.
+        //
+        // We RESET camera.up BEFORE position+lookAt because the prior
+        // drill-down tween can corrupt camera orientation: handleDrillDown
+        // moves the camera all the way to the element's world position
+        // and on the final frame calls lookAt(targetPos) when position ==
+        // targetPos. lookAt(self) is undefined and can leave the camera's
+        // internal quaternion / up vector in a tilted state. Without an
+        // explicit up reset, every subsequent lookAt inherits that tilt.
+        // Symptom: drill from depth 0->1 looks fine, but depths 2 and 3
+        // render rotated 90 degrees around the x-axis (off-screen).
+        camera.up.set(0, 1, 0);
         const targetCamPos = currentDepth === 0 ? new THREE.Vector3(15, 12, 20) : new THREE.Vector3(0, 0, 15);
         const targetLookAt = new THREE.Vector3(0, 0, 0);
 
@@ -407,8 +418,17 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
         const targetPos = new THREE.Vector3();
         _mesh.getWorldPosition(targetPos);
 
+        // Stop the camera SHORT of the element instead of landing exactly
+        // on it. lookAt(target) with camera.position == target is undefined
+        // and corrupts camera.up / quaternion, which then leaks into the
+        // next layer's render (see the up-reset comment in the depth-change
+        // useEffect). Pull back by ~0.1 units along the camera->target
+        // vector so the final lookAt has a stable forward direction.
+        const camToTarget = targetPos.clone().sub(camera.position).normalize();
+        const drillEnd = targetPos.clone().sub(camToTarget.multiplyScalar(0.1));
+
         new TWEEN.Tween(camera.position, tweenGroup)
-            .to({ x: targetPos.x, y: targetPos.y, z: targetPos.z }, 800)
+            .to({ x: drillEnd.x, y: drillEnd.y, z: drillEnd.z }, 800)
             .easing(TWEEN.Easing.Exponential.In)
             .onUpdate(() => {
                 camera.lookAt(targetPos);
