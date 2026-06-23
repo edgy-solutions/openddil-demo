@@ -635,16 +635,7 @@ function SceneController({ currentDepth, parentId, onDrillDown, onInterrogate, i
                         key={currentDepth}
                         ref={el => { if (el) groupsRef.current[currentDepth] = el; }}
                     >
-                        {currentDepth === 0 && (
-                            <mesh>
-                                <boxGeometry args={housingSize} />
-                                <meshPhongMaterial color={COLORS.housing} transparent opacity={0.9} />
-                                <lineSegments>
-                                    <edgesGeometry args={[new THREE.BoxGeometry(...housingSize)]} />
-                                    <lineBasicMaterial color={0x334155} transparent opacity={0.5} />
-                                </lineSegments>
-                            </mesh>
-                        )}
+                        {currentDepth === 0 && <HousingMesh size={housingSize} />}
                         {currentElements.map((data: ElementData) => (
                             <ElementMesh
                                 key={data.id}
@@ -660,8 +651,47 @@ function SceneController({ currentDepth, parentId, onDrillDown, onInterrogate, i
     );
 }
 
+// Outer housing box rendered at depth 0. Extracted into its own
+// component so the EdgesGeometry can be memoized — inline new
+// THREE.BoxGeometry calls in the SceneController body would have
+// rebuilt the GPU buffer on every render, leaking memory until the
+// WebGL context died.
+function HousingMesh({ size }: { size: [number, number, number] }) {
+    const edges = useMemo(() => {
+        const box = new THREE.BoxGeometry(...size);
+        const eg = new THREE.EdgesGeometry(box);
+        box.dispose();
+        return eg;
+    }, [size]);
+    return (
+        <mesh>
+            <boxGeometry args={size} />
+            <meshPhongMaterial color={COLORS.housing} transparent opacity={0.9} />
+            <lineSegments geometry={edges}>
+                <lineBasicMaterial color={0x334155} transparent opacity={0.5} />
+            </lineSegments>
+        </mesh>
+    );
+}
+
 function ElementMesh({ data, onSelect, onDrillDown }: { data: ElementData, onSelect: any, onDrillDown: any }) {
     const meshRef = useRef<THREE.Mesh>(null);
+
+    // Memoize the wireframe EdgesGeometry. Without this, every React
+    // re-render of this component (96 instances × every sim tick) would
+    // execute `new THREE.BoxGeometry(...)` and `new THREE.EdgesGeometry(...)`
+    // — R3F treats the resulting object as a new constructor arg and
+    // builds a fresh GPU buffer. The old buffers don't get disposed,
+    // so over ~15 minutes the WebGL driver runs out of GPU memory and
+    // kills the context (`THREE.WebGLRenderer: Context Lost`). The
+    // useMemo locks the geometry to a single instance keyed on the
+    // box dimensions (data.size); disposed on unmount via R3F.
+    const edgesGeom = useMemo(() => {
+        const box = new THREE.BoxGeometry(...data.size);
+        const edges = new THREE.EdgesGeometry(box);
+        box.dispose();  // BoxGeometry is no longer referenced after EdgesGeometry is built
+        return edges;
+    }, [data.size]);
 
     useFrame((state) => {
         if (meshRef.current && data.healthValue > 0.9) {
@@ -686,8 +716,7 @@ function ElementMesh({ data, onSelect, onDrillDown }: { data: ElementData, onSel
                 emissiveIntensity={data.healthValue > 0.9 ? 0.6 : 0.1}
             />
             {data.wireframe && (
-                <lineSegments>
-                    <edgesGeometry args={[new THREE.BoxGeometry(...data.size)]} />
+                <lineSegments geometry={edgesGeom}>
                     <lineBasicMaterial color={data.status.color} transparent opacity={0.3} />
                 </lineSegments>
             )}
