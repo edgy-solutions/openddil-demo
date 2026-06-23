@@ -148,33 +148,6 @@ interface ElementData {
     wireframe?: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Seeded RNG so each asset_id gets a STABLE set of element values across
-// re-renders (no jitter every frame) AND is independent from every other
-// asset (no two assets share the same "broken element" pattern). Replace
-// with live mrad-sim data via the `liveTelemetry` prop once the data
-// path is in place.
-// ---------------------------------------------------------------------------
-function hashStringToSeed(s: string): number {
-    let h = 2166136261 >>> 0;
-    for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = Math.imul(h, 16777619);
-    }
-    return h >>> 0;
-}
-
-function mulberry32(seed: number): () => number {
-    let a = seed | 0;
-    return function () {
-        a = (a + 0x6D2B79F5) | 0;
-        let t = a;
-        t = Math.imul(t ^ (t >>> 15), t | 1);
-        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-}
-
 /** Per-element telemetry from a live source (logistics-sim). Keyed
  *  by the same element id this view generates
  *  (`<prefix>-<face>-<i>-<j>` for face elements, `<prefix>-<i>-<j>`
@@ -193,44 +166,82 @@ export interface LiveElementTelemetry {
     };
 }
 
+// Status pill rendered when no liveTelemetry entry exists for this
+// element_id. Distinct color (medium slate) so the operator can tell
+// "telemetry hasn't arrived yet" from "telemetry says nominal".
+const NO_DATA_STATUS = {
+    color: 0x475569,
+    label: 'NO DATA',
+    class: 'bg-slate-700/30 text-slate-400',
+};
+
+// Build the per-element render data list for a single layer at a given
+// depth.
+//
+// LAYOUT is config-driven (from MRAD_CONFIG / LTAMDS_CONFIG): cell
+// positions, sizes, wireframe styling — all known statically.
+//
+// ELEMENT IDs are PATH-ENCODED at depth > 0 to match the sim's tree
+// topology. Depth 0 ids look like `TR-PRIMARYAPERTURE-3-5` (the face
+// element's own id). Depth N ids look like `<parentId>/<prefix>-<i>-<j>`
+// where parentId is the FULL path-encoded id of the element the user
+// drilled into at depth N-1. The sim publishes the entire tree using
+// this exact id format (see logistics-sim element_gen.py) so the live-
+// telemetry lookup hits per-drill-path, not globally.
+//
+// HEALTH / TEMP / LOAD / TX / RX values come ONLY from liveTelemetry.
+// When liveTelemetry has no entry for an element_id, that element
+// renders with NO_DATA_STATUS — a neutral slate placeholder, NOT a
+// fabricated nominal/degraded color.
+//
+// This is the "frontend is a puppet" contract: there is no second
+// synthesizer. openddil-logistics-sim is the sole source of truth for
+// per-element values; the frontend just lays them out and colors them.
 function generateElements(
     depth: number,
-    degraded: boolean,
     faces: FaceSpec[],
     layers: LayerSpec[],
-    assetId: string,
+    parentId: string | null,
     liveTelemetry?: LiveElementTelemetry,
 ): ElementData[] {
     const elements: ElementData[] = [];
     const layer = layers[depth];
     if (!layer) return elements;
+    // Depth > 0 requires a parent path to construct child ids. If none
+    // is set (shouldn't happen in normal nav flow), bail out — better
+    // than emitting unscoped ids that would miss the live lookup.
+    if (depth > 0 && !parentId) return elements;
 
-    const rng = mulberry32(hashStringToSeed(`${assetId}|${depth}`));
-
-    const synthHealth = (degradedRoll: () => number): number => {
-        let health = rng();
-        // 15% degraded population becomes near-critical when the operational
-        // posture flags this asset as degraded — keeps the "everything red
-        // when broken" demo intuitive without inventing fake fault paths.
-        if (degraded && degradedRoll() > 0.85) health = 0.98;
-        return health;
+    const fromLive = (elementId: string): {
+        healthValue: number;
+        status: typeof NO_DATA_STATUS;
+        temp: string;
+        load: string;
+    } => {
+        const live = liveTelemetry?.[elementId];
+        if (live?.health == null) {
+            return { healthValue: 0, status: NO_DATA_STATUS, temp: '—', load: '—' };
+        }
+        return {
+            healthValue: live.health,
+            status: getStatusFromHealth(live.health),
+            temp: live.temp != null ? live.temp.toFixed(1) : '—',
+            load: live.load != null ? live.load.toFixed(0) : '—',
+        };
     };
 
     if (depth === 0) {
         // Depth 0 = outer housing surface. faces[] drives the layout; each
         // face's cols/rows lay out a planar grid that's then transformed
-        // into the housing's frame.
+        // into the housing's frame. Ids are face-scoped (e.g. TR-PRIMARY
+        // APERTURE-3-5); they ARE the root of every subsequent drill path.
         for (const spec of faces) {
             const { cols, rows, pos, rot, name } = spec;
             const spacing = layer.spacing;
             for (let i = 0; i < cols; i++) {
                 for (let j = 0; j < rows; j++) {
                     const elementId = `${layer.prefix}-${name.replace(/\s+/g, '')}-${i}-${j}`;
-                    const live = liveTelemetry?.[elementId];
-                    const health = live?.health ?? synthHealth(rng);
-                    const status = getStatusFromHealth(health);
-                    const temp = live?.temp ?? (30 + health * 40);
-                    const load = live?.load ?? (rng() * 100);
+                    const v = fromLive(elementId);
 
                     const localPos = new THREE.Vector3((i - (cols - 1) / 2) * spacing, (j - (rows - 1) / 2) * spacing, 0);
                     localPos.applyQuaternion(new THREE.Quaternion().setFromEuler(new THREE.Euler(...rot)));
@@ -239,37 +250,36 @@ function generateElements(
                     elements.push({
                         id: elementId,
                         face: name,
-                        temp: temp.toFixed(1),
-                        load: load.toFixed(0),
-                        healthValue: health,
-                        status,
+                        temp: v.temp,
+                        load: v.load,
+                        healthValue: v.healthValue,
+                        status: v.status,
                         pos: [localPos.x, localPos.y, localPos.z],
                         rot,
                         size: layer.elementSize,
-                        color: status.color,
+                        color: v.status.color,
                     });
                 }
             }
         }
     } else {
-        // Internal layer — centered cols×rows grid in the housing's z=0 plane.
+        // Internal layer — children of parentId. Ids are path-scoped
+        // (`<parentId>/<prefix>-<i>-<j>`) so different parents have
+        // different children. Sim publishes all 23k tree nodes; this
+        // lookup hits the entry for THIS specific drill path.
         const { cols, rows, prefix, spacing, elementSize, wireframe } = layer;
         for (let i = 0; i < cols; i++) {
             for (let j = 0; j < rows; j++) {
-                const elementId = `${prefix}-${i}-${j}`;
-                const live = liveTelemetry?.[elementId];
-                const health = live?.health ?? synthHealth(rng);
-                const status = getStatusFromHealth(health);
-                const temp = live?.temp ?? (35 + health * 50);
-                const load = live?.load ?? (20 + rng() * 70);
+                const elementId = `${parentId}/${prefix}-${i}-${j}`;
+                const v = fromLive(elementId);
 
                 elements.push({
                     id: elementId,
                     face: 'INTERNAL',
-                    temp: temp.toFixed(1),
-                    load: load.toFixed(0),
-                    healthValue: health,
-                    status,
+                    temp: v.temp,
+                    load: v.load,
+                    healthValue: v.healthValue,
+                    status: v.status,
                     pos: [(i - (cols - 1) / 2) * spacing, (j - (rows - 1) / 2) * spacing, 0],
                     rot: [0, 0, 0],
                     size: elementSize,
@@ -282,43 +292,131 @@ function generateElements(
     return elements;
 }
 
-function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitioning, setIsTransitioning, degraded, faces, layers, assetId, liveTelemetry, housingSize }: any) {
+// SceneController — rewritten for stability.
+//
+// Previous design mixed (a) TWEEN-driven camera.position mutations with
+// per-frame camera.lookAt() calls, and (b) OrbitControls owning the camera
+// after each tween completed. The two sources of truth raced: lookAt() at
+// near-zero distance corrupted camera.up and camera.quaternion; OrbitControls
+// retained residual damping velocity across enable/disable cycles. The
+// failure was intermittent and depended on exact tween timing — classic
+// signature of accumulated state corruption.
+//
+// Current design:
+//   * OrbitControls is the SOLE owner of camera position/orientation after
+//     mount. No TWEEN ever touches camera.position or camera.up.
+//   * Depth change = hard snap. camera.position, camera.up, camera.lookAt,
+//     and controls.target all reset to canonical values atomically.
+//   * Single click = scale-up the clicked mesh + show HUD. No camera move.
+//     User can orbit/zoom freely using OrbitControls to inspect.
+//   * Double click = brief mesh scale-pop (visual feedback), then commit
+//     depth change. No camera tween, so no lookAt(self), no up corruption,
+//     no leaked state into the next layer.
+//   * tweenGroup only animates mesh scale + group scale-in. Both reset
+//     deterministically on depth change so re-entering a layer is clean.
+function SceneController({ currentDepth, parentId, onDrillDown, onInterrogate, isTransitioning, setIsTransitioning, faces, layers, liveTelemetry, housingSize }: any) {
     const { camera } = useThree();
     const controlsRef = useRef<any>(null);
     const groupsRef = useRef<THREE.Group[]>([]);
+    // Tracks the in-flight depth-0 camera fly-in tween so handleDrillDown
+    // and the depth-change useEffect can cancel it cleanly without nuking
+    // the layer scale-in or element-pop tweens.
+    const cameraFlyRef = useRef<TWEEN.Tween<any> | null>(null);
+    // Deferred camera-fly timer. The fly is delayed ~250ms after a single
+    // click so a follow-up dblclick can intercept and drill instead. Without
+    // this delay, the camera moves on the first click, the mesh shifts on
+    // screen, the second click misses, and onDoubleClick never fires.
+    const clickTimerRef = useRef<number | null>(null);
+    // Currently-popped mesh, tracked via REF (not useState) so back-to-back
+    // clicks see the LATEST selection synchronously. With useState, the
+    // closure in handleSelect captures the prior render's value of
+    // selectedMesh — if the user clicks B before React re-renders after
+    // clicking A, the closure still sees selectedMesh=null and skips the
+    // "cancel A's tween + reset A.scale" cleanup. A keeps popping toward
+    // its 1.4x target while B pops too; the user sees "A is the big one"
+    // when they expected B to be selected, reading as "B didn't bounce."
+    // Refs update synchronously, so this race goes away.
+    const selectedMeshRef = useRef<THREE.Mesh | null>(null);
 
-    const [selectedMesh, setSelectedMesh] = useState<THREE.Mesh | null>(null);
-
-    // One memoized element list per layer. Recomputes only when degraded /
-    // faces / layers / assetId / liveTelemetry actually change — element
-    // values stay rock-stable across the per-frame useFrame loop.
-    const elementsByDepth = useMemo(
-        () => layers.map((_: LayerSpec, d: number) =>
-            generateElements(d, degraded, faces, layers, assetId, liveTelemetry),
-        ),
-        [degraded, faces, layers, assetId, liveTelemetry],
+    // Layout for the currently-visible depth. Generated from config (faces
+    // + layers + drill parent); coloring/values come from liveTelemetry.
+    // No synthesis. parentId is the FULL path-encoded id of the element
+    // the user drilled INTO at the previous depth (null at depth 0).
+    const currentElements = useMemo(
+        () => generateElements(currentDepth, faces, layers, parentId, liveTelemetry),
+        [currentDepth, faces, layers, parentId, liveTelemetry],
     );
 
     useFrame(() => {
         tweenGroup.update();
     });
 
+    // Tween the camera position and lookAt-target in lockstep over `duration` ms.
+    //
+    // Stable for the select fly-in because the camera-to-target distance
+    // stays >= ~5 units throughout (start is the overview ~28 units out;
+    // end is the face-normal offset of 5 units). lookAt(target) where
+    // camera != target is well-defined, so calling it every frame is safe
+    // here — unlike the drill tween (removed), which approached zero
+    // distance and corrupted camera.up.
+    //
+    // Lerping the lookAt target (not just the camera position) is what
+    // keeps the array in frame throughout the tween. Without it, the
+    // camera moves in 3D toward the element but keeps pointing at the
+    // origin until the end — the array swings off-screen mid-flight and
+    // snaps back at completion. With it, the camera always points at a
+    // sensible interpolated point on or near the array center.
+    const flyCameraTo = (endPos: THREE.Vector3, endTarget: THREE.Vector3, duration: number) => {
+        if (cameraFlyRef.current) {
+            tweenGroup.remove(cameraFlyRef.current);
+            cameraFlyRef.current = null;
+        }
+        if (controlsRef.current) controlsRef.current.enabled = false;
+
+        const startPos = camera.position.clone();
+        const startTarget = controlsRef.current?.target?.clone() ?? new THREE.Vector3(0, 0, 0);
+        const tmpTarget = new THREE.Vector3();
+
+        const progress = { t: 0 };
+        const tween = new TWEEN.Tween(progress, tweenGroup)
+            .to({ t: 1 }, duration)
+            .easing(TWEEN.Easing.Quadratic.InOut)
+            .onUpdate(() => {
+                camera.position.lerpVectors(startPos, endPos, progress.t);
+                tmpTarget.lerpVectors(startTarget, endTarget, progress.t);
+                camera.up.set(0, 1, 0);
+                camera.lookAt(tmpTarget);
+            })
+            .onComplete(() => {
+                camera.position.copy(endPos);
+                camera.up.set(0, 1, 0);
+                camera.lookAt(endTarget);
+                if (controlsRef.current) {
+                    controlsRef.current.target.copy(endTarget);
+                    controlsRef.current.update();
+                    controlsRef.current.enabled = true;
+                }
+                cameraFlyRef.current = null;
+            })
+            .start();
+        cameraFlyRef.current = tween;
+    };
+
     useEffect(() => {
-        // Instantly reset camera on depth change.
-        //
-        // We RESET camera.up BEFORE position+lookAt because the prior
-        // drill-down tween can corrupt camera orientation: handleDrillDown
-        // moves the camera all the way to the element's world position
-        // and on the final frame calls lookAt(targetPos) when position ==
-        // targetPos. lookAt(self) is undefined and can leave the camera's
-        // internal quaternion / up vector in a tilted state. Without an
-        // explicit up reset, every subsequent lookAt inherits that tilt.
-        // Symptom: drill from depth 0->1 looks fine, but depths 2 and 3
-        // render rotated 90 degrees around the x-axis (off-screen).
-        camera.up.set(0, 1, 0);
+        // Hard snap to canonical view for this depth. No tweens, no
+        // accumulated state from prior layers.
+        tweenGroup.removeAll();
+        cameraFlyRef.current = null;
+        selectedMeshRef.current = null;
+        if (clickTimerRef.current !== null) {
+            window.clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+        }
+
         const targetCamPos = currentDepth === 0 ? new THREE.Vector3(15, 12, 20) : new THREE.Vector3(0, 0, 15);
         const targetLookAt = new THREE.Vector3(0, 0, 0);
 
+        camera.up.set(0, 1, 0);
         camera.position.copy(targetCamPos);
         camera.lookAt(targetLookAt);
 
@@ -327,26 +425,26 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
             controlsRef.current.update();
         }
 
-        // Scale in new group
+        // Reset scales for ALL layers so groups left scaled-up by prior
+        // visual feedback (or stale from an earlier mount) come back to 1.
+        // Then animate the active layer in from 0.1 for the "pop" effect.
+        groupsRef.current.forEach((g, d) => {
+            if (!g) return;
+            if (d === currentDepth) {
+                g.scale.set(0.1, 0.1, 0.1);
+            } else {
+                g.scale.set(1, 1, 1);
+            }
+        });
+
         const activeGroup = groupsRef.current[currentDepth];
         if (activeGroup) {
-            activeGroup.scale.set(0.1, 0.1, 0.1);
             new TWEEN.Tween(activeGroup.scale, tweenGroup)
-                .to({ x: 1, y: 1, z: 1 }, 600)
+                .to({ x: 1, y: 1, z: 1 }, 500)
                 .easing(TWEEN.Easing.Back.Out)
-                .onComplete(() => {
-                    if (controlsRef.current) {
-                        controlsRef.current.enabled = true;
-                        controlsRef.current.enableDamping = true;
-                    }
-                    setIsTransitioning(false);
-                })
+                .onComplete(() => setIsTransitioning(false))
                 .start();
         } else {
-            if (controlsRef.current) {
-                controlsRef.current.enabled = true;
-                controlsRef.current.enableDamping = true;
-            }
             setIsTransitioning(false);
         }
     }, [currentDepth, camera, setIsTransitioning]);
@@ -354,104 +452,157 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
     const handleSelect = (data: ElementData, mesh: THREE.Mesh) => {
         if (isTransitioning) return;
 
-        // Cancel any ongoing tweens
-        tweenGroup.removeAll();
-
-        setIsTransitioning(true);
-        if (controlsRef.current) {
-            controlsRef.current.enabled = false;
+        // Cancel the PRIOR selection's pop tween BEFORE setting its
+        // scale back to 1. Uses the REF (selectedMeshRef.current), not
+        // state — across rapid clicks, the closure's state value is
+        // stale and this cleanup gets skipped, leaving the prior mesh
+        // popped while the new one also pops.
+        const prior = selectedMeshRef.current;
+        if (prior && prior !== mesh) {
+            tweenGroup.getAll()
+                .filter(t => (t as any)._object === prior.scale)
+                .forEach(t => tweenGroup.remove(t));
+            prior.scale.set(1, 1, 1);
         }
 
-        if (selectedMesh && selectedMesh !== mesh) {
-            selectedMesh.scale.set(1, 1, 1);
-        }
-
-        setSelectedMesh(mesh);
+        selectedMeshRef.current = mesh;
         onInterrogate(data);
 
+        // Cancel any in-flight pop tween on THIS mesh (re-clicking the
+        // same element or a rapid mesh-to-mesh swap), then start fresh
+        // from scale=1. The prior bug — "click registers in the HUD but
+        // the element doesn't bounce" — was the prior tween's onUpdate
+        // overwriting our scale.set(1,1,1) on the next frame, leaving
+        // the new tween effectively starting and ending at the same
+        // value.
+        tweenGroup.getAll()
+            .filter(t => (t as any)._object === mesh.scale)
+            .forEach(t => tweenGroup.remove(t));
+        mesh.scale.set(1, 1, 1);
+        // Uniform 1.4x — more visible than the prior {1.2, 1.2, 2}
+        // which appears as only ~20% xy growth from head-on (the 2x z
+        // is invisible when looking straight down z).
         new TWEEN.Tween(mesh.scale, tweenGroup)
-            .to({ x: 1.2, y: 1.2, z: 2 }, 300)
+            .to({ x: 1.4, y: 1.4, z: 1.4 }, 300)
             .easing(TWEEN.Easing.Back.Out)
             .start();
 
-        const targetPos = new THREE.Vector3();
-        mesh.getWorldPosition(targetPos);
+        // Camera fly applies at all depths. Distance scales with
+        // element size so the focused element fills a similar fraction
+        // of view regardless of depth.
+        //
+        // The fly is DEFERRED 250ms so a follow-up dblclick can
+        // intercept and drill. Without the delay, the camera starts
+        // moving on the first click → the mesh shifts on screen → the
+        // second click misses → onDoubleClick never fires. This was
+        // the depth-0 dblclick bug; the same trap applies at every
+        // depth that has a fly-in.
+        if (clickTimerRef.current !== null) {
+            window.clearTimeout(clickTimerRef.current);
+        }
+        clickTimerRef.current = window.setTimeout(() => {
+            clickTimerRef.current = null;
+            const targetPos = new THREE.Vector3();
+            mesh.getWorldPosition(targetPos);
 
-        const offset = new THREE.Vector3(0, 0, currentDepth === 0 ? 5 : 8);
-        offset.applyQuaternion(mesh.quaternion);
-        if (currentDepth > 0) offset.z = 10;
-
-        const newCamPos = targetPos.clone().add(offset);
-
-        new TWEEN.Tween(camera.position, tweenGroup)
-            .to({ x: newCamPos.x, y: newCamPos.y, z: newCamPos.z }, 1000)
-            .easing(TWEEN.Easing.Quadratic.Out)
-            .onUpdate(() => {
-                camera.lookAt(targetPos);
-            })
-            .onComplete(() => {
-                if (controlsRef.current) {
-                    controlsRef.current.target.copy(targetPos);
-                    controlsRef.current.enabled = true;
-                    controlsRef.current.update();
-                }
-                setIsTransitioning(false);
-            })
-            .start();
+            let endPos: THREE.Vector3;
+            if (currentDepth === 0) {
+                // Depth 0: ZOOM IN along the face normal so the small
+                // element on a big face becomes the centered, head-on
+                // focus. Face normal = face local +Z transformed by
+                // the mesh's quaternion (varies per face on multi-face
+                // arrays like LTAMDS; always world +Z for MRAD).
+                const faceNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(mesh.quaternion);
+                endPos = targetPos.clone().add(faceNormal.multiplyScalar(5));
+            } else {
+                // Depth > 0: pan AND re-flatten the view. Preserve the
+                // user's current zoom DISTANCE so scroll-zoom isn't
+                // lost, but reset the camera direction to canonical
+                // top-down (camera above the element at +z, looking
+                // down -z) — so an orbited/rotated view snaps back to
+                // the flat layer plane on click. The "click should
+                // put the layer back into the view plane" behavior.
+                const currentTarget = controlsRef.current?.target?.clone() ?? new THREE.Vector3(0, 0, 0);
+                const currentDist = camera.position.distanceTo(currentTarget);
+                endPos = new THREE.Vector3(targetPos.x, targetPos.y, targetPos.z + currentDist);
+            }
+            flyCameraTo(endPos, targetPos, 700);
+        }, 250);
     };
 
-    const handleDrillDown = (_data: ElementData, _mesh: THREE.Mesh) => {
-        // Cancel any ongoing tweens (like the single-click zoom)
-        tweenGroup.removeAll();
+    const handleDrillDown = (data: ElementData, mesh: THREE.Mesh) => {
+        if (isTransitioning) return;
+
+        // Cancel any deferred camera-fly from the preceding single-click
+        // so it never runs (the user is drilling, not selecting).
+        if (clickTimerRef.current !== null) {
+            window.clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+        }
+        // Interrupt any in-flight depth-0 fly-in so the drill commits
+        // immediately. The depth-change useEffect will hard-snap the
+        // camera to the new layer's canonical view.
+        if (cameraFlyRef.current) {
+            tweenGroup.remove(cameraFlyRef.current);
+            cameraFlyRef.current = null;
+        }
 
         setIsTransitioning(true);
-        if (controlsRef.current) {
-            controlsRef.current.enabled = false;
+        onInterrogate(null);
+
+        const prior = selectedMeshRef.current;
+        if (prior) {
+            tweenGroup.getAll()
+                .filter(t => (t as any)._object === prior.scale)
+                .forEach(t => tweenGroup.remove(t));
+            prior.scale.set(1, 1, 1);
+            selectedMeshRef.current = null;
         }
-        onInterrogate(null); // hide HUD
 
-        if (selectedMesh) {
-            selectedMesh.scale.set(1, 1, 1);
-            setSelectedMesh(null);
-        }
-
-        const targetPos = new THREE.Vector3();
-        _mesh.getWorldPosition(targetPos);
-
-        // Stop the camera SHORT of the element instead of landing exactly
-        // on it. lookAt(target) with camera.position == target is undefined
-        // and corrupts camera.up / quaternion, which then leaks into the
-        // next layer's render (see the up-reset comment in the depth-change
-        // useEffect). Pull back by ~0.1 units along the camera->target
-        // vector so the final lookAt has a stable forward direction.
-        const camToTarget = targetPos.clone().sub(camera.position).normalize();
-        const drillEnd = targetPos.clone().sub(camToTarget.multiplyScalar(0.1));
-
-        new TWEEN.Tween(camera.position, tweenGroup)
-            .to({ x: drillEnd.x, y: drillEnd.y, z: drillEnd.z }, 800)
-            .easing(TWEEN.Easing.Exponential.In)
-            .onUpdate(() => {
-                camera.lookAt(targetPos);
-            })
+        // Visual feedback: pop the clicked element briefly, then commit
+        // the depth change. No camera tween — depth-change useEffect
+        // handles the camera hard-snap atomically.
+        tweenGroup.getAll()
+            .filter(t => (t as any)._object === mesh.scale)
+            .forEach(t => tweenGroup.remove(t));
+        mesh.scale.set(1, 1, 1);
+        new TWEEN.Tween(mesh.scale, tweenGroup)
+            .to({ x: 1.5, y: 1.5, z: 1.5 }, 200)
+            .easing(TWEEN.Easing.Quadratic.Out)
             .onComplete(() => {
-                onDrillDown();
+                mesh.scale.set(1, 1, 1);
+                // Pass the clicked element up so the parent component
+                // can extend the drill path — the next layer's element
+                // ids are scoped under THIS element's full path-id.
+                onDrillDown(data);
             })
             .start();
-
-        const activeGroup = groupsRef.current[currentDepth];
-        if (activeGroup) {
-            new TWEEN.Tween(activeGroup.scale, tweenGroup)
-                .to({ x: 5, y: 5, z: 5 }, 800)
-                .easing(TWEEN.Easing.Exponential.In)
-                .start();
-        }
     };
+
     const handlePointerMissed = () => {
-        if (selectedMesh) {
-            new TWEEN.Tween(selectedMesh.scale, tweenGroup).to({ x: 1, y: 1, z: 1 }, 300).start();
-            setSelectedMesh(null);
+        // Cancel any pending camera fly that was queued from a prior
+        // click — the user clicked away, so don't fire it.
+        if (clickTimerRef.current !== null) {
+            window.clearTimeout(clickTimerRef.current);
+            clickTimerRef.current = null;
+        }
+        const prior = selectedMeshRef.current;
+        if (prior) {
+            tweenGroup.getAll()
+                .filter(t => (t as any)._object === prior.scale)
+                .forEach(t => tweenGroup.remove(t));
+            prior.scale.set(1, 1, 1);
+            selectedMeshRef.current = null;
             onInterrogate(null);
         }
+        // INTENTIONAL: do NOT auto-fly the camera back to overview on
+        // a missed click. With gaps between elements (e.g. depth-1
+        // BACKPLANE = 4-wide elements at 6-unit spacing → 2-unit
+        // gaps), users routinely click in the gap when aiming for an
+        // element. A missed-click flyback then yanks the camera away
+        // mid-select, producing the "moves toward element but doesn't
+        // center" symptom. Just deselect; the user can click another
+        // element or orbit out manually.
     };
 
     return (
@@ -465,13 +616,26 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
                 enablePan={!isTransitioning}
             />
             <group onPointerMissed={handlePointerMissed}>
-                {elementsByDepth.map((elements: ElementData[], depth: number) => (
+                {/* Only the active depth's group is mounted. Three.js's
+                    Raycaster does NOT filter by Object3D.visible — invisible
+                    children are still tested for ray hits — so a <group
+                    visible={false}> still intercepts clicks. With MRAD's
+                    depth-0 face (96 elements at z=2.51) sitting in front
+                    of depth-1 elements (z=0) in screen space, clicks on
+                    centered depth-1 elements were hitting the invisible
+                    depth-0 face elements behind the camera ray instead,
+                    routing the click to a mesh the user couldn't see
+                    (pop tween fires on an invisible mesh, no visible
+                    effect; HUD shows the depth-0 element's data even
+                    though the breadcrumb says BACKPLANE). Unmounting
+                    non-active layers eliminates the raycast collision
+                    entirely. */}
+                {currentElements && (
                     <group
-                        key={depth}
-                        ref={el => { if (el) groupsRef.current[depth] = el; }}
-                        visible={currentDepth === depth}
+                        key={currentDepth}
+                        ref={el => { if (el) groupsRef.current[currentDepth] = el; }}
                     >
-                        {depth === 0 && (
+                        {currentDepth === 0 && (
                             <mesh>
                                 <boxGeometry args={housingSize} />
                                 <meshPhongMaterial color={COLORS.housing} transparent opacity={0.9} />
@@ -481,7 +645,7 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
                                 </lineSegments>
                             </mesh>
                         )}
-                        {elements.map((data) => (
+                        {currentElements.map((data: ElementData) => (
                             <ElementMesh
                                 key={data.id}
                                 data={data}
@@ -490,7 +654,7 @@ function SceneController({ currentDepth, onDrillDown, onInterrogate, isTransitio
                             />
                         ))}
                     </group>
-                ))}
+                )}
             </group>
         </>
     );
@@ -545,20 +709,52 @@ interface SensorArrayViewProps {
     liveTelemetry?: LiveElementTelemetry;
 }
 
-export default function SensorArrayView({ degraded, coreTemp, config = LTAMDS_CONFIG, assetId = 'unknown', liveTelemetry }: SensorArrayViewProps) {
+export default function SensorArrayView({ coreTemp, config = LTAMDS_CONFIG, liveTelemetry }: SensorArrayViewProps) {
     const [currentDepth, setCurrentDepth] = useState(0);
     const [selectedElement, setSelectedElement] = useState<ElementData | null>(null);
     const [isTransitioning, setIsTransitioning] = useState(false);
+    // Full path-encoded id of the element the user drilled INTO at the
+    // previous depth. Null at depth 0 (face elements have no parent).
+    // The sim publishes one row per (asset, drill-path) so this is the
+    // key for child-element lookup. Wrap-around (depth N-1 → 0) resets.
+    const [parentId, setParentId] = useState<string | null>(null);
 
     const maxDepth = config.layers.length;
 
-    const handleDrillDown = () => {
-        setCurrentDepth(prev => (prev + 1) % maxDepth);
+    const handleDrillDown = (parentData: ElementData) => {
+        const next = (currentDepth + 1) % maxDepth;
+        setCurrentDepth(next);
+        // The clicked element's id IS the new parent path. Its id is
+        // already fully path-encoded (e.g. "TR-X-Y/BOARD-0-1") so the
+        // next layer's children inherit the whole chain by suffix.
+        setParentId(next === 0 ? null : parentData.id);
     };
 
     const handleInterrogate = (data: ElementData | null) => {
         setSelectedElement(data);
     };
+
+    // Refresh selectedElement when liveTelemetry ticks so the HUD card
+    // doesn't lag behind the tile color. Without this, click→pick a
+    // yellow tile, sim ticks, tile re-renders cyan (new health value)
+    // but the right-side card still says DEGRADED — frozen at click
+    // time. Re-deriving from the latest liveTelemetry entry keeps the
+    // two in sync on every tick.
+    useEffect(() => {
+        if (!selectedElement) return;
+        const live = liveTelemetry?.[selectedElement.id];
+        if (live?.health == null) return;
+        if (live.health === selectedElement.healthValue) return;
+        const status = getStatusFromHealth(live.health);
+        setSelectedElement({
+            ...selectedElement,
+            healthValue: live.health,
+            status,
+            temp: live.temp != null ? live.temp.toFixed(1) : selectedElement.temp,
+            load: live.load != null ? live.load.toFixed(0) : selectedElement.load,
+            color: selectedElement.face === 'INTERNAL' ? selectedElement.color : status.color,
+        });
+    }, [liveTelemetry, selectedElement]);
 
     const headerExtras = (
         <>
@@ -599,14 +795,13 @@ export default function SensorArrayView({ degraded, coreTemp, config = LTAMDS_CO
 
                 <SceneController
                     currentDepth={currentDepth}
+                    parentId={parentId}
                     onDrillDown={handleDrillDown}
                     onInterrogate={handleInterrogate}
                     isTransitioning={isTransitioning}
                     setIsTransitioning={setIsTransitioning}
-                    degraded={degraded}
                     faces={config.faces}
                     layers={config.layers}
-                    assetId={assetId}
                     liveTelemetry={liveTelemetry}
                     housingSize={config.housingSize}
                 />

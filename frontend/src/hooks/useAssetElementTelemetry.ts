@@ -23,7 +23,7 @@
 // asset_profiles[].name in the sim config this asset routed to. MRAD
 // today; LTAMDS / Patriot to follow as logistics-sim config
 // additions.
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { useTableShape, sqlLiteral, type ShapeResult } from './electric';
 import type { LiveElementTelemetry } from '../components/SensorArrayView';
 
@@ -120,8 +120,18 @@ export function useAssetElementTelemetry(assetId: string | null | undefined): {
 
   const row = shape.data?.[0];
 
+  // Cache the last successfully-parsed liveTelemetry. ElectricSQL's
+  // compacted-topic replication briefly drops shape.data to undefined
+  // (or to a row with no elements) WHILE applying the next snapshot,
+  // even though the new row has 23k elements and arrives milliseconds
+  // later. Without this cache, every tile would flash to NO_DATA grey
+  // for one render every 30 seconds when the sim publishes. Falling
+  // back to the previous successful parse keeps the UI stable through
+  // the blip; the next successful parse replaces the cache.
+  const lastGoodRef = useRef<LiveElementTelemetry | undefined>(undefined);
+
   const liveTelemetry = useMemo<LiveElementTelemetry | undefined>(() => {
-    if (!row?.elements?.length) return undefined;
+    if (!row?.elements?.length) return lastGoodRef.current;
     const out: LiveElementTelemetry = {};
     for (const e of row.elements) {
       if (!e || !e.element_id) continue;
@@ -137,6 +147,7 @@ export function useAssetElementTelemetry(assetId: string | null | undefined): {
         rxActive: e.rx_active,
       };
     }
+    lastGoodRef.current = out;
     return out;
   }, [row]);
 
