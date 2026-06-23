@@ -816,7 +816,42 @@ export default function SensorArrayView({ coreTemp, config = LTAMDS_CONFIG, live
             bottomHint="[CLICK] FOCUS & INTERROGATE • [DBL-CLICK] DRILL DOWN • [SCROLL] ZOOM"
             headerExtras={headerExtras}
         >
-            <Canvas camera={{ position: [15, 12, 20], fov: 50 }}>
+            <Canvas
+                camera={{ position: [15, 12, 20], fov: 50 }}
+                // GPU memory budget knobs — Three.js defaults are
+                // generous and can over-allocate on integrated GPUs
+                // and high-DPI displays, which then surfaces as
+                // "THREE.WebGLRenderer: Context Lost" on Edge/Chrome
+                // (the driver kills the context when D3D/ANGLE can't
+                // satisfy the next alloc).
+                //
+                //   dpr [1, 1.5]   — cap device-pixel-ratio at 1.5×
+                //                    (Windows on 4K monitors often
+                //                    reports 2.0+). At 2.0 the backing
+                //                    buffer is 4× the pixels; capping
+                //                    cuts GPU memory ~2.25× with
+                //                    almost no visible difference.
+                //   antialias false — MSAA off; saves the multi-sample
+                //                    color/depth buffers. Lines look
+                //                    slightly aliased but the dark
+                //                    theme hides it. Re-enable if
+                //                    aliasing is visible on the demo
+                //                    rig.
+                //   powerPreference high-performance — asks Windows
+                //                    to wake the dedicated GPU when
+                //                    one is present, instead of the
+                //                    integrated chip.
+                //   alpha false    — opaque canvas; saves the alpha
+                //                    channel on the swap chain.
+                dpr={[1, 1.5]}
+                gl={{
+                    antialias: false,
+                    powerPreference: 'high-performance',
+                    alpha: false,
+                    stencil: false,
+                    depth: true,
+                }}
+            >
                 <color attach="background" args={[COLORS.bg]} />
                 <fogExp2 attach="fog" args={[COLORS.bg, 0.05]} />
                 <ambientLight intensity={0.4} />
