@@ -730,6 +730,10 @@ function ElementMesh({ data, onSelect, onDrillDown }: { data: ElementData, onSel
 interface SensorArrayViewProps {
     degraded: boolean;
     coreTemp: number;
+    /** Asset uptime in hours. Null → fall back to a hardcoded literal
+     *  in the header so the readout never reads as 0H or blank when
+     *  the upstream feed doesn't carry an hour meter. */
+    uptimeHours?: number | null;
     /** Config for the specific sensor array being rendered. Defaults to
      *  LTAMDS_CONFIG. Pass MRAD_CONFIG for MRAD variants. */
     config?: SensorArrayConfig;
@@ -741,7 +745,7 @@ interface SensorArrayViewProps {
     liveTelemetry?: LiveElementTelemetry;
 }
 
-export default function SensorArrayView({ coreTemp, config = LTAMDS_CONFIG, liveTelemetry }: SensorArrayViewProps) {
+export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS_CONFIG, liveTelemetry }: SensorArrayViewProps) {
     const [currentDepth, setCurrentDepth] = useState(0);
     const [selectedElement, setSelectedElement] = useState<ElementData | null>(null);
     const [isTransitioning, setIsTransitioning] = useState(false);
@@ -805,7 +809,7 @@ export default function SensorArrayView({ coreTemp, config = LTAMDS_CONFIG, live
                 </div>
                 <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-cyan-500"></span>
-                    UPTIME: 1,422H
+                    UPTIME: {uptimeHours != null ? uptimeHours.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '1,422'}H
                 </div>
             </div>
         </>

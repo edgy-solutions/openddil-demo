@@ -33,6 +33,13 @@ export interface AssetElementOperational {
   actively_transmitting?: boolean;
   actively_receiving?: boolean;
   degraded?: boolean;
+  // Asset-level rollups synthesized by logistics-sim because the
+  // customer-overlay proprietary feed doesn't carry sustainment data
+  // (no temps, no hour meters). The maintainer 3D view's CORE TEMP /
+  // UPTIME readouts pick these up; null/undefined falls back to the
+  // hardcoded literals in SensorArrayView.
+  core_temp_c?: number;
+  uptime_hours?: number;
 }
 
 interface AssetElementTelemetryRow {

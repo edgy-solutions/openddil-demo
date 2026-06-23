@@ -31,10 +31,9 @@
 // view-level banner.
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG } from './SensorArrayView';
+import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG, type LiveElementTelemetry } from './SensorArrayView';
 import HudFrame from './HudFrame';
 import { useTransitPhase, transitClass } from './EdgeTransit';
-import { useAssetElementTelemetry } from '../hooks';
 import {
     SCHEMATIC_REGISTRY,
     UnknownPlatformBadge,
@@ -85,6 +84,16 @@ interface DiagnosticCanvasProps {
     assetId?: string | null;
     degraded: boolean;
     coreTemp: number;
+    /** Asset uptime in hours. Threaded from MaintainerApp which
+     *  resolves sustainment.uptime_hours > logistics-sim asset rollup
+     *  (operational.uptime_hours) > null. SensorArrayView falls back
+     *  to a hardcoded literal when null. */
+    uptimeHours?: number | null;
+    /** Per-asset element telemetry from openddil-logistics-sim, lifted
+     *  to MaintainerApp so the asset rollups (core_temp_c, uptime_hours
+     *  in operational) flow to header readouts without a second hook
+     *  subscription. Same shape useAssetElementTelemetry returns. */
+    liveTelemetry?: LiveElementTelemetry;
     /** Phase 6c.3 — when this key changes (the selectedEdge from
      *  MaintainerApp), the schematic Canvas runs a transit animation.
      *  First-mount and same-key re-renders do NOT trigger. */
@@ -102,31 +111,25 @@ export default function DiagnosticCanvas({
     assetId,
     degraded,
     coreTemp,
+    uptimeHours,
+    liveTelemetry,
     transitTriggerKey,
     operationalState,
 }: DiagnosticCanvasProps) {
-    // Hooks run on every render -- React rules-of-hooks requires this
-    // ordering be stable across renders, so we call BOTH hooks here
-    // regardless of which dispatch branch fires below. The transit
-    // hook gates internally on first-mount + same-key. The MRAD
-    // telemetry hook returns liveTelemetry=undefined on non-MRAD
-    // assets (the SQL filter resolves to no rows) and the MRAD-
-    // SensorArrayView path falls back to seeded synthesis when
-    // undefined -- so the LTAMDS / cascade paths pay only the
-    // hook-subscription cost, not the rendering cost.
+    // The transit hook gates internally on first-mount + same-key.
+    // The MRAD telemetry hook USED to live here but was lifted to
+    // MaintainerApp so the asset-level rollups (core_temp_c,
+    // uptime_hours from the operational JSONB) can flow to header
+    // readouts without a duplicate hook subscription. liveTelemetry
+    // and uptimeHours are now props.
     const transitPhase = useTransitPhase(transitTriggerKey ?? null);
-    const { liveTelemetry: mradLive } = useAssetElementTelemetry(assetId);
 
     // MRAD-class variants get a dedicated detailed-array view. This is the
     // production routing path -- any asset whose platform_variant matches
     // an MRAD_VARIANTS entry renders the single-face MRAD detailed array
     // for maintainer drill-down, regardless of the dev RADAR override.
-    // liveTelemetry is wired through; when openddil-mrad-sim has
-    // published a snapshot for this asset, those per-element values
-    // override the seeded-RNG fallback. Until the sim ships data the
-    // view renders the seeded values.
     if (platformVariant && MRAD_VARIANTS.has(platformVariant)) {
-        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={mradLive} />;
+        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} />;
     }
 
     if (assetType === 'RADAR') {
@@ -135,7 +138,7 @@ export default function DiagnosticCanvas({
         // SensorRadarSchematic. Retained as a maintainer-only debug aid;
         // ORBAT-named radar tiers (CUAS/VSHORAD/SHORAD/MRAD_Sensor) go
         // through the registry path below.
-        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} />;
+        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} />;
     }
 
     const { title, subtitle } = titleForVariant(platformVariant);

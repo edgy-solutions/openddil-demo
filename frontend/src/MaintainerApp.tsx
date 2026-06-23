@@ -32,6 +32,7 @@ import {
   useCmState,
   useLogisticsStatus,
   useTacticalEvents,
+  useAssetElementTelemetry,
 } from './hooks';
 import { platformClass } from './config/platformChartConfig';
 import { deployment } from './deployment';
@@ -152,6 +153,13 @@ function MaintainerApp() {
   const logistics = useLogisticsStatus(selectedAssetId);
   // Maintainer view: recent events filtered to the selected asset.
   const events = useTacticalEvents(10, selectedAssetId);
+  // Per-element tree + asset rollups (core_temp_c, uptime_hours) from
+  // openddil-logistics-sim. Lifted to MaintainerApp from DiagnosticCanvas
+  // so the asset rollups can flow into header readouts alongside the
+  // 3D drill-down. liveTelemetry is threaded down to DiagnosticCanvas.
+  const assetElementTelemetry = useAssetElementTelemetry(selectedAssetId);
+  const mradLive = assetElementTelemetry.liveTelemetry;
+  const mradOperational = assetElementTelemetry.operational;
 
   // Available edges for the pulldown — distinct edge_ids actually
   // observed in the pipeline. Sorted alphabetically. Symmetric with
@@ -297,7 +305,21 @@ function MaintainerApp() {
     ? new URLSearchParams(window.location.search).get('force')
     : null;
   const assetClass = forceClass === 'radar' ? 'RADAR' : platformClass(variant);
-  const coreTemp = tel?.sustainment?.thermal?.component_temperature?.value ?? 32.0;
+  // CORE TEMP precedence: customer-overlay sustainment block (if the
+  // upstream feed populates it) > logistics-sim asset rollup (the
+  // common case — customer-overlay's proprietary feed doesn't carry
+  // sustainment) > hardcoded 32.0 fallback. Same precedence for
+  // uptime: sustainment.uptime_hours > sim rollup > frontend literal.
+  // The sim values come from openddil-logistics-sim's
+  // compute_asset_metrics + ride in asset_element_telemetry.operational.
+  const coreTemp =
+    tel?.sustainment?.thermal?.component_temperature?.value
+    ?? mradOperational?.core_temp_c
+    ?? 32.0;
+  const uptimeHours =
+    tel?.sustainment?.uptime_hours
+    ?? mradOperational?.uptime_hours
+    ?? null;
 
   // Radar plots real lat/lon (via FleetAsset.position from
   // telemetry_latest_state) projected to a 2D frame centered on the
@@ -397,6 +419,8 @@ function MaintainerApp() {
               assetId={selectedAssetId}
               degraded={degraded}
               coreTemp={coreTemp}
+              uptimeHours={uptimeHours}
+              liveTelemetry={mradLive}
               transitTriggerKey={selectedEdge}
               operationalState={tel?.operational_state ?? null}
             />
