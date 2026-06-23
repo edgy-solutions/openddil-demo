@@ -113,8 +113,15 @@ export const LTAMDS_CONFIG: SensorArrayConfig = {
 export const MRAD_CONFIG: SensorArrayConfig = {
     title: 'MRAD Multi-Mission Radar',
     subtitle: 'ARRAY DIAGNOSTIC INTERFACE @[//] FORWARD-DEPLOYED',
+    // Face shrunk from 8×12 (96 elements) to 6×8 (48). Work-cluster
+    // integrated GPU was losing WebGL context on every MRAD asset
+    // switch even after the deeper-layer cardinality reduction;
+    // halving the face mesh count + frameloop=demand on the Canvas
+    // (below) holds the context. Must match the sim's
+    // default.yaml face dimensions for the path-encoded element ids
+    // to resolve in liveTelemetry.
     faces: [
-        { cols: 8, rows: 12, pos: [0, 0, 2.51], rot: [0, 0, 0], name: 'PRIMARY APERTURE' },
+        { cols: 6, rows: 8, pos: [0, 0, 2.51], rot: [0, 0, 0], name: 'PRIMARY APERTURE' },
     ],
     // IMPORTANT: cols×rows MUST match the sim's default.yaml MRAD
     // profile (openddil-logistics-sim/config/default.yaml). The path-
@@ -860,7 +867,27 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                 //                    integrated chip.
                 //   alpha false    — opaque canvas; saves the alpha
                 //                    channel on the swap chain.
+                //   frameloop demand — render only when scene state
+                //                    changes. Default 'always' re-
+                //                    paints at 60fps even though the
+                //                    scene is mostly static (stable
+                //                    health per tick, no animations
+                //                    other than the now-disabled
+                //                    pulse). Combined with the face
+                //                    shrink + cardinality reduction,
+                //                    this is what holds the WebGL
+                //                    context on the work-cluster
+                //                    integrated GPU. liveTelemetry
+                //                    updates trigger React state
+                //                    changes → automatic invalidate,
+                //                    so the tile colors still update
+                //                    once per sim tick. Trade-off:
+                //                    the pulse animation on critical
+                //                    tiles stops moving — they sit
+                //                    at constant emissive intensity.
+                //                    Visually distinct enough; ship.
                 dpr={[1, 1.5]}
+                frameloop="demand"
                 gl={{
                     antialias: false,
                     powerPreference: 'high-performance',
