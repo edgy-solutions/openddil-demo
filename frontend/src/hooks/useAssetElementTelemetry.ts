@@ -103,7 +103,18 @@ export function useAssetElementTelemetry(assetId: string | null | undefined): {
     'asset_element_telemetry',
     mapRow,
     assetId
-      ? { where: `asset_id = ${sqlLiteral(assetId)}` }
+      // LIKE-without-wildcard is SQL-equivalent to =, but works around an
+      // Electric Shape API bug where `column = literal` returns empty for
+      // rows whose serialized JSON exceeds ~1MB. asset_element_telemetry
+      // rows are ~5MB on the wire (the full 23k-element tree from
+      // logistics-sim), so the = path silently returns snapshot-end with
+      // no rows. Verified by binary search: small row with same asset_id
+      // filtered by = → returns data; large row → empty; same large row
+      // filtered by LIKE → returns data.
+      // TODO: report to ElectricSQL upstream; remove this workaround when
+      // patched. Other hooks (useCmState, useCapabilityState, etc.) use
+      // the same pattern but on smaller rows so haven't tripped this yet.
+      ? { where: `asset_id LIKE ${sqlLiteral(assetId)}` }
       : { where: '1=0' }, // no asset selected -> empty result, hook still safe
   );
 
