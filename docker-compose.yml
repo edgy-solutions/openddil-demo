@@ -288,6 +288,24 @@ services:
               -c segment.ms=60000 \
               -c retention.ms=-1 \
               || true
+          # Phase 9: per-asset element telemetry from openddil-logistics-sim.
+          # Compacted, keyed by asset_id — projector upserts the latest
+          # envelope into asset_element_telemetry per asset. logistics-sim
+          # PRODUCES to redpanda-hq only; topic created on every broker for
+          # subscription-parity (same pattern as asset-cm-state above).
+          # max.message.bytes raised to 16MB to fit the full per-asset
+          # element TREE (~5MB for MRAD at 23k elements with path-encoded
+          # ids — see openddil-logistics-sim element_gen.py). Producer
+          # max_request_size and consumer fetch.message.max.bytes both
+          # match (publisher.py / projector main.py).
+          rpk -X brokers=$$B topic create asset-element-telemetry \
+              -p 8 -r 1 \
+              -c cleanup.policy=compact \
+              -c min.cleanable.dirty.ratio=0.1 \
+              -c segment.ms=60000 \
+              -c retention.ms=-1 \
+              -c max.message.bytes=16777216 \
+              || true
           echo "INFO: Topics initialized on $$B."
         done
         # ADR-0023 Phase 6b §B — per-region fan-in topics. Pipeline
@@ -931,6 +949,45 @@ services:
       restate-server:
         condition: service_started
     restart: "no"
+
+  # =============================================================================
+  # Logistics Sim (Phase 9) — per-element sub-component telemetry generator
+  # =============================================================================
+  # Subscribes to telemetry-latest-state on each edge broker, builds a roster
+  # of assets whose platform_variant matches one of the configured asset
+  # profiles (MRAD today; LTAMDS / Patriot to follow as config additions),
+  # and on every tick publishes a per-asset element snapshot to
+  # asset-element-telemetry on redpanda-hq. The projector handler at
+  # openddil-projector/src/handlers/asset_element_telemetry.py upserts into
+  # the asset_element_telemetry postgres table; the SensorArrayView reads
+  # via useAssetElementTelemetry (ElectricSQL shape).
+  #
+  # Replaces the frontend's seeded-RNG synthesis fallback — this is now the
+  # single source of truth for per-element health / temp / load and for
+  # the tx_active / rx_active state propagated from the customer feed.
+  logistics-sim:
+    image: ghcr.io/edgy-solutions/openddil/logistics-sim:latest
+    pull_policy: always
+    container_name: openddil-demo-logistics-sim
+    environment:
+      LOGISTICS_SIM_HQ_BROKERS:           redpanda-hq:19092
+      LOGISTICS_SIM_EDGE_CLUSTERS:        "edge-01=redpanda-edge-01:9092,edge-02=redpanda-edge-02:9092,edge-03=redpanda-edge-03:9092"
+      LOGISTICS_SIM_INPUT_TOPIC:          telemetry-latest-state
+      LOGISTICS_SIM_CONSUMER_GROUP_PREFIX: logistics-sim
+      LOGISTICS_SIM_CONFIG_PATH:          /app/config/default.yaml
+      LOG_LEVEL:                          INFO
+    depends_on:
+      redpanda-edge-01:
+        condition: service_healthy
+      redpanda-edge-02:
+        condition: service_healthy
+      redpanda-edge-03:
+        condition: service_healthy
+      redpanda-hq:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   cm-service-bootstrap:
     # Reuses the same image as cm-service; only the entrypoint differs.

@@ -68,6 +68,8 @@ const MAINTAINER_ACTIONABLE_VARIANTS = new Set<string>([
   'CUAS_Sensor', 'VSHORAD_Sensor', 'SHORAD_Sensor', 'MRAD_Sensor',
   'CUAS_Interceptor', 'VSHORAD_Interceptor', 'SHORAD_Interceptor', 'MRAD_Interceptor',
   'MISSILE_LAUNCHER',
+  // Customer-overlay MRAD variants (proprietary feed token)
+  'MRAD2_radar',
 ]);
 
 // Phase 6c.2: edge-scope mechanism (pulldown + ?edge= URL param). The
