@@ -58,13 +58,30 @@ interface ElementJson {
   rx_active?: boolean;
 }
 
+// Electric's Shape API returns JSONB columns as JSON-encoded STRINGS,
+// not pre-parsed JS arrays/objects. If we hand `row.elements` through
+// raw, the consumer's `for (const e of row.elements)` iterates the
+// string CHARACTER BY CHARACTER (each char has no element_id, so the
+// inner guard `continue`s every time) and liveTelemetry comes out as
+// `{}`. That manifests as every face tile rendering NO_DATA grey
+// even though the row is populated in postgres. Parse both JSONB
+// columns here so downstream code sees the array/object shapes the
+// TypeScript types promise.
+function _parseJsonbCol<T>(value: unknown, fallback: T): T {
+  if (value == null) return fallback;
+  if (typeof value === 'string') {
+    try { return JSON.parse(value) as T; } catch { return fallback; }
+  }
+  return value as T;
+}
+
 function mapRow(row: Record<string, any>): AssetElementTelemetryRow {
   return {
     asset_id: row.asset_id,
     platform_variant: row.platform_variant ?? '',
     profile_name: row.profile_name ?? '',
-    elements: row.elements ?? [],
-    operational: row.operational ?? {},
+    elements: _parseJsonbCol<ElementJson[]>(row.elements, []),
+    operational: _parseJsonbCol<AssetElementOperational>(row.operational, {}),
     observed_at: row.observed_at ?? null,
     edge_id: row.edge_id ?? '',
     region_id: row.region_id ?? '',
