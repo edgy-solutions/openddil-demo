@@ -13,10 +13,16 @@
 import type { ReactNode } from 'react';
 import { DemoMockBanner } from './DemoMockBanner';
 
+type BannerPosition = 'top-right' | 'bottom-right' | 'bottom-center';
+
 interface HudFrameProps {
     title: string;
     subtitle?: string;
     bannerNote?: string;
+    /** Position for the DemoMockBanner. Defaults to top-right; the
+     *  maintainer 3D drill-down passes 'bottom-center' so the badge
+     *  doesn't crowd the top header's title + breadcrumbs. */
+    bannerPosition?: BannerPosition;
     bottomHint?: string;
     /** Optional content rendered under the header (e.g. SensorArrayView's
      *  depth-breadcrumb and status pills). Lives in the same top-left
@@ -37,6 +43,7 @@ export default function HudFrame({
     title,
     subtitle,
     bannerNote,
+    bannerPosition,
     bottomHint,
     headerExtras,
     children,
@@ -44,7 +51,7 @@ export default function HudFrame({
 }: HudFrameProps) {
     return (
         <div className="absolute inset-0 bg-[#020617] text-[#22d3ee] font-mono select-none overflow-hidden">
-            {bannerNote && <DemoMockBanner note={bannerNote} />}
+            {bannerNote && <DemoMockBanner note={bannerNote} position={bannerPosition} />}
             <style>{`
                 .hud-border {
                     border: 1px solid rgba(34, 211, 238, 0.3);

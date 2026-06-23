@@ -16,11 +16,15 @@
 // collide with the title.
 // =============================================================================
 
-type BannerPosition = 'top-right' | 'bottom-right';
+type BannerPosition = 'top-right' | 'bottom-right' | 'bottom-center';
 
 const POSITION_CLASSES: Record<BannerPosition, string> = {
-  'top-right': 'top-1 right-1',
-  'bottom-right': 'bottom-1 right-1',
+  'top-right':     'top-1 right-1',
+  'bottom-right':  'bottom-1 right-1',
+  // Bottom-center centers along the horizontal axis; the maintainer
+  // 3D drill-down uses this so the badge sits under the asset and out
+  // of the way of the top-left header / drill breadcrumbs.
+  'bottom-center': 'bottom-1 left-1/2 -translate-x-1/2',
 };
 
 export function DemoMockBanner({

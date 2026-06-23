@@ -122,7 +122,10 @@ export const MRAD_CONFIG: SensorArrayConfig = {
         { name: 'PROCESSOR BANK', cols: 2, rows: 2, prefix: 'MODULE', elementSize: [3, 3, 0.5],     spacing: 5, wireframe: true },
         { name: 'GAN MMIC CHIP',  cols: 3, rows: 3, prefix: 'CHIP',   elementSize: [1.5, 1.5, 0.4], spacing: 2.5, wireframe: true },
     ],
-    bannerNote: 'DEMO_MOCK -- per-element telemetry from openddil-mrad-sim (synthesized when sim absent)',
+    // Short banner — DemoMockBanner prepends "Demo Mock — " on its
+    // own, so don't repeat the marker. Result: "Demo Mock — source:
+    // logistics-sim" (or whatever real producer is wired).
+    bannerNote: 'source: logistics-sim',
     housingSize: [6, 9, 5],
 };
 
@@ -813,6 +816,7 @@ export default function SensorArrayView({ coreTemp, config = LTAMDS_CONFIG, live
             title={config.title}
             subtitle={config.subtitle}
             bannerNote={config.bannerNote}
+            bannerPosition="bottom-center"
             bottomHint="[CLICK] FOCUS & INTERROGATE • [DBL-CLICK] DRILL DOWN • [SCROLL] ZOOM"
             headerExtras={headerExtras}
         >
@@ -882,13 +886,32 @@ export default function SensorArrayView({ coreTemp, config = LTAMDS_CONFIG, live
             <div className={`absolute right-6 top-6 w-80 hud-border p-6 z-20 transition-transform duration-500 transform ${selectedElement ? 'translate-x-0' : 'translate-x-[120%]'} pointer-events-auto`}>
                 <div className="scanning-line"></div>
                 <div className="flex justify-between items-start mb-4">
-                    <div>
-                        <h2 className="text-lg font-bold glitch-text text-cyan-400">{selectedElement?.id || '--'}</h2>
+                    <div className="min-w-0 flex-1 pr-2">
+                        {/* Title is just the LEAF segment of the path-encoded
+                            element_id (e.g. "CHIP-0-0"); the full drill path
+                            shows as a smaller breadcrumb above it. Without
+                            the split, a depth-3 selection would title-wrap
+                            to four lines with the full
+                            TR-PRIMARYAPERTURE-3-5/BOARD-0-0/MODULE-1-0/CHIP-0-0
+                            string. The leaf is the actionable component;
+                            the chain is context. */}
+                        {selectedElement && selectedElement.id.includes('/') && (
+                            <p className="text-[0.55rem] opacity-50 tracking-wider uppercase break-all leading-tight mb-1">
+                                {selectedElement.id.substring(0, selectedElement.id.lastIndexOf('/') + 1)}
+                            </p>
+                        )}
+                        <h2 className="text-lg font-bold glitch-text text-cyan-400 truncate">
+                            {selectedElement
+                                ? (selectedElement.id.includes('/')
+                                    ? selectedElement.id.substring(selectedElement.id.lastIndexOf('/') + 1)
+                                    : selectedElement.id)
+                                : '--'}
+                        </h2>
                         <p className="text-[0.6rem] opacity-60 uppercase">{selectedElement?.face || 'SYSTEM COMPONENT'}</p>
                     </div>
                     <button onClick={() => {
                         setSelectedElement(null);
-                    }} className="text-cyan-400 hover:text-white transition-colors text-xl font-bold p-1 cursor-pointer">✕</button>
+                    }} className="text-cyan-400 hover:text-white transition-colors text-xl font-bold p-1 cursor-pointer flex-shrink-0">✕</button>
                 </div>
 
                 <div className="space-y-4">
