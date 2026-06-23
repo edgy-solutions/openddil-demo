@@ -153,7 +153,30 @@ export default function DiagnosticCanvas({
             bannerNote={DEMO_MOCK ? 'synthetic 3D schematic' : undefined}
             contentClassName={transitClass(transitPhase)}
         >
-            <Canvas camera={{ position: [10, 10, 10], fov: 50 }}>
+            <Canvas
+                camera={{ position: [10, 10, 10], fov: 50 }}
+                // GPU memory budget knobs — same conservative config as
+                // SensorArrayView. Integrated GPUs (work laptops) run out
+                // of buffer slots fast when an operator picks through a
+                // fleet of 60+ assets, each switch mounting/unmounting
+                // this Canvas; the driver eventually kills a context.
+                //   * dpr cap 1.5× saves ~2.25× GPU memory vs 2.0+ DPR
+                //   * antialias off — MSAA buffers are the next biggest
+                //     cost; dark theme hides aliasing
+                //   * alpha/stencil off — saves swap-chain channels
+                //   * powerPreference high-performance — wakes dGPU
+                //   * frameloop demand — only renders when scene state
+                //     changes (not 60fps), HUGE win for an idle picker
+                dpr={[1, 1.5]}
+                frameloop="demand"
+                gl={{
+                    antialias: false,
+                    powerPreference: 'high-performance',
+                    alpha: false,
+                    stencil: false,
+                    depth: true,
+                }}
+            >
                 <color attach="background" args={[0x020617]} />
                 <fogExp2 attach="fog" args={[0x020617, 0.05]} />
                 <ambientLight intensity={0.4} />

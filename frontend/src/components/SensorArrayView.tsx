@@ -116,11 +116,20 @@ export const MRAD_CONFIG: SensorArrayConfig = {
     faces: [
         { cols: 8, rows: 12, pos: [0, 0, 2.51], rot: [0, 0, 0], name: 'PRIMARY APERTURE' },
     ],
+    // IMPORTANT: cols×rows MUST match the sim's default.yaml MRAD
+    // profile (openddil-logistics-sim/config/default.yaml). The path-
+    // encoded element ids the sim publishes (TR-.../BOARD-i-j/MODULE-
+    // i-j/CHIP-i-j) only resolve in liveTelemetry when both sides
+    // agree on the grid. Tree was 96 × 6 × 4 × 9 = 23,712 elements
+    // (~5MB serialized), which killed WebGL on integrated GPUs at
+    // first load. Reduced to 96 × 4 × 4 × 4 = 8,160 (~1.6MB) so the
+    // browser can hold context while keeping a 2×2 drill at every
+    // level.
     layers: [
         { name: 'RADAR UNIT',     cols: 0, rows: 0, prefix: 'TR',     elementSize: [0.5, 0.5, 0.15], spacing: 0.65 },
-        { name: 'BACKPLANE',      cols: 2, rows: 3, prefix: 'BOARD',  elementSize: [4, 4, 0.5],     spacing: 6, wireframe: true },
+        { name: 'BACKPLANE',      cols: 2, rows: 2, prefix: 'BOARD',  elementSize: [4, 4, 0.5],     spacing: 6, wireframe: true },
         { name: 'PROCESSOR BANK', cols: 2, rows: 2, prefix: 'MODULE', elementSize: [3, 3, 0.5],     spacing: 5, wireframe: true },
-        { name: 'GAN MMIC CHIP',  cols: 3, rows: 3, prefix: 'CHIP',   elementSize: [1.5, 1.5, 0.4], spacing: 2.5, wireframe: true },
+        { name: 'GAN MMIC CHIP',  cols: 2, rows: 2, prefix: 'CHIP',   elementSize: [1.5, 1.5, 0.4], spacing: 2.5, wireframe: true },
     ],
     // Short banner — DemoMockBanner prepends "Demo Mock — " on its
     // own, so don't repeat the marker. Result: "Demo Mock — source:
