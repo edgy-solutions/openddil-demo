@@ -335,12 +335,38 @@ export default function TelemetryCharts({
           // SYNTHESIZED badge -- distinguishes sim-derived aggregates
           // from real sustainment. Same color family as the existing
           // DEMO MOCK marker so the operator recognizes the provenance
-          // signal at a glance.
-          <span
-            className="text-[9px] font-mono tracking-widest text-amber-400 border border-amber-700/50 bg-amber-900/30 px-2 py-0.5 rounded-sm"
-            title="Per-element aggregates synthesized by logistics-sim. Real sustainment will replace this view automatically when the customer / DIS feed emits sustainment.* fields."
-          >
-            SYNTHESIZED
+          // signal at a glance. The provenance paragraph used to render
+          // as an always-on banner above the charts, but it dominated
+          // the panel; moved to a hover popup so the explanation is
+          // discoverable without taking up vertical space all the time.
+          //
+          // CSS-only popup: parent is `group`, child is hidden by
+          // default + `group-hover:block`. `pointer-events-none` keeps
+          // the popup from intercepting mouse events that would close
+          // it (causes a flicker loop on borders). Positioned BELOW
+          // the badge so it doesn't get clipped by the panel header.
+          <span className="relative group cursor-help">
+            <span className="text-[9px] font-mono tracking-widest text-amber-400 border border-amber-700/50 bg-amber-900/30 px-2 py-0.5 rounded-sm">
+              SYNTHESIZED
+            </span>
+            <div
+              className="
+                absolute right-0 top-full mt-1 z-20 w-72
+                hidden group-hover:block
+                pointer-events-none
+                text-[10px] font-mono leading-snug normal-case tracking-normal
+                text-amber-100 bg-slate-900/95 border border-amber-700/50
+                p-3 rounded-sm shadow-lg
+              "
+              role="tooltip"
+            >
+              Real sustainment is not yet wired for this asset. Showing
+              per-element rollups synthesized by logistics-sim — the
+              same data driving the 3D drill-down above. When the
+              upstream feed begins emitting <span className="text-amber-300">sustainment.*</span>,
+              this panel will switch back to real measurements
+              automatically.
+            </div>
           </span>
         )}
       </h2>
@@ -361,15 +387,6 @@ export default function TelemetryCharts({
 
       {!isLoading && source !== 'empty' && (
         <>
-          {source === 'sim' && (
-            <p className="text-[10px] font-mono text-amber-300/70 mb-3 leading-snug">
-              Real sustainment is not yet wired for this asset. Showing
-              per-element rollups synthesized by logistics-sim — the
-              same data driving the 3D drill-down above. When the
-              upstream feed begins emitting sustainment.*, this panel
-              will switch back to real measurements automatically.
-            </p>
-          )}
           {fields.map((field, idx) => {
             const isAnomaly =
               field.anomalyThreshold != null && field.value >= field.anomalyThreshold;
