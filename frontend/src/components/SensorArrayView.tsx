@@ -113,30 +113,26 @@ export const LTAMDS_CONFIG: SensorArrayConfig = {
 export const MRAD_CONFIG: SensorArrayConfig = {
     title: 'MRAD Multi-Mission Radar',
     subtitle: 'ARRAY DIAGNOSTIC INTERFACE @[//] FORWARD-DEPLOYED',
-    // Face shrunk from 8×12 (96 elements) to 6×8 (48). Work-cluster
-    // integrated GPU was losing WebGL context on every MRAD asset
-    // switch even after the deeper-layer cardinality reduction;
-    // halving the face mesh count + frameloop=demand on the Canvas
-    // (below) holds the context. Must match the sim's
-    // default.yaml face dimensions for the path-encoded element ids
-    // to resolve in liveTelemetry.
-    faces: [
-        { cols: 6, rows: 8, pos: [0, 0, 2.51], rot: [0, 0, 0], name: 'PRIMARY APERTURE' },
-    ],
     // IMPORTANT: cols×rows MUST match the sim's default.yaml MRAD
     // profile (openddil-logistics-sim/config/default.yaml). The path-
     // encoded element ids the sim publishes (TR-.../BOARD-i-j/MODULE-
     // i-j/CHIP-i-j) only resolve in liveTelemetry when both sides
-    // agree on the grid. Tree was 96 × 6 × 4 × 9 = 23,712 elements
-    // (~5MB serialized), which killed WebGL on integrated GPUs at
-    // first load. Reduced to 96 × 4 × 4 × 4 = 8,160 (~1.6MB) so the
-    // browser can hold context while keeping a 2×2 drill at every
-    // level.
+    // agree on the grid. Full tree: 96 (face 8×12) × 6 (backplane 2×3)
+    // × 4 (processor 2×2) × 9 (chip 3×3) = 23,712 elements (~5MB
+    // serialized). Earlier reduced to 4,080 to hold WebGL context on
+    // integrated GPUs; restored to 23,712 after a visual quality pass
+    // (the trimmed-down array looked sparse compared to the original
+    // dense grid + pulse animation). If WebGL context loss recurs on
+    // a target deployment, the path back is in git history (commit
+    // 3bf93d9 + 6a645df).
+    faces: [
+        { cols: 8, rows: 12, pos: [0, 0, 2.51], rot: [0, 0, 0], name: 'PRIMARY APERTURE' },
+    ],
     layers: [
         { name: 'RADAR UNIT',     cols: 0, rows: 0, prefix: 'TR',     elementSize: [0.5, 0.5, 0.15], spacing: 0.65 },
-        { name: 'BACKPLANE',      cols: 2, rows: 2, prefix: 'BOARD',  elementSize: [4, 4, 0.5],     spacing: 6, wireframe: true },
+        { name: 'BACKPLANE',      cols: 2, rows: 3, prefix: 'BOARD',  elementSize: [4, 4, 0.5],     spacing: 6, wireframe: true },
         { name: 'PROCESSOR BANK', cols: 2, rows: 2, prefix: 'MODULE', elementSize: [3, 3, 0.5],     spacing: 5, wireframe: true },
-        { name: 'GAN MMIC CHIP',  cols: 2, rows: 2, prefix: 'CHIP',   elementSize: [1.5, 1.5, 0.4], spacing: 2.5, wireframe: true },
+        { name: 'GAN MMIC CHIP',  cols: 3, rows: 3, prefix: 'CHIP',   elementSize: [1.5, 1.5, 0.4], spacing: 2.5, wireframe: true },
     ],
     // Short banner — DemoMockBanner prepends "Demo Mock — " on its
     // own, so don't repeat the marker. Result: "Demo Mock — source:
@@ -842,59 +838,19 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
         >
             <Canvas
                 camera={{ position: [15, 12, 20], fov: 50 }}
-                // GPU memory budget knobs — Three.js defaults are
-                // generous and can over-allocate on integrated GPUs
-                // and high-DPI displays, which then surfaces as
-                // "THREE.WebGLRenderer: Context Lost" on Edge/Chrome
-                // (the driver kills the context when D3D/ANGLE can't
-                // satisfy the next alloc).
-                //
-                //   dpr [1, 1.5]   — cap device-pixel-ratio at 1.5×
-                //                    (Windows on 4K monitors often
-                //                    reports 2.0+). At 2.0 the backing
-                //                    buffer is 4× the pixels; capping
-                //                    cuts GPU memory ~2.25× with
-                //                    almost no visible difference.
-                //   antialias false — MSAA off; saves the multi-sample
-                //                    color/depth buffers. Lines look
-                //                    slightly aliased but the dark
-                //                    theme hides it. Re-enable if
-                //                    aliasing is visible on the demo
-                //                    rig.
-                //   powerPreference high-performance — asks Windows
-                //                    to wake the dedicated GPU when
-                //                    one is present, instead of the
-                //                    integrated chip.
-                //   alpha false    — opaque canvas; saves the alpha
-                //                    channel on the swap chain.
-                //   frameloop demand — render only when scene state
-                //                    changes. Default 'always' re-
-                //                    paints at 60fps even though the
-                //                    scene is mostly static (stable
-                //                    health per tick, no animations
-                //                    other than the now-disabled
-                //                    pulse). Combined with the face
-                //                    shrink + cardinality reduction,
-                //                    this is what holds the WebGL
-                //                    context on the work-cluster
-                //                    integrated GPU. liveTelemetry
-                //                    updates trigger React state
-                //                    changes → automatic invalidate,
-                //                    so the tile colors still update
-                //                    once per sim tick. Trade-off:
-                //                    the pulse animation on critical
-                //                    tiles stops moving — they sit
-                //                    at constant emissive intensity.
-                //                    Visually distinct enough; ship.
+                // dpr cap at 1.5× retained from the GPU-budget pass.
+                // Windows on 4K monitors often reports DPR 2.0+; at
+                // 2.0 the backing buffer is 4× the logical pixel
+                // count -- capping at 1.5× cuts GPU memory ~2.25×
+                // with almost no visible difference on the dark UI
+                // theme. The other budget knobs (antialias=false,
+                // alpha=false, stencil=false, frameloop=demand) were
+                // reverted -- the trimmed-down look was a visual
+                // regression (no pulse animation on critical tiles,
+                // aliased edges on the radar housing). If WebGL
+                // context loss recurs, restore those knobs (commit
+                // b8c1c83 + 3bf93d9 in git history).
                 dpr={[1, 1.5]}
-                frameloop="demand"
-                gl={{
-                    antialias: false,
-                    powerPreference: 'high-performance',
-                    alpha: false,
-                    stencil: false,
-                    depth: true,
-                }}
             >
                 <color attach="background" args={[COLORS.bg]} />
                 <fogExp2 attach="fog" args={[COLORS.bg, 0.05]} />
