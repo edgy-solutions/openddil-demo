@@ -467,7 +467,19 @@ function MaintainerApp() {
               Shows ammo per weapon/store with LOW/DEPLETED banding once
               levels cross the configured threshold. */}
           <StrikeCapabilityCard assetId={selectedAssetId} />
-          <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={degraded} isLoading={telemetry.isLoading} />
+          {/* TelemetryCharts uses a layered data source -- real
+              sustainment when the customer/DIS feed provides it,
+              sim-derived per-element aggregates when not. mradLive
+              is the same hook the 3D drill-down above consumes,
+              so when sustainment is absent the chart panel and
+              the 3D tiles tell the same story from the same data. */}
+          <TelemetryCharts
+            telemetry={tel}
+            platformVariant={variant}
+            degraded={degraded}
+            isLoading={telemetry.isLoading}
+            liveTelemetry={mradLive}
+          />
           <AlertFeed events={events.data} isLoading={events.isLoading} />
           <Inventory />
         </div>
