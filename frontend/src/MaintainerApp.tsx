@@ -472,13 +472,18 @@ function MaintainerApp() {
               sim-derived per-element aggregates when not. mradLive
               is the same hook the 3D drill-down above consumes,
               so when sustainment is absent the chart panel and
-              the 3D tiles tell the same story from the same data. */}
+              the 3D tiles tell the same story from the same data.
+              selectedAssetId is passed so the rolling chart history
+              resets when the operator switches assets (otherwise
+              the prior asset's 30-sample history scrolls through
+              the new asset's chart for ~30 ticks). */}
           <TelemetryCharts
             telemetry={tel}
             platformVariant={variant}
             degraded={degraded}
             isLoading={telemetry.isLoading}
             liveTelemetry={mradLive}
+            assetId={selectedAssetId}
           />
           <AlertFeed events={events.data} isLoading={events.isLoading} />
           <Inventory />

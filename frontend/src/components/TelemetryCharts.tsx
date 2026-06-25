@@ -239,6 +239,12 @@ interface TelemetryChartsProps {
    *  mode (4-stat aggregate panel + SYNTHESIZED badge). Falls back
    *  to empty state when both are missing. */
   liveTelemetry?: LiveElementTelemetry;
+  /** Selected asset_id. Threaded purely so the rolling chart history
+   *  resets on asset change -- without this, switching from a per-site
+   *  sensor to its chassis (or to a different asset class entirely)
+   *  leaves the prior asset's 30-sample chart history scrolling
+   *  through the new asset's chart for ~30 ticks. */
+  assetId?: string | null;
 }
 
 export default function TelemetryCharts({
@@ -247,21 +253,26 @@ export default function TelemetryCharts({
   degraded,
   isLoading = false,
   liveTelemetry,
+  assetId,
 }: TelemetryChartsProps) {
   const config = platformChartConfig(platformVariant);
   const sustainment = telemetry?.sustainment ?? null;
   const { fields, source } = resolveFields(config, sustainment, liveTelemetry);
 
-  // One canvas ref per resolved field. Re-created when source or
-  // platformVariant flips (different field list, different histories).
+  // One canvas ref per resolved field. Re-created when source, variant,
+  // OR selected asset_id changes (different field list, different
+  // histories, or just a different asset selection).
   const chartRefs = useRef<(HTMLCanvasElement | null)[]>([]);
   const chartInstances = useRef<(Chart | undefined)[]>([]);
   const dataHistories = useRef<number[][]>([]);
-  // Rebuild key: source + variant + field count. When ANY of these
-  // change, the chart set is rebuilt and histories reset.
+  // Rebuild key: source + variant + field count + assetId. When ANY of
+  // these change, the chart set is rebuilt and histories reset. Asset-id
+  // is in the key so an operator switching between two MRAD assets
+  // (same source, same variant, same field count) still gets a clean
+  // chart instead of the prior asset's history scrolling through.
   const prevRebuildKey = useRef<string | null>(null);
 
-  const rebuildKey = `${source}|${platformVariant ?? '-'}|${fields.length}`;
+  const rebuildKey = `${source}|${platformVariant ?? '-'}|${fields.length}|${assetId ?? '-'}`;
 
   // (Re)build charts when the resolved field set changes.
   useEffect(() => {

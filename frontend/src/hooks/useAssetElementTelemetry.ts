@@ -135,7 +135,22 @@ export function useAssetElementTelemetry(assetId: string | null | undefined): {
   // for one render every 30 seconds when the sim publishes. Falling
   // back to the previous successful parse keeps the UI stable through
   // the blip; the next successful parse replaces the cache.
+  //
+  // CRITICAL: the cache MUST be invalidated when assetId changes,
+  // else switching from a per-site sensor (has telemetry) to a chassis
+  // radar or launcher (no/different telemetry) leaks the previous
+  // asset's data into the new asset's view -- the Prognostics card's
+  // sim-derived aggregates and the maintainer 3D tiles both render
+  // stale numbers for the wrong asset, persisting until the new
+  // asset's row arrives. Observed 2026-06-25: switching off a MRAD
+  // sensor onto a SHORAD radar showed SHORAD asset displaying the
+  // MRAD's telemetry charts.
   const lastGoodRef = useRef<LiveElementTelemetry | undefined>(undefined);
+  const lastGoodAssetIdRef = useRef<string | null | undefined>(undefined);
+  if (lastGoodAssetIdRef.current !== assetId) {
+    lastGoodRef.current = undefined;
+    lastGoodAssetIdRef.current = assetId;
+  }
 
   const liveTelemetry = useMemo<LiveElementTelemetry | undefined>(() => {
     if (!row?.elements?.length) return lastGoodRef.current;
