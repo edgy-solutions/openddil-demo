@@ -476,13 +476,30 @@ function MaintainerApp() {
               selectedAssetId is passed so the rolling chart history
               resets when the operator switches assets (otherwise
               the prior asset's 30-sample history scrolls through
-              the new asset's chart for ~30 ticks). */}
+              the new asset's chart for ~30 ticks).
+
+              Sim-derived path is gated to per-site SENSOR assets
+              (asset_id ending in `_Sensor`). Per-site radar Unit
+              chassis (`*_radar`) and per-site launchers (`*_Launcher*`)
+              are also rostered by the sim today (variant=MRAD_Sensor /
+              MRAD_Interceptor after aliasing) and have a 4080-element
+              synthetic tree that the sim emits -- but those platforms
+              don't have arrays; only the sensor subsystem does. The
+              3D drill-down's DiagnosticCanvas already gates the
+              multi-array view on the same suffix check, but
+              TelemetryCharts read liveTelemetry directly, so the
+              chassis + launcher views showed sim-derived aggregates
+              for elements that aren't physically there. Skip the
+              live-telemetry path for non-sensor assets so the card
+              falls back to the sustainment path (or empty state if
+              the customer feed doesn't carry sustainment, which is
+              the truthful answer for those platforms today). */}
           <TelemetryCharts
             telemetry={tel}
             platformVariant={variant}
             degraded={degraded}
             isLoading={telemetry.isLoading}
-            liveTelemetry={mradLive}
+            liveTelemetry={selectedAssetId.endsWith('_Sensor') ? mradLive : undefined}
             assetId={selectedAssetId}
           />
           <AlertFeed events={events.data} isLoading={events.isLoading} />
