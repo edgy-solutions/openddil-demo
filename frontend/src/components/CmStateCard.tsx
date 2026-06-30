@@ -37,28 +37,65 @@ function lifecycleLabel(lifecycle: string): string {
   return lifecycle.replace(/^LIFECYCLE_/, '');
 }
 
+// The on-the-wire shape comes from the AsMaintainedConfiguration proto
+// (openddil.configuration.v1.as_maintained_pb2). cm-service serializes
+// installed[] as InstalledCi records and mod_status[] as ModCompliance
+// records. The frontend sees the JSON of those protos -- snake_case
+// field names, missing optional fields are empty-string / 0, enums
+// come through as either integer (proto wire) or name string (after
+// JSON serialization) depending on the producer.
+//
+// Initial-from-baseline path leaves ci_id empty: the slot is reserved
+// but no specific CI has been recorded yet -- which is exactly the
+// DISCREPANCY_MISSING_CI condition the analyzer emits. We render that
+// as "(unverified)" so the operator sees the slot AND understands why
+// it's also showing up in the discrepancies list.
+
 function partLabel(p: any): string {
-  // submit_cm_event.py --part-replaced "category:identifier" lands as a
-  // record with `part_id` (the post-colon identifier) + `category` (the
-  // pre-colon token). Be liberal in what we render -- different upstream
-  // producers may name the fields slightly differently.
   if (p == null) return 'part';
   if (typeof p === 'string') return p;
+  // InstalledCi proto: slot_id + ci_id + installed_at.
+  const slot = (p.slot_id ?? p.slotId ?? '').toString();
+  const ci = (p.ci_id ?? p.ciId ?? '').toString();
+  if (slot && ci) return `${slot}: ${ci}`;
+  if (slot) return `${slot} (unverified)`;
+  // Legacy / submit_cm_event.py-shaped fallback for producers that
+  // don't go through the proto path.
   const category = p.category ?? p.part_category ?? '';
   const id = p.part_id ?? p.identifier ?? p.id ?? '';
   if (category && id) return `${category}: ${id}`;
-  return id || category || JSON.stringify(p).slice(0, 80);
+  if (id || category) return `${id || category}`;
+  return JSON.stringify(p).slice(0, 80);
+}
+
+// ModCompliance proto: state is a MOD_STATE_* enum. cm-service can emit
+// it either as the integer value or as the name string depending on the
+// JSON serializer config; handle both.
+const MOD_STATE_NAMES: Record<number, string> = {
+  0: 'UNSPECIFIED',
+  1: 'NOT_APPLICABLE',
+  2: 'PENDING',
+  3: 'OVERDUE',
+  4: 'APPLIED',
+  5: 'WAIVED',
+};
+
+function modStateLabel(state: any): string {
+  if (state == null || state === '') return '';
+  if (typeof state === 'number') return MOD_STATE_NAMES[state] ?? `STATE_${state}`;
+  // Name string already -- strip the MOD_STATE_ prefix for terse display.
+  return String(state).replace(/^MOD_STATE_/, '');
 }
 
 function modLabel(m: any): string {
-  // submit_cm_event.py --mod-applied "MWO-...." lands as a record with
-  // `mod_id` (the MWO/ECP token) + optional `status`.
   if (m == null) return 'mod';
   if (typeof m === 'string') return m;
-  const id = m.mod_id ?? m.identifier ?? m.id ?? '';
-  const status = m.status ?? '';
-  if (id && status) return `${id} (${status})`;
-  return id || JSON.stringify(m).slice(0, 80);
+  // ModCompliance proto: mod_id + state + (sometimes) status field.
+  const id = (m.mod_id ?? m.modId ?? m.identifier ?? m.id ?? '').toString();
+  const state = modStateLabel(m.state ?? m.status);
+  if (id && state) return `${id} (${state})`;
+  if (id) return id;
+  return JSON.stringify(m).slice(0, 80);
 }
 
 export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | null; isLoading?: boolean }) {
@@ -132,7 +169,7 @@ export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | n
               {expandedInstalled && (
                 <div className="mt-1 mb-2 space-y-1 text-[11px] max-h-32 overflow-y-auto pr-1">
                   {installed.map((p: any, i: number) => (
-                    <div key={p.part_id ?? p.identifier ?? p.id ?? i}
+                    <div key={p.slot_id ?? p.slotId ?? p.part_id ?? p.identifier ?? p.id ?? i}
                          className="border-l-2 border-cyan-700 pl-2 py-0.5 text-slate-300">
                       {partLabel(p)}
                     </div>
@@ -155,7 +192,7 @@ export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | n
               {expandedMods && (
                 <div className="mt-1 mb-2 space-y-1 text-[11px] max-h-32 overflow-y-auto pr-1">
                   {modStatus.map((m: any, i: number) => (
-                    <div key={m.mod_id ?? m.identifier ?? m.id ?? i}
+                    <div key={m.mod_id ?? m.modId ?? m.identifier ?? m.id ?? i}
                          className="border-l-2 border-amber-700 pl-2 py-0.5 text-slate-300">
                       {modLabel(m)}
                     </div>
