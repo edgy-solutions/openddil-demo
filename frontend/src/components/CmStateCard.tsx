@@ -2,11 +2,19 @@
 // CmStateCard — per-asset Configuration Management state
 // =============================================================================
 // Renders an asset_cm_state row (useCmState): overall_status badge,
-// baseline, lifecycle, discrepancy counts, and an expandable discrepancy
-// list. Reused by the maintainer view; the regional/HQ views aggregate
-// CM state rather than showing this card.
+// baseline, lifecycle, discrepancy counts, installed-parts list,
+// applied-mods list, and an expandable discrepancy list. Reused by the
+// maintainer view; the regional/HQ views aggregate CM state rather
+// than showing this card.
+//
+// 2026-06-29: added installed[] and mod_status[] surfacing. Before
+// this, the card only rendered discrepancies, so operators using
+// seed-cm-events.sh to inject part-replaced / mod-applied events
+// saw the DB populate but the card stay visually empty (the seeded
+// events populate installed[] / mod_status[] without producing
+// discrepancies unless a baseline mismatch is also configured).
 import { useState } from 'react';
-import { ShieldAlert, ChevronRight } from 'lucide-react';
+import { ShieldAlert, ChevronRight, Wrench, Package } from 'lucide-react';
 import type { CmState } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
 
@@ -29,11 +37,39 @@ function lifecycleLabel(lifecycle: string): string {
   return lifecycle.replace(/^LIFECYCLE_/, '');
 }
 
+function partLabel(p: any): string {
+  // submit_cm_event.py --part-replaced "category:identifier" lands as a
+  // record with `part_id` (the post-colon identifier) + `category` (the
+  // pre-colon token). Be liberal in what we render -- different upstream
+  // producers may name the fields slightly differently.
+  if (p == null) return 'part';
+  if (typeof p === 'string') return p;
+  const category = p.category ?? p.part_category ?? '';
+  const id = p.part_id ?? p.identifier ?? p.id ?? '';
+  if (category && id) return `${category}: ${id}`;
+  return id || category || JSON.stringify(p).slice(0, 80);
+}
+
+function modLabel(m: any): string {
+  // submit_cm_event.py --mod-applied "MWO-...." lands as a record with
+  // `mod_id` (the MWO/ECP token) + optional `status`.
+  if (m == null) return 'mod';
+  if (typeof m === 'string') return m;
+  const id = m.mod_id ?? m.identifier ?? m.id ?? '';
+  const status = m.status ?? '';
+  if (id && status) return `${id} (${status})`;
+  return id || JSON.stringify(m).slice(0, 80);
+}
+
 export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | null; isLoading?: boolean }) {
   const [expanded, setExpanded] = useState(false);
+  const [expandedInstalled, setExpandedInstalled] = useState(false);
+  const [expandedMods, setExpandedMods] = useState(false);
   const badge = cmStatusBadge(cm?.overall_status);
   const discrepancies = cm?.discrepancies ?? [];
   const manual = cm?.manual_discrepancies ?? [];
+  const installed = cm?.installed ?? [];
+  const modStatus = cm?.mod_status ?? [];
   const totalDisc = discrepancies.length + manual.length;
 
   return (
@@ -67,6 +103,14 @@ export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | n
               <span className="text-slate-300">{cm.baseline_id ?? '—'}</span>
             </div>
             <div className="flex justify-between">
+              <span className="text-slate-500">Installed parts</span>
+              <span className="text-slate-300">{installed.length}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Mods applied</span>
+              <span className="text-slate-300">{modStatus.length}</span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-slate-500">Discrepancies</span>
               <span className="text-slate-300">
                 {discrepancies.length}
@@ -74,6 +118,52 @@ export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | n
               </span>
             </div>
           </div>
+
+          {installed.length > 0 && (
+            <>
+              <button
+                onClick={() => setExpandedInstalled((e) => !e)}
+                className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center"
+              >
+                <ChevronRight className={`w-3 h-3 mr-1 transition-transform ${expandedInstalled ? 'rotate-90' : ''}`} />
+                <Package className="w-3 h-3 mr-1" />
+                {expandedInstalled ? 'Hide' : 'View'} installed parts ({installed.length})
+              </button>
+              {expandedInstalled && (
+                <div className="mt-1 mb-2 space-y-1 text-[11px] max-h-32 overflow-y-auto pr-1">
+                  {installed.map((p: any, i: number) => (
+                    <div key={p.part_id ?? p.identifier ?? p.id ?? i}
+                         className="border-l-2 border-cyan-700 pl-2 py-0.5 text-slate-300">
+                      {partLabel(p)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {modStatus.length > 0 && (
+            <>
+              <button
+                onClick={() => setExpandedMods((e) => !e)}
+                className="text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center"
+              >
+                <ChevronRight className={`w-3 h-3 mr-1 transition-transform ${expandedMods ? 'rotate-90' : ''}`} />
+                <Wrench className="w-3 h-3 mr-1" />
+                {expandedMods ? 'Hide' : 'View'} mods applied ({modStatus.length})
+              </button>
+              {expandedMods && (
+                <div className="mt-1 mb-2 space-y-1 text-[11px] max-h-32 overflow-y-auto pr-1">
+                  {modStatus.map((m: any, i: number) => (
+                    <div key={m.mod_id ?? m.identifier ?? m.id ?? i}
+                         className="border-l-2 border-amber-700 pl-2 py-0.5 text-slate-300">
+                      {modLabel(m)}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
 
           {totalDisc > 0 && (
             <button
