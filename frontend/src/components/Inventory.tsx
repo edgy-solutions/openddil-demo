@@ -16,19 +16,48 @@ function InitialLoadSpinner() {
   );
 }
 
-function InventoryEmptyState() {
+function InventoryEmptyState({ scoped }: { scoped: boolean }) {
   // Honest empty-state. Replaces a pre-§C.2 mock fallback that rendered
   // hardcoded "Coolant Pumps / T/R Modules" rows whenever inventory_items
   // had zero rows — combined with the stale-cached banner that fired
   // after 30s, the panel read as "real data that's gone stale" when it
   // was actually "feature not built yet." Same family as ADR-0017's
-  // no-orphan-mocks rule, applied to the empty-state path. The
-  // follow-up reference makes the deferral findable from the rendered
-  // UI itself, not just from tests/hero_scenario_v3/README.md.
+  // no-orphan-mocks rule, applied to the empty-state path.
+  //
+  // 2026-06-30: two empty states now -- the asset-scoped one ("this
+  // asset has no inventory rows yet -- sim hasn't ticked, or this asset
+  // doesn't have a sim profile") vs the global fallback ("no rows at
+  // all in the table"). Different copy so the operator can tell why.
+  if (scoped) {
+    return (
+      <div className="text-xs text-slate-500 mt-3 border border-slate-700 bg-slate-800/50 p-2 rounded-sm">
+        No per-layer inventory for this asset yet — awaiting
+        <code className="text-slate-400 mx-1">asset-element-inventory</code>
+        tick (sim emits on the same cadence as element telemetry).
+      </div>
+    );
+  }
   return (
     <div className="text-xs text-slate-500 mt-3 border border-slate-700 bg-slate-800/50 p-2 rounded-sm">
       No FOB inventory data — <code className="text-slate-400">inventory_items</code> table not yet populated. Per follow-up #17.
     </div>
+  );
+}
+
+function SynthesizedBadge() {
+  // Mirror of TelemetryCharts' SYNTHESIZED badge -- the maintainer needs
+  // a single, consistent cue across the cards that distinguishes "real
+  // sustainment-feed data" from "logistics-sim modeled signal." Per
+  // feedback_artifact_provenance.md: clear provenance > slightly tighter
+  // chrome. The hover tooltip explains the source so the operator can
+  // trust-but-verify without having to read the codebase.
+  return (
+    <span
+      className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-amber-700/50 bg-amber-900/30 text-amber-400 uppercase rounded-sm cursor-help"
+      title="Bars derived from openddil-logistics-sim's per-element health snapshot (asset-element-inventory topic). NOT a real maintenance-system inventory feed. When elements flip DEGRADED/FAULT/FAILED on the 3D drill-down, allocated climbs and the bar drops; this is the SAME signal driving the tile colors."
+    >
+      SYNTHESIZED
+    </span>
   );
 }
 
@@ -69,10 +98,23 @@ function InventoryTable({ rows }: { rows: any[] }) {
   );
 }
 
-export default function Inventory() {
+export default function Inventory({ assetId }: { assetId?: string }) {
+  // 2026-06-30: per-asset scoping. When `assetId` is set (maintainer
+  // view), filter inventory_items rows by asset_id so the bars reflect
+  // ONLY the sim-emitted per-layer aggregate for the focused asset.
+  // When unset (any caller that still wants the legacy fleet view), the
+  // filter is dropped and every row is rendered -- preserves the older
+  // semantics for callers that haven't been migrated.
+  //
+  // Electric's `where` syntax is SQL-fragment style; quote the value so
+  // a stray quote in the asset_id (none today, but defensive) can't
+  // break the predicate. Empty assetId falls back to no filter.
   const { data, isLoading, lastSyncedAt } = useShape({
     url: ELECTRIC_URL,
-    params: { table: 'inventory_items' },
+    params: {
+      table: 'inventory_items',
+      ...(assetId ? { where: `asset_id = '${assetId.replace(/'/g, "''")}'` } : {}),
+    },
   });
 
   // Initial-load-only spinner: if we have cached data from a prior session,
@@ -95,6 +137,7 @@ export default function Inventory() {
       <h2 className="text-sm text-slate-400 tracking-wider uppercase flex items-center justify-between">
           <div className="flex items-center">
             <Package className="w-4 h-4 mr-2 text-emerald-500" /> Local FOB Inventory
+            {hasCachedData && <SynthesizedBadge />}
           </div>
           {!isLoading && hasCachedData && !isStale && <span className="text-[10px] text-emerald-500 flex items-center">SYNCED</span>}
           {isLoading && hasCachedData && <span className="text-[10px] text-amber-500 flex items-center animate-pulse">SYNCING</span>}
@@ -107,7 +150,7 @@ export default function Inventory() {
         </div>
       )}
 
-      {hasCachedData ? <InventoryTable rows={data} /> : <InventoryEmptyState />}
+      {hasCachedData ? <InventoryTable rows={data} /> : <InventoryEmptyState scoped={!!assetId} />}
     </div>
   );
 }

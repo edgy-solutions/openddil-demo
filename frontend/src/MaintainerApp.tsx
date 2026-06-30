@@ -152,7 +152,15 @@ function MaintainerApp() {
   const cm = useCmState(selectedAssetId);
   const logistics = useLogisticsStatus(selectedAssetId);
   // Maintainer view: recent events filtered to the selected asset.
-  const events = useTacticalEvents(10, selectedAssetId);
+  // Maintainer attention flow: the tactical event feed is FLEET-WIDE
+  // (no subject filter), so a CRITICAL transition on a sibling asset
+  // surfaces in the operator's feed even when their focus is on a
+  // NOMINAL one. AlertFeed renders cross-asset rows with a chevron +
+  // background tint and routes the click back to setSelectedAssetId
+  // so the 3D drill-down + cards immediately follow the alert. Fleet
+  // limit is bumped from 10 to 20 because filtering is gone — without
+  // this the operator's feed would clip useful sibling-asset rows.
+  const events = useTacticalEvents(20);
   // Per-element tree + asset rollups (core_temp_c, uptime_hours) from
   // openddil-logistics-sim. Lifted to MaintainerApp from DiagnosticCanvas
   // so the asset rollups can flow into header readouts alongside the
@@ -502,8 +510,13 @@ function MaintainerApp() {
             liveTelemetry={selectedAssetId.endsWith('_Sensor') ? mradLive : undefined}
             assetId={selectedAssetId}
           />
-          <AlertFeed events={events.data} isLoading={events.isLoading} />
-          <Inventory />
+          <AlertFeed
+            events={events.data}
+            isLoading={events.isLoading}
+            selectedAssetId={selectedAssetId}
+            onSelectAsset={setSelectedAssetId}
+          />
+          <Inventory assetId={selectedAssetId} />
         </div>
       </main>
     </div>

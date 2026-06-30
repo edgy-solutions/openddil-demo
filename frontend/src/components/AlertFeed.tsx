@@ -5,7 +5,18 @@
 // existed plus locally-synthesised {id,msg,type,time} alerts. Now renders
 // real CloudEvents from the tactical_events shape (useTacticalEvents):
 // type, subject, severity, time.
-import { AlertTriangle } from 'lucide-react';
+//
+// 2026-06-30: maintainer-attention flow. The maintainer view stares at
+// ONE asset at a time, so a CRITICAL transition on a DIFFERENT asset
+// would previously land in the events shape but the operator would
+// never see it (the feed was filtered to selectedAssetId only). Now
+// the feed renders fleet-wide events; rows for OTHER assets get a
+// chevron + slightly different background to call out the "look
+// elsewhere" affordance; clicking any row switches the active asset
+// to that event's subject so the 3D drill-down + cards immediately
+// follow the alert. Paired with fusion's CRITICAL-transition CloudEvent
+// emission (see openddil-logistics-fusion-service _recompute_and_maybe_emit).
+import { AlertTriangle, ChevronRight } from 'lucide-react';
 import type { TacticalEvent } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
 
@@ -49,7 +60,17 @@ function formatTime(iso: string): string {
  * content scanner picks tokens like `min-h-bracket-150px-close` out
  * of comments and bakes them into the bundle as unused utilities.
  */
-export default function AlertFeed({ events, isLoading = false }: { events: TacticalEvent[]; isLoading?: boolean }) {
+export default function AlertFeed({
+  events,
+  isLoading = false,
+  selectedAssetId,
+  onSelectAsset,
+}: {
+  events: TacticalEvent[];
+  isLoading?: boolean;
+  selectedAssetId?: string;
+  onSelectAsset?: (assetId: string) => void;
+}) {
   return (
     <div className="panel shrink-0 flex flex-col max-h-[280px] p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center shrink-0">
@@ -64,18 +85,46 @@ export default function AlertFeed({ events, isLoading = false }: { events: Tacti
             No tactical events. Awaiting CM / logistics transitions.
           </div>
         )}
-        {!isLoading && events.map((e) => (
-          <div key={e.id} className={`p-2 border-l-2 text-xs mb-2 transition-all ${severityColors(e.severity)}`}>
-            <div className="flex justify-between">
-              <span className="font-bold">{shortType(e.type)}</span>
-              <span className="opacity-50">[{formatTime(e.time)}]</span>
+        {!isLoading && events.map((e) => {
+          const isOtherAsset = !!selectedAssetId && !!e.subject && e.subject !== selectedAssetId;
+          const isClickable = !!onSelectAsset && !!e.subject;
+          const baseColors = severityColors(e.severity);
+          // Cross-asset rows get a slight background overlay + opacity nudge
+          // so they read as "look elsewhere" affordances without burying
+          // the severity colour. Same-asset rows render flat.
+          const otherTint = isOtherAsset ? 'bg-slate-900/30 ring-1 ring-slate-600/40' : '';
+          const cursor = isClickable ? 'cursor-pointer hover:bg-slate-700/40' : '';
+          return (
+            <div
+              key={e.id}
+              role={isClickable ? 'button' : undefined}
+              tabIndex={isClickable ? 0 : undefined}
+              onClick={() => isClickable && e.subject && onSelectAsset(e.subject)}
+              onKeyDown={(ev) => {
+                if (!isClickable || !e.subject) return;
+                if (ev.key === 'Enter' || ev.key === ' ') {
+                  ev.preventDefault();
+                  onSelectAsset(e.subject);
+                }
+              }}
+              className={`p-2 border-l-2 text-xs mb-2 transition-all ${baseColors} ${otherTint} ${cursor}`}
+            >
+              <div className="flex justify-between">
+                <span className="font-bold flex items-center">
+                  {isOtherAsset && (
+                    <ChevronRight className="w-3 h-3 mr-1 opacity-70" aria-label="Switch to this asset" />
+                  )}
+                  {shortType(e.type)}
+                </span>
+                <span className="opacity-50">[{formatTime(e.time)}]</span>
+              </div>
+              <div className="opacity-80 mt-0.5">
+                {e.subject}
+                {e.severity ? <span className="ml-2 opacity-70">— {e.severity}</span> : null}
+              </div>
             </div>
-            <div className="opacity-80 mt-0.5">
-              {e.subject}
-              {e.severity ? <span className="ml-2 opacity-70">— {e.severity}</span> : null}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
