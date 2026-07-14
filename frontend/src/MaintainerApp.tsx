@@ -203,6 +203,20 @@ function MaintainerApp() {
   const mradLive = assetElementTelemetry.liveTelemetry;
   const mradOperational = assetElementTelemetry.operational;
 
+  // Derive isPoweredOff from the sim-envelope operational block. Sim
+  // synthesizes elements for POWER_OFF as "no lifted-band tiles + all
+  // tx/rx off" (element_gen.py 2026-07-14 commit 9c8d30e), but the
+  // frontend still needs an ASSET-LEVEL signal to render the whole
+  // array as OFF -- element-level `health` values alone can't
+  // distinguish "everything nominal, nothing firing" from "asset
+  // OFF, nothing firing." Both would read as green tiles otherwise.
+  // Both OFF and SHUTTING_DOWN count as "not running" for rendering
+  // purposes; the maintainer view treats them the same until the
+  // asset transitions back to a running state.
+  const isPoweredOff =
+    mradOperational?.power_state === 'POWER_STATE_OFF' ||
+    mradOperational?.power_state === 'POWER_STATE_SHUTTING_DOWN';
+
   // Available edges for the pulldown — distinct edge_ids actually
   // observed in the pipeline. Sorted alphabetically. Symmetric with
   // RegionalApp's region-from-summary pattern.
@@ -465,6 +479,7 @@ function MaintainerApp() {
               liveTelemetry={mradLive}
               transitTriggerKey={selectedEdge}
               operationalState={tel?.operational_state ?? null}
+              isPoweredOff={isPoweredOff}
             />
             <LocalFleetRadar
               degraded={degraded}
@@ -552,6 +567,7 @@ function MaintainerApp() {
             isLoading={telemetry.isLoading}
             liveTelemetry={selectedAssetId.endsWith('_Sensor') ? mradLive : undefined}
             assetId={selectedAssetId}
+            isPoweredOff={isPoweredOff}
           />
           <AlertFeed
             events={events.data}

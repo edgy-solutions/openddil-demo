@@ -190,6 +190,22 @@ const NO_DATA_STATUS = {
     class: 'bg-slate-700/30 text-slate-400',
 };
 
+// Status pill rendered when the asset's power_state is OFF (or
+// SHUTTING_DOWN). Darker slate than NO_DATA + distinct label so
+// the operator sees "asset is deliberately off" separately from
+// "data hasn't arrived yet." Applied UNIFORMLY across every
+// element regardless of the synthesized health value -- element
+// health can't distinguish "everything nominal, idle" from
+// "asset off, idle" (sim emits identical green health values in
+// both cases). The asset-level power_state is the disambiguator;
+// SensorArrayView receives it as `isPoweredOff` prop, threaded
+// through from useAssetElementTelemetry.operational.power_state.
+const OFF_STATUS = {
+    color: 0x334155,   // slate-700 -- darker than NO_DATA
+    label: 'OFF',
+    class: 'bg-slate-800/50 text-slate-500',
+};
+
 // Build the per-element render data list for a single layer at a given
 // depth.
 //
@@ -218,6 +234,7 @@ function generateElements(
     layers: LayerSpec[],
     parentId: string | null,
     liveTelemetry?: LiveElementTelemetry,
+    isPoweredOff: boolean = false,
 ): ElementData[] {
     const elements: ElementData[] = [];
     const layer = layers[depth];
@@ -233,6 +250,12 @@ function generateElements(
         temp: string;
         load: string;
     } => {
+        // Asset-level POWER_OFF short-circuits every element regardless
+        // of its synthesized health/temp/load values. See OFF_STATUS
+        // and the isPoweredOff prop docstring for the rationale.
+        if (isPoweredOff) {
+            return { healthValue: 0, status: OFF_STATUS, temp: '—', load: '—' };
+        }
         const live = liveTelemetry?.[elementId];
         if (live?.health == null) {
             return { healthValue: 0, status: NO_DATA_STATUS, temp: '—', load: '—' };
@@ -329,7 +352,7 @@ function generateElements(
 //     no leaked state into the next layer.
 //   * tweenGroup only animates mesh scale + group scale-in. Both reset
 //     deterministically on depth change so re-entering a layer is clean.
-function SceneController({ currentDepth, parentId, onDrillDown, onInterrogate, isTransitioning, setIsTransitioning, faces, layers, liveTelemetry, housingSize }: any) {
+function SceneController({ currentDepth, parentId, onDrillDown, onInterrogate, isTransitioning, setIsTransitioning, faces, layers, liveTelemetry, housingSize, isPoweredOff }: any) {
     const { camera } = useThree();
     const controlsRef = useRef<any>(null);
     const groupsRef = useRef<THREE.Group[]>([]);
@@ -358,8 +381,8 @@ function SceneController({ currentDepth, parentId, onDrillDown, onInterrogate, i
     // No synthesis. parentId is the FULL path-encoded id of the element
     // the user drilled INTO at the previous depth (null at depth 0).
     const currentElements = useMemo(
-        () => generateElements(currentDepth, faces, layers, parentId, liveTelemetry),
-        [currentDepth, faces, layers, parentId, liveTelemetry],
+        () => generateElements(currentDepth, faces, layers, parentId, liveTelemetry, isPoweredOff),
+        [currentDepth, faces, layers, parentId, liveTelemetry, isPoweredOff],
     );
 
     useFrame(() => {
@@ -755,9 +778,15 @@ interface SensorArrayViewProps {
     /** Live per-element telemetry from openddil-mrad-sim. Optional — when
      *  absent, the view falls back to seeded-RNG synthesis. */
     liveTelemetry?: LiveElementTelemetry;
+    /** True when the asset's power_state is OFF or SHUTTING_DOWN. Forces
+     *  every element to render as OFF_STATUS regardless of its
+     *  synthesized health value. See the OFF_STATUS declaration above
+     *  for the rationale (element-level health alone can't disambiguate
+     *  nominal-idle from asset-off). */
+    isPoweredOff?: boolean;
 }
 
-export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS_CONFIG, liveTelemetry }: SensorArrayViewProps) {
+export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS_CONFIG, liveTelemetry, isPoweredOff = false }: SensorArrayViewProps) {
     const [currentDepth, setCurrentDepth] = useState(0);
     const [selectedElement, setSelectedElement] = useState<ElementData | null>(null);
     const [isTransitioning, setIsTransitioning] = useState(false);
@@ -790,6 +819,19 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
     // two in sync on every tick.
     useEffect(() => {
         if (!selectedElement) return;
+        // Power-off short-circuit: force the selected-element card into
+        // OFF_STATUS regardless of the synthesized health value, so the
+        // side card matches what the tile shows.
+        if (isPoweredOff && selectedElement.status !== OFF_STATUS) {
+            setSelectedElement({
+                ...selectedElement,
+                status: OFF_STATUS,
+                temp: '—',
+                load: '—',
+                color: selectedElement.face === 'INTERNAL' ? selectedElement.color : OFF_STATUS.color,
+            });
+            return;
+        }
         const live = liveTelemetry?.[selectedElement.id];
         if (live?.health == null) return;
         if (live.health === selectedElement.healthValue) return;
@@ -802,7 +844,7 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
             load: live.load != null ? live.load.toFixed(0) : selectedElement.load,
             color: selectedElement.face === 'INTERNAL' ? selectedElement.color : status.color,
         });
-    }, [liveTelemetry, selectedElement]);
+    }, [liveTelemetry, selectedElement, isPoweredOff]);
 
     const headerExtras = (
         <>
@@ -868,6 +910,7 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                     layers={config.layers}
                     liveTelemetry={liveTelemetry}
                     housingSize={config.housingSize}
+                    isPoweredOff={isPoweredOff}
                 />
             </Canvas>
 

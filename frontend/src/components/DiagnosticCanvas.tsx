@@ -138,6 +138,14 @@ interface DiagnosticCanvasProps {
      *  react to POWER_STATE_OFF / MAINTENANCE / HEALTH_STATE_FAULT etc.
      *  beyond the rolled-up `degraded` boolean. */
     operationalState?: SchematicProps['operationalState'];
+    /** 2026-07-14: asset-level POWER_STATE_OFF signal. Threaded down to
+     *  SensorArrayView so the per-element tiles render as OFF rather
+     *  than as their synthesized (nominal green) health colors. Sim
+     *  correctly synthesizes POWER_OFF as "no lifted-band tiles + all
+     *  tx/rx off", but the element-health values alone can't tell
+     *  the UI apart from "everything nominal, idle" -- the asset-
+     *  level flag is the disambiguator. */
+    isPoweredOff?: boolean;
 }
 
 export default function DiagnosticCanvas({
@@ -150,6 +158,7 @@ export default function DiagnosticCanvas({
     liveTelemetry,
     transitTriggerKey,
     operationalState,
+    isPoweredOff = false,
 }: DiagnosticCanvasProps) {
     // The transit hook gates internally on first-mount + same-key.
     // The MRAD telemetry hook USED to live here but was lifted to
@@ -169,7 +178,7 @@ export default function DiagnosticCanvas({
     // comment block for the full rationale + the 2026-06-24 per-site
     // sensor identity fix that surfaced this distinction.
     if (platformVariant && MRAD_VARIANTS.has(platformVariant) && isPerSiteSensorAsset(assetId)) {
-        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} />;
+        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} />;
     }
 
     if (assetType === 'RADAR') {
@@ -178,7 +187,7 @@ export default function DiagnosticCanvas({
         // SensorRadarSchematic. Retained as a maintainer-only debug aid;
         // ORBAT-named radar tiers (CUAS/VSHORAD/SHORAD/MRAD_Sensor) go
         // through the registry path below.
-        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} />;
+        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} isPoweredOff={isPoweredOff} />;
     }
 
     const { title, subtitle } = titleForVariant(platformVariant);

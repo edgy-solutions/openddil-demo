@@ -90,7 +90,7 @@ interface ResolvedField {
   hasValue: boolean;
 }
 
-type FieldSource = 'sustainment' | 'sim' | 'empty';
+type FieldSource = 'sustainment' | 'sim' | 'empty' | 'off';
 
 // ---------------------------------------------------------------------------
 // Sim-derived aggregation -- collapses per-element telemetry into 4
@@ -245,6 +245,13 @@ interface TelemetryChartsProps {
    *  leaves the prior asset's 30-sample chart history scrolling
    *  through the new asset's chart for ~30 ticks. */
   assetId?: string | null;
+  /** 2026-07-14: asset-level POWER_STATE_OFF signal. When true, the
+   *  card renders a "POWERED OFF" state regardless of what sim /
+   *  sustainment fields might carry -- element health values alone
+   *  can't tell a nominal-and-idle asset from a shut-down one, so
+   *  the parent supplies the disambiguator. Both POWER_STATE_OFF
+   *  and POWER_STATE_SHUTTING_DOWN treat as off for display. */
+  isPoweredOff?: boolean;
 }
 
 export default function TelemetryCharts({
@@ -254,10 +261,18 @@ export default function TelemetryCharts({
   isLoading = false,
   liveTelemetry,
   assetId,
+  isPoweredOff = false,
 }: TelemetryChartsProps) {
   const config = platformChartConfig(platformVariant);
   const sustainment = telemetry?.sustainment ?? null;
-  const { fields, source } = resolveFields(config, sustainment, liveTelemetry);
+  const resolved = resolveFields(config, sustainment, liveTelemetry);
+  // Power-off short-circuit: don't render synthesized charts when the
+  // asset is off. The sim already zeroes elements + tx/rx, but the
+  // aggregated stats still trend visibly (from prior history) which
+  // reads as "asset is up." Force an 'off' source so the panel shows
+  // POWERED OFF instead of streaming curves.
+  const fields: ResolvedField[] = isPoweredOff ? [] : resolved.fields;
+  const source: FieldSource = isPoweredOff ? 'off' : resolved.source;
 
   // One canvas ref per resolved field. Re-created when source, variant,
   // OR selected asset_id changes (different field list, different
@@ -276,7 +291,7 @@ export default function TelemetryCharts({
 
   // (Re)build charts when the resolved field set changes.
   useEffect(() => {
-    if (source === 'empty') return;
+    if (source === 'empty' || source === 'off') return;
     if (prevRebuildKey.current !== rebuildKey) {
       dataHistories.current = fields.map(() => Array(HISTORY).fill(0));
       prevRebuildKey.current = rebuildKey;
@@ -316,7 +331,7 @@ export default function TelemetryCharts({
   // array each render; we lean on `rebuildKey` to detect structural
   // changes and just read values out here on every render.
   useEffect(() => {
-    if (source === 'empty') return;
+    if (source === 'empty' || source === 'off') return;
     fields.forEach((field, idx) => {
       const hist = dataHistories.current[idx];
       if (!hist) return;
@@ -396,7 +411,17 @@ export default function TelemetryCharts({
         </div>
       )}
 
-      {!isLoading && source !== 'empty' && (
+      {!isLoading && source === 'off' && (
+        <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-3 rounded-sm">
+          <div className="font-mono text-[10px] tracking-widest text-slate-400 mb-1">
+            POWERED OFF
+          </div>
+          Asset is powered off — no telemetry streaming. Prognostics and
+          per-field charts resume when the asset returns to POWER_STATE_ON.
+        </div>
+      )}
+
+      {!isLoading && source !== 'empty' && source !== 'off' && (
         <>
           {fields.map((field, idx) => {
             const isAnomaly =
