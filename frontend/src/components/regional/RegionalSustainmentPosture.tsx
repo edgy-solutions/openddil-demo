@@ -182,14 +182,8 @@ function buildRenderables(
     bucket.push(s);
   }
 
-  // Callout label geometry constants. LABEL_LIFT is the Y-height above
-  // the asset's ground position where the label anchor sits (leader
-  // line vertical segment). LABEL_OUTWARD is the horizontal offset
-  // away from the bucket centroid (spreads co-located assets' labels
-  // outward on the same ring they occupy -- lightweight collision
-  // avoidance without a per-frame layout pass).
-  const LABEL_LIFT = 6;
-  const LABEL_OUTWARD = 3;
+  const LABEL_LIFT = LABEL_GEOMETRY.lift;
+  const LABEL_OUTWARD = LABEL_GEOMETRY.outward;
 
   const out: RenderableAsset[] = [];
   for (const bucket of buckets.values()) {
@@ -359,9 +353,33 @@ const SCENE_ASSET_SCALE = 0.35;
 
 const LABEL_VISIBLE_DISTANCE = 130;   // ~40% into the maxDistance=300 range
 
+// Callout label geometry. Tight to the asset per operator preference
+// (2026-07-14 iteration: earlier values pushed labels far off the
+// schematics and the L-shape leader looked disconnected).
+//   assetTop  -- Y-coord where the leader line ATTACHES to the asset.
+//                Approximates the top of the rendered schematic at
+//                SCENE_ASSET_SCALE=0.35. Line starts here, not at
+//                y=0 (the ground).
+//   lift      -- Y-coord where the label anchor sits. Just above the
+//                schematic top -- "only slightly projected above the
+//                asset."
+//   outward   -- Horizontal offset (world units) away from the bucket
+//                centroid. Spreads co-located assets' labels outward
+//                on the same ring they occupy. Tiny value because
+//                labels are tight; ring geometry does most of the
+//                collision-avoidance work.
+const LABEL_GEOMETRY = {
+  assetTop: 1.2,
+  lift:     2.4,
+  outward:  0.4,
+};
+
 /** Return the "short name" of an asset_id: strip a scheme prefix
  *  (`prop:` / `sim:`) then take the trailing underscore-delimited
- *  segment. Empty string when the input can't be shortened. */
+ *  segment. Empty string when the input can't be shortened.
+ *  Examples (structure-only, no customer strings):
+ *    prop:<...>_MRAD1_Launcher1              -> "Launcher1"
+ *    prop:<...>_MRAD1_radar_MRAD_Sensor      -> "Sensor" */
 function assetShortName(assetId: string): string {
   if (!assetId) return '';
   let bare = assetId;
@@ -369,6 +387,17 @@ function assetShortName(assetId: string): string {
   if (colon >= 0 && colon <= 6) bare = bare.substring(colon + 1);
   const underscore = bare.lastIndexOf('_');
   return underscore >= 0 ? bare.substring(underscore + 1) : bare;
+}
+
+/** Family label derived from a platform_variant: strip the trailing
+ *  role-suffix ("_Sensor" / "_Interceptor" / "_LAUNCHER") so the
+ *  callout shows just the family (MRAD / SHORAD / CUAS / VSHORAD /
+ *  MRAD_ADVANCED). The visible schematic already tells the operator
+ *  whether it's a sensor or launcher; the callout only needs to say
+ *  WHICH family they're looking at. */
+function familyLabel(variant: string | null): string {
+  if (!variant) return '';
+  return variant.replace(/_(Sensor|Interceptor|LAUNCHER)$/, '');
 }
 
 /** Track whether the camera is inside LABEL_VISIBLE_DISTANCE of the
@@ -400,28 +429,48 @@ function ZoomGate({ children }: { children: React.ReactNode }) {
   return zoomedIn ? <>{children}</> : null;
 }
 
-/** One callout: leader line from asset ground position up to the
- *  label anchor, then an Html overlay with the text content. Text
- *  has no background box (user preference: "no box, too much noise").
+/** One callout, L-shape leader + underline.
+ *
+ *  Geometry:
+ *    * Leader starts at [x, LABEL_ASSET_TOP, z] (top of the schematic,
+ *      NOT the ground plane) and rises to the label anchor.
+ *    * Html overlay is anchored at the label anchor with its bottom-
+ *      left corner sitting exactly at that world point (transform
+ *      `translate(0, -100%)`). Text renders above the anchor.
+ *    * A CSS border-bottom underneath the text forms the horizontal
+ *      leg of the L -- runs from the anchor point out along the
+ *      text baseline. That "line below text connected to the line
+ *      from the asset" the operator asked for.
+ *
+ *  Content: `<instance> · <family>` (+ ` · <ammo>` for launchers).
+ *  Sensor vs launcher is already visually clear from the schematic,
+ *  so the callout only tells you WHICH instance and WHICH family.
+ *
  *  pointerEvents: none so 3D clicks pass through to the AssetMarker
- *  hit-target underneath. */
+ *  hit-target underneath.
+ */
 function AssetCallout({
-  position, labelAnchor, name, variant, ammoText, launcherDepleted,
+  position, labelAnchor, name, family, ammoText, launcherDepleted,
 }: {
   position: [number, number, number];
   labelAnchor: [number, number, number];
   name: string;
-  variant: string;
+  family: string;
   ammoText: string | null;
   launcherDepleted: boolean;
 }) {
   const ammoClass = launcherDepleted
     ? 'text-rose-400 font-bold'
     : 'text-emerald-300';
+  // Leader starts at the schematic TOP (not the ground plane) so it
+  // reads as attached to the asset, not floating out of the floor.
+  const leaderStart: [number, number, number] = [
+    position[0], LABEL_GEOMETRY.assetTop, position[2],
+  ];
   return (
     <>
       <Line
-        points={[position, labelAnchor]}
+        points={[leaderStart, labelAnchor]}
         color={0x64748b}   // slate-500 -- a quiet line, not attention-grabbing
         lineWidth={0.6}
         transparent
@@ -429,17 +478,25 @@ function AssetCallout({
       />
       <Html
         position={labelAnchor}
-        center
         style={{
           pointerEvents: 'none',
           whiteSpace: 'nowrap',
-          transform: 'translateY(-8px)',   // small extra lift above the anchor
+          // Anchor the BOTTOM-LEFT corner of the label at the world
+          // position. That places the underline (border-bottom of
+          // the text) exactly at labelAnchor's y-coordinate, so the
+          // vertical leader terminates at the same point where the
+          // horizontal underline starts -- L-shape junction.
+          transform: 'translate(0, -100%)',
         }}
       >
-        <div className="font-mono text-[10px] tracking-wider leading-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+        <div className="font-mono text-[10px] tracking-wider leading-tight border-b border-slate-500/70 pl-1 pr-2 pb-0.5 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
           <span className="text-slate-100">{name}</span>
-          <span className="text-slate-500 mx-1">·</span>
-          <span className="text-slate-400">{variant}</span>
+          {family && (
+            <>
+              <span className="text-slate-500 mx-1">·</span>
+              <span className="text-slate-400">{family}</span>
+            </>
+          )}
           {ammoText && (
             <>
               <span className="text-slate-500 mx-1">·</span>
@@ -793,7 +850,7 @@ export default function RegionalSustainmentPosture({
           <ZoomGate>
             {renderables.map((a) => {
               const shortName = assetShortName(a.asset_id);
-              const variant = a.platform_variant ?? 'UNKNOWN';
+              const family = familyLabel(a.platform_variant);
               // Launcher ammo: sum current + initial across all stores
               // owned by this launcher (from useMunitionsStockpile).
               // Non-launchers get ammoText = null, so the ammo tail
@@ -810,7 +867,7 @@ export default function RegionalSustainmentPosture({
                   position={a.position}
                   labelAnchor={a.label_anchor}
                   name={shortName}
-                  variant={variant}
+                  family={family}
                   ammoText={ammoText}
                   launcherDepleted={depleted}
                 />
