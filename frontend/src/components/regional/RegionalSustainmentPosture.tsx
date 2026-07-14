@@ -28,9 +28,9 @@
 //
 // Phase B remaining: per-edge labels, honesty badges, color/style tuning.
 // =============================================================================
-import { useMemo } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { Html, OrbitControls } from '@react-three/drei';
+import { Html, Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import DdilNetworkLink from '../DdilNetworkLink';
 import AssetVisual from '../AssetVisual';
@@ -42,6 +42,8 @@ import {
   useAllLogisticsStatus,
   useAllCapabilityState,
   useFleetTiers,
+  useMunitionsStockpile,
+  stockpileForLauncher,
   type FleetAsset,
   type FleetTierMap,
   type LogisticsStatus,
@@ -88,6 +90,15 @@ interface RenderableAsset {
    *  + opacity damping so receding assets visibly recede. LOST assets are
    *  filtered out before this struct is built. */
   tier: AssetTier;
+  /** 2026-07-14: anchor point for this asset's callout label in world
+   *  coords. Computed as position + a small outward offset (away from
+   *  the co-location bucket centroid), plus a vertical lift. For solo
+   *  assets the offset is straight up. Simple collision-avoidance by
+   *  ring geometry -- co-located assets get their labels spread on
+   *  the same ring they occupy. Leader line renders from `position`
+   *  to `label_anchor` so the operator can trace which label belongs
+   *  to which asset. */
+  label_anchor: [number, number, number];
 }
 
 // Co-location layout — the geometric stagger that prevents asset
@@ -171,6 +182,15 @@ function buildRenderables(
     bucket.push(s);
   }
 
+  // Callout label geometry constants. LABEL_LIFT is the Y-height above
+  // the asset's ground position where the label anchor sits (leader
+  // line vertical segment). LABEL_OUTWARD is the horizontal offset
+  // away from the bucket centroid (spreads co-located assets' labels
+  // outward on the same ring they occupy -- lightweight collision
+  // avoidance without a per-frame layout pass).
+  const LABEL_LIFT = 6;
+  const LABEL_OUTWARD = 3;
+
   const out: RenderableAsset[] = [];
   for (const bucket of buckets.values()) {
     if (bucket.length === 1) {
@@ -184,6 +204,9 @@ function buildRenderables(
         homedAtFob: s.homed,
         operational_state: s.asset.operational_state,
         tier: s.tier,
+        // Solo -> label straight up from the asset. No sibling to
+        // collide with, no bucket centroid to radiate outward from.
+        label_anchor: [s.x, LABEL_LIFT, s.z],
       });
       continue;
     }
@@ -221,6 +244,10 @@ function buildRenderables(
         homedAtFob: s.homed,
         operational_state: s.asset.operational_state,
         tier: s.tier,
+        // Facility label goes straight up from the centroid. There's
+        // typically only one facility per bucket, and multi-facility
+        // buckets are already treated as an anomaly (rows stack).
+        label_anchor: [cx, LABEL_LIFT, cz],
       });
     }
 
@@ -231,6 +258,15 @@ function buildRenderables(
     const radius = colocationRingRadius(others.length, facilities.length > 0);
     others.forEach((s, i) => {
       const { x: px, z: pz } = colocationRingSlot(cx, cz, radius, i, others.length);
+      // Ring-based label offset: extend outward from centroid to
+      // asset, then a fixed distance beyond. Assets on opposite sides
+      // of the ring get labels going in opposite directions, so they
+      // don't stack in 2D screen space at typical camera angles.
+      const dx = px - cx;
+      const dz = pz - cz;
+      const dlen = Math.hypot(dx, dz) || 1;
+      const nx = dx / dlen;
+      const nz = dz / dlen;
       out.push({
         asset_id: s.asset.asset_id,
         position: [px, 0, pz],
@@ -240,6 +276,7 @@ function buildRenderables(
         homedAtFob: s.homed,
         operational_state: s.asset.operational_state,
         tier: s.tier,
+        label_anchor: [px + nx * LABEL_OUTWARD, LABEL_LIFT, pz + nz * LABEL_OUTWARD],
       });
     });
   }
@@ -300,6 +337,120 @@ function AssetMarker({
 // the camera at ~150 units back. 0.3-0.4 is the starting estimate;
 // tune during visual QA.
 const SCENE_ASSET_SCALE = 0.35;
+
+// -----------------------------------------------------------------------------
+// Per-asset callout labels (2026-07-14)
+// -----------------------------------------------------------------------------
+// A tiny text label above each asset showing:
+//   * short name (last segment of the asset_id, stripped of `prop:` prefix)
+//   * platform variant
+//   * for LAUNCHER-class: current/initial ammo summed across stores
+// Rendered as an Html overlay anchored at asset.label_anchor (world coords
+// computed in buildRenderables using ring geometry), with a leader line
+// from the asset's ground position up to the anchor.
+//
+// GATED on camera-zoom: labels only render when the camera is inside
+// LABEL_VISIBLE_DISTANCE from the OrbitControls target. Fleet views at
+// the default camera position see the schematics unlabeled (labels
+// would visually stack at that distance); a user who zooms in to
+// inspect a FOB sees the labels appear as they approach.
+//
+// No box / background chrome by design -- just text + a thin line.
+
+const LABEL_VISIBLE_DISTANCE = 130;   // ~40% into the maxDistance=300 range
+
+/** Return the "short name" of an asset_id: strip a scheme prefix
+ *  (`prop:` / `sim:`) then take the trailing underscore-delimited
+ *  segment. Empty string when the input can't be shortened. */
+function assetShortName(assetId: string): string {
+  if (!assetId) return '';
+  let bare = assetId;
+  const colon = bare.indexOf(':');
+  if (colon >= 0 && colon <= 6) bare = bare.substring(colon + 1);
+  const underscore = bare.lastIndexOf('_');
+  return underscore >= 0 ? bare.substring(underscore + 1) : bare;
+}
+
+/** Track whether the camera is inside LABEL_VISIBLE_DISTANCE of the
+ *  OrbitControls target. Runs a throttled check (~5 Hz) in useFrame
+ *  so we don't set state 60 times a second; state changes only when
+ *  the boolean flips.
+ *
+ *  Renders its children INSIDE the Three.js scene graph; returning
+ *  null when zoomed out hides every downstream callout at once. */
+function ZoomGate({ children }: { children: React.ReactNode }) {
+  const { camera, controls } = useThree() as unknown as {
+    camera: THREE.Camera;
+    controls: { target: THREE.Vector3 } | null;
+  };
+  const [zoomedIn, setZoomedIn] = useState(false);
+  const lastCheck = useRef(0);
+  useFrame(({ clock }) => {
+    // 5 Hz check is enough -- zoom transitions are user-driven and
+    // gradual. 60 Hz would just churn React state without visible
+    // benefit.
+    const now = clock.getElapsedTime();
+    if (now - lastCheck.current < 0.2) return;
+    lastCheck.current = now;
+    const target = controls?.target ?? new THREE.Vector3(0, 0, 0);
+    const d = camera.position.distanceTo(target);
+    const next = d < LABEL_VISIBLE_DISTANCE;
+    if (next !== zoomedIn) setZoomedIn(next);
+  });
+  return zoomedIn ? <>{children}</> : null;
+}
+
+/** One callout: leader line from asset ground position up to the
+ *  label anchor, then an Html overlay with the text content. Text
+ *  has no background box (user preference: "no box, too much noise").
+ *  pointerEvents: none so 3D clicks pass through to the AssetMarker
+ *  hit-target underneath. */
+function AssetCallout({
+  position, labelAnchor, name, variant, ammoText, launcherDepleted,
+}: {
+  position: [number, number, number];
+  labelAnchor: [number, number, number];
+  name: string;
+  variant: string;
+  ammoText: string | null;
+  launcherDepleted: boolean;
+}) {
+  const ammoClass = launcherDepleted
+    ? 'text-rose-400 font-bold'
+    : 'text-emerald-300';
+  return (
+    <>
+      <Line
+        points={[position, labelAnchor]}
+        color={0x64748b}   // slate-500 -- a quiet line, not attention-grabbing
+        lineWidth={0.6}
+        transparent
+        opacity={0.75}
+      />
+      <Html
+        position={labelAnchor}
+        center
+        style={{
+          pointerEvents: 'none',
+          whiteSpace: 'nowrap',
+          transform: 'translateY(-8px)',   // small extra lift above the anchor
+        }}
+      >
+        <div className="font-mono text-[10px] tracking-wider leading-tight drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+          <span className="text-slate-100">{name}</span>
+          <span className="text-slate-500 mx-1">·</span>
+          <span className="text-slate-400">{variant}</span>
+          {ammoText && (
+            <>
+              <span className="text-slate-500 mx-1">·</span>
+              <span className={ammoClass}>{ammoText}</span>
+            </>
+          )}
+        </div>
+      </Html>
+    </>
+  );
+}
 
 // =============================================================================
 // Topology nodes — RegionalAggregator + HQ marker
@@ -443,6 +594,11 @@ export default function RegionalSustainmentPosture({
   const fleet = useFleetAssetsForRegion(regionId);
   const logistics = useAllLogisticsStatus();
   const { fobs } = deployment();
+  // Stockpile feed for the 3D asset callouts (launcher rows only).
+  // Fleet-wide is fine even though this view is region-scoped -- the
+  // launcher's own asset_id already filters us to just this region's
+  // launchers via stockpileForLauncher(entries, id).
+  const stockpile = useMunitionsStockpile();
 
   // 2026-07-13 Phase 5: split fleet into hardware vs. in-flight
   // munitions. Hardware renders as 3D assets on the map; in-flight
@@ -626,6 +782,41 @@ export default function RegionalSustainmentPosture({
               onClick={(e) => { e.stopPropagation(); onAssetSelect(a.asset_id, a.severity); }}
             />
           ))}
+
+          {/* Per-asset callouts. ZoomGate hides ALL callouts when the
+              camera is farther than LABEL_VISIBLE_DISTANCE from the
+              orbit target -- fleet-wide unlabeled view at max zoom-out,
+              tight per-asset labels once the operator zooms in on a
+              cluster. Each callout shows: <short name> · <variant>
+              (· <ammo> for launchers). Leader line connects the label
+              to the asset schematic. */}
+          <ZoomGate>
+            {renderables.map((a) => {
+              const shortName = assetShortName(a.asset_id);
+              const variant = a.platform_variant ?? 'UNKNOWN';
+              // Launcher ammo: sum current + initial across all stores
+              // owned by this launcher (from useMunitionsStockpile).
+              // Non-launchers get ammoText = null, so the ammo tail
+              // just doesn't render.
+              const stores = stockpileForLauncher(stockpile.entries, a.asset_id);
+              const hasStores = stores.length > 0;
+              const cur = hasStores ? stores.reduce((s, r) => s + r.current_ammo, 0) : 0;
+              const max = hasStores ? stores.reduce((s, r) => s + r.initial_ammo, 0) : 0;
+              const ammoText = hasStores ? `${cur}/${max}` : null;
+              const depleted = hasStores && cur === 0 && max > 0;
+              return (
+                <AssetCallout
+                  key={`callout-${a.asset_id}`}
+                  position={a.position}
+                  labelAnchor={a.label_anchor}
+                  name={shortName}
+                  variant={variant}
+                  ammoText={ammoText}
+                  launcherDepleted={depleted}
+                />
+              );
+            })}
+          </ZoomGate>
 
           {/* Topology overlay: real OpenDDIL network shape (per-FOB bridge
               -> regional aggregator -> HQ theater).
