@@ -191,38 +191,43 @@ function buildPostureRollups(
   return rollups;
 }
 
-/** One row of the FORCE POSTURE panel: LABEL then ready/degraded/offline
- *  counts. Only non-zero severity buckets render so a fully-ready class
- *  reads as "SENSORS  9 READY" rather than "SENSORS  9 READY 0 DEGRADED
- *  0 OFFLINE 0 UNKNOWN." UNKNOWN renders only when > 0 because a
- *  non-zero unknown IS informative ("N assets fusion hasn't evaluated"). */
+/** One row of the FORCE POSTURE panel: LABEL then ready/degraded/offline/
+ *  unknown counts, then a "N total" summary. Only non-zero severity
+ *  buckets render VISIBLE text, but each severity ALWAYS occupies its
+ *  own table column so labels stay column-aligned across rows even when
+ *  a row has fewer active severities than its siblings (e.g. a fully-
+ *  ready SENSORS row alongside a partially-degraded LAUNCHERS row --
+ *  before this the SENSORS label drifted right because there were
+ *  fewer spans to justify against).
+ *
+ *  Rendered as <tr> to sit inside the ClassRollupTable's <table>;
+ *  table-column semantics do the alignment work for free.
+ */
 function ClassRollupLine({
   label, rollup,
 }: {
   label: string;
   rollup: PostureRollup;
 }) {
-  // Empty class -> render a "0" placeholder rather than nothing, so the
-  // absence is visible during scenario cold-start (no launchers yet =/=
-  // "we deleted the LAUNCHERS row").
-  const totalLabel = `${rollup.total} total`;
   return (
-    <div className="flex items-center justify-end font-mono text-[11px] tracking-wider">
-      <span className="text-slate-500 mr-3 tabular-nums">{label}</span>
-      {rollup.ready > 0 && (
-        <span className="text-emerald-400 ml-2">{rollup.ready} READY</span>
-      )}
-      {rollup.degraded > 0 && (
-        <span className="text-amber-400 ml-2">{rollup.degraded} DEG</span>
-      )}
-      {rollup.offline > 0 && (
-        <span className="text-rose-400 ml-2">{rollup.offline} OFF</span>
-      )}
-      {rollup.unknown > 0 && (
-        <span className="text-slate-400 ml-2">{rollup.unknown} UNK</span>
-      )}
-      <span className="text-slate-600 ml-3">{totalLabel}</span>
-    </div>
+    <tr className="font-mono text-[11px] tracking-wider">
+      <td className="text-slate-500 pr-3 text-left tabular-nums">{label}</td>
+      <td className="text-right tabular-nums px-1 text-emerald-400">
+        {rollup.ready > 0 ? `${rollup.ready} READY` : ''}
+      </td>
+      <td className="text-right tabular-nums px-1 text-amber-400">
+        {rollup.degraded > 0 ? `${rollup.degraded} DEG` : ''}
+      </td>
+      <td className="text-right tabular-nums px-1 text-rose-400">
+        {rollup.offline > 0 ? `${rollup.offline} OFF` : ''}
+      </td>
+      <td className="text-right tabular-nums px-1 text-slate-400">
+        {rollup.unknown > 0 ? `${rollup.unknown} UNK` : ''}
+      </td>
+      <td className="text-right tabular-nums pl-3 text-slate-600 whitespace-nowrap">
+        {rollup.total} total
+      </td>
+    </tr>
   );
 }
 
@@ -393,18 +398,29 @@ export default function TheaterReadinessPosture({
               rule against a fresh scenario. Until then, IN FLIGHT is
               the placeholder that at least tells the commander an
               engagement is under way. */}
-          <div className="bg-slate-900/80 p-2 border border-slate-700 space-y-1">
+          <div className="bg-slate-900/80 p-2 border border-slate-700">
             <div className="text-[10px] text-slate-500 mb-1">FORCE POSTURE</div>
-            <ClassRollupLine label="SENSORS"    rollup={rollups.sensors} />
-            <ClassRollupLine label="LAUNCHERS"  rollup={rollups.launchers} />
-            {rollups.facilities.total > 0 && (
-              <ClassRollupLine label="FACILITIES" rollup={rollups.facilities} />
-            )}
-            {rollups.other.total > 0 && (
-              <ClassRollupLine label="OTHER" rollup={rollups.other} />
-            )}
+            {/* Table so class labels + severity counts + totals stay
+                column-aligned across rows. Individual severity cells
+                render empty when zero (still occupy the column slot),
+                which keeps the alignment invariant regardless of how
+                many severities are active on each row -- the earlier
+                flex-justify-end layout had SENSORS drift right when
+                the row had fewer active severities than LAUNCHERS. */}
+            <table className="w-full">
+              <tbody>
+                <ClassRollupLine label="SENSORS"    rollup={rollups.sensors} />
+                <ClassRollupLine label="LAUNCHERS"  rollup={rollups.launchers} />
+                {rollups.facilities.total > 0 && (
+                  <ClassRollupLine label="FACILITIES" rollup={rollups.facilities} />
+                )}
+                {rollups.other.total > 0 && (
+                  <ClassRollupLine label="OTHER" rollup={rollups.other} />
+                )}
+              </tbody>
+            </table>
             {rollups.inflight.total > 0 && (
-              <div className="flex items-center justify-end font-mono text-[11px] tracking-wider pt-1 border-t border-slate-700">
+              <div className="flex items-center justify-end font-mono text-[11px] tracking-wider pt-1 mt-1 border-t border-slate-700">
                 <span className="text-slate-500 mr-2">IN FLIGHT</span>
                 <span className="text-amber-300 font-bold">{rollups.inflight.total}</span>
               </div>
