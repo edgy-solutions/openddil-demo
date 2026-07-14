@@ -13,6 +13,13 @@ export {
   type ClassifiedFleetResult,
 } from './useClassifiedFleet';
 export {
+  useMunitionsStockpile,
+  stockpileForLauncher,
+  type StockpileEntry,
+  type MunitionTypeRollup,
+  type MunitionsStockpileResult,
+} from './useMunitionsStockpile';
+export {
   useTelemetryLatest,
   type TelemetryLatest,
   type OperationalState,

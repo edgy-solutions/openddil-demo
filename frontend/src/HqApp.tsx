@@ -28,6 +28,7 @@ import HqDigitalTwin from './components/hq/HqDigitalTwin';
 import HqWorkOrders from './components/hq/HqWorkOrders';
 import EdgeAttribution from './components/hq/EdgeAttribution';
 import RegionFleetSummary from './components/hq/RegionFleetSummary';
+import MunitionsInventory from './components/hq/MunitionsInventory';
 import { AlertOctagon } from 'lucide-react';
 import {
   useAllCmState,
@@ -352,6 +353,13 @@ export default function HqApp() {
           <EdgeAttribution />
           <RegionFleetSummary />
           <FleetReadiness fleetSummary={regionFleet.data} />
+          {/* MunitionsInventory (Phase 3, 2026-07-13): theater-wide
+              effector rollup by munition_type. Sibling to FORCE POSTURE
+              (hardware axis) -- this is the EFFECTOR axis. Derived
+              client-side from asset_capability_state via max-seen
+              accumulator; see components/hq/MunitionsInventory.tsx +
+              hooks/useMunitionsStockpile.ts. */}
+          <MunitionsInventory />
           <TopFactorsTheater topFactors={regionTopFactors.data} />
           <ConfigurationPosture cm={cm.data} fleet={fleet.data} />
           <WearTrendsTheater wearTrends={regionWearTrends.data} />

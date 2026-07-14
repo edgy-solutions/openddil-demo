@@ -22,6 +22,7 @@ import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
 import CmStateCard from './components/CmStateCard';
 import { StrikeCapabilityCard } from './components/StrikeCapabilityCard';
+import MunitionsLoadoutCard from './components/MunitionsLoadoutCard';
 import GroundDiagnosticsCard from './components/GroundDiagnosticsCard';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
@@ -507,6 +508,15 @@ function MaintainerApp() {
               Shows ammo per weapon/store with LOW/DEPLETED banding once
               levels cross the configured threshold. */}
           <StrikeCapabilityCard assetId={selectedAssetId} />
+          {/* Phase 3 (2026-07-13): per-launcher munitions loadout
+              breakdown -- shows initial vs. current per capability
+              store, with expended count and a bar chart. Renders
+              only when the selected asset has StrikeCapability
+              snapshots (i.e. it's a LAUNCHER). Complements the
+              StrikeCapabilityCard: that one shows the raw feed shape,
+              this one shows the derived stockpile view (max-seen
+              accumulator drives the initial baseline). */}
+          <MunitionsLoadoutCard assetId={selectedAssetId} />
           {/* TelemetryCharts uses a layered data source -- real
               sustainment when the customer/DIS feed provides it,
               sim-derived per-element aggregates when not. mradLive
