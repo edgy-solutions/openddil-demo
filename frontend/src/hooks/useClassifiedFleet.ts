@@ -16,9 +16,24 @@ import { useMemo } from 'react';
 import { useFleetAssets, type FleetAsset } from './useFleetAssets';
 import { useAllCapabilityState } from './useCapabilityState';
 import { classifyAsset, type AssetClass } from '../lib/assetClass';
+import {
+  extractParentLauncherFromAssetId,
+  extractFiringSequence,
+} from '../lib/munitionAsset';
 
 export interface ClassifiedFleetAsset extends FleetAsset {
   asset_class: AssetClass;
+  /** Set only for MUNITION-class assets: the launcher this in-flight
+   *  munition was fired from (derived by matching the launcher's asset_id
+   *  as a substring in the munition's asset_id). Null when we can't
+   *  attribute -- e.g. a munition variant whose naming doesn't embed
+   *  the launcher id. */
+  parent_launcher_id: string | null;
+  /** Set only for MUNITION-class assets: the integer firing sequence
+   *  parsed from the asset_id (`<TYPE>_<SEQ>-<PARENT>...` convention).
+   *  Null when the pattern doesn't match. Paired with parent_launcher_id
+   *  it forms a stable firing identity for dedup. */
+  firing_sequence: number | null;
 }
 
 export interface ClassifiedFleetResult {
@@ -36,10 +51,26 @@ export function useClassifiedFleet(): ClassifiedFleetResult {
     // is cheaper than an inner-loop find over capabilities.data for every
     // fleet asset (~O(f * c) -> O(f + c)).
     const launcherIds = new Set(capabilities.data.map((c) => c.asset_id));
-    return fleet.data.map((a) => ({
-      ...a,
-      asset_class: classifyAsset(a.platform_variant, launcherIds.has(a.asset_id)),
-    }));
+    return fleet.data.map((a) => {
+      const asset_class = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
+      // Parent-launcher + firing-sequence extraction only makes sense for
+      // MUNITION-class rows (in-flight munitions embed both in the asset_id).
+      // For every other class the fields stay null.
+      if (asset_class === 'MUNITION') {
+        return {
+          ...a,
+          asset_class,
+          parent_launcher_id: extractParentLauncherFromAssetId(a.asset_id, launcherIds),
+          firing_sequence: extractFiringSequence(a.asset_id),
+        };
+      }
+      return {
+        ...a,
+        asset_class,
+        parent_launcher_id: null,
+        firing_sequence: null,
+      };
+    });
   }, [fleet.data, capabilities.data]);
 
   return {

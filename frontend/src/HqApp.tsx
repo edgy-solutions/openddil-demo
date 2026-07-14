@@ -33,6 +33,7 @@ import { AlertOctagon } from 'lucide-react';
 import {
   useAllCmState,
   useFleetAssets,
+  useClassifiedFleet,
   useEdgeBuffer,
   useRegionFleetSummary,
   useRegionTopFactors,
@@ -300,6 +301,13 @@ export default function HqApp() {
   // — the per-platform-family slice is NOT in the rolled-up topics.
   const cm = useAllCmState();
   const fleet = useFleetAssets();
+  // Classified fleet for ConfigurationPosture -- lets us filter out
+  // MUNITION-class (in-flight) rows before the family aggregation
+  // runs. Configuration Posture is about maintainable HARDWARE (CM
+  // discrepancies, MWO/TCTO compliance, baseline assignment); in-flight
+  // munitions have none of those concerns and would pollute the
+  // family-percent-compliance math.
+  const classifiedFleet = useClassifiedFleet();
   const edge = useEdgeBuffer();
 
   // Phase 6c.1: theater-level rollup sources.
@@ -361,7 +369,10 @@ export default function HqApp() {
               hooks/useMunitionsStockpile.ts. */}
           <MunitionsInventory />
           <TopFactorsTheater topFactors={regionTopFactors.data} />
-          <ConfigurationPosture cm={cm.data} fleet={fleet.data} />
+          <ConfigurationPosture
+            cm={cm.data}
+            fleet={classifiedFleet.data.filter((a) => a.asset_class !== 'MUNITION')}
+          />
           <WearTrendsTheater wearTrends={regionWearTrends.data} />
           <HqDigitalTwin wanActive={!severed} />
           <HqWorkOrders wanActive={!severed} />

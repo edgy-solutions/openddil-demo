@@ -12,9 +12,15 @@
 // happen if the classifier said LAUNCHER -- LAUNCHER means "present in
 // asset_capability_state" -- but defensive path is present).
 // =============================================================================
-import { Target, Package } from 'lucide-react';
-import { useMunitionsStockpile, stockpileForLauncher } from '../hooks';
+import { useMemo } from 'react';
+import { Target, Package, Rocket } from 'lucide-react';
+import {
+  useMunitionsStockpile,
+  useClassifiedFleet,
+  stockpileForLauncher,
+} from '../hooks';
 import { displayMunitionType } from '../lib/munitionType';
+import { dedupFirings } from '../lib/munitionAsset';
 
 export default function MunitionsLoadoutCard({
   assetId,
@@ -23,6 +29,19 @@ export default function MunitionsLoadoutCard({
 }) {
   const stockpile = useMunitionsStockpile();
   const rows = stockpileForLauncher(stockpile.entries, assetId);
+
+  // Live count of in-flight munitions attributable to THIS launcher --
+  // MUNITION-class fleet rows whose parent_launcher_id matches, deduped
+  // to one representative per firing (delivery vehicle + seeker payload
+  // collapse). Zero when nothing is airborne right now.
+  const fleet = useClassifiedFleet();
+  const inflightFromThisLauncher = useMemo(() => {
+    if (!assetId) return 0;
+    const rows = fleet.data.filter(
+      (a) => a.asset_class === 'MUNITION' && a.parent_launcher_id === assetId,
+    );
+    return dedupFirings(rows).length;
+  }, [fleet.data, assetId]);
 
   if (!assetId) return null;
 
@@ -41,6 +60,15 @@ export default function MunitionsLoadoutCard({
         >
           DERIVED
         </span>
+        {inflightFromThisLauncher > 0 && (
+          <span
+            className="ml-auto flex items-center text-[10px] font-mono tracking-widest px-1.5 py-0.5 border border-amber-500/60 bg-amber-500/10 text-amber-300 rounded-sm"
+            title="Munitions currently in flight from this launcher (deduped per firing)"
+          >
+            <Rocket className="w-3 h-3 mr-1 animate-pulse" />
+            {inflightFromThisLauncher} IN FLIGHT
+          </span>
+        )}
       </h2>
 
       {rows.length === 0 ? (
