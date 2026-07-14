@@ -27,6 +27,7 @@ import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
   useFleetAssets,
   useFleetAssetsForEdge,
+  useAllCapabilityState,
   useFleetTiers,
   useTelemetryLatest,
   useCmState,
@@ -34,6 +35,7 @@ import {
   useTacticalEvents,
   useAssetElementTelemetry,
 } from './hooks';
+import { classifyAsset } from './lib/assetClass';
 import { platformClass } from './config/platformChartConfig';
 import { deployment } from './deployment';
 
@@ -137,7 +139,37 @@ function MaintainerApp() {
   // resolved), falls back to the unfiltered shape so the picker isn't
   // empty during the brief cold-start window.
   const fleetScoped = useFleetAssetsForEdge(selectedEdge);
-  const fleet = selectedEdge ? fleetScoped : fleetAll;
+  const fleetRaw = selectedEdge ? fleetScoped : fleetAll;
+
+  // Filter fired-and-in-flight MUNITION-class assets OUT of the
+  // maintainer picker (2026-07-13). A missile in flight isn't a
+  // maintainable asset -- no BIT, no CM state, no wear trend. It
+  // appears in telemetry_latest_state with a *_Interceptor variant
+  // for the ~seconds it's flying, then TTL's out. Leaving it in the
+  // picker cluttered the fleet dropdown with transient noise and
+  // made it possible to drill into an asset whose telemetry stopped
+  // updating five seconds ago. Classification per src/lib/assetClass:
+  // an asset is LAUNCHER if it emits StrikeCapability, MUNITION if
+  // it has a munition-candidate variant AND doesn't. Capability
+  // data is fleet-wide (not edge-scoped) which is fine -- Set
+  // membership is O(1).
+  const allCapability = useAllCapabilityState();
+  const fleet = useMemo(() => {
+    const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
+    const kept = fleetRaw.data.filter((a) => {
+      const cls = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
+      return cls !== 'MUNITION';
+    });
+    // Return in the same ShapeResult shape the rest of this component
+    // expects -- keep isLoading/isError from the raw source so cold-
+    // start states still surface correctly.
+    return {
+      data: kept,
+      isLoading: fleetRaw.isLoading || allCapability.isLoading,
+      isError:   fleetRaw.isError   || allCapability.isError,
+    };
+  }, [fleetRaw.data, fleetRaw.isLoading, fleetRaw.isError,
+      allCapability.data, allCapability.isLoading, allCapability.isError]);
 
   // 5-tier liveness per asset (see lib/assetTier). Drives the picker
   // suffix + the dim styling in Header so the operator can still

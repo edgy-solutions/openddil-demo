@@ -30,7 +30,12 @@ import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
 import { deployment, type Fob } from '../../deployment';
-import { useFleetAssets, useAllLogisticsStatus } from '../../hooks';
+import {
+  useClassifiedFleet,
+  useAllLogisticsStatus,
+  type ClassifiedFleetAsset,
+} from '../../hooks';
+import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
 
 // Scene scale: HQ canvas spans ~2000 units; ~400 units per deg of lat
@@ -38,26 +43,31 @@ import { makeProjection } from '../../lib/geoProjection';
 // within view at the default (0, 150, 600) camera.
 const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
 
-// Per-FOB composition breakdown, derived from each asset's platform_variant.
-// Categories match the customer ORBAT enum buckets:
-//   * sensors        — *_Sensor (4 tiers)
-//   * interceptors   — *_Interceptor (4 tiers) + MISSILE_LAUNCHER
-//   * facilities     — AIR_DEFENSE_SITE / HEADQUARTER_COMPLEX /
-//                      INSTALLATION_FACILITY_CIVILIAN
-//   * other          — everything else (legacy DIS fleet: M1A2-SEPv3,
-//                      AH-64E; plus any unrecognized platform_variant)
+// Per-FOB composition breakdown, driven by the asset_class discriminator
+// (src/lib/assetClass.ts) rather than by platform_variant pattern-matching.
+// The class separates fired-and-in-flight MUNITIONs from LAUNCHERs even
+// though both can carry the same platform_variant -- the discriminator
+// is "does the asset emit StrikeCapability."
 //
-// Reading the COP: a healthy posture has a balanced sensors:interceptors
-// ratio per FOB. Composition pills on the FOB labels make this instantly
-// visible at HQ scale without a per-asset zoom.
-function categoryOf(variant: string | null | undefined): 'sensors' | 'interceptors' | 'facilities' | 'other' {
-  if (!variant) return 'other';
-  if (variant.endsWith('_Sensor')) return 'sensors';
-  if (variant.endsWith('_Interceptor') || variant === 'MISSILE_LAUNCHER') return 'interceptors';
-  if (variant === 'AIR_DEFENSE_SITE' ||
-      variant === 'HEADQUARTER_COMPLEX' ||
-      variant === 'INSTALLATION_FACILITY_CIVILIAN') return 'facilities';
-  return 'other';
+// Categories:
+//   * sensors        — asset_class = SENSOR
+//   * launchers      — asset_class = LAUNCHER  (real launcher hardware)
+//   * facilities     — asset_class = FACILITY
+//   * inflight       — asset_class = MUNITION  (fired, in flight, transient)
+//   * other          — PLATFORM / UNKNOWN (legacy DIS, unresolved variants)
+//
+// Reading the COP: a healthy posture has a balanced sensors:launchers
+// ratio per FOB. In-flight munitions are shown as a per-FOB ticker so
+// the commander can see engagement activity at a glance without
+// polluting the hardware counts.
+function categoryOf(cls: AssetClass): 'sensors' | 'launchers' | 'facilities' | 'inflight' | 'other' {
+  switch (cls) {
+    case 'SENSOR':   return 'sensors';
+    case 'LAUNCHER': return 'launchers';
+    case 'FACILITY': return 'facilities';
+    case 'MUNITION': return 'inflight';
+    default:         return 'other';
+  }
 }
 
 interface FobMetrics {
@@ -69,15 +79,16 @@ interface FobMetrics {
   /** Per-category composition counts. Drives the FobLabel composition pill. */
   composition: {
     sensors: number;
-    interceptors: number;
+    launchers: number;
     facilities: number;
+    inflight: number;   // fired munitions currently in flight
     other: number;
   };
 }
 
 function buildFobMetrics(
   fobs: Fob[],
-  fleet: ReturnType<typeof useFleetAssets>['data'],
+  fleet: ClassifiedFleetAsset[],
   logistics: ReturnType<typeof useAllLogisticsStatus>['data'],
   scale: number,
 ): FobMetrics[] {
@@ -88,11 +99,13 @@ function buildFobMetrics(
     const [x, z] = proj.project(fob.lat, fob.lon);
     const assets = fleet.filter((a) => a.edge_id === fob.edge_id);
     const bySev = new Map<string, number>();
-    const composition = { sensors: 0, interceptors: 0, facilities: 0, other: 0 };
+    const composition = {
+      sensors: 0, launchers: 0, facilities: 0, inflight: 0, other: 0,
+    };
     for (const a of assets) {
       const sev = sevByAsset.get(a.asset_id) ?? 'LOGISTICS_SEVERITY_UNSPECIFIED';
       bySev.set(sev, (bySev.get(sev) ?? 0) + 1);
-      composition[categoryOf(a.platform_variant)]++;
+      composition[categoryOf(a.asset_class)]++;
     }
     return {
       fob,
@@ -105,38 +118,112 @@ function buildFobMetrics(
 }
 
 /**
- * Posture rollup across the whole theater. Buckets every logistics status
- * row by severity tier and surfaces it as a single header banner: how many
- * READY vs OFFLINE vs UNKNOWN. Pairs with the per-FOB composition pill to
- * give the HQ commander an at-a-glance "is the posture green or not?"
- * answer without zooming into any FOB.
+ * Posture rollup PER asset_class. Instead of one merged bucket that
+ * mixed hardware severity with in-flight munition noise (the 2026-07-08
+ * "126 in FORCE POSTURE, 97 in Configuration Posture" divergence),
+ * this separates the classes so:
+ *   * Hardware readiness (SENSORS + LAUNCHERS + FACILITIES) is the
+ *     primary commander question. Munitions in flight don't dilute it.
+ *   * IN FLIGHT is a separate ticker showing engagement activity.
+ *   * The invariant `ready+degraded+offline+unknown == class_total`
+ *     holds within each rollup (symmetric correction, unlike the old
+ *     one-way `if totalAssets > accountedFor` clamp).
+ *
+ * Iteration order: fleet-driven, not logistics-driven. Every asset in
+ * `fleet` gets bucketed exactly once by severity via a lookup into
+ * logistics; assets with no logistics row default to UNKNOWN. This
+ * guarantees totals = fleet.length by construction; there's no way for
+ * an orphan logistics row (a stale asset_logistics_status entry whose
+ * telemetry_latest_state row has TTL'd out) to inflate the total.
  */
 interface PostureRollup {
   ready: number;
   degraded: number;
   offline: number;
   unknown: number;
+  total: number;
 }
-function buildPostureRollup(
-  logistics: ReturnType<typeof useAllLogisticsStatus>['data'],
-  totalAssets: number,
-): PostureRollup {
-  const rollup: PostureRollup = { ready: 0, degraded: 0, offline: 0, unknown: 0 };
-  for (const l of logistics) {
-    switch (l.overall_severity) {
-      case 'LOGISTICS_SEVERITY_OK': rollup.ready++; break;
-      case 'LOGISTICS_SEVERITY_DEGRADED': rollup.degraded++; break;
-      case 'LOGISTICS_SEVERITY_CRITICAL':
-      case 'LOGISTICS_SEVERITY_NON_OPERATIONAL': rollup.offline++; break;
-      default: rollup.unknown++;
-    }
+
+function emptyRollup(): PostureRollup {
+  return { ready: 0, degraded: 0, offline: 0, unknown: 0, total: 0 };
+}
+
+function bucketSeverity(sev: string | undefined): keyof Omit<PostureRollup, 'total'> {
+  switch (sev) {
+    case 'LOGISTICS_SEVERITY_OK':
+      return 'ready';
+    case 'LOGISTICS_SEVERITY_DEGRADED':
+      return 'degraded';
+    case 'LOGISTICS_SEVERITY_CRITICAL':
+    case 'LOGISTICS_SEVERITY_NON_OPERATIONAL':
+      return 'offline';
+    default:
+      return 'unknown';
   }
-  // Any asset in fleet but missing from logistics_status (typical for
-  // assets that haven't yet been evaluated by the fusion service) is
-  // counted as unknown. Keeps the totals consistent with the FOB labels.
-  const accountedFor = rollup.ready + rollup.degraded + rollup.offline + rollup.unknown;
-  if (totalAssets > accountedFor) rollup.unknown += totalAssets - accountedFor;
-  return rollup;
+}
+
+interface ClassRollups {
+  sensors:    PostureRollup;
+  launchers:  PostureRollup;
+  facilities: PostureRollup;
+  inflight:   PostureRollup;
+  other:      PostureRollup;
+}
+
+function buildPostureRollups(
+  fleet: ClassifiedFleetAsset[],
+  logistics: ReturnType<typeof useAllLogisticsStatus>['data'],
+): ClassRollups {
+  const sevByAsset = new Map(logistics.map((l) => [l.asset_id, l.overall_severity]));
+  const rollups: ClassRollups = {
+    sensors:    emptyRollup(),
+    launchers:  emptyRollup(),
+    facilities: emptyRollup(),
+    inflight:   emptyRollup(),
+    other:      emptyRollup(),
+  };
+  for (const a of fleet) {
+    const cat = categoryOf(a.asset_class);
+    const bucket = bucketSeverity(sevByAsset.get(a.asset_id));
+    rollups[cat][bucket]++;
+    rollups[cat].total++;
+  }
+  return rollups;
+}
+
+/** One row of the FORCE POSTURE panel: LABEL then ready/degraded/offline
+ *  counts. Only non-zero severity buckets render so a fully-ready class
+ *  reads as "SENSORS  9 READY" rather than "SENSORS  9 READY 0 DEGRADED
+ *  0 OFFLINE 0 UNKNOWN." UNKNOWN renders only when > 0 because a
+ *  non-zero unknown IS informative ("N assets fusion hasn't evaluated"). */
+function ClassRollupLine({
+  label, rollup,
+}: {
+  label: string;
+  rollup: PostureRollup;
+}) {
+  // Empty class -> render a "0" placeholder rather than nothing, so the
+  // absence is visible during scenario cold-start (no launchers yet =/=
+  // "we deleted the LAUNCHERS row").
+  const totalLabel = `${rollup.total} total`;
+  return (
+    <div className="flex items-center justify-end font-mono text-[11px] tracking-wider">
+      <span className="text-slate-500 mr-3 tabular-nums">{label}</span>
+      {rollup.ready > 0 && (
+        <span className="text-emerald-400 ml-2">{rollup.ready} READY</span>
+      )}
+      {rollup.degraded > 0 && (
+        <span className="text-amber-400 ml-2">{rollup.degraded} DEG</span>
+      )}
+      {rollup.offline > 0 && (
+        <span className="text-rose-400 ml-2">{rollup.offline} OFF</span>
+      )}
+      {rollup.unknown > 0 && (
+        <span className="text-slate-400 ml-2">{rollup.unknown} UNK</span>
+      )}
+      <span className="text-slate-600 ml-3">{totalLabel}</span>
+    </div>
+  );
 }
 
 function AbstractContinents() {
@@ -170,14 +257,18 @@ function FobLabel({
   position: [number, number, number];
   label: string;
   total: number;
-  composition: { sensors: number; interceptors: number; facilities: number; other: number };
+  composition: {
+    sensors: number; launchers: number; facilities: number;
+    inflight: number; other: number;
+  };
 }) {
-  // Composition pill — show categories that have at least one asset. A
-  // FOB with only "other"-class assets (legacy DIS) gets the plain total;
-  // a FOB with a mix of sensors+interceptors+facilities gets the categorized
-  // breakdown that tells the air-defense-posture story at a glance.
+  // Composition pill: sensors + LAUNCHER hardware + facilities. In-flight
+  // munitions surface as a smaller separate ticker (IN FLIGHT: N) so
+  // they don't distort the hardware picture -- a FOB with 4 launchers
+  // that just fired 20 interceptors is still "4 launchers," not "24."
+  // Legacy DIS / unresolved variants fall through to `other`.
   const hasOrbatComposition =
-      composition.sensors > 0 || composition.interceptors > 0 || composition.facilities > 0;
+      composition.sensors > 0 || composition.launchers > 0 || composition.facilities > 0;
   return (
     <Html
       position={position}
@@ -197,14 +288,19 @@ function FobLabel({
             {composition.sensors > 0 && (
               <span className="text-cyan-300">{composition.sensors} SENS</span>
             )}
-            {composition.interceptors > 0 && (
-              <span className="text-amber-300">{composition.interceptors} INTC</span>
+            {composition.launchers > 0 && (
+              <span className="text-amber-300">{composition.launchers} LNCH</span>
             )}
             {composition.facilities > 0 && (
               <span className="text-slate-400">{composition.facilities} FAC</span>
             )}
             {composition.other > 0 && (
               <span className="text-slate-500">{composition.other} OTHER</span>
+            )}
+            {composition.inflight > 0 && (
+              <span className="text-amber-500 border-l border-slate-700 pl-2">
+                {composition.inflight} FLT
+              </span>
             )}
           </div>
         ) : (
@@ -225,7 +321,7 @@ export default function TheaterReadinessPosture({
   severed: boolean;
 }) {
   const { fobs } = deployment();
-  const fleet = useFleetAssets();
+  const fleet = useClassifiedFleet();
   const logistics = useAllLogisticsStatus();
 
   // Projection is computed once here and shared with both the FOB metrics
@@ -241,13 +337,17 @@ export default function TheaterReadinessPosture({
     [fobs, fleet.data, logistics.data],
   );
 
-  // Force-posture rollup — same fleet, bucketed by overall_severity from
-  // the fusion service. Shows next to GLOBAL LINK STATUS in the header so
-  // the commander gets two-axis read at a glance: "are the links up?" AND
-  // "are the assets ready?"
-  const posture = useMemo(
-    () => buildPostureRollup(logistics.data, fleet.data.length),
-    [logistics.data, fleet.data.length],
+  // Per-class posture rollups: hardware (SENSORS / LAUNCHERS / FACILITIES)
+  // gets a severity breakdown; fired MUNITIONs (in flight) get a count.
+  // The severity/class split solves two divergences we saw earlier:
+  //   1. FORCE POSTURE (asset_logistics_status count) diverging from
+  //      the GLOBAL FLEET header (telemetry_latest_state count). Fleet-
+  //      driven iteration guarantees per-class total = per-class fleet.
+  //   2. LAUNCHER hardware readiness being polluted by fired-and-in-flight
+  //      munition rows using the same platform_variant.
+  const rollups = useMemo(
+    () => buildPostureRollups(fleet.data, logistics.data),
+    [fleet.data, logistics.data],
   );
 
   // With one global hq_link_severed today, every FOB shares the same
@@ -279,23 +379,36 @@ export default function TheaterReadinessPosture({
               )}
             </div>
           </div>
-          {/* FORCE POSTURE — fleet-level (fusion-computed logistics severity).
-              Only the non-zero buckets render so a fully-ready posture
-              reads as a clean "N READY" rather than a noisy "N/0/0/0". */}
-          <div className="bg-slate-900/80 p-2 border border-slate-700">
+          {/* FORCE POSTURE — split by asset_class so the commander sees
+              hardware readiness cleanly instead of one merged bucket
+              polluted by in-flight munition telemetry rows. Only the
+              non-empty classes render, so a facility-less deployment
+              reads as SENSORS+LAUNCHERS rather than SENSORS+LAUNCHERS+
+              (0 FACILITIES). IN FLIGHT is a separate ticker -- it's
+              an activity signal, not a readiness one.
+
+              Full munitions inventory (per-type available/expended/
+              failed rollup) lands in the sibling MUNITIONS panel in
+              Phase 3, once we've confirmed the initial-ammo derivation
+              rule against a fresh scenario. Until then, IN FLIGHT is
+              the placeholder that at least tells the commander an
+              engagement is under way. */}
+          <div className="bg-slate-900/80 p-2 border border-slate-700 space-y-1">
             <div className="text-[10px] text-slate-500 mb-1">FORCE POSTURE</div>
-            <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-              <span className="text-emerald-400">{posture.ready} READY</span>
-              {posture.degraded > 0 && (
-                <span className="text-amber-400 ml-4">{posture.degraded} DEGRADED</span>
-              )}
-              {posture.offline > 0 && (
-                <span className="text-rose-400 ml-4">{posture.offline} OFFLINE</span>
-              )}
-              {posture.unknown > 0 && (
-                <span className="text-slate-400 ml-4">{posture.unknown} UNKNOWN</span>
-              )}
-            </div>
+            <ClassRollupLine label="SENSORS"    rollup={rollups.sensors} />
+            <ClassRollupLine label="LAUNCHERS"  rollup={rollups.launchers} />
+            {rollups.facilities.total > 0 && (
+              <ClassRollupLine label="FACILITIES" rollup={rollups.facilities} />
+            )}
+            {rollups.other.total > 0 && (
+              <ClassRollupLine label="OTHER" rollup={rollups.other} />
+            )}
+            {rollups.inflight.total > 0 && (
+              <div className="flex items-center justify-end font-mono text-[11px] tracking-wider pt-1 border-t border-slate-700">
+                <span className="text-slate-500 mr-2">IN FLIGHT</span>
+                <span className="text-amber-300 font-bold">{rollups.inflight.total}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

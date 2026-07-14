@@ -8,6 +8,11 @@ export {
   type FleetAsset,
 } from './useFleetAssets';
 export {
+  useClassifiedFleet,
+  type ClassifiedFleetAsset,
+  type ClassifiedFleetResult,
+} from './useClassifiedFleet';
+export {
   useTelemetryLatest,
   type TelemetryLatest,
   type OperationalState,
