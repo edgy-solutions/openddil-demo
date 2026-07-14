@@ -113,6 +113,7 @@ import {
   colocationRingSlot,
   isFacilityVariant,
 } from '../../lib/coLocationLayout';
+import { resolveRingRadius } from '../../lib/assetGeometry';
 
 function buildRenderables(
   fleet: FleetAsset[],
@@ -248,8 +249,21 @@ function buildRenderables(
     // Ring radius + per-slot positions delegated to lib/coLocationLayout.
     // Geometry is pinned by unit tests there; comments at the
     // declaration site describe the formula trade-offs.
+    //
+    // 2026-07-14: measure the max base-ring radius across the ring-slot
+    // assets in this bucket and pass it in. colocationRingRadius sizes
+    // the ring so adjacent ring slots' base rings can't overlap. Without
+    // this, a bucket of 4 launchers (each with a ~2.1-world-unit base
+    // ring) rendered with rings visibly touching -- operator flagged
+    // "so close they are on top of each other".
     if (others.length === 0) continue;
-    const radius = colocationRingRadius(others.length, facilities.length > 0);
+    const maxRingRadius = others.reduce(
+      (acc, s) => Math.max(acc, resolveRingRadius(s.asset.platform_variant, SCENE_ASSET_SCALE)),
+      0,
+    );
+    const radius = colocationRingRadius(
+      others.length, facilities.length > 0, maxRingRadius,
+    );
     others.forEach((s, i) => {
       const { x: px, z: pz } = colocationRingSlot(cx, cz, radius, i, others.length);
       // Ring-based label offset: extend outward from centroid to

@@ -182,9 +182,14 @@ function SeverityBaseRing({ color, radius, selected, selectedHeight, opacityScal
     const cylHeight = (selectedHeight ?? radius * 2) * 1.15;
     return (
         <>
-            {/* Primary ring — flat on ground plane (Y up), thin annulus */}
+            {/* Primary ring — flat on ground plane (Y up), thin annulus.
+                2026-07-14: halved thickness (was inner=0.85, now 0.925).
+                Original ring was 15% of the radius wide -- read as a
+                deliberate ring, but visually competed with the schematic
+                inside. 7.5% width is a subtler underscore that still
+                carries the severity color at a glance without dominating. */}
             <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
-                <ringGeometry args={[radius * 0.85, radius, 32]} />
+                <ringGeometry args={[radius * 0.925, radius, 32]} />
                 <meshBasicMaterial color={color} transparent opacity={0.85 * opacityScale} side={THREE.DoubleSide} />
             </mesh>
             {/* Selected — bright cyan halo ring + faint solid disc + vertical

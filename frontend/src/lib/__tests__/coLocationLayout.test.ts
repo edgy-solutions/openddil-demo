@@ -11,6 +11,7 @@ import {
   colocationRingSlot,
   isFacilityVariant,
   COLOC_MIN_SPACING,
+  COLOC_RING_GAP,
   COLOC_BUCKET,
   FACILITY_RING_MIN_RADIUS,
   FACILITY_VARIANTS,
@@ -69,45 +70,26 @@ describe('colocationBucketKey — same-point detection grain', () => {
 });
 
 describe('colocationRingRadius — ring sizing per asset count', () => {
-  it('few assets -> floor radius (geometric term is small)', () => {
-    // n=3, no facility: geometric = 3*2.5/2π ≈ 1.19. Floor = 2.5.
+  // Legacy (arc-length) formula — maxRingRadius omitted / 0.
+  it('legacy formula: few assets -> floor radius (arc term is small)', () => {
+    // n=3, no facility, no radius: arc = 3*2.5/2π ≈ 1.19. Floor = 2.5.
     expect(colocationRingRadius(3, false)).toBe(COLOC_MIN_SPACING);
   });
 
-  it('many assets -> geometric term dominates', () => {
-    // n=20, no facility: geometric = 20*2.5/2π ≈ 7.96. Floor = 2.5.
-    // Geometric wins; should equal the geometric value.
+  it('legacy formula: many assets -> arc term dominates', () => {
     const r = colocationRingRadius(20, false);
     expect(r).toBeCloseTo((20 * COLOC_MIN_SPACING) / (2 * Math.PI), 4);
     expect(r).toBeGreaterThan(COLOC_MIN_SPACING);
   });
 
   it('with facility at center -> at least FACILITY_RING_MIN_RADIUS', () => {
-    // n=3, facility: geometric ≈ 1.19 but floor is 4.0. Floor wins.
     expect(colocationRingRadius(3, true)).toBe(FACILITY_RING_MIN_RADIUS);
   });
 
   it('with facility + many assets -> geometric still applies if larger', () => {
-    // n=20, facility: geometric ≈ 7.96 > floor 4.0. Geometric wins.
     const r = colocationRingRadius(20, true);
     expect(r).toBeCloseTo((20 * COLOC_MIN_SPACING) / (2 * Math.PI), 4);
     expect(r).toBeGreaterThan(FACILITY_RING_MIN_RADIUS);
-  });
-
-  it('adjacent slots stay >= COLOC_MIN_SPACING apart at the geometric-dominated radius', () => {
-    // The whole point of the geometric term: at large n, the ring
-    // expands so the arc-length between adjacent slots stays at
-    // COLOC_MIN_SPACING. Verify for n=10.
-    const n = 10;
-    const r = colocationRingRadius(n, false);
-    const slotA = colocationRingSlot(0, 0, r, 0, n);
-    const slotB = colocationRingSlot(0, 0, r, 1, n);
-    const dx = slotA.x - slotB.x;
-    const dz = slotA.z - slotB.z;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    // Geometric radius gives arc-length = COLOC_MIN_SPACING; chord
-    // length is slightly less but very close for adjacent slots.
-    expect(dist).toBeGreaterThan(COLOC_MIN_SPACING * 0.95);
   });
 
   it('n=1 special case: just the floor', () => {
@@ -118,6 +100,44 @@ describe('colocationRingRadius — ring sizing per asset count', () => {
   it('n=0 returns the floor (defensive, even though buildRenderables guards)', () => {
     expect(colocationRingRadius(0, false)).toBe(COLOC_MIN_SPACING);
     expect(colocationRingRadius(0, true)).toBe(FACILITY_RING_MIN_RADIUS);
+  });
+
+  // New (chord-based) formula — maxRingRadius > 0.
+  describe('chord formula: base rings never overlap', () => {
+    it('n=4 launchers with r=2.1: adjacent chord = 2r + COLOC_RING_GAP', () => {
+      // Real-world case: 4 MRAD_Interceptor launchers at SCENE_ASSET_SCALE=0.35
+      // -> ring radius ~2.1. Adjacent centers must be >= 2r + gap apart.
+      const r = 2.1;
+      const R = colocationRingRadius(4, false, r);
+      // Chord between adjacent slots on this ring:
+      const chord = 2 * R * Math.sin(Math.PI / 4);
+      expect(chord).toBeCloseTo(2 * r + COLOC_RING_GAP, 4);
+    });
+
+    it('n=2 (opposite ends) has chord >= 2r + gap', () => {
+      const r = 1.5;
+      const R = colocationRingRadius(2, false, r);
+      const chord = 2 * R * Math.sin(Math.PI / 2);   // 2R
+      expect(chord).toBeGreaterThanOrEqual(2 * r + COLOC_RING_GAP - 1e-9);
+    });
+
+    it('n=8 crowded ring still keeps base rings clear', () => {
+      const r = 1.0;
+      const R = colocationRingRadius(8, false, r);
+      const chord = 2 * R * Math.sin(Math.PI / 8);
+      expect(chord).toBeCloseTo(2 * r + COLOC_RING_GAP, 4);
+    });
+
+    it('with facility floor when few assets and small rings', () => {
+      const r = 0.5;
+      // n=3 chord formula would give a small R; facility floor wins.
+      const R = colocationRingRadius(3, true, r);
+      expect(R).toBe(FACILITY_RING_MIN_RADIUS);
+    });
+
+    it('n=1 with radius -> floor (no ring math)', () => {
+      expect(colocationRingRadius(1, false, 2.1)).toBe(COLOC_MIN_SPACING);
+    });
   });
 });
 

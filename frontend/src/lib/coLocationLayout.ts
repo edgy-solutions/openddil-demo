@@ -16,8 +16,13 @@
 //
 // Constants:
 //   * COLOC_MIN_SPACING (2.5) — minimum world-unit gap between
-//     adjacent ring slots. ArtillerySchematic pod ~2 wide at scale
-//     0.35; 2.5 keeps adjacent launchers clear with a slight buffer.
+//     adjacent ring slots when no per-asset radii are known. Legacy
+//     default; kept for callers that don't measure. ArtillerySchematic
+//     pod ~2 wide at scale 0.35; 2.5 keeps adjacent launchers clear.
+//   * COLOC_RING_GAP (0.5) — extra world-unit gap between two
+//     adjacent assets' BASE-RING EDGES. Guarantees the severity
+//     rings never touch, so the operator can still read each ring's
+//     color independently when assets sit shoulder-to-shoulder.
 //   * COLOC_BUCKET (0.5) — bucket-key grain for "same point"
 //     detection. Well below COLOC_MIN_SPACING (no spurious bucket
 //     merges from staggered positions) and above lat/lon projection
@@ -28,16 +33,21 @@
 //     must clear that plus the ring-asset's own footprint plus
 //     a small buffer.
 //
-// Ring radius formula:
+// Ring radius formula (2026-07-14 rewrite):
 //
-//   R = max(min_radius, N * COLOC_MIN_SPACING / 2π)
+//   chord_needed = 2*maxRingRadius + COLOC_RING_GAP
+//   R = max(floor, chord_needed / (2 * sin(π/N)))
 //
-//   where N = number of ring assets. The second term keeps adjacent
-//   slots at >= COLOC_MIN_SPACING arc-length apart, derived from
-//   arc = R * angle, angle = 2π/N. The max() takes whichever is
-//   bigger — the geometric clearance OR the facility-floor radius.
+//   where maxRingRadius is the largest asset base-ring radius in the
+//   bucket. `2 * R * sin(π/N)` is the STRAIGHT-LINE distance between
+//   adjacent slots on the ring; we pin it >= diameter of two
+//   adjacent base rings plus the gap. Prior formula used arc-length
+//   with a fixed COLOC_MIN_SPACING; that worked for the small-asset
+//   case but let large-schematic base rings (MRAD_Interceptor r~2.1
+//   at scale 0.35) overlap when 4+ launchers shared a bucket.
 
 export const COLOC_MIN_SPACING = 2.5;
+export const COLOC_RING_GAP = 0.5;
 export const COLOC_BUCKET = 0.5;
 export const FACILITY_RING_MIN_RADIUS = 4.0;
 
@@ -57,19 +67,38 @@ export function colocationBucketKey(x: number, z: number): string {
   return `${Math.round(x / COLOC_BUCKET)}|${Math.round(z / COLOC_BUCKET)}`;
 }
 
-/** Ring radius for a co-location bucket. `n` is the count of assets
- *  that need ring slots (i.e. NOT counting any facility-class entities
- *  that sit at center). `hasFacility` selects the floor radius:
- *  FACILITY_RING_MIN_RADIUS when a facility sits at center,
- *  COLOC_MIN_SPACING otherwise (a same-class bucket of leaves only
- *  needs the spacing-from-each-other floor, not the facility-clearance
- *  floor). */
+/** Ring radius for a co-location bucket, sized so adjacent assets'
+ *  BASE RINGS don't overlap.
+ *
+ *  Args:
+ *    n              - count of ring-slot assets (excludes facility-
+ *                     class entities that sit at center)
+ *    hasFacility    - true when a facility sits at center; selects
+ *                     the FACILITY_RING_MIN_RADIUS floor
+ *    maxRingRadius  - largest base-ring radius (world units) among the
+ *                     ring-slot assets. When >0, sizes the ring so
+ *                     chord_length(adjacent slots) >=
+ *                     2*maxRingRadius + COLOC_RING_GAP. When 0/omitted,
+ *                     falls back to the legacy arc-length formula
+ *                     (used by tests that don't care about radii).
+ *
+ *  N<=1 returns the floor (nothing to space; caller usually skips
+ *  the ring path for solo assets anyway).
+ */
 export function colocationRingRadius(
   n: number,
   hasFacility: boolean,
+  maxRingRadius: number = 0,
 ): number {
   const floor = hasFacility ? FACILITY_RING_MIN_RADIUS : COLOC_MIN_SPACING;
-  const geometric = (n * COLOC_MIN_SPACING) / (2 * Math.PI);
+  if (n <= 1) return floor;
+  const geometric = maxRingRadius > 0
+    // New: chord-based, ring-diameter-aware. Guarantees adjacent
+    // base rings clear by COLOC_RING_GAP.
+    ? (2 * maxRingRadius + COLOC_RING_GAP) / (2 * Math.sin(Math.PI / n))
+    // Legacy: arc-length with fixed spacing. Kept for callers/tests
+    // that don't measure ring radii.
+    : (n * COLOC_MIN_SPACING) / (2 * Math.PI);
   return Math.max(floor, geometric);
 }
 
