@@ -128,13 +128,19 @@ describe('launcher invariants — pad sized to hinge, ring sized to pod', () => 
     LAUNCHER_VARIANTS.forEach(v => expect(PAD_RADIUS_NATIVE[v]).toBe(2.0));
   });
 
-  it('launcher footprint radius (6.0) exceeds pod top-down half-diagonal', () => {
-    // Pod top-down half-diagonal ≈ 4.16 native. Footprint 6.0 means
-    // the outer halo (footprint * scale * 1.5) clearly exceeds the
-    // pod outline at any scale. Pinned per the comment in
-    // assetGeometry.ts.
+  it('launcher footprint radius (3.3) is set intentionally tight', () => {
+    // 2026-07-14: dropped from 6.0 → 3.3 native. Rationale: at
+    // effectiveScale = SCENE_ASSET_SCALE * variantScale = 0.35 *
+    // 0.6 = 0.21, that gives rendered ring ≈ 0.7 world -- large
+    // enough to visibly encircle the launcher pod at typical camera
+    // distances but not so large that adjacent-bucket assets
+    // (dense FOB clusters ~1.8-2.6 world apart) visually
+    // collide. The pod's top-down half-diagonal is 4.16 native, so
+    // the ring no longer fully encloses the pod outline -- accepted
+    // trade-off; the pod silhouette itself is the primary identifier.
     LAUNCHER_VARIANTS.forEach((v) => {
-      expect(ASSET_FOOTPRINT_RADIUS[v]).toBeGreaterThan(POD_TOP_DOWN_HALF_DIAGONAL);
+      expect(ASSET_FOOTPRINT_RADIUS[v]).toBeLessThan(POD_TOP_DOWN_HALF_DIAGONAL);
+      expect(ASSET_FOOTPRINT_RADIUS[v]).toBeGreaterThan(2.0);
     });
   });
 });
@@ -175,7 +181,7 @@ describe('resolveFootprintRadius / resolvePadHeight / resolvePadRadius', () => {
   // undefined (not a default) on miss, so callers can branch on
   // "has override" vs "use generic floor."
   it('launcher variants return numeric footprint, pad height, pad radius', () => {
-    expect(resolveFootprintRadius('MRAD_Interceptor')).toBe(6.0);
+    expect(resolveFootprintRadius('MRAD_Interceptor')).toBe(3.3);
     expect(resolvePadHeight('MRAD_Interceptor')).toBe(2.0);
     expect(resolvePadRadius('MRAD_Interceptor')).toBe(2.0);
   });
@@ -198,20 +204,22 @@ describe('resolveFootprintRadius / resolvePadHeight / resolvePadRadius', () => {
 // ---------------------------------------------------------------------------
 
 describe('resolveRingRadius', () => {
-  // The min radius is 1.0 (literal Math.max in the helper) so small-
-  // scale rendering still shows a visible ring.
-  it('launcher at scale 0.35 -> 2.1 (footprint override)', () => {
-    expect(resolveRingRadius('MRAD_Interceptor', 0.35)).toBeCloseTo(6.0 * 0.35, 4);
+  // 2026-07-14: floors and multipliers tightened after dense-FOB
+  // report -- rings no longer visually overlap adjacent-bucket assets.
+  // Floor is 0.4 (was 1.0) so small-scale rendering still shows a
+  // visible ring; default multiplier 1.7*scale (was 3*scale).
+  it('launcher at scale 0.35 -> 1.155 (footprint override)', () => {
+    expect(resolveRingRadius('MRAD_Interceptor', 0.35)).toBeCloseTo(3.3 * 0.35, 4);
   });
-  it('sensor at scale 0.35 -> ~1.05 (default 3*scale path)', () => {
-    expect(resolveRingRadius('MRAD_Sensor', 0.35)).toBeCloseTo(Math.max(1, 3 * 0.35), 4);
+  it('sensor at scale 0.35 -> 0.595 (default 1.7*scale path)', () => {
+    expect(resolveRingRadius('MRAD_Sensor', 0.35)).toBeCloseTo(1.7 * 0.35, 4);
   });
-  it('floor of 1.0 enforced at very small scale', () => {
-    expect(resolveRingRadius('MRAD_Sensor', 0.1)).toBe(1.0);   // 3*0.1=0.3 < 1
-    expect(resolveRingRadius(null, 0.1)).toBe(1.0);
+  it('floor of 0.4 enforced at very small scale', () => {
+    expect(resolveRingRadius('MRAD_Sensor', 0.1)).toBe(0.4);   // 1.7*0.1=0.17 < 0.4
+    expect(resolveRingRadius(null, 0.1)).toBe(0.4);
   });
   it('null platform_variant uses default path', () => {
-    expect(resolveRingRadius(null, 0.35)).toBeCloseTo(Math.max(1, 3 * 0.35), 4);
+    expect(resolveRingRadius(null, 0.35)).toBeCloseTo(1.7 * 0.35, 4);
   });
 });
 

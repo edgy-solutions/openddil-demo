@@ -108,15 +108,18 @@ export const ASSET_HEIGHT: Readonly<Record<string, number>> = {
 };
 
 export const ASSET_FOOTPRINT_RADIUS: Readonly<Record<string, number>> = {
-  // Launchers only — 6.0 native gives ring=2.1 world at scale 0.35,
-  // outer halo (1.5x) = 3.15 world, larger than the pod's top-down
-  // diagonal (~2.92 world). Other variants use the
-  // Math.max(1, 3*scale) default in resolveRingRadius().
-  'CUAS_Interceptor':    6.0,
-  'VSHORAD_Interceptor': 6.0,
-  'SHORAD_Interceptor':  6.0,
-  'MRAD_Interceptor':    6.0,
-  'MISSILE_LAUNCHER':    6.0,
+  // Launchers — sized so the RENDERED ring (footprint * effectiveScale,
+  // where effectiveScale = SCENE_ASSET_SCALE * variantScale = 0.35 *
+  // 0.6 = 0.21) is roughly 0.7 world units. Adjacent launchers at a
+  // typical FOB cluster (~1.8-2.6 world units apart in raw projection)
+  // then clear each other's rings with margin. Previous 6.0 gave ring
+  // = 1.26 world, which visibly overlapped adjacent-bucket assets in
+  // dense FOB clusters (operator report 2026-07-14).
+  'CUAS_Interceptor':    3.3,
+  'VSHORAD_Interceptor': 3.3,
+  'SHORAD_Interceptor':  3.3,
+  'MRAD_Interceptor':    3.3,
+  'MISSILE_LAUNCHER':    3.3,
 };
 
 export const LAUNCH_PADS: Readonly<Record<string, number>> = {
@@ -193,17 +196,24 @@ export function resolvePadRadius(platformVariant: string | null | undefined): nu
 // ---------------------------------------------------------------------------
 
 /** Effective severity-ring radius. Per-variant footprint override wins;
- *  otherwise the Math.max(1, 3*scale) default ensures a minimum visible
- *  ring even at very small scales. */
+ *  otherwise a tight default sized just outside the schematic silhouette.
+ *
+ *  2026-07-14: dropped from Math.max(1, 3*scale) to Math.max(0.4,
+ *  1.7*scale). At SCENE_ASSET_SCALE=0.35 that gives sensor rings ~0.6
+ *  world units (was 1.05). Rings still clear the sensor dish
+ *  silhouette (~0.42 world half-width) with margin, and adjacent
+ *  assets at typical FOB clustering distances no longer visually
+ *  collide (dense-FOB operator report). Small floor (0.4) preserves
+ *  visibility if a caller passes an unusually small scale. */
 export function resolveRingRadius(
   platformVariant: string | null | undefined,
   scale: number,
 ): number {
   const footprint = resolveFootprintRadius(platformVariant);
   if (footprint !== undefined) {
-    return Math.max(1, footprint * scale);
+    return Math.max(0.4, footprint * scale);
   }
-  return Math.max(1, 3 * scale);
+  return Math.max(0.4, 1.7 * scale);
 }
 
 /** Pad-mesh radius in world units. Uses the per-variant override when
