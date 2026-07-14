@@ -296,17 +296,16 @@ function WearTrendsTheater({
 export default function HqApp() {
   const [wanActive, setWanActive] = useState(true);
 
-  // Pipeline data — ElectricSQL Shapes. cm + fleet still used by
+  // Pipeline data — ElectricSQL Shapes. cm + fleet used by
   // ConfigurationPosture (MWO compliance by family, baseline distribution)
   // — the per-platform-family slice is NOT in the rolled-up topics.
+  //
+  // Classified fleet lets us filter out MUNITION-class (in-flight) rows
+  // before the family aggregation runs. Configuration Posture is about
+  // maintainable HARDWARE (CM discrepancies, MWO/TCTO compliance,
+  // baseline assignment); in-flight munitions have none of those
+  // concerns and would pollute the family-percent-compliance math.
   const cm = useAllCmState();
-  const fleet = useFleetAssets();
-  // Classified fleet for ConfigurationPosture -- lets us filter out
-  // MUNITION-class (in-flight) rows before the family aggregation
-  // runs. Configuration Posture is about maintainable HARDWARE (CM
-  // discrepancies, MWO/TCTO compliance, baseline assignment); in-flight
-  // munitions have none of those concerns and would pollute the
-  // family-percent-compliance math.
   const classifiedFleet = useClassifiedFleet();
   const edge = useEdgeBuffer();
 
