@@ -21,7 +21,7 @@ import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
 import CmStateCard from './components/CmStateCard';
-import { StrikeCapabilityCard } from './components/StrikeCapabilityCard';
+import { WeaponsCapabilityCard } from './components/WeaponsCapabilityCard';
 import MunitionsLoadoutCard from './components/MunitionsLoadoutCard';
 import GroundDiagnosticsCard from './components/GroundDiagnosticsCard';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
@@ -150,7 +150,8 @@ function MaintainerApp() {
   // picker cluttered the fleet dropdown with transient noise and
   // made it possible to drill into an asset whose telemetry stopped
   // updating five seconds ago. Classification per src/lib/assetClass:
-  // an asset is LAUNCHER if it emits StrikeCapability, MUNITION if
+  // an asset is LAUNCHER if it emits a weapons-capability snapshot,
+  // MUNITION if
   // it has a munition-candidate variant AND doesn't. Capability
   // data is fleet-wide (not edge-scoped) which is fine -- Set
   // membership is O(1).
@@ -503,17 +504,17 @@ function MaintainerApp() {
             opState={tel?.operational_state ?? null}
             isLoading={logistics.isLoading}
           />
-          {/* Strike-only card: renders nothing on non-strike-capable assets
-              (sensors, HQ, infrastructure) so the right-rail stays clean.
-              Shows ammo per weapon/store with LOW/DEPLETED banding once
-              levels cross the configured threshold. */}
-          <StrikeCapabilityCard assetId={selectedAssetId} />
+          {/* Weapons-capable card: renders nothing on non-weapons-capable
+              assets (sensors, HQ, infrastructure) so the right-rail
+              stays clean. Shows ammo per weapon/store with LOW/DEPLETED
+              banding once levels cross the configured threshold. */}
+          <WeaponsCapabilityCard assetId={selectedAssetId} />
           {/* Phase 3 (2026-07-13): per-launcher munitions loadout
               breakdown -- shows initial vs. current per capability
               store, with expended count and a bar chart. Renders
-              only when the selected asset has StrikeCapability
+              only when the selected asset has weapons-capability
               snapshots (i.e. it's a LAUNCHER). Complements the
-              StrikeCapabilityCard: that one shows the raw feed shape,
+              WeaponsCapabilityCard: that one shows the raw feed shape,
               this one shows the derived stockpile view (max-seen
               accumulator drives the initial baseline). */}
           <MunitionsLoadoutCard assetId={selectedAssetId} />

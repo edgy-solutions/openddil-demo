@@ -40,7 +40,7 @@ describe('assetLabel', () => {
   });
 
   // The bug this rule was added for. Customer overlay's
-  // StrikeCapabilityMessage feed emits asset_id == callsign, which
+  // weapons-capability feed emits asset_id == callsign, which
   // without the dedup rendered:
   //   "MRAD_Interceptor_40-... — MRAD_Interceptor_40-... (CUAS_Interceptor)"
   // in the asset picker.

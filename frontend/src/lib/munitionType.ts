@@ -1,18 +1,19 @@
 // =============================================================================
 // munitionType -- extract the munition-type token from a capability_id
 // =============================================================================
-// The customer's StrikeCapability wire shape carries `CapabilityID.
-// DescriptiveLabel` as a concatenation of two pieces: the launcher's
-// asset_id and the munition-type token, joined by an underscore. For
-// example, a launcher with asset_id `<LAUNCHER_ID>` and a capability
-// carrying `<LAUNCHER_ID>_<MUNITION_TYPE>_Interceptor` yields a
-// munition_type of `<MUNITION_TYPE>_Interceptor`.
+// The customer's weapons-capability wire shape carries a
+// `capability_id` per store that concatenates two pieces: the
+// launcher's asset_id and the munition-type token, joined by an
+// underscore. For example, a launcher with asset_id `<LAUNCHER_ID>`
+// and a capability carrying `<LAUNCHER_ID>_<MUNITION_TYPE>_Interceptor`
+// yields a munition_type of `<MUNITION_TYPE>_Interceptor`.
 //
-// This is a generic prefix-strip -- works for any customer whose
-// StrikeCapability producer follows the "<launcher>_<munition-type>"
-// convention. Fallback returns the raw capability_id unchanged so
-// producers that don't follow the pattern still render something
-// meaningful (the label just isn't type-collapsed for aggregation).
+// This is a generic prefix-strip -- works for any producer whose
+// weapons-capability feed follows the `<launcher>_<munition-type>`
+// naming convention. Fallback returns the raw capability_id
+// unchanged so producers that don't follow the pattern still render
+// something meaningful (the label just isn't type-collapsed for
+// aggregation).
 //
 // Not customer-identifying: this function contains no knowledge of
 // specific launcher names, deployment locations, or munition

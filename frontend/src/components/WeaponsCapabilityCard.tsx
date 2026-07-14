@@ -1,11 +1,17 @@
 // =============================================================================
-// StrikeCapabilityCard -- per-asset strike capability snapshot
+// WeaponsCapabilityCard -- per-asset weapons loadout snapshot
 // =============================================================================
 // Renders the asset_capability_state row for one asset:
 //   - one row per weapon/store entry in capabilities[]
 //   - ammo count vs the configured low-ammo threshold (LOW / DEPLETED badge
 //     when at or below threshold, OK otherwise)
 //   - capability_id, store category/location, accepted command interfaces
+//
+// Terminology: this component consumes the generic weapons-capability
+// snapshot shape (asset_capability_state). Source-specific decompositions
+// (DIS Fire/Detonation PDU streams, AFSim stores modeling, Link 16 J3.7
+// weapon-status, or any customer-proprietary equivalent) land in this
+// canonical shape at the Bloblang layer.
 //
 // Mounted in the Maintainer right-rail next to LogisticsStatusCard.
 // The card renders nothing only when the asset has no capability_state row
@@ -89,20 +95,20 @@ interface Props {
   ammoLowThreshold?: number;
 }
 
-export function StrikeCapabilityCard({ assetId, ammoLowThreshold }: Props) {
+export function WeaponsCapabilityCard({ assetId, ammoLowThreshold }: Props) {
   const { data } = useCapabilityState(assetId);
   const lowThreshold = ammoLowThreshold ?? DEFAULT_AMMO_LOW;
   const row = data?.[0];
 
-  // No capability row => non-strike-capable asset (sensor, HQ, etc.). Hide.
+  // No capability row => non-weapons-capable asset (sensor, HQ, etc.). Hide.
   //
   // Important: gate on `!row` ONLY, not on `!isLoading && !row`. The latter
-  // form caused a visible flash on every initial mount for non-strike
-  // assets: during loading the outer card + <SyncingNotice> rendered,
+  // form caused a visible flash on every initial mount for non-weapons-
+  // capable assets: during loading the outer card + <SyncingNotice> rendered,
   // then after the load resolved to "no row" we returned null and the
   // card disappeared. By keying off row alone, the card is invisible
   // throughout the entire never-going-to-have-data lifecycle. For
-  // strike-capable assets the card pops in once the row arrives -- no
+  // weapons-capable assets the card pops in once the row arrives -- no
   // loading skeleton, but no flicker either. Acceptable trade because
   // useCapabilityState typically resolves quickly and a brief delay is
   // less noisy than a flash-and-disappear.
@@ -112,7 +118,7 @@ export function StrikeCapabilityCard({ assetId, ammoLowThreshold }: Props) {
     <div className="bg-slate-900/60 border border-slate-700 rounded p-2 text-xs">
       <div className="flex items-center gap-2 mb-2">
         <Crosshair className="w-3 h-3 text-cyan-400" />
-        <span className="text-cyan-400 font-bold tracking-wider text-[10px]">STRIKE CAPABILITY</span>
+        <span className="text-cyan-400 font-bold tracking-wider text-[10px]">WEAPONS CAPABILITY</span>
       </div>
 
       {row && (

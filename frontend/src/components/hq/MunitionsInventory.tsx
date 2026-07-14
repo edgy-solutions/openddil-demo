@@ -6,10 +6,10 @@
 // EFFECTOR inventory dimension of the commander's air-defense picture.
 //
 // Reads useMunitionsStockpile() -- a frontend-derived rollup from
-// asset_capability_state's StrikeCapability snapshots. Initial ammo
-// values are derived via a running max-seen accumulator; expended
-// values are `initial - current` per (launcher, capability) rolled
-// up to munition_type.
+// asset_capability_state (per-launcher weapons-capability snapshots).
+// Initial ammo values are derived via a running max-seen accumulator;
+// expended values are `initial - current` per (launcher, capability)
+// rolled up to munition_type.
 //
 // Known operational quirks (surfaced via the SYNTHESIZED-style badge):
 //   * A page reload zeroes the max-seen accumulator, so post-reload
@@ -64,7 +64,7 @@ export default function MunitionsInventory() {
 
       {empty ? (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
-          No StrikeCapability snapshots yet -- awaiting first emission.
+          No weapons-capability snapshots yet -- awaiting first emission.
         </div>
       ) : (
         <>

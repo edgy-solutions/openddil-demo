@@ -47,7 +47,7 @@ const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
 // (src/lib/assetClass.ts) rather than by platform_variant pattern-matching.
 // The class separates fired-and-in-flight MUNITIONs from LAUNCHERs even
 // though both can carry the same platform_variant -- the discriminator
-// is "does the asset emit StrikeCapability."
+// is "does the asset emit a weapons-capability snapshot."
 //
 // Categories:
 //   * sensors        — asset_class = SENSOR

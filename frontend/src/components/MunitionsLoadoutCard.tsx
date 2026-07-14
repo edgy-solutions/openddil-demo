@@ -35,7 +35,7 @@ export default function MunitionsLoadoutCard({
           className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-amber-700/50 bg-amber-900/30 text-amber-400 uppercase rounded-sm cursor-help"
           title={
             "Initial ammo derived from the max value observed on the wire " +
-            "during this browser session (StrikeCapability snapshots). " +
+            "during this browser session (weapons-capability snapshots). " +
             "Expended = initial - current."
           }
         >
@@ -45,7 +45,7 @@ export default function MunitionsLoadoutCard({
 
       {rows.length === 0 ? (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
-          No StrikeCapability snapshot for this launcher yet.
+          No weapons-capability snapshot for this launcher yet.
         </div>
       ) : (
         <div className="space-y-3">

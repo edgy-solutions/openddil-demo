@@ -26,12 +26,12 @@
 //      No auto-fix here; the Reset button + a fresh-scenario workflow
 //      are the honest answer.
 //   2. Post-flush drift: after a cluster flush the ammo values may
-//      transiently be 0 (empty table) before the customer sim
-//      republishes StrikeCapability. Once new values arrive higher
-//      than the ref cache's max, the max bumps up and expended
-//      naturally realigns to the new scenario. But if the new scenario
-//      starts LOWER than the previous one's max, expended overcounts
-//      until the operator clicks Reset.
+//      transiently be 0 (empty table) before the source republishes
+//      capability snapshots. Once new values arrive higher than the
+//      ref cache's max, the max bumps up and expended naturally
+//      realigns to the new scenario. But if the new scenario starts
+//      LOWER than the previous one's max, expended overcounts until
+//      the operator clicks Reset.
 //   3. No persistence across page reload -- the ref cache lives in
 //      component memory. Reload = starts over. Acceptable for demo.
 //

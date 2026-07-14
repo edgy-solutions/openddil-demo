@@ -1,10 +1,12 @@
-// useCapabilityState -- strike capability snapshot for one asset.
+// useCapabilityState -- weapons-capability snapshot for one asset.
 // Source: asset_capability_state, filtered by asset_id.
 //
-// The customer-overlay StrikeCapabilityMessage is mapped by the strike
-// Bloblang (connect-strike-capability) into the JSONB `capabilities` array.
-// Each entry is one weapon/store on the asset: ammo count, capability id,
-// accepted interfaces, store metadata.
+// Source-specific weapons-capability messages (customer-overlay AMQP,
+// DIS Fire/Munition PDU derivations, AFSim stores extractions, Link 16
+// J3.7 weapon status, etc.) are decomposed by their respective Bloblang
+// into the JSONB `capabilities` array. Each entry is one weapon/store
+// on the asset: ammo count, capability id, accepted interfaces, store
+// metadata.
 //
 // Same shape pattern as useCmState. Returns at most one row per asset.
 import { useTableShape, sqlLiteral, type ShapeResult } from './electric';

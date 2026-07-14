@@ -22,10 +22,14 @@
 // column or view for the display split. Both signals are already
 // streaming to the frontend via useFleetAssets + useCapabilityRoster.
 //
-// KEY DISCRIMINATOR: a LAUNCHER is defined as "emits StrikeCapability."
-// Fired munitions land in telemetry_latest_state but never in
-// asset_capability_state -- so the presence check cleanly separates
-// the two even when they share a platform_variant.
+// KEY DISCRIMINATOR: a LAUNCHER is defined as "emits a weapons-capability
+// snapshot" (i.e., appears in asset_capability_state). Fired munitions
+// land in telemetry_latest_state but never in asset_capability_state --
+// so the presence check cleanly separates the two even when they share
+// a platform_variant. The canonical shape is designed from open sources
+// (DIS Fire/Detonation PDUs, AFSim stores modeling, Link 16 J3.7 weapon
+// status); source-specific decompositions land in this shape at the
+// Bloblang layer.
 //
 // Suffix-family fallback: `*_Sensor` -> SENSOR, `*_Interceptor` or
 // `MISSILE_LAUNCHER` (and no capability) -> MUNITION. Adding a new
@@ -53,8 +57,8 @@ const FACILITY_VARIANTS: ReadonlySet<string> = new Set([
 ]);
 
 // Munition-candidate variants. An asset with one of these variants that
-// ALSO emits StrikeCapability is a LAUNCHER; without capability, it's
-// a fired-and-in-flight MUNITION.
+// ALSO emits a weapons-capability snapshot is a LAUNCHER; without
+// capability, it's a fired-and-in-flight MUNITION.
 function isMunitionCandidateVariant(variant: string): boolean {
   return variant === 'MISSILE_LAUNCHER' || variant.endsWith('_Interceptor');
 }
@@ -64,12 +68,12 @@ function isMunitionCandidateVariant(variant: string): boolean {
  *   1. No variant known               -> UNKNOWN
  *   2. Variant ends `_Sensor`         -> SENSOR
  *   3. Variant is a facility          -> FACILITY
- *   4. Asset emits StrikeCapability   -> LAUNCHER  (definitive)
+ *   4. Asset emits capability snapshot -> LAUNCHER  (definitive)
  *   5. Variant is munition-candidate  -> MUNITION  (fired-in-flight)
  *   6. Fallthrough                    -> PLATFORM
  *
  * `hasCapability` = true iff the asset appears in asset_capability_state
- * (i.e. the customer's StrikeCapability feed carries it).
+ * (i.e. the customer's weapons-capability feed carries it).
  */
 export function classifyAsset(
   variant: string | null | undefined,
