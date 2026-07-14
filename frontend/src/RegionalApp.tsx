@@ -30,6 +30,7 @@ import WorkOrders from './components/regional/WorkOrders';
 import TacticalRuleBuilder from './components/regional/TacticalRuleBuilder';
 import AssetDeepDive from './components/regional/AssetDeepDive';
 import EngagementWatchlist from './components/regional/EngagementWatchlist';
+import MunitionsInventory from './components/hq/MunitionsInventory';
 import AlertFeed from './components/AlertFeed';
 import {
   useFleetAssetsForRegion,
@@ -373,6 +374,21 @@ export default function RegionalApp() {
     [wearTrends.data, selectedRegion],
   );
 
+  // Launcher-id set for the region-scoped MunitionsInventory panel.
+  // Every LAUNCHER-class asset in the (already region-filtered)
+  // hardware fleet contributes its asset_id. MunitionsInventory
+  // aggregates stockpile entries whose launcher_asset_id is in this
+  // set -- gives a region-scoped rollup by munition type without
+  // requiring a new hook.
+  const regionLauncherIds = useMemo(() => {
+    const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
+    const set = new Set<string>();
+    for (const a of fleet.data) {
+      if (launcherIds.has(a.asset_id)) set.add(a.asset_id);
+    }
+    return set;
+  }, [fleet.data, allCapability.data]);
+
   return (
     <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <RegionalHeader
@@ -417,6 +433,15 @@ export default function RegionalApp() {
                 logistics={logistics.data}
                 selectedId={selectedAssetId}
                 onSelect={setSelectedAssetId}
+              />
+              {/* Region-scoped munitions rollup by type. Same component
+                  as the HQ panel; the launcherIdFilter prop restricts
+                  aggregation to launchers in the selected AOR. Regional
+                  commander gets available / expended / initial per
+                  munition type across their launcher fleet. */}
+              <MunitionsInventory
+                title={`Munitions Inventory (${(selectedRegion ?? '—').toUpperCase()})`}
+                launcherIdFilter={regionLauncherIds}
               />
               <RegionFleetBuckets row={scopedFleetSummary} />
               <EngagementWatchlist regionId={selectedRegion} />
