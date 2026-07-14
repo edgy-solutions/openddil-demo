@@ -40,12 +40,19 @@ import { deployment, type Fob } from '../../deployment';
 import {
   useFleetAssetsForRegion,
   useAllLogisticsStatus,
+  useAllCapabilityState,
   useFleetTiers,
   type FleetAsset,
   type FleetTierMap,
   type LogisticsStatus,
   type OperationalState,
 } from '../../hooks';
+import { classifyAsset } from '../../lib/assetClass';
+import {
+  extractParentLauncherFromAssetId,
+  extractFiringSequence,
+  dedupFirings,
+} from '../../lib/munitionAsset';
 import { isTierVisibleIn3D, type AssetTier } from '../../lib/assetTier';
 import { makeProjection, type Projection } from '../../lib/geoProjection';
 
@@ -437,12 +444,62 @@ export default function RegionalSustainmentPosture({
   const logistics = useAllLogisticsStatus();
   const { fobs } = deployment();
 
+  // 2026-07-13 Phase 5: split fleet into hardware vs. in-flight
+  // munitions. Hardware renders as 3D assets on the map; in-flight
+  // munitions surface only as a header ticker.
+  //
+  // Rationale: MUNITION-class rows (fired interceptors + their seeker
+  // payloads) share a platform_variant with launcher hardware
+  // (*_Interceptor / MISSILE_LAUNCHER), so SCHEMATIC_REGISTRY would
+  // route both to ArtillerySchematic. Left unfiltered, the map showed
+  // a swarm of launcher silhouettes at the FOB during a scenario,
+  // ~2 per firing, mixed with the real launcher hardware and
+  // impossible to tell apart. The taxonomy fix is to render only
+  // real hardware here and keep the effector activity on a separate
+  // ticker.
+  //
+  // Capability set is fleet-wide (not region-scoped); LAUNCHER
+  // membership is O(1) via a Set. Fine because the customer's
+  // asset_capability_state is small (one row per real launcher --
+  // in-flight munitions never land in that table by design).
+  const allCapability = useAllCapabilityState();
+  const { hardwareFleet, inflightCount } = useMemo(() => {
+    const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
+    const hw: FleetAsset[] = [];
+    const inflightSeed: Array<{
+      asset_id: string;
+      platform_variant: string | null;
+      parent_launcher_id: string | null;
+      firing_sequence: number | null;
+    }> = [];
+    for (const a of fleet.data) {
+      const cls = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
+      if (cls === 'MUNITION') {
+        inflightSeed.push({
+          asset_id: a.asset_id,
+          platform_variant: a.platform_variant,
+          parent_launcher_id: extractParentLauncherFromAssetId(a.asset_id, launcherIds),
+          firing_sequence: extractFiringSequence(a.asset_id),
+        });
+      } else {
+        hw.push(a);
+      }
+    }
+    // Dedup so we count firings, not delivery-vehicle + seeker-payload
+    // pairs. Matches the identical dedup applied on the HQ Fleet Tree
+    // + FORCE POSTURE + per-launcher Loadout card so all four views
+    // agree on "N in flight."
+    return { hardwareFleet: hw, inflightCount: dedupFirings(inflightSeed).length };
+  }, [fleet.data, allCapability.data]);
+
   // 5-tier liveness map. link1=false means the operator has flipped
   // the DDIL toggle (severed); we feed that into the classifier so
   // silent assets on a severed link read as COMM_LOST rather than
   // generic STALE. In production this becomes a per-edge map from
-  // edge_buffer_status; today it's a single global boolean.
-  const tiers = useFleetTiers(fleet.data, !link1);
+  // edge_buffer_status; today it's a single global boolean. Uses
+  // the hardware-only fleet so in-flight munitions don't distort
+  // the STALE/LOST tiering.
+  const tiers = useFleetTiers(hardwareFleet, !link1);
 
   // Project around the active region's FOBs so the camera bbox is the
   // region's geographic extent, not the whole theater.
@@ -456,8 +513,8 @@ export default function RegionalSustainmentPosture({
   );
 
   const renderables = useMemo(
-    () => buildRenderables(fleet.data, logistics.data, fobs, proj, tiers),
-    [fleet.data, logistics.data, fobs, proj, tiers],
+    () => buildRenderables(hardwareFleet, logistics.data, fobs, proj, tiers),
+    [hardwareFleet, logistics.data, fobs, proj, tiers],
   );
 
   const targetAsset = useMemo(
@@ -487,6 +544,11 @@ export default function RegionalSustainmentPosture({
           <p className="text-[10px] font-mono tracking-widest text-slate-400">
             AREA OF RESPONSIBILITY: {(regionId ?? '—').toUpperCase()}
             <span className="ml-3 opacity-60">{renderables.length} ASSET{renderables.length === 1 ? '' : 'S'}</span>
+            {inflightCount > 0 && (
+              <span className="ml-3 text-amber-400">
+                · {inflightCount} IN FLIGHT
+              </span>
+            )}
           </p>
         </div>
         <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
