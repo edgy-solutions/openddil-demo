@@ -1,16 +1,22 @@
 // =============================================================================
 // MunitionsLoadoutCard -- per-launcher munitions inventory
 // =============================================================================
-// Rendered on the maintainer view when the selected asset is a LAUNCHER
-// (asset_class === 'LAUNCHER'). Shows per-store bars: munition_type,
-// available count, expended count, capacity bar.
+// Renders ONLY when the selected asset is a LAUNCHER (asset_class ===
+// 'LAUNCHER'). Sensor / facility / platform / munition selections get
+// nothing at all -- munitions loadout is a launcher-only concern; the
+// old always-render behavior surfaced "no weapons-capability snapshot
+// for this launcher yet" on every non-launcher selection, which read
+// as if launcher state were broken.
 //
-// Data source: useMunitionsStockpile() -> filter to selectedAssetId via
-// stockpileForLauncher(). Purely derived, no server-side change.
+// Shows per-store bars: munition_type, available count, expended
+// count, capacity bar. Optional IN FLIGHT pill in the card header
+// when the selected launcher has any deduped-per-firing munitions
+// currently airborne.
 //
-// Empty state: a launcher with no capabilities in the roster (shouldn't
-// happen if the classifier said LAUNCHER -- LAUNCHER means "present in
-// asset_capability_state" -- but defensive path is present).
+// Data sources:
+//   * useClassifiedFleet   -- asset_class discriminator for the
+//                             render-or-hide gate
+//   * useMunitionsStockpile -- per-store entries filtered to selectedAssetId
 // =============================================================================
 import { useMemo } from 'react';
 import { Target, Package, Rocket } from 'lucide-react';
@@ -29,21 +35,35 @@ export default function MunitionsLoadoutCard({
 }) {
   const stockpile = useMunitionsStockpile();
   const rows = stockpileForLauncher(stockpile.entries, assetId);
+  const fleet = useClassifiedFleet();
+
+  // Class of the selected asset drives the render-or-hide gate. We
+  // consult useClassifiedFleet rather than checking rows.length so
+  // a launcher whose weapons-capability feed hasn't yet arrived
+  // still renders the card (with its empty-state) -- the card
+  // legitimately signals "this launcher has no snapshot yet" only
+  // for actual launchers, not for sensors that will never have one.
+  const selectedClass = useMemo(() => {
+    if (!assetId) return null;
+    return fleet.data.find((a) => a.asset_id === assetId)?.asset_class ?? null;
+  }, [fleet.data, assetId]);
 
   // Live count of in-flight munitions attributable to THIS launcher --
   // MUNITION-class fleet rows whose parent_launcher_id matches, deduped
   // to one representative per firing (delivery vehicle + seeker payload
   // collapse). Zero when nothing is airborne right now.
-  const fleet = useClassifiedFleet();
   const inflightFromThisLauncher = useMemo(() => {
     if (!assetId) return 0;
-    const rows = fleet.data.filter(
+    const munitions = fleet.data.filter(
       (a) => a.asset_class === 'MUNITION' && a.parent_launcher_id === assetId,
     );
-    return dedupFirings(rows).length;
+    return dedupFirings(munitions).length;
   }, [fleet.data, assetId]);
 
-  if (!assetId) return null;
+  // Hide entirely for non-launcher selections. The card exists to
+  // convey per-store weapons state; a sensor / facility / platform
+  // has no stores to render.
+  if (!assetId || selectedClass !== 'LAUNCHER') return null;
 
   return (
     <div className="panel shrink-0 p-3">

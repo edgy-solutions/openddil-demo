@@ -34,6 +34,7 @@ import AlertFeed from './components/AlertFeed';
 import {
   useFleetAssetsForRegion,
   useAllLogisticsStatus,
+  useAllCapabilityState,
   useRegionFleetSummary,
   useRegionTopFactors,
   useRegionWearTrends,
@@ -42,6 +43,7 @@ import {
   type RegionTopFactors,
   type RegionWearTrends,
 } from './hooks';
+import { classifyAsset } from './lib/assetClass';
 import {
   aorAssetList,
   severityHeatClass,
@@ -277,7 +279,29 @@ export default function RegionalApp() {
   const fleetSummary = useRegionFleetSummary();
   const topFactors = useRegionTopFactors();
   const wearTrends = useRegionWearTrends();
-  const fleet = useFleetAssetsForRegion(selectedRegion);
+  const fleetRaw = useFleetAssetsForRegion(selectedRegion);
+  const allCapability = useAllCapabilityState();
+  // Filter fired-and-in-flight MUNITION-class rows out of the region-
+  // scoped fleet before ANY downstream consumer sees them. Same rule
+  // MaintainerApp applies to its picker: a missile in flight isn't a
+  // drillable asset -- no CM state, no wear trend, no maintenance
+  // affordance -- so an operator-facing "assets in this AOR" list
+  // shouldn't include them. In-flight engagement activity surfaces
+  // instead through the RegionalSustainmentPosture header IN FLIGHT
+  // ticker (kept separate from the hardware count).
+  const fleet = useMemo(() => {
+    const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
+    const kept = fleetRaw.data.filter((a) => {
+      const cls = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
+      return cls !== 'MUNITION';
+    });
+    return {
+      data: kept,
+      isLoading: fleetRaw.isLoading || allCapability.isLoading,
+      isError:   fleetRaw.isError   || allCapability.isError,
+    };
+  }, [fleetRaw.data, fleetRaw.isLoading, fleetRaw.isError,
+      allCapability.data, allCapability.isLoading, allCapability.isError]);
   // Per-asset logistics still needed for AorAssetList severity coloring
   // (aggregator outputs are region-level; the picker is per-asset).
   const logistics = useAllLogisticsStatus();
