@@ -165,16 +165,28 @@ function buildRenderables(
     stage1.push({ asset: a, x, z, homed, sev, tier });
   }
 
-  // Second pass — bucket assets by their projected (x,z) and lay co-located
-  // groups out in a ring around the cell centroid. Without this, sensors and
-  // launchers at the same FOB stack at the same point and the larger
-  // silhouettes (Artillery launcher pods) completely occlude the smaller
-  // ones (sensor radar dishes). This was flagged as Phase B work in the
-  // file header — surfacing now that the customer ORBAT has 5–14 assets
-  // per FOB rather than the 3-FOB demo's handful.
+  // Second pass — bucket assets by their edge_id (FOB attribution) when
+  // known, falling back to projected (x,z) proximity otherwise. Lays
+  // co-located groups out in a ring around the bucket centroid.
+  //
+  // Why edge-first: a FOB is a logical grouping — all assets at one
+  // base share an edge_id. Their raw projected positions can span
+  // several world units (individual launch pads, radar sites, storage
+  // buildings within the base), which is enough to fragment them
+  // across multiple geometric buckets and produce visible mesh
+  // overlap. Bucketing by edge_id merges everything at one FOB into
+  // one co-location ring, sized to spread N assets cleanly around
+  // the FOB centroid.
+  //
+  // The geometric fallback stays for assets without an edge_id
+  // (transiting / mobile / any asset the projector hasn't attributed
+  // yet). Assets with the same edge_id also merge regardless of
+  // spread — that's what fixes the dense-FOB pile-up.
   const buckets = new Map<string, Stage1[]>();
   for (const s of stage1) {
-    const key = colocationBucketKey(s.x, s.z);
+    const key = s.asset.edge_id
+      ? `edge:${s.asset.edge_id}`
+      : colocationBucketKey(s.x, s.z);
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
