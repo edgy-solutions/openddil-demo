@@ -186,10 +186,26 @@ function buildRenderables(
   const LABEL_LIFT = LABEL_GEOMETRY.lift;
   const LABEL_OUTWARD = LABEL_GEOMETRY.outward;
 
+  // TEMP DIAGNOSTIC (2026-07-14, remove once ring-overlap issue is resolved):
+  // gate on ?debug=rings so it doesn't spam production. Dumps per-bucket
+  // centroid, member variants+ids, chosen ring radius, and per-slot
+  // positions. Cross-bucket overlap will show up as two bucket centroids
+  // being much closer than sum of their radii.
+  const debugRings = typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).get('debug') === 'rings';
+  if (debugRings) {
+    console.groupCollapsed('[rings] buildRenderables — %d buckets', buckets.size);
+  }
+
   const out: RenderableAsset[] = [];
   for (const bucket of buckets.values()) {
     if (bucket.length === 1) {
       const s = bucket[0];
+      if (debugRings) {
+        console.log('[rings] SOLO bucket: %s (%s) @ (%s, %s)',
+          s.asset.asset_id, s.asset.platform_variant ?? '?',
+          s.x.toFixed(2), s.z.toFixed(2));
+      }
       out.push({
         asset_id: s.asset.asset_id,
         position: [s.x, 0, s.z],
@@ -264,8 +280,25 @@ function buildRenderables(
     const radius = colocationRingRadius(
       others.length, facilities.length > 0, maxRingRadius,
     );
+    if (debugRings) {
+      console.log('[rings] MULTI bucket: centroid=(%s, %s), n=%d, hasFacility=%s, maxRingRadius=%s, ringR=%s',
+        cx.toFixed(2), cz.toFixed(2),
+        others.length, facilities.length > 0,
+        maxRingRadius.toFixed(2), radius.toFixed(2));
+      for (const f of facilities) {
+        console.log('  facility (center): %s (%s) ownRing=%s',
+          f.asset.asset_id, f.asset.platform_variant ?? '?',
+          resolveRingRadius(f.asset.platform_variant, SCENE_ASSET_SCALE).toFixed(2));
+      }
+    }
     others.forEach((s, i) => {
       const { x: px, z: pz } = colocationRingSlot(cx, cz, radius, i, others.length);
+      if (debugRings) {
+        console.log('  slot %d: %s (%s) @ (%s, %s) ownRing=%s',
+          i, s.asset.asset_id, s.asset.platform_variant ?? '?',
+          px.toFixed(2), pz.toFixed(2),
+          resolveRingRadius(s.asset.platform_variant, SCENE_ASSET_SCALE).toFixed(2));
+      }
       // Ring-based label offset: extend outward from centroid to
       // asset, then a fixed distance beyond. Assets on opposite sides
       // of the ring get labels going in opposite directions, so they
@@ -287,6 +320,9 @@ function buildRenderables(
         label_anchor: [px + nx * LABEL_OUTWARD, LABEL_LIFT, pz + nz * LABEL_OUTWARD],
       });
     });
+  }
+  if (debugRings) {
+    console.groupEnd();
   }
   return out;
 }
