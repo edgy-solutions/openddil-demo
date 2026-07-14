@@ -81,6 +81,11 @@ export const SCHEMATIC_REGISTRY: Record<string, ComponentType<SchematicProps>> =
         (p) => <SensorRadarSchematic {...p} tier="SHORAD" />,
     'MRAD_Sensor':
         (p) => <SensorRadarSchematic {...p} tier="MRAD" />,
+    // MRAD extended tier (2026-07-13): reuses the MRAD sensor visual
+    // for now. If a downstream deployment wants a differentiated
+    // rendering, override here per-key without touching the fallback.
+    'MRAD_ADVANCED_Sensor':
+        (p) => <SensorRadarSchematic {...p} tier="MRAD" />,
 
     // ---- ORBAT: Interceptors (4 range tiers) + generic launcher ----
     // All 5 share ArtillerySchematic for now. Future per-tier launcher
@@ -89,6 +94,7 @@ export const SCHEMATIC_REGISTRY: Record<string, ComponentType<SchematicProps>> =
     'VSHORAD_Interceptor': ArtillerySchematic,
     'SHORAD_Interceptor':  ArtillerySchematic,
     'MRAD_Interceptor':    ArtillerySchematic,
+    'MRAD_ADVANCED_Interceptor': ArtillerySchematic,
     'MISSILE_LAUNCHER':    ArtillerySchematic,
 
     // ---- ORBAT: Facilities ----
@@ -107,10 +113,36 @@ export const SCHEMATIC_REGISTRY: Record<string, ComponentType<SchematicProps>> =
     'AH-64E':     QuadrupedSchematic,
 };
 
-/** Convenience lookup. Returns the registry entry if present, otherwise the
- *  UnknownPlatformBadge. Cascade consumers can call this instead of
- *  checking the registry themselves. */
+/** Convenience lookup. Returns the registry entry if present, otherwise
+ *  applies a suffix-family fallback so unrecognized-but-well-shaped
+ *  variants get a reasonable default rather than the Unknown badge.
+ *
+ *  Precedence:
+ *    1. Exact match in SCHEMATIC_REGISTRY  — preserves per-tier customization
+ *    2. `*_Sensor` suffix                  — generic sensor visual
+ *    3. `*_Interceptor` / `*_Launcher`     — generic launcher/artillery visual
+ *    4. Fallthrough                        — UnknownPlatformBadge
+ *
+ *  Motivation (2026-07-13): the customer's ORBAT enum is open-ended --
+ *  new tiers like `MRAD_ADVANCED_Sensor` appear organically as the sim
+ *  grows. The pre-fallback registry required a code change per new
+ *  tier or the asset rendered as the Unknown badge. Suffix-family
+ *  fallback makes the common case (well-shaped new tier) work without
+ *  code change; explicit registry entries still take precedence for
+ *  tiers that need a distinct visual.
+ */
 export function resolveSchematic(platformVariant: string | null | undefined): ComponentType<SchematicProps> {
     if (!platformVariant) return UnknownPlatformBadge;
-    return SCHEMATIC_REGISTRY[platformVariant] ?? UnknownPlatformBadge;
+    const exact = SCHEMATIC_REGISTRY[platformVariant];
+    if (exact) return exact;
+    if (platformVariant.endsWith('_Sensor')) {
+        // Generic sensor tier we haven't enumerated. Use MRAD-tier visual
+        // as the default -- callers that want tier-specific rendering
+        // add an explicit registry entry above.
+        return (p) => <SensorRadarSchematic {...p} tier="MRAD" />;
+    }
+    if (platformVariant.endsWith('_Interceptor') || platformVariant.endsWith('_Launcher')) {
+        return ArtillerySchematic;
+    }
+    return UnknownPlatformBadge;
 }
