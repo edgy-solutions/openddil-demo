@@ -203,19 +203,32 @@ function MaintainerApp() {
   const mradLive = assetElementTelemetry.liveTelemetry;
   const mradOperational = assetElementTelemetry.operational;
 
-  // Derive isPoweredOff from the sim-envelope operational block. Sim
-  // synthesizes elements for POWER_OFF as "no lifted-band tiles + all
-  // tx/rx off" (element_gen.py 2026-07-14 commit 9c8d30e), but the
-  // frontend still needs an ASSET-LEVEL signal to render the whole
-  // array as OFF -- element-level `health` values alone can't
-  // distinguish "everything nominal, nothing firing" from "asset
-  // OFF, nothing firing." Both would read as green tiles otherwise.
-  // Both OFF and SHUTTING_DOWN count as "not running" for rendering
-  // purposes; the maintainer view treats them the same until the
-  // asset transitions back to a running state.
+  // Derive isPoweredOff — the asset-level signal that renders the whole
+  // array (and telemetry charts) as OFF. Element-level `health` values
+  // alone can't distinguish "everything nominal, nothing firing" from
+  // "asset OFF, nothing firing" (both read as green tiles), so the
+  // parent supplies the disambiguator.
+  //
+  // Read power_state from BOTH sources and OR them:
+  //   * the WIRE operational_state (telemetry_latest_state) — the SAME
+  //     source Ground Diagnostics' POWER pill reads. Immediate: flips
+  //     the moment the customer feed reports POWER_STATE_OFF.
+  //   * the SIM element-envelope (asset_element_telemetry.operational)
+  //     — the sim's re-published copy, which drives the tile colors.
+  //
+  // Previously this read ONLY the sim envelope. That lags the wire by
+  // the sim's re-discovery / re-emit cycle (observed ~10 min after a
+  // cold-open re-prime): Ground Diagnostics showed OFF from the wire
+  // while the array stayed lit waiting on the sim to catch up, and the
+  // operator had to re-select the asset to force a re-fetch. ORing the
+  // wire in makes the array's OFF track the POWER pill exactly — they
+  // can no longer disagree. Both OFF and SHUTTING_DOWN count as "not
+  // running" for rendering.
+  const _wirePower = telemetry.data[0]?.operational_state?.power_state;
+  const _simPower = mradOperational?.power_state;
   const isPoweredOff =
-    mradOperational?.power_state === 'POWER_STATE_OFF' ||
-    mradOperational?.power_state === 'POWER_STATE_SHUTTING_DOWN';
+    _wirePower === 'POWER_STATE_OFF' || _wirePower === 'POWER_STATE_SHUTTING_DOWN' ||
+    _simPower === 'POWER_STATE_OFF' || _simPower === 'POWER_STATE_SHUTTING_DOWN';
 
   // Available edges for the pulldown — distinct edge_ids actually
   // observed in the pipeline. Sorted alphabetically. Symmetric with

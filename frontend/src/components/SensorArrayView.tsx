@@ -856,14 +856,20 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                     </span>
                 ))}
             </div>
+            {/* Header readouts. When the asset is powered off, CORE TEMP and
+                UPTIME are stale/meaningless (a powered-down radar isn't
+                accumulating uptime and isn't reporting a live core temp), so
+                render OFF with a dimmed static dot rather than live-looking
+                numbers behind a pulsing green indicator. Matches the tile +
+                telemetry-chart OFF treatment. */}
             <div className="mt-4 flex gap-4 text-[10px] font-mono">
                 <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    CORE TEMP: <span>{coreTemp.toFixed(1)}</span>°C
+                    <span className={`w-2 h-2 rounded-full ${isPoweredOff ? 'bg-slate-600' : 'bg-emerald-500 animate-pulse'}`}></span>
+                    CORE TEMP: <span className={isPoweredOff ? 'text-slate-500' : ''}>{isPoweredOff ? 'OFF' : `${coreTemp.toFixed(1)}°C`}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-cyan-500"></span>
-                    UPTIME: {uptimeHours != null ? uptimeHours.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '1,422'}H
+                    <span className={`w-2 h-2 rounded-full ${isPoweredOff ? 'bg-slate-600' : 'bg-cyan-500'}`}></span>
+                    UPTIME: <span className={isPoweredOff ? 'text-slate-500' : ''}>{isPoweredOff ? 'OFF' : `${uptimeHours != null ? uptimeHours.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '1,422'}H`}</span>
                 </div>
             </div>
         </>
