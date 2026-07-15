@@ -15,11 +15,19 @@
 //                              HQ inline)
 //
 // What's left here is per-asset display helpers (severityRank,
-// severityHeatClass, shortSeverity, shortCmStatus) plus the two per-
-// platform-family slicers (mwoComplianceByFamily, baselineDistribution)
-// and the per-asset picker join helper (aorAssetList). None of these has
-// an aggregator-sourced replacement — the rolled-up topics are
+// severityHeatClass, shortSeverity) plus the two per-platform-family
+// slicers (mwoComplianceByFamily, baselineDistribution) and the
+// per-asset picker join helper (aorAssetList). None of these has an
+// aggregator-sourced replacement — the rolled-up topics are
 // region-level, not per-asset or per-platform-family.
+//
+// CM-status label formatting is NOT here: it lives in the single
+// cmStatusBadge() helper (components/CmStateCard) so the label +
+// color stay consistent everywhere CM status renders (maintainer
+// card, regional + HQ recommendations). A previous shortCmStatus()
+// helper that raw-formatted the enum (producing the overclaiming
+// "NOT MISSION CAPABLE") was removed — it was unused and a divergence
+// trap. Use cmStatusBadge() for any CM-status rendering.
 import type { CmState, LogisticsStatus, FleetAsset } from '../hooks';
 
 // --- severity / status ordering ---------------------------------------------
@@ -49,10 +57,6 @@ export function severityHeatClass(sev: string | undefined): string {
 
 export function shortSeverity(sev: string | undefined): string {
   return (sev ?? 'UNSPECIFIED').replace(/^LOGISTICS_SEVERITY_/, '');
-}
-
-export function shortCmStatus(status: string | undefined): string {
-  return (status ?? 'UNSPECIFIED').replace(/^CONFIG_STATUS_/, '').replace(/_/g, ' ');
 }
 
 // --- AOR asset list (fleet joined with logistics severity) ------------------

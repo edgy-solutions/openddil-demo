@@ -21,6 +21,7 @@
 // link is genuinely severed, the panel shows the freeze.
 import { ClipboardList, Lock } from 'lucide-react';
 import { useAllCmState, useEdgeBuffer } from '../../hooks';
+import { cmStatusBadge } from '../CmStateCard';
 
 interface ActionItem {
   key: string;
@@ -38,14 +39,13 @@ const CM_RANK: Record<string, number> = {
   CONFIG_STATUS_IN_COMPLIANCE: 1,
 };
 
-function statusClass(status: string): string {
-  switch (status) {
-    case 'CONFIG_STATUS_NOT_MISSION_CAPABLE': return 'bg-rose-500/20 text-rose-400 border-rose-500/50';
-    case 'CONFIG_STATUS_MAJOR_DISCREPANCY': return 'bg-orange-500/20 text-orange-400 border-orange-500/50';
-    case 'CONFIG_STATUS_MINOR_DISCREPANCY': return 'bg-amber-500/20 text-amber-400 border-amber-500/50';
-    default: return 'bg-slate-800 text-slate-400 border-slate-700';
-  }
-}
+// Label + color come from the shared cmStatusBadge() helper (CmStateCard),
+// so the CM status renders identically here, on the maintainer CM card,
+// and in the HQ recommendations panel. Previously this panel re-derived
+// the label via .replace() (which produced the overclaiming "NOT MISSION
+// CAPABLE") and painted it rose -- a divergence from the maintainer card
+// that survived the ADR-0026 label fix because it was a separate code
+// path. Single source of truth prevents the same drift recurring.
 
 export default function WorkOrders() {
   const cm = useAllCmState();
@@ -102,9 +102,14 @@ export default function WorkOrders() {
                   <div className="text-slate-500 text-[11px]">{it.recommended_action}</div>
                 </td>
                 <td className="text-right align-top">
-                  <span className={`px-1.5 py-0.5 rounded text-[9px] border ${statusClass(it.overall_status)}`}>
-                    {it.overall_status.replace('CONFIG_STATUS_', '').replace(/_/g, ' ')}
-                  </span>
+                  {(() => {
+                    const badge = cmStatusBadge(it.overall_status);
+                    return (
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] border ${badge.cls}`}>
+                        {badge.label}
+                      </span>
+                    );
+                  })()}
                 </td>
               </tr>
             ))}

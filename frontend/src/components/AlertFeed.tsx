@@ -21,12 +21,21 @@ import type { TacticalEvent } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
 
 // Map a CloudEvent's best-effort severity string to a feed colour.
+//
+// ADR-0026: NOT_MISSION_CAPABLE is a CM (records-compliance) value, not
+// an operational one -- operational severity uses CRITICAL /
+// NON_OPERATIONAL. It rides in the amber (degraded) bucket alongside the
+// other CM statuses (MAJOR / MINOR), NOT the red bucket. Red stays
+// reserved for genuine functional criticality. This keeps the alert-feed
+// coloring consistent with the CM-DEGRADED cap applied in fusion and
+// with the "CM: NON-COMPLIANT" amber badge on the maintainer card and
+// recommendations panels.
 function severityColors(severity: string | null): string {
   const s = (severity ?? '').toUpperCase();
-  if (s.includes('CRITICAL') || s.includes('NOT_MISSION_CAPABLE') || s.includes('NON_OPERATIONAL')) {
+  if (s.includes('CRITICAL') || s.includes('NON_OPERATIONAL')) {
     return 'border-rose-500 bg-rose-500/10 text-rose-400';
   }
-  if (s.includes('DEGRADED') || s.includes('MAJOR') || s.includes('MINOR')) {
+  if (s.includes('DEGRADED') || s.includes('NOT_MISSION_CAPABLE') || s.includes('MAJOR') || s.includes('MINOR')) {
     return 'border-amber-500 bg-amber-500/10 text-amber-400';
   }
   return 'border-slate-500 bg-slate-800/50 text-slate-300';

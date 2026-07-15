@@ -17,6 +17,7 @@
 // work-orders topic, and the title becomes accurate again.
 import { Layers } from 'lucide-react';
 import { useAllCmState } from '../../hooks';
+import { cmStatusBadge } from '../CmStateCard';
 
 const CM_RANK: Record<string, number> = {
   CONFIG_STATUS_NOT_MISSION_CAPABLE: 4,
@@ -25,14 +26,10 @@ const CM_RANK: Record<string, number> = {
   CONFIG_STATUS_IN_COMPLIANCE: 1,
 };
 
-function statusClass(status: string): string {
-  switch (status) {
-    case 'CONFIG_STATUS_NOT_MISSION_CAPABLE': return 'bg-rose-500/20 text-rose-400 border-rose-500/50';
-    case 'CONFIG_STATUS_MAJOR_DISCREPANCY': return 'bg-orange-500/20 text-orange-400 border-orange-500/50';
-    case 'CONFIG_STATUS_MINOR_DISCREPANCY': return 'bg-amber-500/20 text-amber-400 border-amber-500/50';
-    default: return 'bg-slate-800 text-slate-500 border-slate-700';
-  }
-}
+// Label + color come from the shared cmStatusBadge() helper (CmStateCard),
+// so the CM status renders identically across the maintainer card, the
+// regional recommendations panel, and here. See the WorkOrders.tsx note
+// on the ADR-0026 divergence this consolidation closes.
 
 export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
   const cm = useAllCmState();
@@ -75,9 +72,14 @@ export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
                   <div className="text-slate-500 text-[11px]">{it.recommended_action}</div>
                 </td>
                 <td className="text-right align-top">
-                  <span className={`px-1.5 py-0.5 rounded text-[9px] border ${statusClass(it.overall_status)}`}>
-                    {it.overall_status.replace('CONFIG_STATUS_', '').replace(/_/g, ' ')}
-                  </span>
+                  {(() => {
+                    const badge = cmStatusBadge(it.overall_status);
+                    return (
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] border ${badge.cls}`}>
+                        {badge.label}
+                      </span>
+                    );
+                  })()}
                 </td>
               </tr>
             ))}
