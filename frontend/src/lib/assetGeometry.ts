@@ -144,18 +144,51 @@ export const PAD_RADIUS_NATIVE: Readonly<Record<string, number>> = {
 };
 
 // ---------------------------------------------------------------------------
+// Geometry aliasing
+// ---------------------------------------------------------------------------
+// A variant that renders an EXISTING schematic verbatim (via
+// SCHEMATIC_REGISTRY) must reuse that schematic's geometry, or it falls
+// through EVERY table below to the defaults and renders wrong: sunk into
+// the ground (DEFAULT_GROUND_OFFSET 1.6 instead of the schematic's real
+// offset) and mis-sized (DEFAULT_VARIANT_SCALE 1.0 instead of e.g. the
+// launcher's 0.6).
+//
+// This bit MRAD_ADVANCED_* (added to SCHEMATIC_REGISTRY 2026-07-13
+// reusing the MRAD sensor + artillery visuals, but never added here) --
+// advanced launchers rendered oversized and buried. Rather than
+// duplicate all six tables per reused variant (the drift-prone path that
+// caused the bug), alias the variant to the base whose geometry it
+// shares. Keep this map in lockstep with SCHEMATIC_REGISTRY: whenever a
+// new registry key points at an existing schematic, add the alias here.
+//
+// Provably safe for existing variants: a variant NOT in this map
+// resolves to itself (`?? platformVariant`), so every current lookup is
+// byte-for-byte unchanged.
+export const GEOMETRY_VARIANT_ALIAS: Readonly<Record<string, string>> = {
+  MRAD_ADVANCED_Sensor:      'MRAD_Sensor',
+  MRAD_ADVANCED_Interceptor: 'MRAD_Interceptor',
+};
+
+/** Normalize a variant to the key its geometry tables are stored under.
+ *  Variants that render an existing schematic verbatim alias to that
+ *  schematic's base variant; everything else resolves to itself. */
+function geometryKey(platformVariant: string): string {
+  return GEOMETRY_VARIANT_ALIAS[platformVariant] ?? platformVariant;
+}
+
+// ---------------------------------------------------------------------------
 // Lookup helpers — all default-aware, all return numbers ready to
 // multiply by `scale` at the render site.
 // ---------------------------------------------------------------------------
 
 export function resolveGroundOffset(platformVariant: string | null | undefined): number {
   if (!platformVariant) return DEFAULT_GROUND_OFFSET;
-  return GROUND_OFFSET[platformVariant] ?? DEFAULT_GROUND_OFFSET;
+  return GROUND_OFFSET[geometryKey(platformVariant)] ?? DEFAULT_GROUND_OFFSET;
 }
 
 export function resolveAssetHeight(platformVariant: string | null | undefined): number {
   if (!platformVariant) return DEFAULT_ASSET_HEIGHT;
-  return ASSET_HEIGHT[platformVariant] ?? DEFAULT_ASSET_HEIGHT;
+  return ASSET_HEIGHT[geometryKey(platformVariant)] ?? DEFAULT_ASSET_HEIGHT;
 }
 
 /** Per-variant visual-scale multiplier. Apply this on the caller's
@@ -164,7 +197,7 @@ export function resolveAssetHeight(platformVariant: string | null | undefined): 
  *  with no entry render at their existing on-screen size. */
 export function resolveVariantScale(platformVariant: string | null | undefined): number {
   if (!platformVariant) return DEFAULT_VARIANT_SCALE;
-  return ASSET_VARIANT_SCALE[platformVariant] ?? DEFAULT_VARIANT_SCALE;
+  return ASSET_VARIANT_SCALE[geometryKey(platformVariant)] ?? DEFAULT_VARIANT_SCALE;
 }
 
 /** Footprint radius — undefined when the variant uses the default
@@ -174,21 +207,21 @@ export function resolveVariantScale(platformVariant: string | null | undefined):
  *  stays intact. */
 export function resolveFootprintRadius(platformVariant: string | null | undefined): number | undefined {
   if (!platformVariant) return undefined;
-  return ASSET_FOOTPRINT_RADIUS[platformVariant];
+  return ASSET_FOOTPRINT_RADIUS[geometryKey(platformVariant)];
 }
 
 /** Launch-pad height in native units, or undefined if this variant
  *  doesn't render a pad. */
 export function resolvePadHeight(platformVariant: string | null | undefined): number | undefined {
   if (!platformVariant) return undefined;
-  return LAUNCH_PADS[platformVariant];
+  return LAUNCH_PADS[geometryKey(platformVariant)];
 }
 
 /** Launch-pad radius in native units, or undefined if this variant
  *  doesn't render a pad. */
 export function resolvePadRadius(platformVariant: string | null | undefined): number | undefined {
   if (!platformVariant) return undefined;
-  return PAD_RADIUS_NATIVE[platformVariant];
+  return PAD_RADIUS_NATIVE[geometryKey(platformVariant)];
 }
 
 // ---------------------------------------------------------------------------

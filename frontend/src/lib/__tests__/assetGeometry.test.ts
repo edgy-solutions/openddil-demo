@@ -258,6 +258,43 @@ describe('catalog — all expected ORBAT variants present', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Geometry aliasing -- reused-schematic variants inherit base geometry
+// ---------------------------------------------------------------------------
+
+describe('geometry variant alias -- MRAD_ADVANCED_* inherits base geometry', () => {
+  // Regression: MRAD_ADVANCED_Sensor / _Interceptor were added to
+  // SCHEMATIC_REGISTRY (2026-07-13) reusing the MRAD sensor + artillery
+  // visuals, but NOT to any geometry table. They fell through to
+  // DEFAULT_GROUND_OFFSET (buried the silhouette) and
+  // DEFAULT_VARIANT_SCALE (over-sized it). The geometry alias fixes this
+  // by resolving each advanced variant to its base. Pin that every
+  // resolver returns byte-identical values for advanced vs base, so a
+  // future edit can't silently reintroduce the drift.
+  const pairs: Array<[string, string]> = [
+    ['MRAD_ADVANCED_Sensor', 'MRAD_Sensor'],
+    ['MRAD_ADVANCED_Interceptor', 'MRAD_Interceptor'],
+  ];
+  it.each(pairs)('%s resolves geometry identically to %s', (advanced, base) => {
+    expect(resolveGroundOffset(advanced)).toBe(resolveGroundOffset(base));
+    expect(resolveAssetHeight(advanced)).toBe(resolveAssetHeight(base));
+    expect(resolveVariantScale(advanced)).toBe(resolveVariantScale(base));
+    expect(resolveFootprintRadius(advanced)).toBe(resolveFootprintRadius(base));
+    expect(resolvePadHeight(advanced)).toBe(resolvePadHeight(base));
+    expect(resolvePadRadius(advanced)).toBe(resolvePadRadius(base));
+    expect(resolveRingRadius(advanced, 0.35)).toBe(resolveRingRadius(base, 0.35));
+    expect(resolvePadWorldRadius(advanced, 0.35)).toBe(resolvePadWorldRadius(base, 0.35));
+  });
+
+  it('advanced interceptor is lifted clear of the ground (not buried)', () => {
+    // The specific symptom: DEFAULT_GROUND_OFFSET (1.6) is far below the
+    // artillery schematic's required 4.5 lift, so the pod sank. Assert
+    // the advanced interceptor now gets the launcher's real offset.
+    expect(resolveGroundOffset('MRAD_ADVANCED_Interceptor')).toBe(4.5);
+    expect(resolveVariantScale('MRAD_ADVANCED_Interceptor')).toBe(0.6);
+  });
+});
+
 
 // ---------------------------------------------------------------------------
 // ASSET_VARIANT_SCALE -- per-variant visual-scale multiplier
