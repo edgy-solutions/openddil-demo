@@ -18,16 +18,31 @@ import { ShieldAlert, ChevronRight, Wrench, Package } from 'lucide-react';
 import type { CmState } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
 
+// Labels are domain-anchored to CM (configuration/maintenance records) --
+// they must never claim FUNCTIONAL capability, because CM state and
+// operational state are orthogonal axes (ADR-0026). The previous label
+// "NOT MISSION CAPABLE" for CONFIG_STATUS_NOT_MISSION_CAPABLE overclaimed
+// -- the phrase reads as a functional judgment when the underlying data
+// is records-compliance. Stakeholders saw the red "NOT MISSION CAPABLE"
+// next to a functionally green radar and concluded the display was
+// broken. Fix: "CM:" prefix on every state, plain-language plus no use
+// of the word "capable" (that word carries the functional claim).
+//
+// Amber (not red) for CONFIG_STATUS_NOT_MISSION_CAPABLE now that the
+// fusion severity rollup no longer folds CM into functional severity
+// (ADR-0026 compliance fix). A CM-only failure is a genuine DEGRADED
+// posture (operating with a records deviation is a real deferred-
+// maintenance risk) but not RED "cannot perform mission" territory.
 export function cmStatusBadge(status: string | undefined): { label: string; cls: string } {
   switch (status) {
     case 'CONFIG_STATUS_IN_COMPLIANCE':
-      return { label: 'IN COMPLIANCE', cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' };
+      return { label: 'CM: COMPLIANT', cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' };
     case 'CONFIG_STATUS_MINOR_DISCREPANCY':
-      return { label: 'MINOR DISCREPANCY', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50' };
+      return { label: 'CM: NEEDS MAINTENANCE', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50' };
     case 'CONFIG_STATUS_MAJOR_DISCREPANCY':
-      return { label: 'MAJOR DISCREPANCY', cls: 'bg-orange-500/20 text-orange-400 border-orange-500/50' };
+      return { label: 'CM: MAJOR DISCREPANCY', cls: 'bg-orange-500/20 text-orange-400 border-orange-500/50' };
     case 'CONFIG_STATUS_NOT_MISSION_CAPABLE':
-      return { label: 'NOT MISSION CAPABLE', cls: 'bg-rose-500/20 text-rose-400 border-rose-500/50' };
+      return { label: 'CM: NON-COMPLIANT', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50' };
     default:
       return { label: 'NO CM STATE', cls: 'bg-slate-700/40 text-slate-400 border-slate-600' };
   }
