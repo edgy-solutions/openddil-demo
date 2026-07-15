@@ -12,14 +12,18 @@ Pattern:
   - Snapshot region_fleet_summary BEFORE.
   - Send a fresh entity (never seen) to region-east via edge-02. Fresh
     entities get cm-state initialized at CONFIG_STATUS_NOT_MISSION_CAPABLE
-    immediately (M1A2-SEPv3-Baseline-2024.2 has 2 overdue mods), so the
-    fresh asset enters the non_operational bucket.
+    immediately (M1A2-SEPv3-Baseline-2024.2 has 2 overdue mods). ADR-0026
+    (2026-07-14): CM state now caps at DEGRADED in the regional
+    aggregator, so the fresh CM-only-red asset enters the DEGRADED
+    bucket (not non_operational).
   - Wait for the next aggregator heartbeat (30s interval; wait 35s).
-  - Snapshot AFTER. region-east.asset_count and non_operational both
-    increment by exactly 1; region-west is unchanged.
+  - Snapshot AFTER. region-east.asset_count and degraded both increment
+    by exactly 1; non_operational is unchanged; region-west is unchanged.
 
-Negative assertion: region-west's row is unchanged (the fresh asset on
-edge-02 does NOT leak into region-west's counts).
+Negative assertions: region-west's row is unchanged (the fresh asset on
+edge-02 does NOT leak into region-west's counts); region-east.non_operational
+is unchanged (ADR-0026: CM state must not solo-drive an asset into the
+non_operational bucket).
 
 Defines the headline observable claim of §B in test form.
 """
@@ -104,19 +108,33 @@ def main() -> None:
     if east_after is None:
         fail_(NAME, "region-east row disappeared during test — aggregator emit failed")
 
-    # POSITIVE: region-east asset_count increased by 1, non_operational also
-    # increased by 1 (fresh M1A2-SEPv3 is NMC at initialization due to overdue mods).
+    # POSITIVE: region-east asset_count increased by 1, degraded also
+    # increased by 1. ADR-0026 (2026-07-14): CM state is now capped at
+    # degraded in the regional aggregator -- a fresh asset that is
+    # CM-NOT_MISSION_CAPABLE at initialization (overdue mods) lands in
+    # the degraded bucket, NOT non_operational. Previously it landed in
+    # non_operational via bucket_from_cm_state -> worse_bucket, which
+    # violated ADR-0026 orthogonality (records-compliance state
+    # dominating a rollup that also carries functional signal).
     delta_count = east_after["asset_count"] - east_before["asset_count"]
-    delta_nmc = east_after["non_operational"] - east_before["non_operational"]
+    delta_degraded = east_after["degraded"] - east_before["degraded"]
+    delta_non_op = east_after["non_operational"] - east_before["non_operational"]
     if delta_count != 1:
         fail_(NAME, f"region-east.asset_count delta={delta_count} (expected 1). "
                     f"before={east_before} after={east_after}. Aggregator "
                     f"didn't pick up the fresh asset.")
-    if delta_nmc != 1:
-        fail_(NAME, f"region-east.non_operational delta={delta_nmc} (expected 1). "
+    if delta_degraded != 1:
+        fail_(NAME, f"region-east.degraded delta={delta_degraded} (expected 1). "
                     f"before={east_before} after={east_after}. Fresh M1A2-SEPv3 "
-                    f"should be NMC at initialization (overdue mods); aggregator "
-                    f"placed it in wrong bucket.")
+                    f"is NMC at initialization (overdue mods); ADR-0026 caps CM "
+                    f"contribution at degraded, so this asset should land in the "
+                    f"degraded bucket, not non_operational.")
+    if delta_non_op != 0:
+        fail_(NAME, f"region-east.non_operational delta={delta_non_op} (expected 0). "
+                    f"before={east_before} after={east_after}. ADR-0026 forbids CM "
+                    f"state solo-driving an asset into non_operational; only true "
+                    f"functional non-operability (or lifecycle DECOMMISSIONED) "
+                    f"should land here.")
 
     # NEGATIVE: region-west is unchanged (no cross-region leakage).
     west_before = before.get("region-west", {})
@@ -128,7 +146,7 @@ def main() -> None:
                         f"(region-east) leaked into region-west's counts.")
 
     pass_(NAME, f"aggregation OK: region-east asset_count and "
-                f"non_operational both incremented by 1 (before "
+                f"degraded both incremented by 1 (before "
                 f"asset_count={east_before['asset_count']}, after "
                 f"asset_count={east_after['asset_count']}); region-west "
                 f"unchanged (no cross-region leakage)")
