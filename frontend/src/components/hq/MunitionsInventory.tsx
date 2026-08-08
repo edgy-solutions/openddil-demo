@@ -129,8 +129,22 @@ export default function MunitionsInventory({
           <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-4 gap-y-1 text-[11px] font-mono">
             <div className="text-[10px] text-slate-500 tracking-widest uppercase">TYPE</div>
             <div className="text-[10px] text-slate-500 tracking-widest uppercase text-right">AVAIL</div>
-            <div className="text-[10px] text-slate-500 tracking-widest uppercase text-right">EXPD</div>
-            <div className="text-[10px] text-slate-500 tracking-widest uppercase text-right">INIT</div>
+            {/* EXPD / INIT are derived from a running max-seen accumulator
+                held in browser memory (useMunitionsStockpile) -- there is no
+                durable stockpile table yet, so a page reload re-derives INIT
+                from current ammo and EXPD resets to 0. The column heads have
+                no room for a qualifier, so the basis rides in the tooltip
+                (ADR-0017 discipline applied to a derived metric). Drop the
+                qualifier when the durable stockpile table lands (munitions
+                Phase 3). */}
+            <div
+              className="text-[10px] text-slate-500 tracking-widest uppercase text-right cursor-help"
+              title="Expended since this browser session started. Derived from observed ammo drops, not a durable stockpile record — a page reload resets this to 0."
+            >EXPD*</div>
+            <div
+              className="text-[10px] text-slate-500 tracking-widest uppercase text-right cursor-help"
+              title="Initial load, inferred as the maximum ammo observed for each launcher during this browser session — not a durable stockpile record."
+            >INIT*</div>
             {view.byType.map((row) => {
               // Color the available count by consumption fraction: full
               // = emerald, drained past 75% = amber, fully drained = rose.

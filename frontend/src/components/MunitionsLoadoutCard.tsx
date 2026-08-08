@@ -126,8 +126,18 @@ export default function MunitionsLoadoutCard({
                     <span className={availClass}>{r.current_ammo}</span>
                     <span className="text-slate-500"> / {r.initial_ammo}</span>
                     {r.expended > 0 && (
+                      // "this session" is load-bearing honesty, not filler.
+                      // initial_ammo is a running max-seen accumulator held
+                      // in browser memory (useMunitionsStockpile) -- there is
+                      // no durable stockpile table yet. A page reload
+                      // re-derives initial_ammo from whatever current_ammo is
+                      // at that moment, so expended silently resets to 0.
+                      // Labelling the basis keeps the number from presenting
+                      // as durable truth (ADR-0017 discipline applied to a
+                      // derived metric). Drop the qualifier when the durable
+                      // stockpile table lands (munitions Phase 3).
                       <span className="text-slate-500 ml-2">
-                        ({r.expended} fired)
+                        ({r.expended} fired this session)
                       </span>
                     )}
                   </span>
