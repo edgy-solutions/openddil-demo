@@ -9,7 +9,54 @@
 import { Fuel } from 'lucide-react';
 import type { LogisticsStatus, ConstrainingFactor, OperationalState } from '../hooks';
 import { opStateBackfill } from '../lib/opStateBackfill';
+import { basisKind, describeBasis } from '../lib/valueBasis';
 import { SyncingNotice } from './SyncingNotice';
+
+/** Duration proto JSON ("21600s") -> seconds. Returns null when absent. */
+function durationSeconds(d?: string): number | null {
+  if (!d) return null;
+  const n = parseFloat(d.endsWith('s') ? d.slice(0, -1) : d);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The factor that produced the composed horizon.
+ *
+ *  ADR-0035 IH-6. `projected_mission_capable_remaining` is the SOONEST
+ *  factor's `projected_time_to_worse` (fusion compose_status), so the
+ *  horizon's basis is that factor's provenance. Recomputing the same
+ *  minimum here keeps the marker keyed off the producer's stamp rather
+ *  than off this field's name — when another evaluator starts projecting,
+ *  or a registered analytics unit replaces the rule, the marker follows
+ *  the data with no edit here.
+ *
+ *  Returns null when nothing projected — a horizon with no projecting
+ *  factor is not something to badge, it is something to leave alone. */
+function horizonSource(factors: ConstrainingFactor[]): ConstrainingFactor | null {
+  let best: ConstrainingFactor | null = null;
+  let bestS: number | null = null;
+  for (const f of factors) {
+    const s = durationSeconds(f.projected_time_to_worse);
+    if (s == null) continue;
+    if (bestS == null || s < bestS) { bestS = s; best = f; }
+  }
+  return best;
+}
+
+/** Modelled-not-measured marker. Mirrors the SYNTHESIZED badge's amber
+ *  treatment (Inventory / TelemetryCharts) so the operator meets one
+ *  visual vocabulary for "this is not a measurement" across the COP.
+ *  Renders nothing when the value carries no stamp — an absent badge means
+ *  "no claim", never "measured". */
+function DerivedBadge({ title }: { title: string }) {
+  return (
+    <span
+      className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-amber-700/50 bg-amber-900/30 text-amber-400 uppercase rounded-sm cursor-help"
+      title={title}
+    >
+      DERIVED
+    </span>
+  );
+}
 
 export function severityBadge(sev: string | undefined): { label: string; cls: string } {
   switch (sev) {
@@ -135,6 +182,15 @@ export default function LogisticsStatusCard({
               <span className="text-slate-500">Projected mission-capable</span>
               <span className="text-slate-300">
                 {formatDuration(logistics.projected_mission_capable_remaining_seconds)}
+                {(() => {
+                  // ADR-0035 IH-6. The value is unchanged; only its basis
+                  // becomes visible. Keyed off the producing factor's
+                  // `origin` stamp (IH-5), not off this field's identity.
+                  const src = horizonSource(factors);
+                  if (!src || basisKind(src) !== 'DERIVED') return null;
+                  const title = describeBasis(src);
+                  return title ? <DerivedBadge title={title} /> : null;
+                })()}
               </span>
             </div>
             <div className="flex justify-between">

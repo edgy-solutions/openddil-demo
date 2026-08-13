@@ -13,6 +13,17 @@ export interface ConstrainingFactor {
   description?: string;
   current_value?: { value: number; unit: string };
   threshold?: { value: number; unit: string };
+  /** Proto JSON Duration, e.g. "21600s". Present on factors that project
+   *  forward (today: mtbf.*). The soonest of these is what fusion folds
+   *  into projected_mission_capable_remaining. */
+  projected_time_to_worse?: string;
+  /** ADR-0020 Origin enum name. Read by lib/valueBasis to decide whether a
+   *  rendered value needs a modelled-not-measured marker (ADR-0035 IH-6),
+   *  rather than hardcoding that decision per field. */
+  origin?: string;
+  /** [0,1]. Asserted rather than computed today — see ADR-0020
+   *  §Confidence staircase. */
+  confidence?: number;
 }
 
 export interface LogisticsStatus {
