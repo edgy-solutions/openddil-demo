@@ -18,6 +18,7 @@
 import { Layers } from 'lucide-react';
 import { useAllCmState } from '../../hooks';
 import { cmStatusBadge } from '../CmStateCard';
+import { AdvisoryBadge } from '../AdvisoryBadge';
 
 const CM_RANK: Record<string, number> = {
   CONFIG_STATUS_NOT_MISSION_CAPABLE: 4,
@@ -42,6 +43,7 @@ export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
           key: `${row.asset_id}:${d.discrepancy_id ?? i}`,
           asset_id: row.asset_id,
           recommended_action: d.recommended_action as string,
+          advisory_provenance: d.advisory_provenance ?? null,
           overall_status: row.overall_status,
         })),
     )
@@ -69,7 +71,10 @@ export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
               <tr key={it.key} className="hover:bg-slate-800/50">
                 <td className="py-2 align-top">
                   <div className="text-cyan-400">{it.asset_id}</div>
-                  <div className="text-slate-500 text-[11px]">{it.recommended_action}</div>
+                  <div className="text-slate-500 text-[11px]">
+                    {it.recommended_action}
+                    <AdvisoryBadge provenance={it.advisory_provenance} />
+                  </div>
                 </td>
                 <td className="text-right align-top">
                   {(() => {

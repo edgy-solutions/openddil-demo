@@ -22,12 +22,17 @@
 import { ClipboardList, Lock } from 'lucide-react';
 import { useAllCmState, useEdgeBuffer } from '../../hooks';
 import { cmStatusBadge } from '../CmStateCard';
+import { AdvisoryBadge } from '../AdvisoryBadge';
 
 interface ActionItem {
   key: string;
   asset_id: string;
   description: string;
   recommended_action: string;
+  /** ADR-0038 C4(b). Untyped here for the same reason the hook types
+   *  `discrepancies` as `any[]`: it is verbatim JSONB. `valueBasis`'s
+   *  AdvisoryProvenance is the shape; decoding lives there, not per panel. */
+  advisory_provenance: any;
   overall_status: string;
 }
 
@@ -62,6 +67,7 @@ export default function WorkOrders() {
         asset_id: row.asset_id,
         description: d.description ?? d.discrepancy_id ?? 'discrepancy',
         recommended_action: d.recommended_action,
+        advisory_provenance: d.advisory_provenance ?? null,
         overall_status: row.overall_status,
       });
     });
@@ -99,7 +105,10 @@ export default function WorkOrders() {
                 <td className="py-2 align-top">
                   <div className="text-cyan-400">{it.asset_id}</div>
                   <div className="text-slate-400 text-[11px]">{it.description}</div>
-                  <div className="text-slate-500 text-[11px]">{it.recommended_action}</div>
+                  <div className="text-slate-500 text-[11px]">
+                    {it.recommended_action}
+                    <AdvisoryBadge provenance={it.advisory_provenance} />
+                  </div>
                 </td>
                 <td className="text-right align-top">
                   {(() => {

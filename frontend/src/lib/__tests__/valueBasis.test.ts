@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { basisKind, describeBasis } from '../valueBasis';
+import {
+  advisoryBadge, basisKind, describeAdvisory, describeBasis,
+} from '../valueBasis';
 
 describe('basisKind', () => {
   it('maps the Origin enum names', () => {
@@ -86,5 +88,85 @@ describe('describeBasis', () => {
     expect(s).not.toContain('LOGISTICS_SEVERITY_DEGRADED');
     expect(s).not.toContain('time-to-failure');
     expect(s).not.toContain('[object Object]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Advisory provenance — ADR-0038 C4(b)
+// ---------------------------------------------------------------------------
+// These decode INTEGER enums, not string names, because asset-cm-state is JSON
+// from dataclasses.asdict and the projector stores nested lists as JSONB
+// verbatim (ADR-0018). Getting that wrong is silent: `basis: 1` compared
+// against 'ADVISORY_BASIS_RULE' is simply falsy, and the badge vanishes.
+
+describe('advisoryBadge', () => {
+  it('decodes integer basis values, not string names', () => {
+    expect(advisoryBadge({ basis: 1 })).toBe('RULE');
+    expect(advisoryBadge({ basis: 2 })).toBe('MODEL');
+    expect(advisoryBadge({ basis: 3 })).toBe('HUMAN');
+  });
+
+  it('renders no badge when unstamped — absence is "no claim"', () => {
+    // Every discrepancy written before C4(a) lands here. An absent badge must
+    // never read as "trusted" or "human-authored".
+    expect(advisoryBadge({ basis: 0 })).toBeNull();
+    expect(advisoryBadge({})).toBeNull();
+    expect(advisoryBadge(null)).toBeNull();
+    expect(advisoryBadge(undefined)).toBeNull();
+  });
+
+  it('does not treat a string enum name as a basis', () => {
+    // Guards the asymmetry: ConstrainingFactor carries string origins,
+    // discrepancies carry integer bases. Confusing them fails silently.
+    expect(advisoryBadge({ basis: 'ADVISORY_BASIS_RULE' as any })).toBeNull();
+  });
+});
+
+describe('describeAdvisory', () => {
+  it('names the producer, rule and baseline it was bound to', () => {
+    const s = describeAdvisory({
+      basis: 1,
+      producer: 'cm-service/discrepancy-analyzer',
+      producer_version: '1.0.0',
+      rule_id: 'required-mod.overdue',
+      config_hash: 'M1A2-Baseline-2026.1@2026.1',
+      inputs: ['baseline:M1A2-Baseline-2026.1', 'mod:MWO-2026-001'],
+    })!;
+    expect(s).toContain('deterministic rule');
+    expect(s).toContain('cm-service/discrepancy-analyzer 1.0.0');
+    expect(s).toContain('required-mod.overdue');
+    expect(s).toContain('M1A2-Baseline-2026.1@2026.1');
+    expect(s).toContain('mod:MWO-2026-001');
+  });
+
+  it('renders limitations as what the advisory does NOT claim', () => {
+    const s = describeAdvisory({ basis: 1, limitations: [4, 1, 2] })!;
+    expect(s).toContain('Does NOT claim');
+    expect(s).toContain('not a work order');
+    expect(s).toContain('not a safety-of-use judgment');
+  });
+
+  it('stays silent on confidence when no kind is declared', () => {
+    // The rule-based producer sets neither. Rendering "Confidence 0.00" would
+    // read as no-confidence when the truth is no-claim (ADR-0020 staircase).
+    const s = describeAdvisory({ basis: 1, confidence: 0.0, confidence_kind: 0 })!;
+    expect(s).not.toContain('Confidence');
+  });
+
+  it('renders confidence once a kind IS declared', () => {
+    const s = describeAdvisory({ basis: 2, confidence: 0.83, confidence_kind: 3 })!;
+    expect(s).toContain('Confidence 0.83');
+  });
+
+  it('distinguishes human-authored advice from machine-generated', () => {
+    // AE-2's actual danger: one bare string, two origins, distinguishable
+    // only by which JSONB list the row sat in — which no operator can see.
+    const human = describeAdvisory({ basis: 3 })!;
+    expect(human).toContain('Authored by a person');
+    expect(human).not.toContain('deterministic rule');
+  });
+
+  it('returns null when unstamped, so the caller renders nothing', () => {
+    expect(describeAdvisory({ basis: 0, producer: 'x' })).toBeNull();
   });
 });

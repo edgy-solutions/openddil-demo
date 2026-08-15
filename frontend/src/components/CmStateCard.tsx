@@ -17,6 +17,7 @@ import { useState } from 'react';
 import { ShieldAlert, ChevronRight, Wrench, Package } from 'lucide-react';
 import type { CmState } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
+import { AdvisoryBadge } from './AdvisoryBadge';
 
 // Labels are domain-anchored to CM (configuration/maintenance records) --
 // they must never claim FUNCTIONAL capability, because CM state and
@@ -233,7 +234,10 @@ export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | n
                 <div key={d.discrepancy_id ?? i} className="border-l-2 border-slate-600 pl-2 py-0.5">
                   <div className="text-slate-300">{d.description ?? d.discrepancy_id ?? 'discrepancy'}</div>
                   {d.recommended_action && (
-                    <div className="text-slate-500">{d.recommended_action}</div>
+                    <div className="text-slate-500">
+                      {d.recommended_action}
+                      <AdvisoryBadge provenance={d.advisory_provenance} />
+                    </div>
                   )}
                 </div>
               ))}
