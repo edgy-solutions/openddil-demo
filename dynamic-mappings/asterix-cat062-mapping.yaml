@@ -1,0 +1,96 @@
+processor_resources:
+  - label: asterix_cat062_mapping
+    mapping: |
+      # =========================================================================
+      # ASTERIX CAT062 (system tracks) -> EntityTelemetryEvent
+      # Stage 2 of ADR-0030. PURE RESHAPING — no arithmetic, no grammar.
+      #
+      # INPUT CONTRACT (from asterix_ingestor.py -> ingress-asterix-raw):
+      #   asterix_category: 62
+      #   record_index:     int
+      #   items:            decoded data items, keyed by ASTERIX item number
+      #                     VERBATIM as the decoder produced them
+      #   ingest:           {edge_id, region_id, source_protocol, decoder,
+      #                      received_at_ns}
+      #
+      # WHY CAT062 AND NOT CAT048 FIRST. CAT062 I062/105 carries WGS-84
+      # latitude/longitude directly, so position needs selection and nothing
+      # else. CAT048 target reports carry I048/040 as RHO/THETA — slant range
+      # and azimuth RELATIVE TO THE RADAR — and converting that to WGS-84
+      # requires the radar site's own coordinates, which the record does not
+      # carry, plus geodesy. That is a reference-data join and arithmetic:
+      # forbidden here by ADR-0013 and not the decoder's job either. CAT048 is
+      # decoded and lands on Bronze; its position mapping is deliberately
+      # UNRESOLVED rather than approximated, and is recorded as such.
+      # =========================================================================
+
+      # ---- IDENTITY (ADR-0015) ---------------------------------------------
+      # A CAT062 track number is scoped to the SYSTEM that assigned it, so it
+      # is not globally unique on its own: two centres both number tracks from
+      # 1. The canonical id therefore carries the data-source identifier
+      # (SAC/SIC) as its namespace. Scheme-prefixed per ADR-0015 so downstream
+      # joins never have to guess which producer an id came from.
+      let sac = this.items."010".SAC | -1
+      let sic = this.items."010".SIC | -1
+      let trk = this.items."040".TrkN | -1
+
+      root.asset.asset_id = "asterix:%v/%v:%v".format($sac, $sic, $trk)
+
+      # A surveillance track is not a platform we have a variant for. The
+      # ontology resolves variants from DECLARED source attributes (ADR-0016);
+      # CAT062 declares none, so this stays UNKNOWN rather than being guessed
+      # from behaviour. Populating it from track characteristics would be the
+      # inference-from-observation mistake GD-11 records.
+      root.asset.platform_variant = "UNKNOWN"
+
+      # ---- KINEMATICS ------------------------------------------------------
+      # I062/105 is already WGS-84 degrees. Selection only.
+      # Wgs84Position.lat/lon are Quantity messages, not bare doubles — every
+      # scalar carries its unit (ADR-0013). Degrees are the source's own unit;
+      # no conversion happens here.
+      root.kinematics.position.wgs84.lat = {
+        "unit":  "deg",
+        "value": this.items."105".Lat
+      }
+      root.kinematics.position.wgs84.lon = {
+        "unit":  "deg",
+        "value": this.items."105".Lon
+      }
+
+      # Altitude is NOT set from I062/136 (measured flight level). A flight
+      # level is a pressure altitude referenced to the 1013.25 hPa standard
+      # datum -- it is not a WGS-84 ellipsoidal height, and the conversion
+      # needs local QNH. Emitting it as `alt` would put a pressure figure in
+      # a geometric field and be wrong by tens of metres in ordinary weather.
+      # Absent is the honest answer until the axis has somewhere true to go.
+
+      # POSITION SOURCE IS DELIBERATELY UNSET, and this is a recorded gap
+      # rather than an oversight. PositionSource has no member for a radar
+      # surveillance track: the enum runs GPS variants, INS, dead-reckoning,
+      # operator-entered and simulated. A CAT062 track is none of those.
+      #
+      # The available wrong answers were all worse than absence. SIMULATED
+      # would be false -- this is a real sensor product. GPS_* would assert a
+      # positioning technology the record does not carry. Setting UNSPECIFIED
+      # explicitly is identical on the wire to omitting it, so omitting is the
+      # honest form: we are not claiming "no source", we are unable to state
+      # the source we know.
+      #
+      # Fix shape: a POS_SRC_RADAR_TRACK member. That is a contract change and
+      # belongs in a deliberate decision, not slipped into a mapping commit.
+
+      # ---- PROVENANCE (ADR-0022 / ADR-0029) --------------------------------
+      root.provenance.producer_id     = "asterix-ingestor"
+      root.provenance.source_protocol = this.ingest.source_protocol | "EUROCONTROL-ASTERIX"
+      root.provenance.edge_id         = this.ingest.edge_id | ""
+      root.provenance.region_id       = this.ingest.region_id | ""
+
+      # I062/070 Time Of Track Information is seconds since MIDNIGHT UTC, not
+      # an epoch timestamp -- it wraps daily and carries no date. Reconstructing
+      # an absolute time needs the day, which the record does not carry, so
+      # sample_time is NOT fabricated from a partial field. The raw value stays
+      # visible on Bronze for anyone who can supply the missing day.
+      #
+      # ingest_time is the one time we can state truthfully: when OpenDDIL saw
+      # it. Same precedent as sim-dis-mapping.
+      root.provenance.ingest_time     = now()
