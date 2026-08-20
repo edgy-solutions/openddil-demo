@@ -7,7 +7,19 @@
 // severity change from a cadenced recompute.
 import { num, useTableShape, sqlLiteral, type ShapeResult } from './electric';
 
-export interface ConstrainingFactor {
+/** Declared as a `type` rather than an `interface` DELIBERATELY, and the
+ *  distinction is load-bearing rather than stylistic.
+ *
+ *  TypeScript gives type aliases an implicit index signature and interfaces
+ *  none — because an interface is open to declaration merging, so the
+ *  compiler cannot promise a later declaration will not add an incompatible
+ *  member. That makes an interface unassignable to `ProvenanceBearing`,
+ *  which reads provenance opportunistically via `[key: string]: unknown`,
+ *  and it is why `basisKind(factor)` failed to compile.
+ *
+ *  A closed shape is also the more honest declaration here: this mirrors a
+ *  proto JSON message. Nothing merges into it, and nothing should. */
+export type ConstrainingFactor = {
   factor_id: string;
   severity: string;
   description?: string;
