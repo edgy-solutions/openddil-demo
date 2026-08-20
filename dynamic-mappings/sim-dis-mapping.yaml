@@ -146,3 +146,68 @@ processor_resources:
       # env-default attribution (rate-limited WARN logged there).
       root.provenance.edge_id   = $src.origin_node.edge_id.or("")
       root.provenance.region_id = $src.origin_node.region_id.or("")
+
+      # =====================================================================
+      # OPERATIONAL STATE FROM ENTITY APPEARANCE (ADR-0026 / ADR-0030)
+      # =====================================================================
+      # ADR-0026's adapter list specified this mapping on 2026-05-27
+      # (`appearance.damage / firepower_kill -> health_state`). The sidecar
+      # has published the bits ever since; this is Stage 2 finally reading
+      # them. Until 2026-08-19 the absence was registered as "no DIS source
+      # for the health axis" — the record diagnosing its own unbuilt design
+      # as a missing feed.
+      #
+      # `$src.appearance` is ABSENT unless the source is DECLARED to populate
+      # the field AND the field is non-zero. Both refusals happen in Stage 1;
+      # here we only have to honour them, and honouring them means the whole
+      # block is conditional. A `.or()` default anywhere below would undo the
+      # gate and manufacture health out of silence — which is the defect this
+      # mapping was blocked on for a day (ADR-0026 amendment, clauses 1-2).
+      let ax = $src.appearance.or({})
+
+      # --- health axis -----------------------------------------------------
+      # DESTROYED -> FAILED, not "critical damage". The asset is not impaired,
+      # it is gone; FAULT would understate it and NOMINAL is unreachable.
+      #
+      # NONE -> NOMINAL is the load-bearing line: the first place in this
+      # system where NOMINAL is a POSITIVE assertion from a source that
+      # actually said so, rather than a value reached by falling through
+      # every other branch (clause 4).
+      root.operational_state.health_state = match {
+        $ax.damage.or("") == "DESTROYED" => "HEALTH_STATE_FAILED",
+        $ax.damage.or("") == "MODERATE"  => "HEALTH_STATE_FAULT",
+        $ax.damage.or("") == "SLIGHT"    => "HEALTH_STATE_DEGRADED",
+        $ax.damage.or("") == "NONE"      => "HEALTH_STATE_NOMINAL",
+        # Includes UNRECOGNISED_n — the producer said something we do not
+        # understand, which is not a health claim and must not become one.
+        _ => deleted()
+      }
+
+      # --- power axis ------------------------------------------------------
+      root.operational_state.power_state = match {
+        $ax.deactivated.or(false)   => "POWER_STATE_OFF",
+        $ax.power_plant_on.or(null) == true  => "POWER_STATE_ON",
+        $ax.power_plant_on.or(null) == false => "POWER_STATE_OFF",
+        _ => deleted()
+      }
+
+      # --- kills as subsystem faults ---------------------------------------
+      # Carried as active_fault_codes in the "SUBSYS:HEALTH" form fusion's
+      # _eval_subsystems already parses — so this needs NO contract change and
+      # no new evaluator. The vocabulary is fusion's own: INOPERATIVE maps to
+      # NON_OPERATIONAL.
+      #
+      # INOPERATIVE rather than DEGRADED, deliberately: a DIS "kill" means the
+      # capability is GONE, not impaired. A mobility kill is a platform that
+      # cannot move, and calling that "degraded" would understate it in the
+      # one direction that matters.
+      #
+      # Note firepower_kill is absent from the air domain's ontology block, so
+      # `$ax.firepower_kill` is simply missing there and no code is emitted —
+      # the domain distinction is carried by absence, not by a branch here.
+      root.sustainment.health.active_fault_codes = [
+        if $ax.mobility_kill.or(false) { "PROPULSION:INOPERATIVE" },
+        if $ax.firepower_kill.or(false) { "WEAPONS:INOPERATIVE" },
+      ].filter(v -> v != null)
+
+      root.sustainment.health.weapons_fault = $ax.firepower_kill.or(false)
