@@ -103,14 +103,6 @@ export function useFleetAssets(): ShapeResult<FleetAsset> {
 //
 // Empty regionId returns the unfiltered shape — same as useFleetAssets()
 // — so cold-start (pulldown hasn't picked a region yet) doesn't break.
-export function useFleetAssetsForRegion(
-  regionId: string | null | undefined,
-): ShapeResult<FleetAsset> {
-  const where = regionId
-    ? `region_id = ${sqlLiteral(regionId)}`
-    : undefined;
-  return useTableShape('telemetry_latest_state', mapFleetAsset, { where });
-}
 
 // Phase 6c.2: edge-scoped variant for the Maintainer view's pulldown.
 // Returns ONLY assets whose telemetry_latest_state.edge_id matches the
@@ -127,11 +119,86 @@ export function useFleetAssetsForRegion(
 // Distinctive function-name symbol (per ADR-0025 / follow-up #16):
 // "useFleetAssetsForEdge" is the deployment-proof grep target for §C.2
 // — pre-§C.2 bundles do not contain this string; post-build bundles do.
+
+/** The column that identifies a tier in the read model, and the value that
+ *  identifies THIS tier. Together: "my scope".
+ *
+ *  ─────────────────────────────────────────────────────────────────────────
+ *  WHY THIS IS A PARAMETER AND NOT TWO FUNCTIONS
+ *  ─────────────────────────────────────────────────────────────────────────
+ *  Until 2026-09-05 there were two hooks, `useFleetAssetsForEdge` and
+ *  `useFleetAssetsForRegion`, which were BYTE-IDENTICAL but for the column
+ *  name. Two functions, one shape, differing only in which column encodes
+ *  the tier — which is the two-level hierarchy (GD-01) showing through into
+ *  the presentation layer.
+ *
+ *  Collapsing them does not fix GD-01. It concentrates it: the frontend's
+ *  entire dependence on "how is a tier addressed?" is now this ONE type and
+ *  the one function below, instead of a pattern that would be copied a third
+ *  time the moment a third level appeared.
+ *
+ *  ⚠ AND A THIRD LEVEL CANNOT APPEAR YET. `TierScope.column` can only be a
+ *  column that exists, and the read model has exactly `edge_id` and
+ *  `region_id` — no `tier_id`, no `tier_path`, no depth. So a fourth tier
+ *  still has no left-hand side to be filtered by. That is GD-01's work, not
+ *  this hook's, and this comment is here so the next reader does not mistake
+ *  a parameterized call site for a solved problem.
+ *
+ *  When hierarchy-path addressing lands, `column` becomes a path predicate
+ *  and every call site above this line is unaffected. That is the whole
+ *  point of the collapse. */
+export interface TierScope {
+  /** A column on `telemetry_latest_state` that identifies a tier.
+   *  Constrained to what the schema actually has — widening this union is
+   *  GD-01's job and will be a compile error at every affected site, which
+   *  is the desired behaviour. */
+  column: 'edge_id' | 'region_id';
+  /** This tier's identifier. Null/undefined means "not yet resolved" and
+   *  yields an UNSCOPED read — see the warning on the hook. */
+  value: string | null | undefined;
+}
+
+/** Fleet assets within one tier's scope.
+ *
+ *  ⚠ A NULL `scope` OR A NULL `scope.value` RETURNS THE WHOLE TABLE.
+ *  That is inherited behaviour from the two hooks this replaces, and it is
+ *  preserved deliberately rather than silently tightened: the maintainer
+ *  view's cold start depends on it (the first render happens before the
+ *  default edge is resolved from the URL or from observed data).
+ *
+ *  It is also a sharp edge. An unscoped read at a tier node shows that
+ *  tier's whole store, which is correct there, and at the ROOT shows every
+ *  tier's — which is correct only if the caller meant it. Post-Slice 1 the
+ *  gateway filters by entitlement regardless, so this cannot leak across
+ *  nations; it can still show a wider fleet than the caller intended.
+ *
+ *  Named `useFleetAssetsForTier` and not `...ForScope` because "tier" is the
+ *  domain word (ADR-0033) and the scope is how a tier happens to be
+ *  addressed today. */
+export function useFleetAssetsForTier(
+  scope: TierScope | null | undefined,
+): ShapeResult<FleetAsset> {
+  const where = scope && scope.value
+    ? `${scope.column} = ${sqlLiteral(scope.value)}`
+    : undefined;
+  return useTableShape('telemetry_latest_state', mapFleetAsset, { where });
+}
+
+/** Leaf-tier scope. Thin wrapper, kept so the collapse changed no call site.
+ *
+ *  Distinctive function-name symbol (per ADR-0025 / follow-up #16):
+ *  "useFleetAssetsForEdge" is the deployment-proof grep target for §C.2 —
+ *  pre-§C.2 bundles do not contain this string; post-build bundles do. That
+ *  is why the name survives the collapse rather than being folded away. */
 export function useFleetAssetsForEdge(
   edgeId: string | null | undefined,
 ): ShapeResult<FleetAsset> {
-  const where = edgeId
-    ? `edge_id = ${sqlLiteral(edgeId)}`
-    : undefined;
-  return useTableShape('telemetry_latest_state', mapFleetAsset, { where });
+  return useFleetAssetsForTier({ column: 'edge_id', value: edgeId });
+}
+
+/** Intermediate-tier scope. Thin wrapper; see above. */
+export function useFleetAssetsForRegion(
+  regionId: string | null | undefined,
+): ShapeResult<FleetAsset> {
+  return useFleetAssetsForTier({ column: 'region_id', value: regionId });
 }

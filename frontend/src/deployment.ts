@@ -13,6 +13,7 @@
 // Deployment type is the union of those concerns; a future split into
 // `branding:` and `topology:` sub-blocks is possible if it gets bigger.
 // =============================================================================
+import type { TierScope } from './hooks/useFleetAssets';
 
 /** Forward Operating Base — an OpenDDIL edge's geographic anchor.
  *  The HQ and Regional 3D maps use these as markers and as the projection
@@ -94,6 +95,62 @@ export const DEFAULT_LIVENESS: LivenessThresholds = {
   recovery_window_s:  10,
 };
 
+/** Which tier this instance IS — ADR-0033's amendment made operational.
+ *
+ *  ─────────────────────────────────────────────────────────────────────────
+ *  THE WHOLE MECHANISM IS THAT THIS ARRIVES AT RUNTIME
+ *  ─────────────────────────────────────────────────────────────────────────
+ *  One image, zero tier knowledge at build time, tier identity supplied
+ *  entirely at deploy time. That is not a preference — it is forced. The
+ *  chart previously set a per-tier `ELECTRIC_URL` env var against a value
+ *  Vite had baked into the bundle at build, so the env var was read by
+ *  nothing and every tier's UI silently read the ROOT's store (UD-9). A
+ *  container env var cannot reach a compiled-in constant; a fetched config
+ *  file can.
+ *
+ *  So tier identity rides the channel that already worked: this file,
+ *  fetched at startup, served from a per-tier ConfigMap.
+ *
+ *  ─────────────────────────────────────────────────────────────────────────
+ *  SHAPE, NOT NAME
+ *  ─────────────────────────────────────────────────────────────────────────
+ *  Nothing downstream branches on `id`. Panels are selected by whether this
+ *  tier HAS CHILDREN (does it roll anything up?) and whether it HAS A PARENT
+ *  (can its uplink be severed?). That is what makes "which of the three
+ *  views does a fourth tier get?" a well-formed question with an obvious
+ *  answer instead of an unanswerable one — a fourth tier has a shape, and
+ *  the shape selects the panels.
+ *
+ *  `label` is for humans and is read by the header only.
+ *
+ *  ─────────────────────────────────────────────────────────────────────────
+ *  WHAT THIS DOES NOT SOLVE
+ *  ─────────────────────────────────────────────────────────────────────────
+ *  `scope` can only name a column the read model has — `edge_id` or
+ *  `region_id`. A tier at depth 3 has nothing to be filtered by, so a fourth
+ *  tier still cannot be scoped (GD-01). This type makes the dependency
+ *  explicit and confines it; it does not remove it. */
+export interface TierConfig {
+  /** This tier's identifier, e.g. "edge-northpoint", "region-east", "hq".
+   *  DISPLAY AND CORRELATION ONLY — no panel selection reads it. */
+  id: string;
+  /** Human label for the header. Falls back to `id`. */
+  label?: string;
+  /** How this tier is addressed in the read model, or null for a tier whose
+   *  store holds only its own subtree already (the root of a deployment
+   *  whose store is not shared, or any tier node with its own database).
+   *
+   *  Null means "read the store unscoped", which is CORRECT at a tier node
+   *  — its store contains its subtree and nothing else — and is why the
+   *  root and a tier node can share one code path. */
+  scope: TierScope | null;
+  /** Does this tier roll anything up? Selects the aggregate panels. */
+  has_children: boolean;
+  /** This tier's parent id, or null at the root. Presence selects the
+   *  uplink / severance panel: a root has no uplink to lose. */
+  parent?: string | null;
+}
+
 export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
@@ -111,6 +168,16 @@ export interface Deployment {
    *  DEFAULT_LIVENESS when absent or any individual field is missing /
    *  non-finite. */
   liveness: LivenessThresholds;
+  /** Which tier this instance is. ABSENT means "no tier was configured",
+   *  which is a real and supported state: the demo shell renders its tabs
+   *  and says so. Present means this deployment is a tier node and the UI
+   *  is that tier's instance.
+   *
+   *  Deliberately optional rather than defaulted. A default here would give
+   *  every unconfigured deployment a confident, wrong tier identity — and
+   *  "the UI believes it is a tier it is not" is precisely the class of
+   *  defect (UD-9) this field exists to close. */
+  tier?: TierConfig;
 }
 
 const DEFAULT: Deployment = {
@@ -173,6 +240,62 @@ function isValidDeploymentMap(x: unknown): x is DeploymentMap {
   );
 }
 
+/** A tier config is accepted only if it is COMPLETE and INTERNALLY
+ *  CONSISTENT. A partial one is rejected outright rather than merged with
+ *  defaults.
+ *
+ *  That asymmetry with `liveness` (which merges field by field) is
+ *  deliberate. A half-applied liveness threshold gives slightly wrong
+ *  timing. A half-applied TIER IDENTITY gives a UI that confidently
+ *  believes it is a tier it is not — which is UD-9's failure mode arriving
+ *  through the door built to prevent it. There is no safe default for "who
+ *  am I", so absence is the only alternative to a complete answer.
+ *
+ *  Rejection is LOUD: a console error, because a tier node whose config was
+ *  silently discarded renders the demo shell and looks merely
+ *  misconfigured rather than broken. */
+/** EXPORTED FOR TESTS, deliberately. Reaching it through
+ *  `loadDeployment` would test a fetch stub, a JSON parse and a DOM
+ *  write alongside the one thing under examination — and it forced a
+ *  jsdom dependency for a function that touches no DOM. A validator is
+ *  a decision; decisions get direct tests. */
+export function parseTier(raw: unknown): TierConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const t = raw as Partial<TierConfig>;
+  const bad = (why: string): undefined => {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[deployment] tier config rejected (${why}). This instance will render ` +
+      'the demo shell, NOT a tier instance. A partial tier identity is worse ' +
+      'than none: see UD-9.',
+      raw,
+    );
+    return undefined;
+  };
+  if (typeof t.id !== 'string' || !t.id.trim()) return bad('missing id');
+  if (typeof t.has_children !== 'boolean') return bad('has_children must be a boolean');
+  // `scope` must be explicitly null or a valid pair. Undefined is NOT
+  // accepted as "null": omitting it reads as an oversight, and an oversight
+  // that produces an unscoped read at a tier with children would show the
+  // whole subtree under a leaf's label.
+  if (t.scope !== null) {
+    const sc = t.scope as TierScope | undefined;
+    if (!sc || (sc.column !== 'edge_id' && sc.column !== 'region_id')) {
+      return bad('scope must be null or {column: edge_id|region_id, value}');
+    }
+    if (typeof sc.value !== 'string' || !sc.value.trim()) {
+      return bad('scope.value must be a non-empty string');
+    }
+  }
+  return {
+    id: t.id.trim(),
+    label: typeof t.label === 'string' && t.label.trim() ? t.label.trim() : undefined,
+    scope: t.scope === null ? null : (t.scope as TierScope),
+    has_children: t.has_children,
+    parent: typeof t.parent === 'string' && t.parent.trim() ? t.parent.trim() : null,
+  };
+}
+
 /**
  * Fetch optional overlay deployment config, then apply document.title and
  * the favicon. Call once before the first render. Any failure (no overlay,
@@ -189,6 +312,7 @@ export async function loadDeployment(): Promise<void> {
         fobs: Array.isArray(j.fobs) ? j.fobs.filter(isValidFob) : DEFAULT.fobs,
         map: isValidDeploymentMap(j.map) ? j.map : undefined,
         liveness: mergeLiveness(j.liveness),
+        tier: parseTier((j as { tier?: unknown }).tier),
       };
     }
   } catch {

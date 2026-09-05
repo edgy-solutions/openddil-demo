@@ -75,7 +75,12 @@ const REGION_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
  * fallback that fetches all assets. Using FOBs means the dropdown lands
  * on a real region from the first paint, no "show everything" window.
  */
-function initialRegion(): string | null {
+/** The region this instance opens on. The tier's configured scope wins over
+ *  the URL parameter, for the reason given on MaintainerApp's equivalent:
+ *  at a tier node the config is a statement of identity, and a query
+ *  parameter must not repoint a tier's UI at a different tier. */
+function initialRegion(tierScopeValue?: string | null): string | null {
+  if (tierScopeValue) return tierScopeValue;
   const param = new URLSearchParams(window.location.search).get('region');
   if (param && REGION_ID_PATTERN.test(param)) return param;
 
@@ -269,12 +274,19 @@ function WearTrends({ row }: { row: RegionWearTrends | undefined }) {
 
 // --- app -------------------------------------------------------------------
 
-export default function RegionalApp() {
+/** The tier's own scope, when this instance is a tier node's UI rather than
+ *  the demo shell. Null in the shell, where the operator picks a scope
+ *  instead of being one. */
+interface TierScopedProps { tierScopeValue?: string | null }
+
+export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) {
   const [link1, setLink1] = useState(true);
   const [isRuleEditorOpen, setIsRuleEditorOpen] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState<string>('ALL');
-  const [selectedRegion, setSelectedRegion] = useState<string | null>(initialRegion);
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(
+    () => initialRegion(tierScopeValue),
+  );
 
   // Pipeline data — ElectricSQL Shapes.
   const fleetSummary = useRegionFleetSummary();

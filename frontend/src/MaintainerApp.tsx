@@ -92,7 +92,24 @@ const EDGE_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
 // asset-id shapes.
 const ASSET_ID_PATTERN = /^[a-zA-Z0-9:_-]+$/;
 
-function initialEdge(): string | null {
+/** The edge this instance opens on.
+ *
+ *  ORDER MATTERS AND IS DELIBERATE: the tier's configured scope wins over
+ *  the URL parameter.
+ *
+ *  At a tier node the config is a statement of IDENTITY — this instance IS
+ *  that edge — and a query parameter must not be able to repoint a tier's UI
+ *  at a different tier. The URL param remains the mechanism for the demo
+ *  shell, where no tier is configured and the operator is choosing a scope
+ *  rather than being one.
+ *
+ *  Post-Slice 1 a repointed URL could not leak across nations regardless —
+ *  the gateway filters by entitlement whatever the client asks for. What it
+ *  could do is show one tier's data under another tier's label, which is
+ *  exactly UD-9's failure mode arriving from the client side instead of the
+ *  chart. */
+function initialEdge(tierScopeValue?: string | null): string | null {
+  if (tierScopeValue) return tierScopeValue;
   const param = new URLSearchParams(window.location.search).get('edge');
   if (param && EDGE_ID_PATTERN.test(param)) return param;
   return null;
@@ -111,7 +128,12 @@ function formatSeen(iso: string | null): string {
   return d.toLocaleString('en-US', { hour12: false });
 }
 
-function MaintainerApp() {
+/** The tier's own scope, when this instance is a tier node's UI rather than
+ *  the demo shell. Null in the shell, where the operator picks a scope
+ *  instead of being one. */
+interface TierScopedProps { tierScopeValue?: string | null }
+
+function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // link1 = the DDIL link toggle (severs/restores the real hq-link proxy).
   const [link1, setLink1] = useState(true);
   const [degraded, setDegraded] = useState(false);
@@ -120,7 +142,9 @@ function MaintainerApp() {
   // Phase 6c.2: edge scope. Initial value comes from ?edge= URL param if
   // present and well-formed; otherwise resolved from the observed-edges
   // list (first alphabetically) once the unfiltered fleet shape returns.
-  const [selectedEdge, setSelectedEdge] = useState<string | null>(initialEdge);
+  const [selectedEdge, setSelectedEdge] = useState<string | null>(
+    () => initialEdge(tierScopeValue),
+  );
 
   // Pending deep-link from ?asset= URL param — used at most once on
   // first load. We hold it as state (not a ref) so it stays visible in
