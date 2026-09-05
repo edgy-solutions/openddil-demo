@@ -28,6 +28,22 @@ export interface FleetAsset {
    *  Always present on the returned object; individual axis fields
    *  default to null when the producer didn't emit operational_state. */
   operational_state: OperationalState;
+  /** ADR-0029 coalition releasability. The nation that ORIGINATED this row,
+   *  and the nations it is releasable to beyond that one.
+   *
+   *  PRESENTATION ONLY. These are here so the operator can SEE which nation
+   *  an asset belongs to; they are not, and must never become, a filter. By
+   *  the time a row reaches this hook the gateway has already decided the
+   *  subject may see it — ADR-0029 §1 is explicit that frontend filtering is
+   *  not access control, and a second filter here would be a second
+   *  authorization decision that nobody reviewed.
+   *
+   *  Null on a deployment that has not enabled releasability. The colour
+   *  helpers treat null as "unlabelled" and say so rather than picking a
+   *  default nation, because a mislabelled asset on a map is worse than an
+   *  obviously unlabelled one. */
+  originator_nation: string | null;
+  releasable_to: string[];
 }
 
 function extractPosition(kinematics: any): { lat: number; lon: number } | null {
@@ -58,6 +74,14 @@ function mapFleetAsset(row: Record<string, any>): FleetAsset {
     edge_id: row.edge_id ?? null,
     region_id: row.region_id ?? null,
     position: extractPosition(row.kinematics),
+    originator_nation: row.originator_nation ?? null,
+    // Electric returns a Postgres text[] as an array; tolerate the
+    // brace-string form some drivers produce rather than assuming one.
+    releasable_to: Array.isArray(row.releasable_to)
+      ? row.releasable_to
+      : typeof row.releasable_to === 'string'
+        ? row.releasable_to.replace(/^\{|\}$/g, '').split(',').filter(Boolean)
+        : [],
     operational_state: {
       power_state:           row.power_state ?? null,
       functional_mode:       row.functional_mode ?? null,

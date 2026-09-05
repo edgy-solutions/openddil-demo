@@ -1,27 +1,4 @@
 {
-  "_comment": [
-    "Keycloak realm for the ADR-0029 read-path demo. EVERYTHING HERE IS",
-    "FICTION: Atlantia (ATL) and Borduria (BDR) are invented nations and the",
-    "users are demo accounts with published passwords. This realm is for a lab",
-    "and must never be imported anywhere that matters.",
-    "",
-    "USER IDS ARE PINNED, AND THAT IS THE LOAD-BEARING DETAIL. Keycloak's",
-    "`sub` claim is the user's `id`, and left unset it is a fresh UUID on",
-    "every realm import. The entitlements corpus keys on `sub` (see",
-    "policy/users.yaml), so an unpinned id would mean every re-import",
-    "silently orphaned every entitlement — each user would authenticate",
-    "successfully and then be denied everything, which looks exactly like a",
-    "policy bug and is not one.",
-    "",
-    "Pinning them also makes the corpus reviewable: a human can read",
-    "users.yaml, see the id, and find the same string here.",
-    "",
-    "THE CLIENT IS CONFIDENTIAL AND ITS REDIRECT URI IS EXACT. Contrast with",
-    "the sibling project's UI client, which is public with redirectUris ['*'],",
-    "webOrigins ['*'] and directAccessGrantsEnabled true. Each of those is",
-    "declined here deliberately and the reasons are in gateway/oidc.py."
-  ],
-
   "realm": "openddil",
   "enabled": true,
   "displayName": "OpenDDIL (demo)",
@@ -32,7 +9,6 @@
   "resetPasswordAllowed": false,
   "editUsernameAllowed": false,
   "bruteForceProtected": true,
-
   "clients": [
     {
       "clientId": "openddil-pep",
@@ -40,29 +16,30 @@
       "description": "Backend-for-frontend. Confidential: the browser never holds a token.",
       "enabled": true,
       "protocol": "openid-connect",
-
       "publicClient": false,
       "clientAuthenticatorType": "client-secret",
       "secret": "__PEP_CLIENT_SECRET__",
-
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-
-      "redirectUris": [ "__PEP_REDIRECT_URI__" ],
+      "redirectUris": [
+        "__PEP_REDIRECT_URI__"
+      ],
       "webOrigins": [],
-
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "+"
       },
-
       "fullScopeAllowed": false,
-      "defaultClientScopes": [ "openid", "profile", "email", "roles" ]
+      "defaultClientScopes": [
+        "openid",
+        "profile",
+        "email",
+        "roles"
+      ]
     }
   ],
-
   "users": [
     {
       "id": "11111111-1111-4111-8111-111111111111",
@@ -73,7 +50,11 @@
       "lastName": "Orsini",
       "email": "operator.atlantia@example.invalid",
       "credentials": [
-        { "type": "password", "value": "demo", "temporary": false }
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
       ]
     },
     {
@@ -85,7 +66,11 @@
       "lastName": "Delacroix",
       "email": "operator.borduria@example.invalid",
       "credentials": [
-        { "type": "password", "value": "demo", "temporary": false }
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
       ]
     },
     {
@@ -97,20 +82,14 @@
       "lastName": "Fairbairn",
       "email": "liaison.coalition@example.invalid",
       "credentials": [
-        { "type": "password", "value": "demo", "temporary": false }
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
       ]
     },
     {
-      "_comment": [
-        "THE DEFAULT-DENY SUBJECT. This account authenticates successfully and",
-        "appears NOWHERE in policy/users.yaml, which is the entire point: the",
-        "demo's fourth beat proves that a valid identity with no entitlement",
-        "is refused BY DEFAULT rather than by a rule written about them.",
-        "",
-        "It has to exist in Keycloak to be a real test. An account that could",
-        "not log in would prove that authentication works, which is a",
-        "different and much weaker claim than the one being made."
-      ],
       "id": "44444444-4444-4444-8444-444444444444",
       "username": "observer.unlisted",
       "enabled": true,
@@ -119,7 +98,11 @@
       "lastName": "Vantassel",
       "email": "observer.unlisted@example.invalid",
       "credentials": [
-        { "type": "password", "value": "demo", "temporary": false }
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
       ]
     }
   ]
