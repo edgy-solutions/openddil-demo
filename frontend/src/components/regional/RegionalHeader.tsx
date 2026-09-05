@@ -6,6 +6,7 @@
 // severs/restores the real toxiproxy hq-link proxy. The vestigial second
 // link toggle (link2) was removed.
 import { Laptop, Server, Building2, TrendingUp, Settings } from 'lucide-react';
+import { ThisNodeBadge } from '../../lib/thisNode';
 import { useEdgeBuffer } from '../../hooks';
 
 interface RegionalHeaderProps {
@@ -51,7 +52,7 @@ export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen }:
 
         <div className="flex flex-col items-center text-emerald-400">
           <Server className="w-6 h-6 mb-1 glow-emerald" />
-          <span className="text-xs font-bold tracking-wider text-emerald-300">REGIONAL HUB <span className="bg-emerald-500/20 px-1 py-0.5 rounded text-[8px] ml-1">THIS NODE</span></span>
+          <span className="text-xs font-bold tracking-wider text-emerald-300">REGIONAL HUB <ThisNodeBadge /></span>
         </div>
 
         {/* Link bar between REGIONAL HUB and CENTRAL HQ — mirrors the

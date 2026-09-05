@@ -180,17 +180,51 @@ export interface Deployment {
   tier?: TierConfig;
 }
 
+/** THE TIER A DEPLOYMENT GETS WHEN IT DECLARES NONE.
+ *
+ *  A deployment that says nothing about tiers is a single node, and a
+ *  single node is a root: it has no parent, and it rolls up whatever it
+ *  holds. That is ADR-0033's endpoint stated as a default rather than as
+ *  an aspiration — "the root tier is just the node with no parent".
+ *
+ *  This replaces falling through to the demo shell, which is how a
+ *  COMPOSED multi-tier view came to occupy the root host's endpoint. The
+ *  shell is still reachable at /demo, and is a viewer rather than a node.
+ *
+ *  ⚠ ABSENT IS NOT REJECTED. A `tier` block that is present and malformed
+ *  must NEVER land here — a partial tier identity rendering as a confident
+ *  root is UD-9 with a different label. `loadDeployment` only substitutes
+ *  this when the key is absent altogether. */
+export const IMPLICIT_ROOT: TierConfig = {
+  id: 'root',
+  label: 'hq',
+  scope: null,
+  has_children: true,
+  parent: null,
+};
+
 const DEFAULT: Deployment = {
   title: 'OpenDDIL DEMO',
   logo: '',
   fobs: [],
   liveness: DEFAULT_LIVENESS,
+  tier: IMPLICIT_ROOT,
 };
 
 let active: Deployment = DEFAULT;
 
 /** Current deployment config. Meaningful only after loadDeployment() has
  *  resolved. */
+/** TEST SEAM. Sets the tier this deployment serves, so `isThisNode` can be
+ *  exercised without a fetch, a DOM or a jsdom dependency.
+ *
+ *  Deliberately narrow: it sets the ONE field the identity rule reads, so a
+ *  test cannot accidentally assert against a whole synthetic deployment that
+ *  drifts from the real default. `undefined` restores the module default. */
+export function __setDeploymentForTest(tier: TierConfig | null | undefined): void {
+  active = { ...active, tier: tier === undefined ? IMPLICIT_ROOT : (tier ?? undefined) };
+}
+
 export function deployment(): Deployment {
   return active;
 }
@@ -266,8 +300,9 @@ export function parseTier(raw: unknown): TierConfig | undefined {
     // eslint-disable-next-line no-console
     console.error(
       `[deployment] tier config rejected (${why}). This instance will render ` +
-      'the demo shell, NOT a tier instance. A partial tier identity is worse ' +
-      'than none: see UD-9.',
+      'a CONFIGURATION ERROR and no fleet data at all — not a tier instance, ' +
+      'and deliberately not an implicit root either. A partial tier identity ' +
+      'is worse than none: see UD-9.',
       raw,
     );
     return undefined;
@@ -312,7 +347,14 @@ export async function loadDeployment(): Promise<void> {
         fobs: Array.isArray(j.fobs) ? j.fobs.filter(isValidFob) : DEFAULT.fobs,
         map: isValidDeploymentMap(j.map) ? j.map : undefined,
         liveness: mergeLiveness(j.liveness),
-        tier: parseTier((j as { tier?: unknown }).tier),
+        // ABSENT -> implicit root. PRESENT-BUT-BAD -> undefined, which the
+        // app renders as a configuration error rather than as any node.
+        // parseTier cannot tell these apart (both arrive as undefined), so
+        // the distinction is made here, where the raw object still says
+        // whether the author wrote a `tier` key at all.
+        tier: ('tier' in (j as object))
+          ? parseTier((j as { tier?: unknown }).tier)
+          : IMPLICIT_ROOT,
       };
     }
   } catch {

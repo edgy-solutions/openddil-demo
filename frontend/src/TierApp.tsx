@@ -43,6 +43,7 @@
 // artifact whose self-description is a claim rather than a fact.
 import type { TierConfig } from './deployment';
 import { instanceForShape } from './lib/tierShape';
+import { ThisNodeProvider } from './lib/thisNode';
 import MaintainerApp from './MaintainerApp';
 import RegionalApp from './RegionalApp';
 import HqApp from './HqApp';
@@ -51,7 +52,7 @@ interface Props {
   tier: TierConfig;
 }
 
-export default function TierApp({ tier }: Props) {
+function instance(tier: TierConfig) {
   switch (instanceForShape(tier)) {
     case 'leaf':
       return <MaintainerApp tierScopeValue={tier.scope?.value ?? null} />;
@@ -60,4 +61,19 @@ export default function TierApp({ tier }: Props) {
     case 'root':
       return <HqApp />;
   }
+}
+
+export default function TierApp({ tier }: Props) {
+  // WHETHER THIS SCREEN MAY CLAIM TO BE THE NODE IT SHOWS is decided here,
+  // once, from the tier being rendered versus the tier this deployment
+  // serves — and never by a header inferring it from which component it is.
+  // Inference is what put `TACTICAL EDGE [THIS NODE]` on the HQ host's
+  // maintainer tab: the badge was written when "which tab" and "which node"
+  // were the same fact, and they stopped being that when tiers got
+  // endpoints. See lib/thisNode.
+  return (
+    <ThisNodeProvider tier={tier}>
+      {instance(tier)}
+    </ThisNodeProvider>
+  );
 }

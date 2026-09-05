@@ -5,6 +5,7 @@
 // — read from useEdgeBuffer() (the edge_buffer_status shape). The WAN
 // toggle severs/restores the real toxiproxy hq-link proxy.
 import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
+import { ThisNodeBadge } from '../../lib/thisNode';
 import { useEdgeBuffer } from '../../hooks';
 
 interface HqHeaderProps {
@@ -54,7 +55,7 @@ export default function HqHeader({ wanActive, setWanActive }: HqHeaderProps) {
         </div>
         <div className="flex flex-col items-center text-emerald-400 mr-8">
           <Building2 className="w-6 h-6 mb-1 glow-emerald" />
-          <span className="text-xs font-bold tracking-wider text-emerald-300">CENTRAL HQ <span className="bg-emerald-500/20 px-1 py-0.5 rounded text-[8px] ml-1">THIS NODE</span></span>
+          <span className="text-xs font-bold tracking-wider text-emerald-300">CENTRAL HQ <ThisNodeBadge /></span>
         </div>
 
         {/* Real edge-buffer backlog: bridge-group consumer lag on redpanda-edge */}

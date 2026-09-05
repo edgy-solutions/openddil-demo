@@ -53,6 +53,26 @@ sed -i "s/__PEP_UPSTREAM__/${pep_upstream}/g" "$conf"
 echo "40-resolver.sh: read path -> ${electric_upstream}:${electric_port}"
 echo "40-resolver.sh: auth path -> ${pep_upstream}:8080"
 
+# __SESSION_GATE__
+#
+# Whether the SHELL requires a session, not just the data. Off by default,
+# because the gate is only satisfiable where the PEP is running OIDC: with
+# no PEP /auth/me is a 502 and in header mode it is a 404, and auth_request
+# turns either into a 500 for the whole app. The chart sets this from the
+# same condition that puts the PEP in oidc mode, so the gate and the thing
+# that can answer it arrive together.
+#
+# Stated on stdout either way. A gate that silently failed to engage would
+# leave the shell public while everyone believed otherwise, and "no error"
+# is what that looks like from outside.
+if [ "${OPENDDIL_SESSION_GATE:-off}" = "on" ]; then
+    sed -i "s|__SESSION_GATE__|auth_request /_session_check; error_page 401 = @signin;|g" "$conf"
+    echo "40-resolver.sh: session gate ON — the shell and /deployment/ require a session"
+else
+    sed -i "s|__SESSION_GATE__||g" "$conf"
+    echo "40-resolver.sh: session gate OFF — the shell is public (no OIDC PEP configured)"
+fi
+
 # A placeholder that survives substitution becomes a hostname nginx cannot
 # resolve, and the failure surfaces as a 502 on the first request rather
 # than at start-up. Fail here instead, where the message can say which one.

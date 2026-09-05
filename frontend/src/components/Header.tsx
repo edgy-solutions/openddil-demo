@@ -7,6 +7,7 @@
 // the real toxiproxy hq-link proxy. The vestigial second link toggle
 // (link2 — never backed by anything) was removed.
 import { Laptop, Building2, TrendingUp } from 'lucide-react';
+import { ThisNodeBadge } from '../lib/thisNode';
 import type { FleetAsset, FleetTierMap } from '../hooks';
 import { useEdgeBuffer } from '../hooks';
 import { assetLabel } from '../lib/assetLabel';
@@ -193,14 +194,20 @@ export default function Header({
           </div>
         </div>
 
-        {/* THIS NODE highlight: Maintainer view IS the tactical-edge tab,
-            so TACTICAL EDGE gets the same emerald THIS-NODE treatment
-            HqHeader gives CENTRAL HQ and RegionalHeader gives REGIONAL
-            HUB. Without this, the Maintainer tab visually contradicts
-            the other two -- the icon stays dim despite being "here". */}
+        {/* THIS NODE is now a CLAIM THAT MUST BE TRUE, not decoration.
+            The reasoning this comment used to carry -- "Maintainer view IS
+            the tactical-edge tab" -- was sound while a tab and a node were
+            the same thing, and became false the moment tiers got their own
+            endpoints. It left `TACTICAL EDGE [THIS NODE]` rendering on the
+            HQ host inside the demo shell: a composed edge view asserting it
+            was the node you had connected to.
+            The badge now renders only when the tier being shown is the tier
+            this deployment serves, and renders NOTHING otherwise. In the
+            shell that is always nothing, because a shell is a viewer and
+            not a node. See lib/thisNode. */}
         <div className="flex flex-col items-center text-emerald-400">
           <Laptop className="w-6 h-6 mb-1 glow-emerald" />
-          <span className="text-xs font-bold tracking-wider text-emerald-300">TACTICAL EDGE <span className="bg-emerald-500/20 px-1 py-0.5 rounded text-[8px] ml-1">THIS NODE</span></span>
+          <span className="text-xs font-bold tracking-wider text-emerald-300">TACTICAL EDGE <ThisNodeBadge /></span>
         </div>
 
         {/* DDIL link — the toggle severs/restores the real toxiproxy hq-link */}

@@ -4,6 +4,8 @@ import TierApp from './TierApp';
 import type { TierConfig } from './deployment';
 import { Wrench, Server, Building2, SlidersHorizontal } from 'lucide-react';
 import { deployment } from './deployment';
+import { useSession } from './hooks/useSession';
+import { SignedOut, CheckingSession } from './components/SignedOut';
 
 // =============================================================================
 // Root — two modes, and which one you get is a deployment fact
@@ -88,7 +90,7 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
           <span className="ml-2 rounded border border-slate-600 px-1.5 py-0.5
                            text-[10px] font-normal tracking-normal text-slate-400"
                 title="No tier is configured for this deployment, so every tier is composed into one pane. A tier node renders its own instance instead.">
-            DEMO SHELL · all tiers composed
+            DEMO SHELL · all tiers composed · DEPRECATED
           </span>
         </div>
         <div className="flex gap-2">
@@ -137,9 +139,49 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
   );
 }
 
+/** The shell is reachable ONLY here, and never at a node's own endpoint.
+ *
+ *  It used to be what you got at the root host whenever no tier was
+ *  configured, which put a composed multi-tier view on the HQ node's
+ *  address. Two things were wrong with that at once: HQ had no instance of
+ *  its own to serve, and the composition was sitting at an endpoint that
+ *  reads as a node. Now the root host serves the root node's instance like
+ *  any other tier, and the shell has its own path and says it is going. */
+const DEMO_PATH = '/demo';
+function atDemoPath(): boolean {
+  return window.location.pathname === DEMO_PATH
+      || window.location.pathname.startsWith(DEMO_PATH + '/');
+}
+
 function Root() {
   // Deployment config is loaded once before render (see main.tsx).
   const { title, logo, tier } = deployment();
+  const session = useSession();
+
+  // ---------------------------------------------------------------------
+  // SESSION GATE — before anything renders, including the header.
+  // ---------------------------------------------------------------------
+  // Three states, and collapsing any two of them is a defect that has
+  // already happened here:
+  //
+  //   undefined  /auth/me in flight. Render neither the app (its shape
+  //              requests would 401 and every panel would say "Syncing…")
+  //              nor the login prompt (it would flash on every load for
+  //              users who are signed in).
+  //   false      a finished answer. Say so; render nothing else. The old
+  //              behaviour showed the tier id, the parent, the panel
+  //              inventory and the buffer state to anyone who could reach
+  //              the host — topology before any decision about the viewer.
+  //   authDisabled  there is nothing to sign in to. Not the same as signed
+  //              out, and offering a sign-in button here would be a lie.
+  if (!session.authDisabled) {
+    if (session.authenticated === undefined) return <CheckingSession />;
+    if (session.authenticated === false) return <SignedOut />;
+  }
+
+  if (atDemoPath()) {
+    return <DemoShell title={title} logo={logo} />;
+  }
 
   if (tier) {
     return (
@@ -174,7 +216,27 @@ function Root() {
     );
   }
 
-  return <DemoShell title={title} logo={logo} />;
+  // TIER PRESENT BUT REJECTED. Not the shell, not an implicit root, not a
+  // best guess — a deployment that tried to declare its identity and got it
+  // wrong must not be given one. Rendering a confident node here is exactly
+  // UD-9: a screen reading one tier's store under another tier's label.
+  return (
+    <div className="h-screen w-screen bg-slate-950 text-slate-300 font-mono
+                    flex flex-col items-center justify-center gap-4 px-6 text-center">
+      <div className="font-orbitron tracking-widest text-rose-400 text-lg">
+        DEPLOYMENT CONFIGURATION REJECTED
+      </div>
+      <p className="max-w-md text-xs leading-relaxed text-slate-500">
+        This deployment declares a <code className="text-slate-400">tier</code>{' '}
+        block that could not be read, so this instance has no verified
+        identity and will not render fleet data under a label it cannot
+        stand behind. The console records which field was rejected.
+      </p>
+      <p className="max-w-md text-[10px] leading-relaxed text-slate-600">
+        A partial tier identity is worse than none — see UD-9.
+      </p>
+    </div>
+  );
 }
 
 export default Root;
