@@ -43,14 +43,14 @@
 
       "publicClient": false,
       "clientAuthenticatorType": "client-secret",
-      "secret": "REPLACED_AT_TEMPLATE_TIME",
+      "secret": "__PEP_CLIENT_SECRET__",
 
       "standardFlowEnabled": true,
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
 
-      "redirectUris": [ "REPLACED_AT_TEMPLATE_TIME" ],
+      "redirectUris": [ "__PEP_REDIRECT_URI__" ],
       "webOrigins": [],
 
       "attributes": {
