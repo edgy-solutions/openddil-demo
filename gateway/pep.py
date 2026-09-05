@@ -140,7 +140,17 @@ def ask_topaz(subject: str) -> dict:
     evaluation ever produced."""
     body = json.dumps({
         "query": "x = data.openddil.releasability.decision",
+        # `input` is a JSON *string*, not an object — Topaz's query API takes
+        # it that way. Established by calling the running authorizer, not by
+        # reading docs.
         "input": json.dumps({"subject": subject}),
+        # REQUIRED, even though this policy authenticates nobody. Omitting it
+        # returns `E30008 invalid argument: identity type UNKNOWN` — a 400,
+        # which this gateway would correctly treat as PDP-unavailable and
+        # refuse every request. IDENTITY_TYPE_NONE says "the caller has
+        # already established who this is", which is exactly true here: the
+        # gateway authenticates, the PDP decides.
+        "identity_context": {"type": "IDENTITY_TYPE_NONE"},
     }).encode()
     req = urllib.request.Request(
         f"{TOPAZ}/api/v2/authz/query",

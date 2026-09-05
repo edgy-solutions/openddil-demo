@@ -76,14 +76,43 @@ allow if {
 }
 
 # ---------------------------------------------------------------------------
+# subject_known — total by construction
+# ---------------------------------------------------------------------------
+# WHY THIS IS A RULE WITH A DEFAULT AND NOT AN EXPRESSION ON subject_record.
+#
+# `subject_record` is UNDEFINED for a subject absent from the corpus — that is
+# how Rego expresses absence, and it is correct. But an expression referencing
+# an undefined value is itself undefined, and any rule referencing THAT is
+# undefined in turn. `decision` was written as an object literal containing
+# `subject_record != null`, which made the WHOLE DECISION OBJECT undefined for
+# exactly the case it exists to deny.
+#
+# Topaz then answered `{"response": {"result": []}}` — no bindings at all —
+# and the gateway, unable to read a decision, reported the PDP as UNAVAILABLE.
+# Fail-closed either way, so the user was still refused; but the audit trail
+# recorded an OUTAGE where the truth was an unlisted subject. Those call for
+# different responses, and conflating them is how an outage gets read as a
+# policy change and a policy change gets dismissed as an outage.
+#
+# Found by asking the running PDP about `nobody`, not by reading the policy.
+default subject_known := false
+
+subject_known if data.openddil.users[input.subject]
+
+# ---------------------------------------------------------------------------
 # decision — what the gateway actually asks for
 # ---------------------------------------------------------------------------
 # One object so the gateway makes ONE call and logs ONE answer. A gateway that
 # assembled a decision from several queries could log a combination that no
 # single PDP evaluation ever produced.
+#
+# EVERY FIELD BELOW IS TOTAL. `allow`, `allowed_nations` and `subject_known`
+# each have an explicit default; `policy_version` is a constant. So this
+# object is defined for every possible input, INCLUDING the inputs it denies —
+# which is the property that lets the gateway tell a deny from a broken PDP.
 decision := {
 	"allow": allow,
 	"allowed_nations": allowed_nations,
 	"policy_version": policy_version,
-	"subject_known": subject_record != null,
+	"subject_known": subject_known,
 }
