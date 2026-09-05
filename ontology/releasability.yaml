@@ -1,0 +1,103 @@
+# =============================================================================
+# Releasability declaration — ADR-0029 §3 / Arc 2 Slice 1
+# =============================================================================
+# EVERYTHING IN THIS FILE IS FICTION. Atlantia (ATL) and Borduria (BDR) are
+# invented nations, and the assets below are the demo's synthetic DIS fleet.
+# No real coalition, force structure, disposition or releasability rule is
+# represented here, and none should ever be added to this repository.
+#
+# WHAT THIS FILE IS
+# The deployment's answer to "what DECLARES national origin?" — the question
+# EXCHANGE-LEDGER X-4 holds open for real producers. For this deployment the
+# answer is: THIS FILE DOES. Each asset's nation is authored, reviewed in a
+# diff, and attributable to a commit. That is the strongest rung of the
+# provenance ladder available without a producer that states it on the wire.
+#
+# WHY NOT PARSE THE NATION OUT OF THE ASSET ID
+# Because the demo's ids do not carry one (`dis:<site>:<app>:<entity>`), and
+# because even where ids DO carry one — the sample overlay's
+# `<NATION>_<SITE>_...` convention — reading it is inference from a naming
+# habit, not a declaration by the producer. Releasability is the worst place
+# in the system to inherit an inference: ADR-0029 §7's entire gate rests on
+# telling "not labelled" apart from "labelled by guess", and a guess is
+# indistinguishable from a declaration once it is in the column.
+#
+# The DIS site number correlates perfectly with nation in the fleet below.
+# That correlation is a CONSEQUENCE of how this fiction was authored, not a
+# rule, and nothing reads it. Writing `site 1 -> ATL` as the mechanism would
+# be exactly the shortcut this file exists to refuse.
+#
+# ABSENCE IS NOT DEFAULTED, AND THAT IS THE POINT
+# There is deliberately NO catch-all here. An asset that appears in the feed
+# and is not listed below gets NO LABEL, and the ADR-0029 §7 completeness
+# gate then fails with that asset named.
+#
+# ADR-0029 §7 does permit a deployment-configured default for entities with
+# no derivable origin, and a `default:` block is supported by the readers
+# (see `default_originator_nation` below, unset here). The demo declines to
+# use it, because a default that silently covers new assets makes the gate
+# SELF-SATISFYING: it would report zero unlabelled rows for a fleet nobody
+# ever declared, which is the failure mode the gate exists to detect one
+# layer down. A deployment that genuinely cannot know an origin should set
+# the default and be honest that it is one; a deployment that simply has not
+# got to an asset yet should fail the gate.
+#
+# CONSUMED BY (keep in sync — a reader added without a line here is a reader
+# nobody can find from the file it depends on):
+#   * openddil-demo/dynamic-mappings/sim-dis-mapping.yaml   (ingress stamp)
+#   * openddil-demo/dynamic-mappings/asterix-cat062-mapping.yaml (ingress stamp)
+#   * openddil-logistics-sim  src/logistics_sim/releasability.py
+#   * openddil-projector      src/handlers/base.py (carry-through only)
+#
+# Stamped ONCE at ingress and carried, never re-derived downstream
+# (ADR-0029 §3). Services that produce DERIVED rows — fusion, cm-service —
+# propagate the labels they received; they do not read this file.
+# =============================================================================
+
+version: 1
+
+# Fictional nations this deployment knows about. Declared so a typo in an
+# asset row below is a load-time error rather than a silently unmatched
+# label that nobody is entitled to see.
+nations:
+  ATL:
+    name: Atlantia
+  BDR:
+    name: Borduria
+
+# ADR-0029 §7 deployment default. UNSET on purpose — see the header. To use
+# it, set a nation code from `nations` above; anything else is an error.
+default_originator_nation: null
+
+# -----------------------------------------------------------------------------
+# The fleet
+# -----------------------------------------------------------------------------
+# `releasable_to` lists nations BEYOND the originator. The originator's own
+# access comes from the first clause of the ADR-0029 Phase 4 filter
+# (`originator_nation = ANY(user_nations)`), so an empty list is not a
+# lockout — it means "no additional release", which is the correct default
+# posture for a coalition and the one that makes the two-fleet partition
+# visible in the demo.
+#
+# Empty is written explicitly as [] rather than omitted. Omission and empty
+# would both arrive as the proto's zero value and be indistinguishable on
+# the wire; writing it makes the AUTHOR's intent legible even though the
+# consumer cannot tell the difference.
+assets:
+  # --- Atlantia (ATL) --------------------------------------------------------
+  "dis:1:1:1000": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1001": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1002": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1003": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1004": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1005": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1006": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1007": { originator_nation: ATL, releasable_to: [] }
+
+  # --- Borduria (BDR) --------------------------------------------------------
+  "dis:2:1:1000": { originator_nation: BDR, releasable_to: [] }
+  "dis:2:1:1001": { originator_nation: BDR, releasable_to: [] }
+  "dis:2:1:1002": { originator_nation: BDR, releasable_to: [] }
+  "dis:2:1:1003": { originator_nation: BDR, releasable_to: [] }
+  "dis:2:1:1004": { originator_nation: BDR, releasable_to: [] }
+  "dis:2:1:1005": { originator_nation: BDR, releasable_to: [] }

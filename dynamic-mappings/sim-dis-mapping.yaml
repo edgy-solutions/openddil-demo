@@ -148,6 +148,43 @@ processor_resources:
       root.provenance.region_id = $src.origin_node.region_id.or("")
 
       # =====================================================================
+      # RELEASABILITY LABELS (ADR-0029 §3 / Arc 2 Slice 1)
+      # =====================================================================
+      # Stamped HERE, at ingress, and never re-derived downstream. Every
+      # later tier carries what this line wrote; fusion and cm-service
+      # propagate it onto their derived rows rather than looking it up
+      # again. Two lookups of one fact are two facts as soon as one of them
+      # is stale.
+      #
+      # The nation is DECLARED, not inferred: /ontology/releasability.yaml
+      # lists each asset outright. The DIS site number in the URN happens to
+      # correlate with nation in the demo fleet, and reading it would be
+      # cheaper and shorter and wrong — see that file's header for why
+      # releasability is the one place an id-parsing habit must not be
+      # inherited.
+      #
+      # NO `.or()` DEFAULT ON THE NATION. An undeclared asset gets NO label,
+      # exactly as the appearance block above gets no health when its source
+      # is undeclared. Defaulting here would manufacture a releasability
+      # claim out of silence and make the ADR-0029 §7 completeness gate
+      # self-satisfying — it would read zero for a fleet nobody declared.
+      # The gate failing IS the intended outcome for an undeclared asset.
+      let rel_doc = file(path: "/ontology/releasability.yaml", no_cache: true).parse_yaml()
+      let rel_default = if $rel_doc.default_originator_nation != null {
+        {"originator_nation": $rel_doc.default_originator_nation,
+         "releasable_to": []}
+      } else { {} }
+      let rel = $rel_doc.assets.get($src.entity_id_urn).or($rel_default)
+
+      # `deleted()` on the RHS, not a placeholder value. An undeclared asset
+      # leaves the FIELD ABSENT — which the encoder accepts and the projector
+      # reads as NULL, which is what the completeness gate counts. Writing
+      # "UNKNOWN" or "" here would produce a labelled-looking row that no
+      # policy could ever release and no gate would ever flag.
+      root.provenance.originator_nation = $rel.originator_nation.or(deleted())
+      root.provenance.releasable_to     = $rel.releasable_to.or(deleted())
+
+      # =====================================================================
       # OPERATIONAL STATE FROM ENTITY APPEARANCE (ADR-0026 / ADR-0030)
       # =====================================================================
       # ADR-0026's adapter list specified this mapping on 2026-05-27
