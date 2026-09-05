@@ -36,7 +36,13 @@ set -uo pipefail
 NS="${NS:-openddil}"
 PG_POD="${PG_POD:-openddil-postgres-hq-0}"
 TABLE="telemetry_latest_state"
-PEP_DEPLOY="deploy/openddil-pep"
+# A LABEL SELECTOR, NOT A DEPLOYMENT NAME. `kubectl logs deploy/...` picks
+# ONE pod, and during a rollout that can be the terminating one — which
+# serves nothing and whose log predates the requests this script just made.
+# The result is assertions that fail against a window in which the events
+# never happened, and the failure reads as a missing feature rather than as
+# a stale read. Cost one confusing run to find.
+PEP_SELECTOR="-l app.kubernetes.io/component=pep"
 JAR_DIR="$(mktemp -d)"
 trap 'rm -rf "$JAR_DIR"' EXIT
 
@@ -323,10 +329,10 @@ beat "7. the decision log explains every one of the above"
 # build, so this record is the audit trail rather than defence in depth. It
 # carries allows AND denies: loud on failure and silent on success is exactly
 # the shape that leaves an authorization system with no positive audit trail.
-kubectl logs -n "$NS" "$PEP_DEPLOY" --tail=400 2>/dev/null \
+kubectl logs -n "$NS" $PEP_SELECTOR --tail=400 2>/dev/null \
   | grep "DECISION" | tail -10 | sed 's/^/  /'
 
-LOG="$(kubectl logs -n "$NS" "$PEP_DEPLOY" --tail=400 2>/dev/null | grep 'DECISION')"
+LOG="$(kubectl logs -n "$NS" $PEP_SELECTOR --tail=400 2>/dev/null | grep 'DECISION')"
 [ -n "$LOG" ] && ok "$(echo "$LOG" | count) decision record(s) present" \
   || bad "no decision records — the audit trail is empty"
 echo "$LOG" | grep -q '"policy_version"' \
