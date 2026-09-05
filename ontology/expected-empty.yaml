@@ -1,0 +1,62 @@
+# =============================================================================
+# Declared-empty labelled tables — ADR-0029 §7
+# =============================================================================
+# WHY A DEPLOYMENT HAS TO WRITE THIS DOWN
+#
+# The completeness gate counts unlabelled rows. Over an EMPTY table it counts
+# zero, and that zero is vacuous — a true statement about nothing. The gate
+# has always said so. What it could not say was WHY the table was empty, and
+# there are two very different reasons:
+#
+#   * nothing in this deployment produces that data, which is normal and
+#     expected;
+#   * something that should be producing it has stopped, which is a fault.
+#
+# From the gate's position those are byte-identical. The deployment is the
+# only party that knows, so the deployment declares it here — and the gate
+# refuses an empty table that nobody has explained, rather than reporting a
+# reassuring zero.
+#
+# THIS FILE IS NOT A SUPPRESSION LIST. A row here is a claim, dated and
+# attributable, that a named producer is absent for a named reason. Adding a
+# table to silence a gate failure without knowing why it is empty is the
+# exact move this file exists to make visible: the reason is the artifact,
+# not the entry.
+#
+# Remove a row when the producer starts. A stale row is worse than no row,
+# because it explains away a fault that has since become real.
+# =============================================================================
+
+version: 1
+
+expected_empty:
+
+  asset_capability_state:
+    reason: >-
+      No weapons-capability feed is deployed here. This table is populated by
+      a source-specific snapshot mapping (customer AMQP, DIS-derived, AFSim
+      stores, Link 16 J3.7); the demo runs none of them, so the table is
+      correctly empty rather than stalled.
+    producer: asset-capability-snapshot topic
+    declared_by: cnogradi
+    declared_on: 2026-09-05
+
+  asset_element_telemetry:
+    reason: >-
+      No asset in this fleet matches any logistics-sim profile, and the
+      mismatch is STRUCTURAL rather than a matter of the sim being idle. The
+      only shipped profile matches platform variants MRAD_Sensor / MRAD_Radar
+      / MRAD2_radar AND requires the asset_id to end in `_Sensor`. The demo
+      fleet is DIS-sourced, so its ids are `dis:<site>:<app>:<entity>` and can
+      never carry that suffix — the per-element drill-down is unreachable from
+      the DIS path by construction, not by configuration.
+      .
+      Populating it needs BOTH an ontology entry for a sensor entity type
+      (an ADR-0016 ontology PR) AND a profile whose id filter the DIS naming
+      can satisfy. Recorded rather than patched around: relaxing the suffix
+      filter to make a table non-empty would be changing a producer's
+      matching rule to satisfy a gate, which is the wrong direction of
+      causation.
+    producer: openddil-logistics-sim
+    declared_by: cnogradi
+    declared_on: 2026-09-05
