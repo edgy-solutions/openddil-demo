@@ -1,0 +1,105 @@
+# =============================================================================
+# Asserted entitlements — ADR-0029 §5
+# =============================================================================
+# EVERYTHING HERE IS FICTION. Atlantia (ATL) and Borduria (BDR) are invented
+# nations; the subjects are demo accounts. No real person, unit, clearance or
+# coalition agreement is represented, and none should ever be added to this
+# repository.
+#
+# ENTITLEMENTS ARE ASSERTED, NEVER INFERRED.
+# There is no directory sync and no derivation. That is a deliberate
+# constraint, not a missing feature:
+#
+#   * An inferred entitlement has no accountable author. An asserted one has
+#     a commit, a reviewer and a date — which is the property an accreditor
+#     asks for, and the property a diff can carry.
+#   * Directory integration is per-deployment (every program has a different
+#     identity provider). Baking one into the OSS core would ship an
+#     integration most deployments would replace.
+#
+# "No directory sync" is a statement about DERIVATION, not about transport.
+# Tooling that carries this file into a running authorizer is not a
+# violation; a directory may even seed a DRAFT entry here. THE PR APPROVAL IS
+# WHAT MAKES IT AN ENTITLEMENT.
+#
+# HOW THIS FILE REACHES TOPAZ
+# It is copied into the tier's OPA bundle root as `data.yaml` — OPA's bundle
+# convention names data files, so the reviewed artifact and the loaded
+# artifact have different NAMES and identical CONTENT. The rename happens in
+# one place (the chart's bundle-init) and is called out there too, because a
+# silent rename during transport is precisely how a reviewed file and a
+# running file drift apart.
+#
+# WHY `nations` AND NOT `nation`
+# A subject may hold more than one. The coalition liaison below is the case
+# that makes it necessary and is the reason the schema is plural from the
+# start: a singular field would have forced a migration the first time a real
+# liaison appeared, and liaisons are not an edge case in coalition work.
+#
+# `clearance` IS SHAPED IN AND UNUSED IN SLICE 1.
+# ADR-0029 §2 carries it from the start so the classification axis later
+# becomes a policy-rule change and a column rather than a subject-schema
+# migration. It costs nothing now and it is honest about being unused.
+#
+# DEFAULT DENY IS NOT WRITTEN HERE.
+# A subject absent from this file gets no entitlements, and the policy denies
+# them. That is why `unlisted-subject` below is a COMMENT and not an entry:
+# the demo proves default-deny by asking about a subject this file has never
+# heard of, and adding an explicit deny entry would prove something weaker —
+# that an explicit deny works — while leaving the actual default untested.
+# =============================================================================
+
+version: 1
+
+users:
+  # ---------------------------------------------------------------------------
+  # Single-nation subjects. The two-fleet partition rests on exactly this:
+  # same role, same tier, same screen, different entitlements.
+  # ---------------------------------------------------------------------------
+  user-a:
+    display_name: Operator A (Atlantia)
+    nations: [ATL]
+    clearance: ""            # unused in Slice 1; see header
+    role: regional-operator
+    # ROLE IS RECORDED AND IS NOT THE DECIDING INPUT. Both operators below
+    # hold the SAME role — that is the whole reason ADR-0029 exists. RBAC
+    # cannot express "these two people see different fleets" when the two
+    # people have identical roles; the deciding inputs are attributes of the
+    # subject and of the data.
+    asserted_by: cnogradi
+    asserted_on: 2026-09-05
+
+  user-b:
+    display_name: Operator B (Borduria)
+    nations: [BDR]
+    clearance: ""
+    role: regional-operator
+    asserted_by: cnogradi
+    asserted_on: 2026-09-05
+
+  # ---------------------------------------------------------------------------
+  # The coalition liaison — the case that rules out partitioning at write time
+  # ---------------------------------------------------------------------------
+  # ADR-0029 rejected per-nation stores, and this subject is why. A liaison
+  # holding both nations must see one merged picture. With separate stores
+  # they would have to query two and merge client-side, which is a second
+  # implementation of the join and a second place for it to be wrong.
+  #
+  # One store, filtered reads, and the liaison is a subject with two
+  # entitlements rather than an architectural special case.
+  liaison:
+    display_name: Coalition Liaison (ATL/BDR)
+    nations: [ATL, BDR]
+    clearance: ""
+    role: regional-operator
+    asserted_by: cnogradi
+    asserted_on: 2026-09-05
+
+# -----------------------------------------------------------------------------
+# DELIBERATELY ABSENT: `unlisted-subject`
+# -----------------------------------------------------------------------------
+# The demo's fourth check asks the PDP about a subject that appears nowhere in
+# this file and requires a deny. Do not add it here to "complete the set" —
+# its absence IS the test. An explicit deny entry would prove that explicit
+# denies work while leaving the default itself unexercised, and the default is
+# the branch that runs for every account nobody has thought about yet.
