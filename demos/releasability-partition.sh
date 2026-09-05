@@ -33,6 +33,28 @@
 # not, this file is the one that is checkable.
 set -uo pipefail
 
+# ---------------------------------------------------------------------------
+# WHY THIS FILE USES `grep -q PATTERN <<<"$var"` AND NEVER `printf | grep -q`
+# ---------------------------------------------------------------------------
+# `set -o pipefail` and `grep -q` are a false-negative generator, and the
+# failure is SIZE-DEPENDENT, which is the worst property it could have.
+#
+# `grep -q` exits on the FIRST match and closes its input. The upstream
+# `printf` then takes SIGPIPE and exits 141. With `pipefail` the pipeline
+# reports 141 — so a pipeline that MATCHED reports FAILURE.
+#
+# It only happens when the data exceeds the pipe buffer (~64KB). Below that,
+# printf finishes writing before grep exits, there is no SIGPIPE, and the
+# check is correct. So every one of these worked on small inputs and would
+# have started lying as the fleet grew.
+#
+# The direction of the lie is what makes it worth this comment. In the
+# `match && bad || ok` shape a SIGPIPE reads as "no match" and takes the
+# `ok` branch — REPORTING A PASS ON A REAL LEAK. A check that gets quieter
+# as the data gets bigger is the exact opposite of what these files are for.
+#
+# A here-string is not a pipeline, so `pipefail` has nothing to report.
+
 NS="${NS:-openddil}"
 PG_POD="${PG_POD:-openddil-postgres-hq-0}"
 TABLE="telemetry_latest_state"
@@ -239,7 +261,7 @@ echo "  assets: $NA of $TOTAL"
 # The other nation's assets are ABSENT, not greyed and not counted. A
 # "6 hidden" indicator would itself be a leak: a count of what you cannot see
 # is information about it.
-printf '%s' "$A" | grep -q 'dis:2:' && bad "user-a saw a BDR asset" \
+grep -q 'dis:2:' <<<"$A" && bad "user-a saw a BDR asset" \
   || ok "no BDR asset in user-a's view — absent, not hidden"
 
 # ---------------------------------------------------------------------------
@@ -291,7 +313,7 @@ REF="$(printf '%s' "$OUT" | grep -oE '"reference":[ ]*"[A-F0-9]+"' | grep -oE '[
 echo "  HTTP $CODE   reference ${REF:-<none>}"
 [ "$CODE" = "403" ] && ok "unlisted subject refused (403)" \
   || bad "unlisted subject got HTTP $CODE, expected 403"
-printf '%s' "$OUT" | grep -q "TOPAZ AUTHZ DENIED" \
+grep -q "TOPAZ AUTHZ DENIED" <<<"$OUT" \
   && ok "refusal carries the searchable marker" \
   || bad "refusal did not carry TOPAZ AUTHZ DENIED"
 
@@ -335,28 +357,28 @@ kubectl logs -n "$NS" $PEP_SELECTOR --tail=400 2>/dev/null \
 LOG="$(kubectl logs -n "$NS" $PEP_SELECTOR --tail=400 2>/dev/null | grep 'DECISION')"
 [ -n "$LOG" ] && ok "$(echo "$LOG" | count) decision record(s) present" \
   || bad "no decision records — the audit trail is empty"
-echo "$LOG" | grep -q '"policy_version"' \
+grep -q '"policy_version"' <<<"$LOG" \
   && ok "records carry the policy version that produced them" \
   || bad "records carry no policy version"
 # TWO VERSIONS, NOT ONE. The rule version and the entitlements version move
 # independently — a promotion changes one list in one file and touches no
 # rule — so a record carrying only the first cannot say which entitlements
 # were in force. That is the question an accreditor asks.
-echo "$LOG" | grep -q '"corpus_version"' \
+grep -q '"corpus_version"' <<<"$LOG" \
   && ok "records carry the entitlements corpus version too" \
   || bad "records carry no corpus version"
-echo "$LOG" | grep -q '"outcome": "deny"' \
+grep -q '"outcome": "deny"' <<<"$LOG" \
   && ok "denials are recorded, not only allows" \
   || bad "no denial in the record — only allows are being logged"
 # THE REFERENCE THE USER WAS SHOWN IS THE REFERENCE THE OPERATOR GREPS. That
 # is the whole reason a refusal carries one.
 if [ -n "${REF:-}" ]; then
-  echo "$LOG" | grep -q "\"decision_id\": \"$REF\"" \
+  grep -q "\"decision_id\": \"$REF\"" <<<"$LOG" \
     && ok "the refusal's reference $REF is findable in the log" \
     || bad "reference $REF does not appear in the decision log"
 fi
 if [ "$AUTH_MODE" = "oidc" ]; then
-  echo "$LOG" | grep -q '"auth_mode": "oidc"' \
+  grep -q '"auth_mode": "oidc"' <<<"$LOG" \
     && ok "records name the authentication mode that produced the subject" \
     || bad "records do not name the auth mode"
 fi
