@@ -10,6 +10,7 @@
   "editUsernameAllowed": false,
   "bruteForceProtected": true,
   "clients": [
+    __TIER_CLIENTS__
     {
       "clientId": "openddil-pep",
       "name": "OpenDDIL read-path PEP",
