@@ -95,6 +95,10 @@ allow if {
 # policy change and a policy change gets dismissed as an outage.
 #
 # Found by asking the running PDP about `nobody`, not by reading the policy.
+default corpus_version := "unversioned"
+
+corpus_version := data.openddil.version
+
 default subject_known := false
 
 subject_known if data.openddil.users[input.subject]
@@ -114,5 +118,15 @@ decision := {
 	"allow": allow,
 	"allowed_nations": allowed_nations,
 	"policy_version": policy_version,
+	# WHICH ENTITLEMENTS CORPUS PRODUCED THIS. `policy_version` above versions
+	# the RULES; this versions the DATA, and they move independently — a
+	# promotion changes one list in one file and touches no rule at all. A
+	# decision record carrying only the rule version cannot say which
+	# entitlements were in force, which is the question an accreditor asks.
+	#
+	# Defaulted rather than read bare: a corpus with no version must not make
+	# the whole decision object undefined, which is the exact defect that made
+	# an unlisted subject read as a PDP outage.
+	"corpus_version": corpus_version,
 	"subject_known": subject_known,
 }

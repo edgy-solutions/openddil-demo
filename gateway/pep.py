@@ -231,6 +231,19 @@ def ask_topaz(subject: str) -> dict:
             "allow": bool(bindings["allow"]),
             "allowed_nations": nations,
             "policy_version": bindings["policy_version"],
+            # WHICH ENTITLEMENTS CORPUS DECIDED. `policy_version` versions the
+            # RULES; this versions the DATA, and they move independently — a
+            # promotion changes one list in one file and touches no rule. A
+            # record carrying only the rule version cannot answer "which
+            # entitlements were in force when this person was allowed?", which
+            # is the question an accreditor asks.
+            #
+            # `.get` with a default rather than a required key: an older
+            # policy bundle that predates this field must not turn every
+            # decision into an unparseable answer, which the PEP would
+            # correctly report as a PDP outage — a policy upgrade should not
+            # be able to look like an outage.
+            "corpus_version": bindings.get("corpus_version", "unknown"),
             "subject_known": bool(bindings["subject_known"]),
         }
     except Exception as exc:  # noqa: BLE001
@@ -437,6 +450,7 @@ class Pep(BaseHTTPRequestHandler):
                 "name": (session or {}).get("name", ""),
                 "nations": decision["allowed_nations"],
                 "policy_version": decision["policy_version"],
+                "corpus_version": decision["corpus_version"],
             }).encode()
             self._send(200, body, [("Content-Type", "application/json"),
                                    ("Cache-Control", "no-store")])
@@ -520,6 +534,7 @@ class Pep(BaseHTTPRequestHandler):
             record_decision(decision_id=new_decision_id(), outcome="allow",
                             subject=subject, resource=table,
                             policy_version=decision["policy_version"],
+                            corpus_version=decision["corpus_version"],
                             allowed_nations=decision["allowed_nations"],
                             upstream_error=str(exc))
             self.send_response(502)
@@ -531,6 +546,7 @@ class Pep(BaseHTTPRequestHandler):
         record_decision(decision_id=new_decision_id(), outcome="allow",
                         subject=subject, resource=table,
                         policy_version=decision["policy_version"],
+                        corpus_version=decision["corpus_version"],
                         allowed_nations=decision["allowed_nations"],
                         predicate=where, shape_handle=new_handle or None)
 

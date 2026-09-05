@@ -17,6 +17,9 @@ import {
   type AssetTier,
 } from '../lib/assetTier';
 import EdgePulldown from './EdgePulldown';
+import IdentityBadge from './releasability/IdentityBadge';
+import NationLegend from './releasability/NationLegend';
+import { useSession } from '../hooks/useSession';
 
 // Per-tier styling for the inline count chips above the ASSET label.
 // Live tiers (ACTIVE / DEGRADED) use the live-fleet palette; silent
@@ -106,6 +109,12 @@ export default function Header({
   availableEdges, selectedEdge, onSelectEdge,
 }: HeaderProps) {
   const { status } = useEdgeBuffer();
+  // PRESENTATION ONLY. `session.nations` decides which legend keys are worth
+  // showing and whether an asset is marked "released to you"; it filters
+  // nothing. The rows below have already been filtered by the gateway
+  // (ADR-0029 §1), and a second filter here would be a second authorization
+  // decision that nobody reviewed.
+  const session = useSession();
   // Real observed state from the projector's monitor; falls back to the
   // commanded toggle state until the first shape sync arrives.
   const severed = status ? status.hq_link_severed : !link1;
@@ -114,7 +123,15 @@ export default function Header({
   const linkLabel = probeDown ? 'LINK: PROBE DOWN' : severed ? 'DDIL: LINK SEVERED' : 'EDGE↔HQ: LINK UP';
 
   return (
-    <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
+    <header className="panel flex flex-col p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
+      {/* WHOSE SCREEN IS THIS. Placed above everything else, because the
+          answer changes what every number below it means — and in a
+          side-by-side demo it is the only thing distinguishing two windows
+          that are otherwise identical. */}
+      <div className="mb-2 flex w-full max-w-6xl mx-auto items-center justify-between gap-4">
+        <NationLegend assets={fleet} viewerNations={session.nations} />
+        <IdentityBadge />
+      </div>
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
         {/* Phase 6c.2: two-level scope chrome — EDGE: [edge-N] › ASSET: [...]
             EdgePulldown is visually prominent (cyan-tinted border, bold label)

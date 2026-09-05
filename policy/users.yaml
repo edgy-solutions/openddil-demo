@@ -74,7 +74,18 @@
 # default untested.
 # =============================================================================
 
-version: 1
+# THE CORPUS VERSION, RECORDED IN EVERY DECISION THIS FILE PRODUCES.
+#
+# Distinct from the POLICY version in releasability.rego: that one
+# versions the RULES, this one versions the ENTITLEMENTS, and they
+# change on completely different cadences. A decision log carrying only
+# the rule version cannot answer "which entitlements were in force when
+# this person was allowed?" — which is the question an accreditor
+# actually asks, and the one an entitlement change makes urgent.
+#
+# Found by swapping corpora during a demo rehearsal and watching the
+# recorded policy_version correctly NOT change.
+version: users-2026-09-05
 
 users:
   # ---------------------------------------------------------------------------

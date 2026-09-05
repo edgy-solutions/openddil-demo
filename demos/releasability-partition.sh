@@ -332,6 +332,13 @@ LOG="$(kubectl logs -n "$NS" "$PEP_DEPLOY" --tail=400 2>/dev/null | grep 'DECISI
 echo "$LOG" | grep -q '"policy_version"' \
   && ok "records carry the policy version that produced them" \
   || bad "records carry no policy version"
+# TWO VERSIONS, NOT ONE. The rule version and the entitlements version move
+# independently — a promotion changes one list in one file and touches no
+# rule — so a record carrying only the first cannot say which entitlements
+# were in force. That is the question an accreditor asks.
+echo "$LOG" | grep -q '"corpus_version"' \
+  && ok "records carry the entitlements corpus version too" \
+  || bad "records carry no corpus version"
 echo "$LOG" | grep -q '"outcome": "deny"' \
   && ok "denials are recorded, not only allows" \
   || bad "no denial in the record — only allows are being logged"
