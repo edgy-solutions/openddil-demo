@@ -1,0 +1,77 @@
+# =============================================================================
+# Asserted entitlements — PROMOTED VARIANT
+# =============================================================================
+# IDENTICAL TO users.yaml EXCEPT FOR ONE FIELD: operator.borduria holds
+# [BDR, ATL] instead of [BDR].
+#
+# WHAT THIS FILE IS FOR
+# It is the demo's last beat, and the point it makes is the one an
+# accreditation audience cares about most: **policy is configuration, and a
+# change to it is a reviewable diff rather than a deployment.**
+#
+# Swapping to this variant fills in the Bordurian operator's map with the
+# Atlantian fleet, live, with no code change, no image rebuild and no schema
+# migration. What changed is one list in one YAML file — which is exactly
+# what an entitlement change SHOULD cost, and exactly what a reviewer can be
+# asked to approve.
+#
+# WHY A SECOND FILE AND NOT AN EDIT DURING THE DEMO
+# Editing YAML in front of a customer is a way to mistype in front of a
+# customer. Both variants are built, shipped and provable beforehand; the
+# demo selects between them. The selection is one command:
+#
+#   kubectl set env deploy/<release>-topaz-hq -c policy-loader \
+#       OPENDDIL_POLICY_VARIANT=users-promoted
+#
+# which rolls the authorizer with the other corpus mounted. Roll it back by
+# setting the variant to `users`.
+#
+# THIS IS A DEMO ARTIFACT AND NOT A DEPLOYMENT PATTERN. A real deployment has
+# ONE corpus, and changes it by a pull request against that one file — which
+# is the whole basis of ADR-0029 §5's claim that every entitlement has a
+# named author, a reviewer and a date. Two files that differ by an
+# entitlement is a rehearsal aid; two files that both claim to be current
+# would be the two-truths failure this project keeps writing about.
+#
+# The diff against users.yaml is deliberately one line, so that showing the
+# diff IS the explanation.
+# =============================================================================
+
+version: 1
+
+users:
+  "11111111-1111-4111-8111-111111111111":
+    username: operator.atlantia
+    display_name: Operator A (Atlantia)
+    nations: [ATL]
+    clearance: ""
+    role: regional-operator
+    asserted_by: cnogradi
+    asserted_on: 2026-09-05
+
+  "22222222-2222-4222-8222-222222222222":
+    username: operator.borduria
+    display_name: Operator B (Borduria) — PROMOTED TO COALITION ACCESS
+    # THE ONE LINE THAT DIFFERS. In users.yaml this is [BDR].
+    #
+    # Note what did NOT have to change to grant it: no role, no group, no
+    # code, no column, no redeploy of anything that handles data. The role is
+    # still `regional-operator` and it was never the deciding input.
+    nations: [BDR, ATL]
+    clearance: ""
+    role: regional-operator
+    asserted_by: cnogradi
+    asserted_on: 2026-09-05
+
+  "33333333-3333-4333-8333-333333333333":
+    username: liaison.coalition
+    display_name: Coalition Liaison (ATL/BDR)
+    nations: [ATL, BDR]
+    clearance: ""
+    role: regional-operator
+    asserted_by: cnogradi
+    asserted_on: 2026-09-05
+
+# observer.unlisted stays absent here too. A promotion demo that quietly
+# also entitled the unlisted subject would destroy the default-deny beat, and
+# it would do it in the file nobody re-reads.

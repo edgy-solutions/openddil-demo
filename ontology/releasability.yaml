@@ -85,7 +85,23 @@ default_originator_nation: null
 # consumer cannot tell the difference.
 assets:
   # --- Atlantia (ATL) --------------------------------------------------------
-  "dis:1:1:1000": { originator_nation: ATL, releasable_to: [] }
+  #
+  # THE SHARED ASSET. Declared releasable to Borduria, and the only asset in
+  # this fleet that is. It exists to prove something the two-fleet partition
+  # on its own cannot: that this is ONE STORE with two entitlements, not two
+  # databases.
+  #
+  # Both operators see this asset, and its telemetry ticks identically in
+  # both views because it is the same row. Two separate per-nation stores
+  # would have to replicate it, and replication is visible the moment the two
+  # copies disagree by a tick.
+  #
+  # It is also the only exercise the SECOND clause of the ADR-0029 §4 filter
+  # gets from live data: `user_nation = ANY(releasable_to)`. Without it, every
+  # row matches on originator_nation alone and the array-containment half of
+  # the predicate is carried but never fires — present, untested, and
+  # indistinguishable from broken.
+  "dis:1:1:1000": { originator_nation: ATL, releasable_to: [BDR] }
   "dis:1:1:1001": { originator_nation: ATL, releasable_to: [] }
   "dis:1:1:1002": { originator_nation: ATL, releasable_to: [] }
   "dis:1:1:1003": { originator_nation: ATL, releasable_to: [] }
