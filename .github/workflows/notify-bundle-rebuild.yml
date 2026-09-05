@@ -10,11 +10,30 @@ name: Notify openddil-helm to rebuild runtime-bundle
 #   restate-config.toml
 #   toxiproxy.json
 #   dynamic-mappings/
+#   ontology/          (ADR-0029 — deployment ontology overlay)
+#   policy/            (ADR-0029 — Rego + asserted entitlements)
+#   gateway/           (ADR-0029 — the read-path PEP's source)
 #
 # Everything else (frontend/, docs/, tests/, the chart-side configs the
 # helm chart consumes directly, etc.) is NOT in the bundle and does not
 # need a bundle rebuild. The paths filter is intentionally narrow so a
 # frontend or doc change doesn't fire a bundle rebuild for no reason.
+#
+# ⚠ THIS LIST AND THE BUNDLE DOCKERFILE'S `COPY openddil-demo/...` LINES ARE
+# TWO COPIES OF ONE FACT, IN TWO REPOSITORIES, WITH NOTHING ENFORCING THEIR
+# AGREEMENT. Adding a directory to the bundle without adding it here produces
+# a bundle that NEVER REBUILDS for changes to it: the edit is committed,
+# pushed, CI is green, the pod restarts, and the OLD content is still running.
+# There is no error anywhere in that sequence.
+#
+# That happened on 2026-09-05, to `policy/` and `gateway/` — the Rego and the
+# PEP. An authorization component silently running last week's policy is the
+# worst possible instance of this failure, and it presented as the PDP
+# rejecting every request rather than as anything resembling a stale artifact.
+#
+# `ontology/` had the same gap and was masked by luck: its first change
+# happened to share a commit with a dynamic-mappings edit, so the rebuild
+# fired for the other path.
 #
 # Setup (one-time):
 #   1. Fine-grained PAT with Contents:write on edgy-solutions/openddil-helm,
@@ -35,6 +54,9 @@ on:
       - "restate-config.toml"
       - "toxiproxy.json"
       - "dynamic-mappings/**"
+      - "ontology/**"
+      - "policy/**"
+      - "gateway/**"
       - ".github/workflows/notify-bundle-rebuild.yml"
   workflow_dispatch:
 

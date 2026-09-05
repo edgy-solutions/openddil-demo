@@ -107,6 +107,23 @@ N_ATL="$(echo "$ALL" | awk '$1=="ATL"{print $2}')"
 N_BDR="$(echo "$ALL" | awk '$1=="BDR"{print $2}')"
 echo "  (this is what an UNFILTERED read returns — the thing the PEP prevents)"
 
+# NON-VACUITY FLOOR. Every check below compares a filtered view against these
+# two numbers, and EVERY ONE OF THEM PASSES TRIVIALLY IF BOTH ARE ZERO:
+# "the views are disjoint" and "the liaison sees all 0" are true statements
+# about nothing.
+#
+# Not hypothetical — the FIRST RUN of this script did exactly that. The PEP
+# was refusing every request (a stale bundle), and three checks reported PASS
+# over an empty result set while two others correctly failed. A reader
+# skimming for green would have taken the wrong lesson from a run that was in
+# fact completely broken.
+if [ -z "${N_ATL:-}" ] || [ -z "${N_BDR:-}" ] || [ "${N_ATL:-0}" -eq 0 ] || [ "${N_BDR:-0}" -eq 0 ]; then
+  echo "REFUSING: baseline is ATL='"'"'${N_ATL:-}'"'"' BDR='"'"'${N_BDR:-}'"'"'." >&2
+  echo "A partition demo needs a non-empty fleet on BOTH sides; every check" >&2
+  echo "below would pass trivially against nothing." >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 head1 "1. user-a (Atlantia) sees the ATL fleet only"
 OUT="$(run user-a)"; A="$(printf '%s' "$OUT" | assets)"; NA="$(echo "$A" | grep -c .)"
@@ -128,7 +145,11 @@ printf '%s' "$B" | grep -q 'dis:1:' && bad "user-b saw an ATL asset" \
 # THE DISJOINTNESS IS THE POINT, and it is asserted rather than eyeballed:
 # two counts that happen to add up would also be produced by two identical
 # half-fleets.
-if [ -z "$(comm -12 <(echo "$A") <(echo "$B"))" ]; then
+# Disjointness over two EMPTY sets is trivially true, so emptiness is part of
+# the assertion rather than an assumption sitting behind it.
+if [ "$NA" -eq 0 ] || [ "$NB" -eq 0 ]; then
+  bad "cannot assert disjointness — one view is empty (A=$NA B=$NB)"
+elif [ -z "$(comm -12 <(echo "$A") <(echo "$B"))" ]; then
   ok "the two views are DISJOINT — no asset appears in both"
 else
   bad "an asset appears in both views"
@@ -141,8 +162,11 @@ head1 "3. the coalition liaison sees both"
 # implementation of the join, and a second place for it to be wrong.
 OUT="$(run liaison)"; L="$(printf '%s' "$OUT" | assets)"; NL="$(echo "$L" | grep -c .)"
 echo "  assets: $NL"
-[ "$NL" = "$((N_ATL + N_BDR))" ] && ok "liaison sees all $NL" \
-  || bad "liaison saw $NL, expected $((N_ATL + N_BDR))"
+if [ "$NL" = "$((N_ATL + N_BDR))" ] && [ "$NL" -gt 0 ]; then
+  ok "liaison sees all $NL"
+else
+  bad "liaison saw $NL, expected $((N_ATL + N_BDR))"
+fi
 
 # ---------------------------------------------------------------------------
 head1 "4. an unlisted subject is denied by DEFAULT, not by a rule"
@@ -173,8 +197,16 @@ head1 "5. a client-supplied where-clause cannot WIDEN the set"
 # explicitly; the policy clause still narrows the result to nothing.
 OUT="$(run user-b "&where=originator_nation%20%3D%20%27ATL%27")"
 W="$(printf '%s' "$OUT" | assets)"; NW="$(echo "$W" | grep -c .)"
-[ "$NW" = "0" ] && ok "user-b asking for ATL rows explicitly gets 0" \
-  || bad "client where-clause widened the set to $NW rows"
+# ZERO IS ONLY MEANINGFUL IF user-b CAN SEE ANYTHING AT ALL. A PEP refusing
+# every request also returns zero here and would score this a pass; step 2 is
+# the control.
+if [ "$NB" -eq 0 ]; then
+  bad "cannot assert composition — user-b sees nothing even unfiltered"
+elif [ "$NW" = "0" ]; then
+  ok "user-b sees $NB rows unfiltered, and 0 when asking for ATL explicitly"
+else
+  bad "client where-clause widened the set to $NW rows"
+fi
 
 # ---------------------------------------------------------------------------
 head1 "6. the decision log explains every one of the above"
