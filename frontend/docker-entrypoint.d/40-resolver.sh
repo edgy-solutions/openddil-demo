@@ -31,3 +31,33 @@ svc_suffix="$(awk '/^search/ {
 }' /etc/resolv.conf)"
 sed -i "s/__SVC_SUFFIX__/${svc_suffix}/g" "$conf"
 echo "40-resolver.sh: nginx svc suffix -> '${svc_suffix}'"
+
+# __ELECTRIC_UPSTREAM__ / __ELECTRIC_PORT__ / __PEP_UPSTREAM__
+#
+# Where the read path goes. Electric directly when releasability enforcement
+# is off; the PEP when it is on. Defaults keep the pre-enforcement behaviour
+# for any deployment that sets nothing, so this change is inert until a chart
+# opts in.
+#
+# THE DEFAULT IS THE UNENFORCED PATH, AND THAT IS THE RIGHT WAY ROUND ONLY
+# BECAUSE THE NETWORKPOLICY IS THE REAL GATE. If enforcement is on and this
+# is left pointing at Electric, Electric refuses the connection and the
+# screen breaks visibly — rather than serving every nation's rows to
+# everyone, which is what a silent fallback would do.
+electric_upstream="${OPENDDIL_ELECTRIC_UPSTREAM:-electric-sync}"
+electric_port="${OPENDDIL_ELECTRIC_PORT:-5133}"
+pep_upstream="${OPENDDIL_PEP_UPSTREAM:-openddil-pep}"
+sed -i "s/__ELECTRIC_UPSTREAM__/${electric_upstream}/g" "$conf"
+sed -i "s/__ELECTRIC_PORT__/${electric_port}/g" "$conf"
+sed -i "s/__PEP_UPSTREAM__/${pep_upstream}/g" "$conf"
+echo "40-resolver.sh: read path -> ${electric_upstream}:${electric_port}"
+echo "40-resolver.sh: auth path -> ${pep_upstream}:8080"
+
+# A placeholder that survives substitution becomes a hostname nginx cannot
+# resolve, and the failure surfaces as a 502 on the first request rather
+# than at start-up. Fail here instead, where the message can say which one.
+if grep -q "__[A-Z_]*__" "$conf"; then
+    echo "40-resolver.sh: FATAL — unsubstituted placeholder(s):" >&2
+    grep -o "__[A-Z_]*__" "$conf" | sort -u >&2
+    exit 1
+fi

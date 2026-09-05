@@ -22,13 +22,37 @@
 # violation; a directory may even seed a DRAFT entry here. THE PR APPROVAL IS
 # WHAT MAKES IT AN ENTITLEMENT.
 #
+# -----------------------------------------------------------------------------
+# THE KEY IS THE OIDC `sub`, AND NOT THE USERNAME OR THE EMAIL
+# -----------------------------------------------------------------------------
+# Both of the readable alternatives are MUTABLE AND RE-ASSIGNABLE in an
+# identity provider. An address or a username freed by one person and later
+# handed to another would silently inherit the first person's entitlements,
+# and nothing in this file would look wrong — the row would still name a
+# perfectly plausible principal. `sub` is opaque and stable, so a re-issued
+# username produces a subject nobody has entitled, which fails closed.
+#
+# The sibling project keys on a configurable claim defaulting to `email`,
+# with `sub` as a fallback. That is a reasonable choice for a deployment
+# whose directory guarantees address stability; it is not a safe default.
+#
+# The cost of `sub` is readability, and it is paid for two ways: the demo
+# realm PINS its user ids (policy/realm-openddil.json) so the values here are
+# stable and greppable across re-imports, and every row carries `username`
+# and `display_name` for the human reading the diff. THOSE TWO FIELDS ARE
+# DOCUMENTATION. Nothing reads them, and changing one changes nothing.
+#
+# -----------------------------------------------------------------------------
 # HOW THIS FILE REACHES TOPAZ
-# It is copied into the tier's OPA bundle root as `data.yaml` — OPA's bundle
-# convention names data files, so the reviewed artifact and the loaded
-# artifact have different NAMES and identical CONTENT. The rename happens in
-# one place (the chart's bundle-init) and is called out there too, because a
-# silent rename during transport is precisely how a reviewed file and a
-# running file drift apart.
+# -----------------------------------------------------------------------------
+# It is copied into the tier's OPA bundle root as `openddil/data.yaml` — OPA's
+# bundle convention names data files, and the bundle's `.manifest` declares
+# roots ["openddil"], so data outside that root is refused outright. The
+# reviewed artifact and the loaded artifact therefore have different NAMES
+# AND PATHS and identical CONTENT. That rename happens in one place (the
+# chart's bundle-init) and is called out there too, because a silent rename
+# during transport is precisely how a reviewed file and a running file drift
+# apart.
 #
 # WHY `nations` AND NOT `nation`
 # A subject may hold more than one. The coalition liaison below is the case
@@ -43,10 +67,11 @@
 #
 # DEFAULT DENY IS NOT WRITTEN HERE.
 # A subject absent from this file gets no entitlements, and the policy denies
-# them. That is why `unlisted-subject` below is a COMMENT and not an entry:
-# the demo proves default-deny by asking about a subject this file has never
-# heard of, and adding an explicit deny entry would prove something weaker —
-# that an explicit deny works — while leaving the actual default untested.
+# them. That is why `observer.unlisted` — a real, enabled Keycloak account —
+# appears NOWHERE below: the demo proves default-deny by asking about a
+# subject this file has never heard of. An explicit deny entry would prove
+# something weaker, that an explicit deny works, while leaving the actual
+# default untested.
 # =============================================================================
 
 version: 1
@@ -56,10 +81,11 @@ users:
   # Single-nation subjects. The two-fleet partition rests on exactly this:
   # same role, same tier, same screen, different entitlements.
   # ---------------------------------------------------------------------------
-  user-a:
+  "11111111-1111-4111-8111-111111111111":
+    username: operator.atlantia        # documentation; nothing reads it
     display_name: Operator A (Atlantia)
     nations: [ATL]
-    clearance: ""            # unused in Slice 1; see header
+    clearance: ""                      # unused in Slice 1; see header
     role: regional-operator
     # ROLE IS RECORDED AND IS NOT THE DECIDING INPUT. Both operators below
     # hold the SAME role — that is the whole reason ADR-0029 exists. RBAC
@@ -69,7 +95,8 @@ users:
     asserted_by: cnogradi
     asserted_on: 2026-09-05
 
-  user-b:
+  "22222222-2222-4222-8222-222222222222":
+    username: operator.borduria
     display_name: Operator B (Borduria)
     nations: [BDR]
     clearance: ""
@@ -87,7 +114,8 @@ users:
   #
   # One store, filtered reads, and the liaison is a subject with two
   # entitlements rather than an architectural special case.
-  liaison:
+  "33333333-3333-4333-8333-333333333333":
+    username: liaison.coalition
     display_name: Coalition Liaison (ATL/BDR)
     nations: [ATL, BDR]
     clearance: ""
@@ -96,10 +124,13 @@ users:
     asserted_on: 2026-09-05
 
 # -----------------------------------------------------------------------------
-# DELIBERATELY ABSENT: `unlisted-subject`
+# DELIBERATELY ABSENT: 44444444-4444-4444-8444-444444444444 (observer.unlisted)
 # -----------------------------------------------------------------------------
-# The demo's fourth check asks the PDP about a subject that appears nowhere in
-# this file and requires a deny. Do not add it here to "complete the set" —
-# its absence IS the test. An explicit deny entry would prove that explicit
-# denies work while leaving the default itself unexercised, and the default is
-# the branch that runs for every account nobody has thought about yet.
+# A real, enabled account in the demo realm that authenticates successfully
+# and is entitled to nothing. The demo's fourth beat requires a deny, and its
+# absence from this file IS the test.
+#
+# Do not add it here to "complete the set". An explicit deny entry would
+# prove that explicit denies work while leaving the default itself
+# unexercised — and the default is the branch that runs for every account
+# nobody has thought about yet.

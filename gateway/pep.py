@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import sys
 import threading
 import time
@@ -47,12 +48,42 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import oidc
+
 # --- configuration ----------------------------------------------------------
 ELECTRIC = os.environ["OPENDDIL_ELECTRIC_URL"].rstrip("/")
 TOPAZ = os.environ["OPENDDIL_TOPAZ_URL"].rstrip("/")
 LISTEN_PORT = int(os.getenv("OPENDDIL_PEP_PORT", "8080"))
 SUBJECT_HEADER = os.getenv("OPENDDIL_SUBJECT_HEADER", "X-OpenDDIL-Subject")
 TOPAZ_TIMEOUT = float(os.getenv("OPENDDIL_TOPAZ_TIMEOUT", "2.0"))
+
+# --- how the subject is established ------------------------------------------
+# TWO MODES, CHOSEN AT BOOT, MUTUALLY EXCLUSIVE. This is deliberately NOT a
+# fallback inside one path, and the distinction is the whole point:
+#
+#   oidc    the browser completes an authorization-code flow against Keycloak
+#           and holds an httpOnly session cookie. Tokens never reach
+#           JavaScript. This is the mode a deployment runs.
+#   header  the subject arrives in a trusted header. For the scripted suite
+#           and for a PEP that is reachable only in-cluster.
+#
+# WHY THIS IS NOT `ALLOW_MOCK_AUTH` WEARING A HAT. That defect — inherited as
+# a design constraint from dag-tools, where it was found and retired — was a
+# branch INSIDE the real path that converted an authorizer exception into
+# allow-by-default. A request could take the bypass at runtime without anyone
+# choosing it.
+#
+# Here the mode is fixed before the first request. In `oidc` mode the header
+# is NEVER READ: there is no input a caller can supply that selects the other
+# mode, and no failure that falls back to it. A misconfigured OIDC refuses to
+# start rather than degrading (see oidc.enabled()). Every decision record
+# carries the mode that produced its subject, so the audit trail can never be
+# ambiguous about which one was live.
+try:
+    AUTH_MODE = "oidc" if oidc.enabled() else "header"
+except oidc.AuthError as _exc:
+    print(f"FATAL: {_exc}", file=sys.stderr)
+    raise SystemExit(2)
 
 # The single searchable marker. An operator facing a sudden 403 storm gets ONE
 # string to grep, and "authz is broken" cannot be confused with "authz denied
@@ -83,11 +114,24 @@ log = logging.getLogger("pep")
 decisions = logging.getLogger("pep.decision")
 
 
+def new_decision_id() -> str:
+    """A short, unique id minted per request and used in two places at once.
+
+    IT IS THE SAME STRING THE USER SEES AND THE OPERATOR GREPS. A refusal
+    screen that says "not authorized" and nothing else forces the person who
+    was refused and the person who can explain it to correlate by timestamp,
+    which fails the moment two people are refused in the same second. A
+    reference id makes "why was I denied?" answerable in one query, and it is
+    safe to show because it identifies a decision RECORD, not the data."""
+    return secrets.token_hex(4).upper()
+
+
 def record_decision(**fields) -> None:
     """One JSON line per decision: user, attributes, policy version, outcome,
     timestamp. Structured because the demo reads it back and an operator
     greps it, and those want the same record rather than two."""
     fields.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    fields.setdefault("auth_mode", AUTH_MODE)
     decisions.info("DECISION %s", json.dumps(fields, sort_keys=True))
 
 
@@ -109,17 +153,23 @@ _handles: dict[str, str] = {}
 _handles_lock = threading.Lock()
 
 
-def bind_handle(handle: str, subject: str) -> None:
+# The binding key is the SESSION in oidc mode, not the subject. Stricter, and
+# for a reason worth stating: two concurrent sessions for one person are two
+# separate grants, and a handle minted under one should not be resumable
+# under the other. A session that has been logged out or has expired then
+# cannot resume a shape it opened, which is the behaviour a revoked session
+# ought to have.
+def bind_handle(handle: str, principal: str) -> None:
     if not handle:
         return
     with _handles_lock:
-        _handles[handle] = subject
+        _handles[handle] = principal
 
 
-def handle_belongs_to(handle: str, subject: str) -> bool:
+def handle_belongs_to(handle: str, principal: str) -> bool:
     with _handles_lock:
         owner = _handles.get(handle)
-    return owner is not None and owner == subject
+    return owner is not None and owner == principal
 
 
 # --- the PDP call -----------------------------------------------------------
@@ -247,21 +297,153 @@ class Pep(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # quieter access log; decisions are logged
         log.debug(fmt, *args)
 
-    def _deny(self, cause: str, *, subject: str, resource: str, status: int = 403,
-              upstream: str = "") -> None:
-        """Every non-200 and every exception lands here. There is no other
-        exit from an authorization failure, and no branch that converts one
-        into an allow."""
-        log.warning("%s cause=%s user=%s resource=%s upstream=%s",
-                    DENY_MARKER, cause, subject or "<none>", resource, upstream or "-")
-        record_decision(outcome="deny", cause=cause, subject=subject or None,
-                        resource=resource, upstream_status=upstream or None)
-        body = json.dumps({"error": DENY_MARKER, "cause": cause}).encode()
+    def _send(self, status: int, body: bytes, headers: list | None = None) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        for k, v in (headers or []):
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _deny(self, cause: str, *, subject: str, resource: str, status: int = 403,
+              upstream: str = "", headers: list | None = None) -> None:
+        """Every non-200 and every exception lands here. There is no other
+        exit from an authorization failure, and no branch that converts one
+        into an allow."""
+        ref = new_decision_id()
+        log.warning("%s ref=%s cause=%s user=%s resource=%s upstream=%s",
+                    DENY_MARKER, ref, cause, subject or "<none>", resource,
+                    upstream or "-")
+        record_decision(decision_id=ref, outcome="deny", cause=cause,
+                        subject=subject or None, resource=resource,
+                        upstream_status=upstream or None)
+        # `reference` is the string the refusal screen shows, and it is the
+        # SAME string the operator greps. A refusal that says only "not
+        # authorized" forces the person refused and the person who can
+        # explain it to correlate by timestamp, which fails the moment two
+        # people are refused in the same second. Safe to show, because it
+        # identifies a decision RECORD and carries nothing about the data.
+        body = json.dumps({"error": DENY_MARKER, "cause": cause,
+                           "reference": ref}).encode()
+        self._send(status, body,
+                   [("Content-Type", "application/json")] + (headers or []))
+
+    # --- authentication routes ------------------------------------------------
+    def _sid(self):
+        return oidc.session_id_from_cookies(self.headers.get("Cookie"))
+
+    def _resolve_principal(self):
+        """(subject, principal_key, session) or raise.
+
+        NEVER returns a partially-authenticated caller: either a subject is
+        established or this raises and the caller denies. There is no third
+        outcome, because a third outcome is where a fail-open lives."""
+        if AUTH_MODE == "oidc":
+            sid = self._sid()
+            session = oidc.get_session(sid)
+            if session is None:
+                raise oidc.AuthError("no valid session")
+            return session["subject"], sid or "", session
+        subject = self.headers.get(SUBJECT_HEADER, "").strip()
+        if not subject:
+            raise oidc.AuthError("no authenticated subject")
+        return subject, subject, None
+
+    def _handle_auth(self, parsed):
+        """Serve /auth/*. Returns True when the path was handled."""
+        path = parsed.path
+        if not path.startswith("/auth/"):
+            return False
+        if AUTH_MODE != "oidc":
+            self._deny("auth routes are not served in header mode",
+                       subject="", resource=path, status=404)
+            return True
+
+        if path == "/auth/login":
+            try:
+                url = oidc.begin_login()
+            except oidc.AuthError as exc:
+                # The IdP is unreachable. That is a failure to AUTHENTICATE,
+                # not a denial of anything — but it still ends in a refusal,
+                # and the record must not call it a policy decision.
+                self._deny("identity provider unavailable: " + str(exc),
+                           subject="", resource="login", status=503)
+                return True
+            self._send(302, b"", [("Location", url),
+                                  ("Cache-Control", "no-store")])
+            return True
+
+        if path == "/auth/callback":
+            q = urllib.parse.parse_qs(parsed.query)
+            if "error" in q:
+                self._deny("identity provider returned " + q["error"][0],
+                           subject="", resource="callback")
+                return True
+            code = (q.get("code") or [""])[0]
+            state = (q.get("state") or [""])[0]
+            try:
+                claims = oidc.complete_login(code, state)
+            except oidc.AuthError as exc:
+                self._deny("login failed: " + str(exc), subject="",
+                           resource="callback")
+                return True
+            sid, session = oidc.create_session(claims)
+            record_decision(decision_id=new_decision_id(), outcome="login",
+                            subject=session["subject"],
+                            username=session["username"] or None,
+                            resource="session")
+            self._send(302, b"", [("Location", oidc.POST_LOGIN_PATH),
+                                  ("Set-Cookie", oidc.cookie_header(sid)),
+                                  ("Cache-Control", "no-store")])
+            return True
+
+        if path == "/auth/logout":
+            sid = self._sid()
+            session = oidc.get_session(sid)
+            oidc.destroy_session(sid)
+            if session:
+                record_decision(decision_id=new_decision_id(),
+                                outcome="logout", subject=session["subject"],
+                                resource="session")
+            self._send(302, b"", [("Location", "/"),
+                                  ("Set-Cookie", oidc.clear_cookie_header()),
+                                  ("Cache-Control", "no-store")])
+            return True
+
+        if path == "/auth/me":
+            # THE HEADER BADGE-S SOURCE, and it returns the nations TOPAZ
+            # grants rather than any claim from the token. What the badge
+            # shows and what the filter enforces are then the same answer
+            # from the same authority. A badge fed from token claims could
+            # disagree with the data on screen, and the screen would be the
+            # one telling the truth.
+            try:
+                subject, _, session = self._resolve_principal()
+            except oidc.AuthError:
+                self._send(401, json.dumps({"authenticated": False}).encode(),
+                           [("Content-Type", "application/json"),
+                            ("Cache-Control", "no-store")])
+                return True
+            try:
+                decision = ask_topaz(subject)
+            except AuthzUnavailable as exc:
+                self._deny("PDP unavailable: " + str(exc), subject=subject,
+                           resource="me", status=503)
+                return True
+            body = json.dumps({
+                "authenticated": True,
+                "subject": subject,
+                "username": (session or {}).get("username", ""),
+                "name": (session or {}).get("name", ""),
+                "nations": decision["allowed_nations"],
+                "policy_version": decision["policy_version"],
+            }).encode()
+            self._send(200, body, [("Content-Type", "application/json"),
+                                   ("Cache-Control", "no-store")])
+            return True
+
+        self._deny("unknown auth route", subject="", resource=path, status=404)
+        return True
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
@@ -271,16 +453,24 @@ class Pep(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"ok")
             return
+        if self._handle_auth(parsed):
+            return
         if not parsed.path.startswith("/v1/shape"):
             self._deny("unknown path", subject="", resource=parsed.path, status=404)
             return
 
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         table = (params.get("table") or [""])[0]
-        subject = self.headers.get(SUBJECT_HEADER, "").strip()
 
-        if not subject:
-            self._deny("no authenticated subject", subject="", resource=table)
+        try:
+            subject, principal, _session = self._resolve_principal()
+        except oidc.AuthError as exc:
+            # An unauthenticated read is refused BEFORE the PDP is consulted.
+            # Asking Topaz about an empty subject would produce a deny too,
+            # but it would be recorded as a policy decision about nobody
+            # rather than as a missing session, and those are different
+            # events with different remedies.
+            self._deny(str(exc), subject="", resource=table, status=401)
             return
 
         try:
@@ -300,8 +490,8 @@ class Pep(BaseHTTPRequestHandler):
 
         # Handle binding, checked BEFORE the request is forwarded.
         handle = (params.get("handle") or [""])[0]
-        if handle and not handle_belongs_to(handle, subject):
-            self._deny("shape handle was not minted for this subject",
+        if handle and not handle_belongs_to(handle, principal):
+            self._deny("shape handle was not minted for this session",
                        subject=subject, resource=table)
             return
 
@@ -327,7 +517,8 @@ class Pep(BaseHTTPRequestHandler):
             # events authorization never caused.
             log.error("electric upstream error user=%s resource=%s: %s",
                       subject, table, exc)
-            record_decision(outcome="allow", subject=subject, resource=table,
+            record_decision(decision_id=new_decision_id(), outcome="allow",
+                            subject=subject, resource=table,
                             policy_version=decision["policy_version"],
                             allowed_nations=decision["allowed_nations"],
                             upstream_error=str(exc))
@@ -336,8 +527,9 @@ class Pep(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        bind_handle(new_handle, subject)
-        record_decision(outcome="allow", subject=subject, resource=table,
+        bind_handle(new_handle, principal)
+        record_decision(decision_id=new_decision_id(), outcome="allow",
+                        subject=subject, resource=table,
                         policy_version=decision["policy_version"],
                         allowed_nations=decision["allowed_nations"],
                         predicate=where, shape_handle=new_handle or None)
@@ -353,8 +545,23 @@ class Pep(BaseHTTPRequestHandler):
 
 def main() -> None:
     log.info("read-path PEP listening on :%s", LISTEN_PORT)
-    log.info("  electric: %s", ELECTRIC)
-    log.info("  topaz:    %s", TOPAZ)
+    log.info("  electric:  %s", ELECTRIC)
+    log.info("  topaz:     %s", TOPAZ)
+    # THE AUTH MODE IS ANNOUNCED AT BOOT, ONCE, LOUDLY. An operator asking
+    # "is this thing actually authenticating?" should not have to infer the
+    # answer from a request that happened to fail.
+    log.info("  auth mode: %s", AUTH_MODE)
+    if AUTH_MODE == "oidc":
+        log.info("  issuer:    %s", oidc.ISSUER)
+        log.info("  client:    %s", oidc.CLIENT_ID)
+        log.info("  session:   %ss, cookie=%s SameSite=%s Secure=%s",
+                 oidc.SESSION_TTL, oidc.COOKIE_NAME, oidc.COOKIE_SAMESITE,
+                 oidc.COOKIE_SECURE)
+    else:
+        log.warning("  header mode: the subject is taken from %r and is "
+                    "NOT authenticated. This is correct only where the PEP "
+                    "is unreachable except from inside the cluster.",
+                    SUBJECT_HEADER)
     ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Pep).serve_forever()
 
 
