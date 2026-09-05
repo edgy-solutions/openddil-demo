@@ -244,6 +244,16 @@ def ask_topaz(subject: str) -> dict:
             # correctly report as a PDP outage — a policy upgrade should not
             # be able to look like an outage.
             "corpus_version": bindings.get("corpus_version", "unknown"),
+            # THE SECOND AXIS — affordances within a tier, never rows. It is
+            # carried here so the UI and the decision log agree about it, and
+            # it is NOT consulted anywhere in this file: `allowed_nations` is
+            # the whole of the filter. If that ever stops being true, it must
+            # stop being true in the POLICY, not here.
+            #
+            # Defaulted like the rest, so an older bundle cannot turn every
+            # decision into an unparseable answer the PEP reports as an
+            # outage.
+            "role": bindings.get("role", "observer"),
             "subject_known": bool(bindings["subject_known"]),
         }
     except Exception as exc:  # noqa: BLE001
@@ -451,6 +461,7 @@ class Pep(BaseHTTPRequestHandler):
                 "nations": decision["allowed_nations"],
                 "policy_version": decision["policy_version"],
                 "corpus_version": decision["corpus_version"],
+                "role": decision["role"],
             }).encode()
             self._send(200, body, [("Content-Type", "application/json"),
                                    ("Cache-Control", "no-store")])
@@ -547,6 +558,7 @@ class Pep(BaseHTTPRequestHandler):
                         subject=subject, resource=table,
                         policy_version=decision["policy_version"],
                         corpus_version=decision["corpus_version"],
+                        role=decision["role"],
                         allowed_nations=decision["allowed_nations"],
                         predicate=where, shape_handle=new_handle or None)
 

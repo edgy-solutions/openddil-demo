@@ -1,9 +1,7 @@
 import { useState, useEffect } from 'react';
-import MaintainerApp from './MaintainerApp';
-import RegionalApp from './RegionalApp';
-import HqApp from './HqApp';
 import ControllerApp from './ControllerApp';
 import TierApp from './TierApp';
+import type { TierConfig } from './deployment';
 import { Wrench, Server, Building2, SlidersHorizontal } from 'lucide-react';
 import { deployment } from './deployment';
 
@@ -42,6 +40,22 @@ function initialView(): View {
   const param = new URLSearchParams(window.location.search).get('role');
   return (param && (VALID_VIEWS as string[]).includes(param)) ? (param as View) : 'maintainer';
 }
+
+// The shapes the shell composes. Named for the SHAPE, not for the historical
+// view, because that is the whole correction: "maintainer" was never a kind
+// of view, it was a leaf node's instance.
+const SHELL_LEAF: TierConfig = {
+  id: 'shell-leaf', label: 'maintainer', scope: null,
+  has_children: false, parent: 'shell-intermediate',
+};
+const SHELL_INTERMEDIATE: TierConfig = {
+  id: 'shell-intermediate', label: 'regional', scope: null,
+  has_children: true, parent: 'shell-root',
+};
+const SHELL_ROOT: TierConfig = {
+  id: 'shell-root', label: 'hq', scope: null,
+  has_children: true, parent: null,
+};
 
 /** The demo shell — every tier in one pane, behind tabs. */
 function DemoShell({ title, logo }: { title: string; logo: string }) {
@@ -95,9 +109,28 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
           default `min-height: auto` lets it grow past parent if children
           (role views, which use h-full) try to size to it. */}
       <div className="flex-1 relative min-h-0 overflow-hidden">
-        {view === 'maintainer' && <MaintainerApp />}
-        {view === 'regional' && <RegionalApp />}
-        {view === 'hq' && <HqApp />}
+        {/* THE SHELL COMPOSES TIER INSTANCES. It does not reimplement them,
+            and after 2026-09-05 it does not even reference the three
+            components directly — it hands TierApp a SHAPE and gets whatever
+            that shape resolves to.
+
+            That is the amendment's sentence made literally true rather than
+            approximately: the shell became "a CONSUMER of the
+            tier-parameterized presentation rather than the thing itself".
+            The practical consequence is that the shell cannot drift from a
+            tier node's rendering, because there is one code path and the
+            shell is simply another caller of it.
+
+            The synthetic tiers below have no `scope` — the shell reads the
+            root's store, where scoping is the operator's job through the
+            in-view pickers rather than a property of the instance. */}
+        {view === 'maintainer' && <TierApp tier={SHELL_LEAF} />}
+        {view === 'regional' && <TierApp tier={SHELL_INTERMEDIATE} />}
+        {view === 'hq' && <TierApp tier={SHELL_ROOT} />}
+        {/* The DDIL controller is NOT a tier instance. It is an operator
+            tool that acts on the deployment, and whether it belongs to a
+            tier at all is explicitly undecided (opening package §7). Left
+            as itself rather than forced into a shape it may not have. */}
         {view === 'controller' && <ControllerApp />}
       </div>
     </div>

@@ -35,6 +35,22 @@ export interface Session {
   name: string;
   /** Nations this subject may see, as decided by Topaz. */
   nations: string[];
+  /** The subject's role within this tier — the SECOND axis.
+   *
+   *  WHICH TIER is a fact about where you logged in; WHICH ROLE is a fact
+   *  about you. Keeping them apart is the whole reason the tab switcher had
+   *  to go: "maintainer / regional / hq / controller" mixed a role with two
+   *  tier depths and a tool, which is why a fourth tier had no answer.
+   *
+   *  ⚠ AFFORDANCES, NOT ROWS. Role selects which panels and controls a
+   *  subject is offered. It must never filter data — `nations` is the whole
+   *  of the read-path decision, applied by the gateway before anything
+   *  reaches here. A role-based filter in the browser would be a second
+   *  authorization decision nobody reviewed (ADR-0029 §1).
+   *
+   *  Defaults to the least-privileged value, so a subject whose corpus row
+   *  omits a role gets read-only affordances rather than a blank screen. */
+  role: string;
   /** The policy version that produced those nations — the same string the
    *  decision log records, so a screenshot and an audit line can be tied
    *  together after the fact. */
@@ -51,6 +67,7 @@ const UNKNOWN: Session = {
   username: '',
   name: '',
   nations: [],
+  role: 'observer',
   policyVersion: null,
   authDisabled: false,
 };
@@ -83,6 +100,7 @@ export function useSession(): Session {
           username: body.username ?? '',
           name: body.name ?? '',
           nations: Array.isArray(body.nations) ? body.nations : [],
+          role: typeof body.role === 'string' && body.role ? body.role : 'observer',
           policyVersion: body.policy_version ?? null,
           authDisabled: false,
         });

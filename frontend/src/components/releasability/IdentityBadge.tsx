@@ -97,6 +97,18 @@ export default function IdentityBadge() {
         </span>
       </div>
 
+      {/* THE SECOND AXIS, shown beside the first because they are different
+          questions and an operator needs both. Nations answer "whose data am
+          I seeing"; role answers "what am I able to do here". The tab
+          switcher conflated them, which is why a fourth tier had no answer.
+
+          Displayed, and NOT used to filter anything — see useSession. */}
+      <span className="hidden rounded border border-slate-600/60 px-1.5 py-0.5
+                       text-[10px] uppercase tracking-wide text-slate-400 md:inline"
+            title="Role within this tier — selects affordances, never data">
+        {s.role}
+      </span>
+
       {/* The policy version that produced those nations — the same string the
           decision log records, so a screenshot and an audit line can be tied
           together after the fact without guessing at timestamps. */}

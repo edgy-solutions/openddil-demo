@@ -95,6 +95,35 @@ allow if {
 # policy change and a policy change gets dismissed as an outage.
 #
 # Found by asking the running PDP about `nobody`, not by reading the policy.
+# ---------------------------------------------------------------------------
+# role — THE SECOND AXIS, and it is not an authorization input
+# ---------------------------------------------------------------------------
+# WHICH TIER a subject sees is a fact about WHERE THEY LOGGED IN: the tier
+# node serves its own instance to whoever it authenticates. WHICH ROLE they
+# hold is a fact about the SUBJECT, and it comes from here.
+#
+# Those are two axes and this policy keeps them apart. The tab switcher
+# conflated them into one four-item enum — "maintainer / regional / hq /
+# controller" mixes a role with two tier depths and a tool — which is exactly
+# why "which of the three views does a fourth tier get?" had no answer.
+#
+# ⚠ ROLE DOES NOT FILTER DATA, AND MUST NOT START TO. `allowed_nations` is
+# the whole of the read-path decision (ADR-0029 §4). Role selects AFFORDANCES
+# within a tier — which panels and controls a subject is offered — and if a
+# role ever needs to gate rows it does so by changing the subject's nations,
+# through this policy, not by a second filter somewhere downstream. A second
+# thing that can narrow a result set is a second authorization decision
+# nobody reviewed (§1).
+#
+# Defaulted to `observer`, the least-privileged value, for the same reason
+# every other rule here has a default: a subject whose corpus row omits a
+# role must not make the decision object undefined, which the gateway would
+# correctly report as a PDP outage. An entitled subject with no stated role
+# gets the read-only affordances and nothing else.
+default role := "observer"
+
+role := subject_record.role
+
 default corpus_version := "unversioned"
 
 corpus_version := data.openddil.version
@@ -128,5 +157,7 @@ decision := {
 	# the whole decision object undefined, which is the exact defect that made
 	# an unlisted subject read as a PDP outage.
 	"corpus_version": corpus_version,
+	# The second axis. Affordances, not rows — see the note above.
+	"role": role,
 	"subject_known": subject_known,
 }
