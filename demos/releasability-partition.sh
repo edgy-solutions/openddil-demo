@@ -101,7 +101,7 @@ httpcode() { grep -oE 'HTTP:[0-9]+' | tail -1 | cut -d: -f2; }
 # ---------------------------------------------------------------------------
 head1 "0. baseline — the whole fleet, straight from the store"
 ALL="$(kubectl exec -n "$NS" "$PG_POD" -- psql -U postgres -d openddil -At \
-  -c "SELECT originator_nation || ' ' || count(*) FROM $TABLE GROUP BY 1 ORDER BY 1;" 2>/dev/null)"
+  -c "SELECT originator_nation || ' ' || count(*) FROM $TABLE GROUP BY originator_nation ORDER BY originator_nation;" 2>/dev/null)"
 echo "$ALL" | sed 's/^/  /'
 N_ATL="$(echo "$ALL" | awk '$1=="ATL"{print $2}')"
 N_BDR="$(echo "$ALL" | awk '$1=="BDR"{print $2}')"
@@ -118,7 +118,7 @@ echo "  (this is what an UNFILTERED read returns — the thing the PEP prevents)
 # skimming for green would have taken the wrong lesson from a run that was in
 # fact completely broken.
 if [ -z "${N_ATL:-}" ] || [ -z "${N_BDR:-}" ] || [ "${N_ATL:-0}" -eq 0 ] || [ "${N_BDR:-0}" -eq 0 ]; then
-  echo "REFUSING: baseline is ATL='"'"'${N_ATL:-}'"'"' BDR='"'"'${N_BDR:-}'"'"'." >&2
+  echo "REFUSING: baseline is ATL=[${N_ATL:-}] BDR=[${N_BDR:-}]." >&2
   echo "A partition demo needs a non-empty fleet on BOTH sides; every check" >&2
   echo "below would pass trivially against nothing." >&2
   exit 1
