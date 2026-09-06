@@ -6,6 +6,7 @@ import { Wrench, Server, Building2, SlidersHorizontal } from 'lucide-react';
 import { deployment } from './deployment';
 import { useSession } from './hooks/useSession';
 import { SignedOut, CheckingSession } from './components/SignedOut';
+import IdentityBadge from './components/releasability/IdentityBadge';
 
 // =============================================================================
 // Root — two modes, and which one you get is a deployment fact
@@ -92,6 +93,11 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
                 title="No tier is configured for this deployment, so every tier is composed into one pane. A tier node renders its own instance instead.">
             DEMO SHELL · all tiers composed · DEPRECATED
           </span>
+          {/* The shell is a viewer, not a node — but the rows it shows are
+              still filtered for whoever is looking, so it names them too. */}
+          <div className="ml-3">
+            <IdentityBadge />
+          </div>
         </div>
         <div className="flex gap-2">
           {tabs.map(({ id, label, icon: Icon }) => (
@@ -208,6 +214,16 @@ function Root() {
               ? `${tier.scope.column} = ${tier.scope.value}`
               : 'unscoped (this tier’s own store)'}
           </span>
+          {/* WHOSE SCREEN THIS IS. In the shared chrome so it renders for
+              EVERY tier shape — it used to live in the edge-shaped header
+              alone, which left the HQ and regional shapes showing a
+              subject-scoped partition with no subject named. A partitioned
+              view that does not display its subject is indistinguishable
+              from an unpartitioned one, which is exactly the claim an
+              operator cannot afford to guess at. */}
+          <div className="ml-auto">
+            <IdentityBadge />
+          </div>
         </div>
         <div className="flex-1 relative min-h-0 overflow-hidden">
           <TierApp tier={tier} />

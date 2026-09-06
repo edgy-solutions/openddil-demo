@@ -370,19 +370,42 @@ export default function TheaterReadinessPosture({
             THEATER READINESS POSTURE
           </h1>
           <p className="text-[10px] font-mono tracking-widest text-slate-400 mt-1">
-            GLOBAL FLEET // {fobs.length} FOB{fobs.length === 1 ? '' : 'S'} // {fleet.data.length} ASSET{fleet.data.length === 1 ? '' : 'S'}
+            {/* "0 FOBS // 14 ASSETS" invited the reading that fourteen
+                assets had lost their sites. FOBs are deployment-supplied
+                map topology; assets are live data. An empty FOB list is a
+                deployment that did not configure a map, and saying so is
+                shorter than the confusion it prevents. */}
+            GLOBAL FLEET // {fobs.length > 0
+              ? `${fobs.length} FOB${fobs.length === 1 ? '' : 'S'}`
+              : 'no FOB topology'} // {fleet.data.length} ASSET{fleet.data.length === 1 ? '' : 'S'}
           </p>
         </div>
         <div className="text-right flex flex-col gap-2">
-          {/* GLOBAL LINK STATUS — transport-level (the hq_link_severed signal) */}
+          {/* GLOBAL LINK STATUS — transport-level (the hq_link_severed signal)
+              ⚠ THE LINK COUNT IS THE FOB COUNT. `totalLinks = metrics.length`,
+              and metrics come from `deployment().fobs`. A deployment that
+              supplies no FOB topology therefore has ZERO links, and the
+              panel used to render that as a confident "0 UP" — which reads
+              as "both links are down" beside eight assets streaming at 1s.
+              It was an absent CONFIGURATION rendered as a claim about
+              TRANSPORT: the two are unrelated, and only one of them was
+              being measured. Same root as the "0 FOBS" readout beside a
+              live fleet. */}
           <div className="bg-slate-900/80 p-2 border border-slate-700">
             <div className="text-[10px] text-slate-500 mb-1">GLOBAL LINK STATUS</div>
-            <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-              <span className="text-emerald-400">{linksUp} UP</span>
-              {linksDown > 0 && (
-                <span className="text-rose-400 ml-4">{linksDown} DOWN</span>
-              )}
-            </div>
+            {totalLinks === 0 ? (
+              <div className="text-xs font-rajdhani text-slate-500 text-right leading-tight"
+                   title="Links are counted per FOB, from deployment().fobs. This deployment supplies no FOB topology, so there is nothing to report the status OF — which is not the same as reporting that the links are down.">
+                no FOB topology<br />configured
+              </div>
+            ) : (
+              <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
+                <span className="text-emerald-400">{linksUp} UP</span>
+                {linksDown > 0 && (
+                  <span className="text-rose-400 ml-4">{linksDown} DOWN</span>
+                )}
+              </div>
+            )}
           </div>
           {/* FORCE POSTURE — split by asset_class so the commander sees
               hardware readiness cleanly instead of one merged bucket

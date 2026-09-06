@@ -204,7 +204,7 @@ export const IMPLICIT_ROOT: TierConfig = {
 };
 
 const DEFAULT: Deployment = {
-  title: 'OpenDDIL DEMO',
+  title: 'OpenDDIL',
   logo: '',
   fobs: [],
   liveness: DEFAULT_LIVENESS,

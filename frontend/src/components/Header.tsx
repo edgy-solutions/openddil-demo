@@ -18,7 +18,6 @@ import {
   type AssetTier,
 } from '../lib/assetTier';
 import EdgePulldown from './EdgePulldown';
-import IdentityBadge from './releasability/IdentityBadge';
 import NationLegend from './releasability/NationLegend';
 import { useSession } from '../hooks/useSession';
 
@@ -131,7 +130,14 @@ export default function Header({
           that are otherwise identical. */}
       <div className="mb-2 flex w-full max-w-6xl mx-auto items-center justify-between gap-4">
         <NationLegend assets={fleet} viewerNations={session.nations} />
-        <IdentityBadge />
+        {/* MOVED TO THE SHARED SHELL CHROME (Root.tsx).
+            It lived here, in the edge-shaped header only, so the HQ and
+            REGIONAL shapes rendered a subject-scoped partition while
+            naming no subject — ADR-0035 class 5, and the first concrete
+            instance of the "three components are still three components"
+            debt: a feature landed in one sibling and never reached the
+            others. Chrome that must appear for EVERY shape belongs above
+            the shape selection, not inside one of its branches. */}
       </div>
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
         {/* Phase 6c.2: two-level scope chrome — EDGE: [edge-N] › ASSET: [...]
