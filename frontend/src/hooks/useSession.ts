@@ -24,6 +24,7 @@
 // cannot read, and this endpoint is how the page learns anything about its
 // own session at all.
 import { useEffect, useState } from 'react';
+import { setLabeledTables } from '../lib/labeledTables';
 
 export interface Session {
   /** Undefined while the first request is in flight — distinct from `false`,
@@ -94,6 +95,10 @@ export function useSession(): Session {
           return;
         }
         const body = await res.json();
+        // The gateway's own list of partitionable tables, cached so the
+        // shared shape client can explain a refusal with the same fact the
+        // gateway refused on.
+        setLabeledTables(body.labeled_tables);
         setSession({
           authenticated: Boolean(body.authenticated),
           subject: body.subject ?? null,

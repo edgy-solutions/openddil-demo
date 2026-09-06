@@ -232,3 +232,49 @@ def test_half_configured_oidc_refuses_to_start(monkeypatch):
     monkeypatch.setattr(mod, "CLIENT_SECRET", "")
     with pytest.raises(mod.AuthError, match="CLIENT_SECRET"):
         mod.enabled()
+
+
+# ===========================================================================
+# Table granularity: a rollup that cannot be partitioned must not be served
+# ===========================================================================
+# These defend the rule found by a 502. The region_* rollup tables carry no
+# releasability columns, the PEP forwarded a predicate naming those columns
+# anyway, Electric rejected it, and the browser rendered the failure as
+# "awaiting first emission" — a transport error wearing the clothes of an
+# absence.
+#
+# The rule is NOT a decision against a viewer. Nothing is decided about
+# them: unpartitionable data has no question to answer, so the fully
+# entitled subject is refused exactly as the unentitled one is.
+import os as _os  # noqa: E402
+# pep.py reads its wiring at import time and refuses to guess, which is
+# correct for a gateway and means a test must supply it. Set before import.
+_os.environ.setdefault("OPENDDIL_ELECTRIC_URL", "http://electric.invalid:5133")
+_os.environ.setdefault("OPENDDIL_TOPAZ_URL", "http://topaz.invalid:8282")
+from pep import may_serve_table  # noqa: E402
+
+LABELED = {"telemetry_latest_state", "asset_logistics_status"}
+
+
+def test_labeled_table_is_served():
+    assert may_serve_table("telemetry_latest_state", LABELED) is True
+
+
+def test_unlabelable_table_is_refused():
+    assert may_serve_table("region_fleet_summary", LABELED) is False
+
+
+def test_refusal_does_not_depend_on_the_subject():
+    """The same answer for everyone — that is what makes it a property of
+    the data. A per-subject exception here would be a second authorization
+    decision nobody reviewed (ADR-0029 §1)."""
+    for _subject in ("liaison.coalition", "observer.unlisted", ""):
+        assert may_serve_table("region_top_factors", LABELED) is False
+
+
+def test_unconfigured_means_off_and_serves_everything():
+    """An empty allowlist is 'not configured', never 'nothing is labeled'.
+    Reading it the other way would refuse every table on a deployment that
+    simply had not set the variable — failing closed into a total outage
+    rather than into the previous behaviour, which is announced at boot."""
+    assert may_serve_table("anything_at_all", set()) is True

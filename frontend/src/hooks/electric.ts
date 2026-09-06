@@ -11,6 +11,9 @@
 // parsed objects. `num()` coerces a known-numeric field; per-table hooks
 // use it so components get clean typed data.
 // =============================================================================
+import { useEffect } from 'react';
+import { reportShapeError, clearShapeError } from '../lib/shapeErrors';
+import { isUnlabelable } from '../lib/labeledTables';
 import { useShape } from '@electric-sql/react';
 
 // VITE_ELECTRIC_URL is relative ("/electric/v1/shape") for same-origin Helm
@@ -82,6 +85,25 @@ export function useTableShape<T>(
       ...(opts.where ? { where: opts.where } : {}),
     },
   });
+
+  // A FAILED FEED IS NOT AN EMPTY ONE, and this is the only place that
+  // distinction can be made once for every panel. Reported here rather than
+  // rendered here: the hook does not know what a panel wants to show, but
+  // it is the one thing every panel passes through, so it is the one place
+  // a new panel cannot forget.
+  //
+  // `unlabelable` vs `transport` is decided from the session's
+  // `labeled_tables` — the same list the gateway enforces — so the screen's
+  // explanation comes from the authority that made the refusal instead of
+  // being inferred from a status code.
+  useEffect(() => {
+    if (isError) {
+      reportShapeError(table, isUnlabelable(table) ? 'unlabelable' : 'transport');
+    } else {
+      clearShapeError(table);
+    }
+    return () => clearShapeError(table);
+  }, [table, isError]);
 
   const rows = (data ?? []) as Record<string, any>[];
   return {

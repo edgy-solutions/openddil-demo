@@ -269,6 +269,51 @@ def _sql_str(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+# ---------------------------------------------------------------------------
+# WHICH TABLES CAN BE PARTITIONED AT ALL (ADR-0029, table granularity)
+# ---------------------------------------------------------------------------
+# `policy_predicate` names `originator_nation` and `releasable_to`. A table
+# without those columns cannot be filtered by it — and until 2026-09-06 the
+# PEP forwarded the predicate anyway, Electric rejected the query, and the
+# browser got a 502 that its panels rendered as "awaiting first emission".
+#
+# The behaviour was right by accident and wrong in how it said so: a rollup
+# carrying no releasability labels CANNOT BE PARTITIONED, so it must not be
+# served to anyone — the fully-entitled liaison included. That is
+# deny-unlabeled operating at table granularity, and it deserves to be a
+# stated decision with a cause rather than a SQL error three components
+# away.
+#
+# The cause is `unlabelable`, and it is deliberately NOT phrased as a
+# decision against the viewer. Nothing was decided about them: the data
+# cannot be scoped, so there is no question to decide.
+#
+# EMPTY MEANS THE CHECK IS OFF, and that is announced at boot rather than
+# assumed. A deployment that sets nothing keeps the pre-2026-09-06
+# behaviour; the completeness gate is what verifies this list against the
+# database, because a list in a chart and columns in a schema are two
+# copies of one fact.
+LABELED_TABLES = {
+    t.strip() for t in os.getenv("OPENDDIL_LABELED_TABLES", "").split(",")
+    if t.strip()
+}
+
+
+def may_serve_table(table: str, labeled: set[str] | None = None) -> bool:
+    """False when the table cannot be partitioned, and so must not be served.
+
+    A function rather than an inline test so the rule can be exercised
+    directly — this is the only place the PEP refuses data on a property of
+    the DATA rather than of the subject, and that asymmetry is worth being
+    able to assert.
+    """
+    allowed = LABELED_TABLES if labeled is None else labeled
+    if not allowed:
+        # Not configured. Pre-2026-09-06 behaviour, announced at boot.
+        return True
+    return table in allowed
+
+
 def policy_predicate(nations: list[str]) -> str:
     """The Topaz decision, rendered as a shape filter. Nothing else.
 
@@ -462,6 +507,12 @@ class Pep(BaseHTTPRequestHandler):
                 "policy_version": decision["policy_version"],
                 "corpus_version": decision["corpus_version"],
                 "role": decision["role"],
+                # WHICH TABLES CAN BE PARTITIONED AT ALL. Surfaced here so
+                # the browser learns it from the same authority that
+                # enforces it, rather than inferring "no rows" from a failed
+                # request. Empty list means the check is not configured, and
+                # the UI must not then claim anything about labelability.
+                "labeled_tables": sorted(LABELED_TABLES),
             }).encode()
             self._send(200, body, [("Content-Type", "application/json"),
                                    ("Cache-Control", "no-store")])
@@ -486,6 +537,15 @@ class Pep(BaseHTTPRequestHandler):
 
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         table = (params.get("table") or [""])[0]
+
+        # BEFORE the session and before the PDP: whether this table can be
+        # partitioned is a fact about the data, not about who is asking, so
+        # asking Topaz first would record a decision about a subject when
+        # the answer is the same for every subject.
+        if table and not may_serve_table(table):
+            self._deny("unlabelable: table carries no releasability labels",
+                       subject="", resource=table, status=403)
+            return
 
         try:
             subject, principal, _session = self._resolve_principal()
@@ -579,6 +639,14 @@ def main() -> None:
     # "is this thing actually authenticating?" should not have to infer the
     # answer from a request that happened to fail.
     log.info("  auth mode: %s", AUTH_MODE)
+    if LABELED_TABLES:
+        log.info("  labelable: %d table(s) may be served — %s",
+                 len(LABELED_TABLES), ", ".join(sorted(LABELED_TABLES)))
+    else:
+        log.warning("  labelable: NOT CONFIGURED — every table is forwarded "
+                    "with a releasability predicate, so a table without the "
+                    "label columns fails at Electric and reaches the browser "
+                    "as a transport error. Set OPENDDIL_LABELED_TABLES.")
     if AUTH_MODE == "oidc":
         log.info("  issuer:    %s", oidc.ISSUER)
         log.info("  client:    %s", oidc.CLIENT_ID)

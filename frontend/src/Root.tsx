@@ -7,6 +7,7 @@ import { deployment } from './deployment';
 import { useSession } from './hooks/useSession';
 import { SignedOut, CheckingSession } from './components/SignedOut';
 import IdentityBadge from './components/releasability/IdentityBadge';
+import ShapeErrorBanner from './components/ShapeErrorBanner';
 
 // =============================================================================
 // Root — two modes, and which one you get is a deployment fact
@@ -111,6 +112,8 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
           ))}
         </div>
       </div>
+
+      <ShapeErrorBanner />
 
       {/* Main View Container. min-h-0 + overflow-hidden propagate the
           height constraint down — without min-h-0, this flex item's
@@ -225,6 +228,7 @@ function Root() {
             <IdentityBadge />
           </div>
         </div>
+        <ShapeErrorBanner />
         <div className="flex-1 relative min-h-0 overflow-hidden">
           <TierApp tier={tier} />
         </div>
