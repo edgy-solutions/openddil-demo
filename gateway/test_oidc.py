@@ -278,3 +278,52 @@ def test_unconfigured_means_off_and_serves_everything():
     simply had not set the variable — failing closed into a total outage
     rather than into the previous behaviour, which is announced at boot."""
     assert may_serve_table("anything_at_all", set()) is True
+
+
+# ===========================================================================
+# Table CLASSES — "cannot be partitioned" was hiding four different reasons
+# ===========================================================================
+import pep as _pep  # noqa: E402
+
+
+def _classes(nation=(), role=(), subject=None, oversight=("auditor",)):
+    _pep.LABELED_TABLES = set(nation)
+    _pep.ROLE_SERVED_TABLES = set(role)
+    _pep.SUBJECT_SCOPED_TABLES = dict(subject or {})
+    _pep.OVERSIGHT_ROLES = set(oversight)
+
+
+def test_role_served_table_is_not_refused():
+    """edge_buffer_status holds bridge lag and a severance flag — no asset
+    data, so nothing to partition BY. Refusing it removed HQ's severance
+    indicator, which is the thing a severance recording exists to show."""
+    _classes(nation={"telemetry_latest_state"}, role={"edge_buffer_status"})
+    assert _pep.table_class("edge_buffer_status") == "role"
+    assert _pep.table_class("telemetry_latest_state") == "nation"
+
+
+def test_a_table_in_no_class_is_still_refused():
+    """The split must not become a way for everything to be servable."""
+    _classes(nation={"telemetry_latest_state"}, role={"edge_buffer_status"})
+    assert _pep.table_class("region_top_factors") == "refused"
+
+
+def test_subject_scoped_needs_its_column():
+    _classes(nation={"x"}, subject={"audit_log": "actor"})
+    assert _pep.table_class("audit_log") == "subject"
+    assert _pep.SUBJECT_SCOPED_TABLES["audit_log"] == "actor"
+
+
+def test_class_does_not_depend_on_the_subject():
+    """Which class a table is in is a property of the DATA. What the class
+    then does with a subject differs — that is why table_class returns a
+    class and not a decision."""
+    _classes(nation={"a"}, role={"b"}, subject={"c": "actor"})
+    for _who in ("liaison.coalition", "observer.unlisted", ""):
+        assert _pep.table_class("b") == "role"
+        assert _pep.table_class("zzz") == "refused"
+
+
+def test_unconfigured_still_means_off():
+    _classes()
+    assert _pep.table_class("anything") == "nation"

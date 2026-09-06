@@ -298,6 +298,72 @@ LABELED_TABLES = {
     if t.strip()
 }
 
+# ---------------------------------------------------------------------------
+# THREE CLASSES, NOT TWO — because "unlabelable" was conflating four things
+# ---------------------------------------------------------------------------
+# The first cut of this refused every table without nation labels, which was
+# correct for rollups and WRONG for infrastructure state: `edge_buffer_status`
+# holds bridge lag and a severance flag, no asset data at all, and refusing it
+# removed HQ's severance indicator — the very thing a severance recording
+# exists to show. A single bucket called "cannot be partitioned" was hiding
+# the fact that the tables in it could not be partitioned FOR DIFFERENT
+# REASONS, and only one of those reasons implies "serve to nobody".
+#
+#   nation-filtered  carries originator_nation / releasable_to. The ADR-0029
+#                    predicate applies. (LABELED_TABLES above.)
+#
+#   role-served      carries no asset data, so there is nothing to partition
+#                    BY. Served to an authenticated subject with no nation
+#                    filter. This is a DECLARED POSITION, not an oversight:
+#                    infrastructure topology is visible to authenticated
+#                    operators. Widening it to anything asset-bearing would
+#                    be a bypass wearing this class's name.
+#
+#   subject-scoped   partitioned by WHO, not by nation. A subject sees their
+#                    own rows; a subject whose role grants oversight sees all.
+#                    `audit_log` is the case: your decisions are yours, an
+#                    auditor's remit is everyone's.
+#
+# Anything in none of the three is refused, and that refusal is now a
+# statement about one specific class of data rather than about everything the
+# read path had not got to yet.
+ROLE_SERVED_TABLES = {
+    t.strip() for t in os.getenv("OPENDDIL_ROLE_SERVED_TABLES", "").split(",")
+    if t.strip()
+}
+
+# "table:column" pairs — the column holding the subject a row belongs to.
+SUBJECT_SCOPED_TABLES = {
+    t.split(":", 1)[0].strip(): t.split(":", 1)[1].strip()
+    for t in os.getenv("OPENDDIL_SUBJECT_SCOPED_TABLES", "").split(",")
+    if t.strip() and ":" in t
+}
+
+# Roles that see every row of a subject-scoped table rather than their own.
+OVERSIGHT_ROLES = {
+    r.strip() for r in os.getenv("OPENDDIL_OVERSIGHT_ROLES", "auditor").split(",")
+    if r.strip()
+}
+
+
+def table_class(table: str) -> str:
+    """'nation' | 'role' | 'subject' | 'refused'.
+
+    Checked before any subject is resolved: which class a table belongs to is
+    a property of the DATA and is the same for everyone. What the class then
+    DOES with a subject differs, which is why this returns a class rather
+    than a decision.
+    """
+    if not LABELED_TABLES and not ROLE_SERVED_TABLES and not SUBJECT_SCOPED_TABLES:
+        return "nation"          # not configured — pre-2026-09-06 behaviour
+    if table in LABELED_TABLES:
+        return "nation"
+    if table in ROLE_SERVED_TABLES:
+        return "role"
+    if table in SUBJECT_SCOPED_TABLES:
+        return "subject"
+    return "refused"
+
 
 def may_serve_table(table: str, labeled: set[str] | None = None) -> bool:
     """False when the table cannot be partitioned, and so must not be served.
@@ -307,11 +373,11 @@ def may_serve_table(table: str, labeled: set[str] | None = None) -> bool:
     the DATA rather than of the subject, and that asymmetry is worth being
     able to assert.
     """
-    allowed = LABELED_TABLES if labeled is None else labeled
-    if not allowed:
-        # Not configured. Pre-2026-09-06 behaviour, announced at boot.
-        return True
-    return table in allowed
+    if labeled is not None:
+        # Explicit set — used by the tests to pin the rule without touching
+        # module state.
+        return (not labeled) or table in labeled
+    return table_class(table) != "refused"
 
 
 def policy_predicate(nations: list[str]) -> str:
@@ -521,7 +587,9 @@ class Pep(BaseHTTPRequestHandler):
                 # enforces it, rather than inferring "no rows" from a failed
                 # request. Empty list means the check is not configured, and
                 # the UI must not then claim anything about labelability.
-                "labeled_tables": sorted(LABELED_TABLES),
+                "labeled_tables": sorted(
+                    LABELED_TABLES | ROLE_SERVED_TABLES | set(SUBJECT_SCOPED_TABLES)
+                ),
             }).encode()
             self._send(200, body, [("Content-Type", "application/json"),
                                    ("Cache-Control", "no-store")])
@@ -551,7 +619,7 @@ class Pep(BaseHTTPRequestHandler):
         # partitioned is a fact about the data, not about who is asking, so
         # asking Topaz first would record a decision about a subject when
         # the answer is the same for every subject.
-        if table and not may_serve_table(table):
+        if table and table_class(table) == "refused":
             # NOT a Topaz decision — the PDP is never consulted for this, so
             # the log must not say it was. See _deny's `marker`.
             self._deny("unlabelable: table carries no releasability labels",
@@ -592,8 +660,27 @@ class Pep(BaseHTTPRequestHandler):
                        subject=subject, resource=table)
             return
 
-        where = compose((params.get("where") or [None])[0],
-                        policy_predicate(decision["allowed_nations"]))
+        # THE FILTER THIS TABLE'S CLASS CALLS FOR. One place, so a class
+        # cannot acquire a second meaning somewhere else in the handler.
+        cls = table_class(table)
+        if cls == "role":
+            # Nothing to partition by. The client's own `where` still
+            # applies; the POLICY contributes no clause, which is a
+            # declared position and not an omission — see the class
+            # comment. Recorded in the decision log as such, so a reader
+            # of that log can tell "no filter was applied" from "a filter
+            # was applied and matched everything".
+            policy_clause = None
+        elif cls == "subject":
+            col = SUBJECT_SCOPED_TABLES[table]
+            if decision["role"] in OVERSIGHT_ROLES:
+                policy_clause = None
+            else:
+                policy_clause = f"{col} = {_sql_str(subject)}"
+        else:
+            policy_clause = policy_predicate(decision["allowed_nations"])
+
+        where = compose((params.get("where") or [None])[0], policy_clause)             if policy_clause else (params.get("where") or [None])[0]
 
         upstream_params = [(k, v) for k, vs in params.items()
                            if k in PASSTHROUGH_PARAMS for v in vs]
@@ -651,9 +738,13 @@ def main() -> None:
     # "is this thing actually authenticating?" should not have to infer the
     # answer from a request that happened to fail.
     log.info("  auth mode: %s", AUTH_MODE)
-    if LABELED_TABLES:
-        log.info("  labelable: %d table(s) may be served — %s",
-                 len(LABELED_TABLES), ", ".join(sorted(LABELED_TABLES)))
+    if LABELED_TABLES or ROLE_SERVED_TABLES or SUBJECT_SCOPED_TABLES:
+        log.info("  nation-filtered: %s", ", ".join(sorted(LABELED_TABLES)) or "(none)")
+        log.info("  role-served:     %s — NO nation filter, authenticated subjects",
+                 ", ".join(sorted(ROLE_SERVED_TABLES)) or "(none)")
+        log.info("  subject-scoped:  %s — oversight roles: %s",
+                 ", ".join(f"{t}:{c}" for t, c in sorted(SUBJECT_SCOPED_TABLES.items())) or "(none)",
+                 ", ".join(sorted(OVERSIGHT_ROLES)) or "(none)")
     else:
         log.warning("  labelable: NOT CONFIGURED — every table is forwarded "
                     "with a releasability predicate, so a table without the "
