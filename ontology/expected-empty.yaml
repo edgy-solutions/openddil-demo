@@ -31,6 +31,30 @@ version: 1
 
 expected_empty:
 
+  asset_telemetry_windows:
+    reason: >-
+      The windowing stage that would fill it is not producing here: the
+      asset-telemetry-windows topic has a high-watermark of 0 on both the
+      edge and HQ brokers, so nothing has ever been written to it. The table
+      gained releasability columns in the 2026-09-06 labelling block and is
+      SERVED rather than refused, because "no rows" is the accurate statement
+      about it and "not served" was not.
+    producer: asset-telemetry-windows topic (faust-edge windowing)
+    declared_by: cnogradi
+    declared_on: 2026-09-06
+
+  inventory_items:
+    reason: >-
+      Nothing writes it in this deployment — the asset-element-inventory
+      topic is at high-watermark 0 and no component emits to it. The frontend
+      panel that would read it renders its own "not yet populated" copy
+      rather than a shape, so its emptiness has never been a screen defect.
+      Labelled and served for the same reason as above: empty is a fact about
+      the data, refused was a fact about the read path.
+    producer: asset-element-inventory topic
+    declared_by: cnogradi
+    declared_on: 2026-09-06
+
   asset_capability_state:
     reason: >-
       No weapons-capability feed is deployed here. This table is populated by
