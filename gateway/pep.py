@@ -374,13 +374,22 @@ class Pep(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _deny(self, cause: str, *, subject: str, resource: str, status: int = 403,
-              upstream: str = "", headers: list | None = None) -> None:
+              upstream: str = "", headers: list | None = None,
+              marker: str = DENY_MARKER) -> None:
         """Every non-200 and every exception lands here. There is no other
         exit from an authorization failure, and no branch that converts one
-        into an allow."""
+        into an allow.
+
+        `marker` exists because the default one NAMES TOPAZ, and not every
+        refusal came from Topaz. An `unlabelable` table is refused before the
+        PDP is consulted at all — logging that as "TOPAZ AUTHZ DENIED" would
+        attribute a decision to an authority that never saw the request, and
+        an operator grepping the decision log would go and read Topaz's
+        policy looking for a rule that does not exist.
+        """
         ref = new_decision_id()
         log.warning("%s ref=%s cause=%s user=%s resource=%s upstream=%s",
-                    DENY_MARKER, ref, cause, subject or "<none>", resource,
+                    marker, ref, cause, subject or "<none>", resource,
                     upstream or "-")
         record_decision(decision_id=ref, outcome="deny", cause=cause,
                         subject=subject or None, resource=resource,
@@ -543,8 +552,11 @@ class Pep(BaseHTTPRequestHandler):
         # asking Topaz first would record a decision about a subject when
         # the answer is the same for every subject.
         if table and not may_serve_table(table):
+            # NOT a Topaz decision — the PDP is never consulted for this, so
+            # the log must not say it was. See _deny's `marker`.
             self._deny("unlabelable: table carries no releasability labels",
-                       subject="", resource=table, status=403)
+                       subject="", resource=table, status=403,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
             return
 
         try:
