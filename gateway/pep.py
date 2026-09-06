@@ -680,11 +680,19 @@ class Pep(BaseHTTPRequestHandler):
         else:
             policy_clause = policy_predicate(decision["allowed_nations"])
 
-        where = compose((params.get("where") or [None])[0], policy_clause)             if policy_clause else (params.get("where") or [None])[0]
+        client_where = (params.get("where") or [None])[0]
+        where = compose(client_where, policy_clause) if policy_clause else client_where
 
         upstream_params = [(k, v) for k, vs in params.items()
                            if k in PASSTHROUGH_PARAMS for v in vs]
-        upstream_params.append(("where", where))
+        # ONLY WHEN THERE IS ONE. Appending the parameter unconditionally
+        # sent `where=None` upstream for a role-served table — urlencode
+        # stringifies None, Electric got the literal word as a predicate,
+        # and the browser saw a 502 for a table the gateway had just decided
+        # to serve. A refusal and a malformed allow are opposite outcomes
+        # that looked identical from the panel.
+        if where:
+            upstream_params.append(("where", where))
         url = f"{ELECTRIC}{parsed.path}?" + urllib.parse.urlencode(upstream_params)
 
         try:

@@ -327,3 +327,22 @@ def test_class_does_not_depend_on_the_subject():
 def test_unconfigured_still_means_off():
     _classes()
     assert _pep.table_class("anything") == "nation"
+
+
+def test_role_served_sends_no_where_at_all(monkeypatch):
+    """A role-served table contributes NO policy clause, and the parameter
+    must then be omitted rather than sent empty. Sending it unconditionally
+    put the literal string "None" upstream as a predicate: Electric
+    rejected it and the panel saw a 502 for a table the gateway had just
+    decided to serve — a malformed allow that looked exactly like a
+    refusal."""
+    import urllib.parse
+    params = {"table": ["edge_buffer_status"], "offset": ["-1"]}
+    client_where = (params.get("where") or [None])[0]
+    policy_clause = None
+    where = client_where if not policy_clause else "x"
+    upstream = [(k, v) for k, vs in params.items()
+                if k in _pep.PASSTHROUGH_PARAMS for v in vs]
+    if where:
+        upstream.append(("where", where))
+    assert "where" not in urllib.parse.urlencode(upstream)
