@@ -1,0 +1,125 @@
+# =============================================================================
+# Wear-component manifest — which wear axes a platform CLASS physically has
+# =============================================================================
+# WHAT THIS ANSWERS, AND WHY IT IS NOT THE CM BASELINE
+#
+# Prognostics derives four wear axes: track, engine, barrel, suspension. Until
+# 2026-09-06 it derived all four for every asset that moved, which produced
+# four helicopters reporting 100.0% TRACK wear (GD-14). Helicopters do not
+# have tracks.
+#
+# The obvious fix — gate the axis on the asset's CM baseline — conflates two
+# namespaces that were never meant to align:
+#
+#   * whether an AH-64E HAS tracks is a fact about the platform CLASS. It is
+#     the same for every AH-64E that ever existed.
+#   * a CM baseline is a fact about ONE ASSET's authorized configuration:
+#     which part numbers are acceptable in which slots, per tail number.
+#
+# Measured evidence that they do not align: baseline coverage is 3 of 14
+# assets, no baseline declares a `track` slot (not even the M1A2's), and the
+# UH-60M declares `engine-left`/`engine-right` where the wear axis is called
+# `engine`. Gating one on the other would need an authored mapping between
+# two vocabularies — and the honest answer to two misaligned declarations is
+# usually a THIRD declaration at the level the fact actually lives, not a
+# mapping between the two that do not fit.
+#
+# Tracks live at the platform class. So the declaration goes here.
+#
+# -----------------------------------------------------------------------------
+# WHY AUTHORING THIS IS DECLARATION AND NOT FABRICATION
+# -----------------------------------------------------------------------------
+# A wear COEFFICIENT is an unvalidated number in a physical unit — how many
+# kilometres a track lasts — and inventing one would be authored fiction
+# (GD-14, ADR-0020: real calibration is the AFSim/VR-Forces phase).
+#
+# A component MANIFEST is a checkable statement of existence about a public
+# platform class. A UH-60M has no tracks; an M1A2 has them. Anyone can verify
+# it, it carries no units, and being wrong about it is a correctable error of
+# fact rather than a fabricated measurement.
+#
+# SOURCE: public platform characteristics. Overlay-owned: a real deployment
+# declares its own fleet here rather than inheriting this file.
+#
+# -----------------------------------------------------------------------------
+# THREE OUTCOMES, AND THE MIDDLE ONE IS THE POINT
+# -----------------------------------------------------------------------------
+#   declared present  -> evaluate the axis as before
+#   declared absent   -> NOT APPLICABLE. No factor, no figure, and explicitly
+#                        NOT "unknown": the component does not exist, so
+#                        there is nothing unknown about it. Rendering a
+#                        helicopter's track wear as UNKNOWN would imply the
+#                        system is missing data about a component that is not
+#                        there.
+#   no manifest entry -> UNKNOWN for every axis. The honest gap: we have not
+#                        been told what this platform carries.
+#
+# That is the UNSPECIFIED-is-not-a-value convention one axis over. A claim
+# and an absence of a claim are different things and must not render alike.
+# =============================================================================
+version: 1
+
+# THE COMPONENT VOCABULARY IS OPEN, and that is deliberate. Prognostics emits
+# four axes today (track | engine | barrel | suspension), but fusion evaluates
+# whatever a producer puts in `sustainment.wear.components` — a customer feed
+# may send `transmission`, and the M1A2's CM baseline declares exactly that
+# slot. So this file states what a platform HAS, not what one derivation
+# computes: a component declared here that nothing currently measures is
+# harmless, while one omitted because today's model ignores it would silently
+# suppress a real reading the day a feed starts sending it.
+#
+# `suspension` is terrain-integral wear ((|pitch|+|roll|) x distance) and is
+# declared only for ground vehicles — the integral is meaningless for
+# rotary-wing, which is a statement about the model's applicability rather
+# than about the airframe having no dampers.
+platforms:
+
+  # --- tracked ground combat vehicles -------------------------------------
+  M1A1:
+    components: [track, engine, barrel, suspension, transmission]
+    note: "Tracked MBT, 120mm main gun."
+  M1A2-SEPv3:
+    components: [track, engine, barrel, suspension, transmission]
+    note: "Tracked MBT, 120mm main gun."
+  M2A3-Bradley:
+    components: [track, engine, barrel, suspension, transmission]
+    note: "Tracked IFV, 25mm autocannon."
+  RCV-M:
+    components: [track, engine, suspension, transmission]
+    note: >-
+      Tracked robotic combat vehicle. `barrel` NOT declared, which under the
+      three-outcome rule means DECLARED ABSENT rather than unknown — the
+      armament fit is modular, so the platform class does not carry a barrel
+      as a fixed wear item. Stating that plainly because an earlier draft of
+      this note claimed omission reads as UNKNOWN, which contradicts both the
+      header and the implementation.
+
+      LIMIT WORTH KNOWING: the three states are per-PLATFORM, not per-axis. A
+      platform either has a manifest — in which case every axis is declared
+      present or absent — or has none, in which case every axis is unknown.
+      There is no way to say "this platform, this axis, uncertain". Where that
+      matters, the honest move is to leave the platform out entirely rather
+      than assert an absence you are unsure of.
+
+  # --- wheeled ground vehicles --------------------------------------------
+  HMMWV-M1151A1:
+    components: [engine, suspension, transmission]
+    note: >-
+      Wheeled. `track` declared absent by omission from the list — see the
+      three-outcome rule: a platform WITH a manifest that omits an axis has
+      declared that axis absent, not unknown. `barrel` not declared: the
+      M1151 mounts crew-served weapons rather than carrying a barrel as a
+      platform wear item.
+
+  # --- rotary-wing ---------------------------------------------------------
+  AH-64E-V6:
+    components: [engine, barrel]
+    note: >-
+      Attack helicopter with a 30mm chain gun. No tracks and no
+      terrain-integral suspension wear.
+  UH-60M:
+    components: [engine]
+    note: "Utility helicopter. No tracks, no gun barrel, no ground suspension."
+  CH-47F-BlockII:
+    components: [engine]
+    note: "Heavy-lift helicopter. No tracks, no gun barrel, no ground suspension."
