@@ -28,6 +28,13 @@ export interface RegionWearTrends {
   region_id: string;
   components: ComponentWearTrend[];
   observed_at: string | null;
+  /** True when more than one class partial was merged. The means below are
+   *  then WEIGHTED across partials — exact only because each partial carries
+   *  its own asset_count. Render the flag anyway: a weighted mean of
+   *  truncated per-class component sets can still be missing components that
+   *  appear in neither partial's list. */
+  merged_lossy: boolean;
+  partial_count: number;
 }
 
 function mapRow(row: Record<string, any>): RegionWearTrends {
@@ -41,9 +48,40 @@ function mapRow(row: Record<string, any>): RegionWearTrends {
       asset_count: num(c.asset_count ?? c.assetCount),
     })),
     observed_at: row.observed_at ?? null,
+    merged_lossy: false,
+    partial_count: 1,
   };
 }
 
 export function useRegionWearTrends(): ShapeResult<RegionWearTrends> {
-  return useTableShape('region_wear_trends', mapRow);
+  const raw = useTableShape<RegionWearTrends>('region_wear_trends', mapRow);
+
+  const byRegion = new Map<string, RegionWearTrends>();
+  for (const p of raw.data) {
+    const acc = byRegion.get(p.region_id);
+    if (!acc) {
+      byRegion.set(p.region_id, { ...p, components: p.components.map((c) => ({ ...c })), partial_count: 1, merged_lossy: false });
+      continue;
+    }
+    const idx = new Map(acc.components.map((c) => [c.component_id, c]));
+    for (const c of p.components) {
+      const hit = idx.get(c.component_id);
+      if (!hit) { acc.components.push({ ...c }); idx.set(c.component_id, acc.components[acc.components.length - 1]); continue; }
+      // WEIGHTED mean, not the mean of means. Each partial carries its own
+      // asset_count precisely so this merge is possible; averaging the
+      // averages would let a class of one asset outweigh a class of thirteen.
+      const total = hit.asset_count + c.asset_count;
+      hit.mean_rul_remaining = total > 0
+        ? (hit.mean_rul_remaining * hit.asset_count + c.mean_rul_remaining * c.asset_count) / total
+        : 0;
+      hit.asset_count = total;
+    }
+    acc.partial_count += 1;
+    acc.merged_lossy = true;
+    if (p.observed_at && (!acc.observed_at || p.observed_at < acc.observed_at)) {
+      acc.observed_at = p.observed_at;
+    }
+  }
+
+  return { ...raw, data: Array.from(byRegion.values()) };
 }
