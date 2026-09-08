@@ -85,7 +85,7 @@
 #
 # Found by swapping corpora during a demo rehearsal and watching the
 # recorded policy_version correctly NOT change.
-version: users-2026-09-05
+version: users-2026-09-08
 
 users:
   # ---------------------------------------------------------------------------
@@ -97,7 +97,11 @@ users:
     display_name: Operator A (Atlantia)
     nations: [ATL]
     clearance: ""                      # unused in Slice 1; see header
-    role: regional-operator
+    # ROLE ALIGNED TO THE TIER THIS SUBJECT ACTUALLY WORKS AT. Both operators
+    # were labelled `regional-operator` while there was no region to operate;
+    # now that region-east serves its own screen the label was describing the
+    # wrong tier, and a reader would reasonably infer these two belong on it.
+    role: edge-operator
     # ROLE IS RECORDED AND IS NOT THE DECIDING INPUT. Both operators below
     # hold the SAME role — that is the whole reason ADR-0029 exists. RBAC
     # cannot express "these two people see different fleets" when the two
@@ -111,7 +115,7 @@ users:
     display_name: Operator B (Borduria)
     nations: [BDR]
     clearance: ""
-    role: regional-operator
+    role: edge-operator
     asserted_by: cnogradi
     asserted_on: 2026-09-05
 
@@ -133,6 +137,30 @@ users:
     role: regional-operator
     asserted_by: cnogradi
     asserted_on: 2026-09-05
+
+  # ---------------------------------------------------------------------------
+  # The regional operator — scoped to the REGION'S nations, which are derived
+  # and not chosen
+  # ---------------------------------------------------------------------------
+  # region-east's contributors carry exactly two effective audiences, ATL and
+  # BDR, so the subject who operates that region holds both. That is not the
+  # same claim as the liaison's: the liaison holds two nations because a
+  # coalition role spans them, while this subject holds two because THE
+  # REGION DOES. If region-east's fleet became single-nation, this entry
+  # should narrow and the liaison's should not.
+  #
+  # Under the partitioned rollups it sees all three class partials and a
+  # coalition total of 14; an edge operator sees their own partial plus the
+  # shared one. Same screen, same role name at their own tier, different
+  # numbers — which is ADR-0029's whole point, now one tier up.
+  "55555555-5555-4555-8555-555555555555":
+    username: operator.regioneast
+    display_name: Regional Operator (region-east)
+    nations: [ATL, BDR]
+    clearance: ""
+    role: regional-operator
+    asserted_by: cnogradi
+    asserted_on: 2026-09-08
 
 # -----------------------------------------------------------------------------
 # DELIBERATELY ABSENT: 44444444-4444-4444-8444-444444444444 (observer.unlisted)
