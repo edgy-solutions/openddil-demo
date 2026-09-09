@@ -122,7 +122,19 @@ export default function MunitionsInventory({
 
       {empty ? (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
-          No weapons-capability snapshots yet -- awaiting first emission.
+          {/* DECLARED IDLE, NOT AWAITED. `asset-capability-snapshot` is at
+              watermark 0 on every broker in this deployment because DIS
+              EntityStatePDU carries no loadout or stores information — see
+              ADR-0038 and scripts/declared-idle-topics.yaml, status
+              `declared`. "Awaiting first emission" asserts that one is
+              coming; nothing here will ever emit one, so the sentence was a
+              promise the fleet cannot keep.
+
+              Same discipline as UNSPECIFIED-is-not-a-value: an absence with a
+              known cause and an absence awaiting data are different absences,
+              and only one of them means "check back later". */}
+          Not carried by any source in this fleet — no weapons-capability feed
+          is deployed here (DIS carries no loadout).
         </div>
       ) : (
         <>

@@ -95,11 +95,19 @@ function initialRegion(tierScopeValue?: string | null): string | null {
 // --- panels ----------------------------------------------------------------
 
 function RegionPulldown({
-  available, selected, onSelect,
+  available, selected, onSelect, scopeLabel = 'Region scope', emptyLabel = 'no regions observed yet',
 }: {
   available: string[];
   selected: string | null;
   onSelect: (regionId: string) => void;
+  /** SELECTION IS BY SHAPE, NEVER BY NAME (lib/tierShape). An INTERMEDIATE
+   *  scopes over its SUBTREE — the children it rolls up — while the root
+   *  scopes over regions. Rendering "Region scope / no regions observed yet"
+   *  on a region put the root's selector on a tier that is one region and
+   *  has none beneath it: a control offering a choice that does not exist at
+   *  this tier, which reads as missing data rather than as a wrong control. */
+  scopeLabel?: string;
+  emptyLabel?: string;
 }) {
   // Visually unobtrusive — dev infrastructure, not narrative payoff. The
   // maintainer pulldown (§C.2) will be more prominent because it IS the
@@ -107,7 +115,7 @@ function RegionPulldown({
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="text-[10px] text-slate-500 uppercase tracking-wider">
-        Region scope
+        {scopeLabel}
       </span>
       <select
         value={selected ?? ''}
@@ -116,7 +124,7 @@ function RegionPulldown({
         disabled={available.length === 0}
       >
         {available.length === 0 ? (
-          <option value="">no regions observed yet</option>
+          <option value="">{emptyLabel}</option>
         ) : (
           available.map((r) => (
             <option key={r} value={r}>{r}</option>
@@ -362,7 +370,26 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
   // defensive against config drift). FOB list is the dominant source on
   // cold start; aggregator list catches up asynchronously and is merged
   // in once available.
+  // WHAT THIS TIER SCOPES OVER IS DECIDED BY ITS SHAPE, not by its name.
+  // An intermediate rolls up a subtree, so its scope selector offers the
+  // CHILDREN it aggregates; the root offers regions. Derived from the assets
+  // this subject can actually see, so the selector never offers a scope whose
+  // contents would come back empty for them.
+  // `deployment().tier`, not `this_tier`. The first draft used a field name
+  // that does not exist; `tier` is optional on Deployment, so optional
+  // chaining made it type-check and evaluate to undefined forever — the
+  // selector would have kept the root's shape on every tier and nothing
+  // would have failed. A wrong accessor that compiles is the frontend's
+  // version of a check that only reports success.
+  const thisTier = deployment().tier;
+  const isIntermediate = thisTier?.has_children === true && !!thisTier?.parent;
+
   const availableRegions = useMemo(() => {
+    if (isIntermediate) {
+      return Array.from(new Set(
+        fleet.map((a) => a.edge_id).filter((e): e is string => !!e && e !== 'edge-unspecified'),
+      )).sort();
+    }
     const fobRegions = deployment().fobs
       .map((f) => f.region_id)
       .filter((r): r is string => !!r && r !== 'region-unspecified');
@@ -370,7 +397,7 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
       .map((r) => r.region_id)
       .filter((r): r is string => !!r && r !== 'region-unspecified');
     return Array.from(new Set([...fobRegions, ...observedRegions])).sort();
-  }, [fleetSummary.data]);
+  }, [fleetSummary.data, fleet, isIntermediate]);
 
   // Per-region rows (extracted once, fed to panels).
   const scopedFleetSummary = useMemo(
@@ -412,6 +439,8 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
           regional-vs-maintainer asymmetry; see follow-up #15. */}
       <div className="px-4 py-1 border-b border-slate-800 bg-slate-900/50">
         <RegionPulldown
+          scopeLabel={isIntermediate ? 'Subtree scope' : 'Region scope'}
+          emptyLabel={isIntermediate ? 'no child tiers observed yet' : 'no regions observed yet'}
           available={availableRegions}
           selected={selectedRegion}
           onSelect={setSelectedRegion}

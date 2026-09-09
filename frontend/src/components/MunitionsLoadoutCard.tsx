@@ -93,7 +93,10 @@ export default function MunitionsLoadoutCard({
 
       {rows.length === 0 ? (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
-          No weapons-capability snapshot for this launcher yet.
+          {/* Declared idle for this deployment, not pending — see
+              MunitionsInventory for the reasoning and the declaration. */}
+          Not carried by any source in this fleet — no weapons-capability feed
+          is deployed here.
         </div>
       ) : (
         <div className="space-y-3">
