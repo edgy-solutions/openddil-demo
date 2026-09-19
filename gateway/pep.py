@@ -57,6 +57,43 @@ LISTEN_PORT = int(os.getenv("OPENDDIL_PEP_PORT", "8080"))
 SUBJECT_HEADER = os.getenv("OPENDDIL_SUBJECT_HEADER", "X-OpenDDIL-Subject")
 TOPAZ_TIMEOUT = float(os.getenv("OPENDDIL_TOPAZ_TIMEOUT", "2.0"))
 
+# --- how much of a shape this process is willing to hold at once -------------
+#
+# THE OUTAGE THIS EXISTS FOR (2026-09-18). Every tier PEP was OOMKilled (exit
+# 137) in a loop and the browser showed FEED UNAVAILABLE on every panel. Not a
+# leak -- idle they sat flat at 17-19 MiB for minutes. Two things multiplied:
+#
+#   * the proxy did `payload = resp.read()` -- the WHOLE shape body resident
+#     before a byte was forwarded; and
+#   * ThreadingHTTPServer spawns one unbounded thread per connection, so the
+#     resident total was (bytes per shape) x (however many requests arrived).
+#
+# One client load was measured at 10.05 MiB, of which `tactical_events` alone
+# was 10.00 MiB. Nine shapes, a reconnecting browser, a 256 MiB cap.
+#
+# RAISING THE LIMIT WOULD NOT HAVE FIXED IT. It would have changed how many
+# concurrent shapes the process survives before dying -- the same mistake as
+# sizing a Restate by its memory limit while its RocksDB budget was a fraction
+# OF that limit. A cap is only a sizing if something bounds what runs beneath
+# it. Streaming removes the per-request body; the semaphore bounds the
+# multiplier. Both, or neither is a bound.
+MAX_INFLIGHT_SHAPES = int(os.getenv("OPENDDIL_MAX_INFLIGHT_SHAPES", "8"))
+STREAM_CHUNK = int(os.getenv("OPENDDIL_STREAM_CHUNK", "65536"))
+
+# A SHAPE THIS LARGE IS A FINDING, NOT A REQUEST. Logged per response so the
+# read path has the dimension it lacked: nothing measured shape bytes, so a
+# table that had quietly grown to 10 MiB looked exactly like one that had not
+# until the process died. Warned, never refused -- a PEP that drops a shape
+# because it is big turns a capacity problem into an availability one, and the
+# operator needs the number, not a blank panel.
+SHAPE_WARN_BYTES = int(os.getenv("OPENDDIL_SHAPE_WARN_BYTES", str(2 * 1024 * 1024)))
+
+# Bounds CONCURRENCY, not queueing: a request that cannot get a slot waits. The
+# alternative -- refusing -- makes a busy gateway indistinguishable from a
+# broken one at the panel, which is the confusion this whole corpus exists to
+# remove.
+_inflight = threading.BoundedSemaphore(MAX_INFLIGHT_SHAPES)
+
 # --- how the subject is established ------------------------------------------
 # TWO MODES, CHOSEN AT BOOT, MUTUALLY EXCLUSIVE. This is deliberately NOT a
 # fallback inside one path, and the distinction is the whole point:
@@ -695,14 +732,23 @@ class Pep(BaseHTTPRequestHandler):
             upstream_params.append(("where", where))
         url = f"{ELECTRIC}{parsed.path}?" + urllib.parse.urlencode(upstream_params)
 
+        # The body is STREAMED, not buffered: `resp` stays open across the
+        # write below and bytes leave as they arrive. The semaphore is held
+        # for the whole transfer, because what must be bounded is the number
+        # of transfers in flight, not the number that have started.
         try:
-            with urllib.request.urlopen(url, timeout=30) as resp:
-                payload = resp.read()
-                new_handle = resp.headers.get("electric-handle") or \
-                    resp.headers.get("electric-shape-id") or ""
-                headers = [(k, v) for k, v in resp.headers.items()
-                           if k.lower().startswith("electric-")]
-                status = resp.status
+            _inflight.acquire()
+            try:
+                resp = urllib.request.urlopen(url, timeout=30)
+            except Exception:
+                _inflight.release()
+                raise
+            new_handle = resp.headers.get("electric-handle") or \
+                resp.headers.get("electric-shape-id") or ""
+            headers = [(k, v) for k, v in resp.headers.items()
+                       if k.lower().startswith("electric-")]
+            upstream_len = resp.headers.get("Content-Length")
+            status = resp.status
         except Exception as exc:  # noqa: BLE001
             # An upstream failure is NOT an authorization failure and must not
             # be recorded as a deny — that would poison the audit trail with
@@ -733,9 +779,66 @@ class Pep(BaseHTTPRequestHandler):
         for k, v in headers:
             self.send_header(k, v)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
+        # Content-Length is FORWARDED from upstream when Electric gave one, and
+        # the response is chunked when it did not. The previous version could
+        # always answer `len(payload)` because it had the whole body; the price
+        # of not holding it is that this length is upstream's claim, not a
+        # measurement. Never compute it by reading the body first -- that is
+        # the buffer this change removed, wearing a header.
+        #
+        # protocol_version is HTTP/1.1, so the connection is kept alive and a
+        # response WITHOUT Content-Length must be chunk-framed or the next
+        # response on that socket is parsed as part of this one. The framing
+        # is written here, by hand: BaseHTTPRequestHandler does NOT encode it
+        # for you, and sending the header without doing the work would be a
+        # declaration the code does not honour -- the same shape as a comment
+        # that documents a fix it prevents.
+        chunked = upstream_len is None
+        if chunked:
+            self.send_header("Transfer-Encoding", "chunked")
+        else:
+            self.send_header("Content-Length", upstream_len)
         self.end_headers()
-        self.wfile.write(payload)
+
+        # `sent` counts PAYLOAD bytes, not framing, because it is compared
+        # against a ceiling expressed in shape bytes.
+        sent = 0
+        try:
+            while True:
+                chunk = resp.read(STREAM_CHUNK)
+                if not chunk:
+                    break
+                if chunked:
+                    self.wfile.write(b"%x\r\n" % len(chunk))
+                    self.wfile.write(chunk)
+                    self.wfile.write(b"\r\n")
+                else:
+                    self.wfile.write(chunk)
+                sent += len(chunk)
+            if chunked:
+                self.wfile.write(b"0\r\n\r\n")
+        except (BrokenPipeError, ConnectionResetError):
+            # The browser navigated away mid-shape. Not an error worth a stack
+            # trace, and NOT an authorization event -- the decision above
+            # already stands and must not be re-recorded as a failure.
+            log.info("client disconnected mid-shape resource=%s sent=%d", table, sent)
+        finally:
+            try:
+                resp.close()
+            finally:
+                _inflight.release()
+
+        # PER-SHAPE BYTES, every time. This is the read-path dimension that did
+        # not exist: on 2026-09-18 `tactical_events` had grown to 10 MiB of
+        # residue and nothing anywhere reported a number until the process was
+        # killed for it.
+        if sent >= SHAPE_WARN_BYTES:
+            log.warning("SHAPE OVER CEILING resource=%s bytes=%d ceiling=%d "
+                        "subject=%s -- a shape this size is a retention or "
+                        "predicate finding, not a client problem",
+                        table, sent, SHAPE_WARN_BYTES, subject)
+        else:
+            log.info("shape served resource=%s bytes=%d", table, sent)
 
 
 def main() -> None:
@@ -746,6 +849,8 @@ def main() -> None:
     # "is this thing actually authenticating?" should not have to infer the
     # answer from a request that happened to fail.
     log.info("  auth mode: %s", AUTH_MODE)
+    log.info("  shapes:    max %d in flight, %d B chunks, warn over %d B",
+             MAX_INFLIGHT_SHAPES, STREAM_CHUNK, SHAPE_WARN_BYTES)
     if LABELED_TABLES or ROLE_SERVED_TABLES or SUBJECT_SCOPED_TABLES:
         log.info("  nation-filtered: %s", ", ".join(sorted(LABELED_TABLES)) or "(none)")
         log.info("  role-served:     %s — NO nation filter, authenticated subjects",
