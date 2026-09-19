@@ -387,7 +387,12 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
   const availableRegions = useMemo(() => {
     if (isIntermediate) {
       return Array.from(new Set(
-        fleet.map((a) => a.edge_id).filter((e): e is string => !!e && e !== 'edge-unspecified'),
+        // fleet is { data, isLoading, isError } -- the shape that lets a panel
+        // tell a failed request from an empty fleet. Reading .map off the
+        // wrapper compiled as unknown[] and broke the frontend image build
+        // from 2026-09-09 to 2026-09-18, during which the published image
+        // silently stayed nine days behind the committed source.
+        fleet.data.map((a) => a.edge_id).filter((e): e is string => !!e && e !== 'edge-unspecified'),
       )).sort();
     }
     const fobRegions = deployment().fobs

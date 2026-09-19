@@ -31,6 +31,86 @@ version: 1
 
 expected_empty:
 
+  region_fleet_summary:
+    stores: [leaf]
+    reason: >-
+      A regional rollup is PRODUCED BY A TIER WITH CHILDREN. A leaf has no
+      children, no aggregator and no mapping that could write this table,
+      so its emptiness at an edge is structural.
+      SCOPED TO LEAVES ON PURPOSE. The intermediate's copies hold rows and
+      must keep being checked -- an unscoped declaration would excuse the
+      tier where the rollup actually lives, which is the only place its
+      absence would mean something. `leaf` is derived from the relay kind
+      the chart already computes from hasChildren, not from a list of tier
+      ids: a roster here would answer a question about one topology.
+      Declared 2026-09-18, surfaced the first time the gate ran across
+      every store by default.
+
+  region_top_factors:
+    stores: [leaf]
+    reason: >-
+      A regional rollup is PRODUCED BY A TIER WITH CHILDREN. A leaf has no
+      children, no aggregator and no mapping that could write this table,
+      so its emptiness at an edge is structural.
+      SCOPED TO LEAVES ON PURPOSE. The intermediate's copies hold rows and
+      must keep being checked -- an unscoped declaration would excuse the
+      tier where the rollup actually lives, which is the only place its
+      absence would mean something. `leaf` is derived from the relay kind
+      the chart already computes from hasChildren, not from a list of tier
+      ids: a roster here would answer a question about one topology.
+      Declared 2026-09-18, surfaced the first time the gate ran across
+      every store by default.
+
+  region_wear_trends:
+    stores: [leaf]
+    reason: >-
+      A regional rollup is PRODUCED BY A TIER WITH CHILDREN. A leaf has no
+      children, no aggregator and no mapping that could write this table,
+      so its emptiness at an edge is structural.
+      SCOPED TO LEAVES ON PURPOSE. The intermediate's copies hold rows and
+      must keep being checked -- an unscoped declaration would excuse the
+      tier where the rollup actually lives, which is the only place its
+      absence would mean something. `leaf` is derived from the relay kind
+      the chart already computes from hasChildren, not from a list of tier
+      ids: a roster here would answer a question about one topology.
+      Declared 2026-09-18, surfaced the first time the gate ran across
+      every store by default.
+
+
+  # SPARSE IS NOT EXPECTED-EMPTY, AND THE DIFFERENCE IS THE POINT.
+  #
+  # Every other entry in this file is the claim "nothing here produces that
+  # data". This one is "this producer speaks rarely" -- and a rare speaker and
+  # a dead one look identical from the table, which is exactly the confusion an
+  # ordinary entry here would create rather than resolve.
+  #
+  # So `sparse: true` is CONDITIONAL. The gate permits an empty table only
+  # while check-derive-stage.sh reports the producer completing invocations,
+  # and refuses when it reports otherwise OR when nothing has measured
+  # recently. Absence of evidence buys nothing.
+  #
+  # Same shape as the relay stall probe's `destination reachable` clause: an
+  # absence is benign only when something else proves the source is alive.
+  tactical_events:
+    sparse: true
+    reason: >-
+      Tactical events fire on TRANSITIONS -- a configuration discrepancy
+      appearing or clearing, a logistics severity changing band -- so a stable
+      fleet emits none at all. cm-service deduplicates on last_alerted_status
+      and will not re-emit while a status holds, which is correct and means
+      quiet periods are the normal case rather than the exception.
+      Combined with retention, the table is therefore empty for long stretches
+      at every tier, and at the root most of all because it prunes soonest.
+      DECLARING THIS PLAINLY EMPTY WOULD BE WRONG: the same declaration would
+      explain away a fusion outage that had stopped the producer, which is the
+      move this file's own header names as the thing it exists to make
+      visible. The producer's liveness is the missing term, and it is measured
+      rather than assumed.
+      Declared 2026-09-18, after the root's copy read empty with the newest
+      event 33h old against a 24h retention -- correct behaviour that the gate
+      had no category for.
+
+
   asset_registry:
     stores: [tier]
     reason: >-
