@@ -31,6 +31,24 @@ version: 1
 
 expected_empty:
 
+  asset_registry:
+    stores: [tier]
+    reason: >-
+      The asset registry is a ROOT-SIDE component (ADR-0028): it holds the
+      authoritative asset -> edge -> region lineage that the production
+      warfighter system owns, and OpenDDIL never overrides that assignment.
+      No tier projector has an asset-registry mapping at all, so a tier store
+      has nothing that could write this table and its emptiness is structural
+      rather than a stopped producer.
+      SCOPED TO TIERS ON PURPOSE. The root's copy holds 14 rows and must keep
+      being checked -- an unscoped declaration here would mean that the day
+      the root's registry emptied, the gate that exists to notice it would be
+      the thing explaining it away.
+      Declared 2026-09-18, on the first --all-tiers run that reached this
+      branch: the edge stores had been failing earlier on unlabelled rows, so
+      nothing had ever asked the question at a tier.
+
+
   asset_telemetry_windows:
     reason: >-
       The windowing stage that would fill it is not producing here: the
