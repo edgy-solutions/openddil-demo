@@ -45,10 +45,9 @@ import {
 // sourced. New entries do not require AssetVisual changes; the cascade
 // dispatches by registry presence.
 //
-// Stryker.glb is intentionally NOT mapped to any current platform_variant
-// because the live fleet has tracked M1A2 tanks (different silhouette).
-// himars.glb and ugv.glb are unmapped for similar fit reasons. Park them
-// for now; the cascade falls cleanly to SCHEMATIC_REGISTRY.
+// No GLB files ship in frontend/public/ today. A model is added by placing
+// it under public/models/ and registering it here in the same change; until
+// then the cascade falls cleanly to SCHEMATIC_REGISTRY.
 // ---------------------------------------------------------------------------
 const GLB_REGISTRY: Record<string, string> = {
     // 'HEADQUARTER_COMPLEX': '/models/hq-complex.glb',   // when sourced
