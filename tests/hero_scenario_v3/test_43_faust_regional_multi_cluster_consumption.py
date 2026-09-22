@@ -61,8 +61,8 @@ def main() -> None:
 
     pdu = build_entity_state_pdu(
         site=1, application=1, entity=fresh_entity,
-        kind=1, domain=1, country=225, category=1, subcategory=3,
-        specific=1, extra=0,
+        kind=1, domain=1, country=225, category=1, subcategory=1,
+        specific=18, extra=0,
         marking=f"FAN-{fresh_entity}",
         location_ecef=(0.0, 0.0, 0.0),
         orientation_psi_theta_phi=(0.0, math.radians(0.0), 0.0),

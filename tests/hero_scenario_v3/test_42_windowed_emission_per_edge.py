@@ -46,8 +46,8 @@ TEST_PAIRS = [
 def _send_pdu(entity: int, edge_id: str, location_offset: float) -> None:
     pdu = build_entity_state_pdu(
         site=1, application=1, entity=entity,
-        kind=1, domain=1, country=225, category=1, subcategory=3,
-        specific=1, extra=0,
+        kind=1, domain=1, country=225, category=1, subcategory=1,
+        specific=18, extra=0,
         marking=f"WIN-{entity}",
         # Move slightly each sample so derived sustainment / windowing has
         # variation to work with — pure-stationary entities don't always

@@ -39,8 +39,8 @@ TEST_PAIRS = [
 def _send_pdu(entity: int, edge_id: str) -> None:
     pdu = build_entity_state_pdu(
         site=1, application=1, entity=entity,
-        kind=1, domain=1, country=225, category=1, subcategory=3,
-        specific=1, extra=0,
+        kind=1, domain=1, country=225, category=1, subcategory=1,
+        specific=18, extra=0,
         marking=f"ISO-{entity}",
         location_ecef=(0.0, 0.0, 0.0),
         orientation_psi_theta_phi=(0.0, math.radians(0.0), 0.0),

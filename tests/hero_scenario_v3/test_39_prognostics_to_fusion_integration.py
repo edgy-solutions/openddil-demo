@@ -95,8 +95,8 @@ def main() -> None:
     for i in range(SEGMENTS + 1):
         pdu = build_entity_state_pdu(
             site=1, application=1, entity=TEST_ENTITY,
-            kind=1, domain=1, country=225, category=1, subcategory=3,
-            specific=1, extra=0,
+            kind=1, domain=1, country=225, category=1, subcategory=1,
+            specific=18, extra=0,
             marking=f"INT-{TEST_ENTITY}",
             location_ecef=(i * SEGMENT_M, 0.0, 0.0),
             orientation_psi_theta_phi=(0.0, pitch_rad, 0.0),

@@ -45,8 +45,8 @@ def _build_pdu_with_orientation(psi_rad: float, theta_rad: float,
     buf += struct.pack(">HHH", 1, 1, entity)
     # forceId, numArt
     buf += struct.pack(">BB", 1, 0)
-    # EntityType — M1A2 SEPv3 (1,1,225,1,3,1,0) so ontology lookup succeeds
-    buf += struct.pack(">BBHBBBB", 1, 1, 225, 1, 3, 1, 0)
+    # EntityType — M1A2 SEPv3 (1,1,225,1,1,18,0) so ontology lookup succeeds
+    buf += struct.pack(">BBHBBBB", 1, 1, 225, 1, 1, 18, 0)
     # AlternativeEntityType (zero)
     buf += b"\x00" * 8
     # LinearVelocity (zero)

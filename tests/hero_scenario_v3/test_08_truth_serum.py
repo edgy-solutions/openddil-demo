@@ -45,7 +45,7 @@ def _payload(temperature_kelvin: float) -> dict:
         "entity_id_urn": "dis:9:9:808",
         "dis_entity_type": {
             "kind": 1, "domain": 1, "country": 225,
-            "category": 1, "subcategory": 3, "specific": 1, "extra": 0,
+            "category": 1, "subcategory": 1, "specific": 18, "extra": 0,
         },
         "marking":      "TRUTH-808",
         "force_id":     1,

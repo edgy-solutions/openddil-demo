@@ -44,7 +44,7 @@ def main() -> None:
     pdu = build_entity_state_pdu(
         site=1, application=1, entity=entity_id,
         kind=1, domain=1, country=225, category=1,
-        subcategory=3, specific=1, extra=0,
+        subcategory=1, specific=18, extra=0,
         marking=f"STABLE-{entity_id}",
     )
     asset_id = f"dis:1:1:{entity_id}"

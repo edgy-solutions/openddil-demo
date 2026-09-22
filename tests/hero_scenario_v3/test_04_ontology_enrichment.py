@@ -1,7 +1,7 @@
 """
 Test 4 — Ontology enrichment for a known platform.
 
-Sends a PDU with entityType=(1,1,225,1,3,1,0) (M1A2 SEPv3 per
+Sends a PDU with entityType=(1,1,225,1,1,18,0) (M1A2 SEPv3 per
 dis_entity_types.yaml). Consumes the resulting Silver event from
 raw-sensor-stream and verifies asset.platform_variant == "M1A2-SEPv3".
 
@@ -37,7 +37,7 @@ def main() -> None:
     pdu = build_entity_state_pdu(
         site=1, application=1, entity=4773,
         kind=1, domain=1, country=225,
-        category=1, subcategory=3, specific=1, extra=0,
+        category=1, subcategory=1, specific=18, extra=0,
         marking="M1A2-SEPv3",
     )
     send_udp_bytes(pdu)

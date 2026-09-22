@@ -40,7 +40,7 @@ def main() -> None:
     pdu = build_entity_state_pdu(
         site=3, application=3, entity=7777,
         kind=1, domain=1, country=225,
-        category=1, subcategory=3, specific=1, extra=0,
+        category=1, subcategory=1, specific=18, extra=0,
         marking="STX-7777",
     )
     send_udp_bytes(pdu)

@@ -59,8 +59,8 @@ def main() -> None:
     for tick in range(5):
         pdu = build_entity_state_pdu(
             site=1, application=1, entity=fresh_entity,
-            kind=1, domain=1, country=225, category=1, subcategory=3,
-            specific=1, extra=0,
+            kind=1, domain=1, country=225, category=1, subcategory=1,
+            specific=18, extra=0,
             marking=f"WEAR-{fresh_entity}",
             location_ecef=(100.0 * tick, 0.0, 0.0),  # moving so prognostics fires
             orientation_psi_theta_phi=(0.0, math.radians(0.0), 0.0),

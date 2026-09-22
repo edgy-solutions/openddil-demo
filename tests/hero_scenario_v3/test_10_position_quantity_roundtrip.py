@@ -34,7 +34,7 @@ def _build_pdu_with_location(x_m: float, y_m: float, z_m: float,
     buf += struct.pack(">BBBBIHBB", 7, 1, 1, 1, 0, 144, 0, 0)
     buf += struct.pack(">HHH", 1, 1, entity)
     buf += struct.pack(">BB", 1, 0)
-    buf += struct.pack(">BBHBBBB", 1, 1, 225, 1, 3, 1, 0)  # M1A2 SEPv3
+    buf += struct.pack(">BBHBBBB", 1, 1, 225, 1, 1, 18, 0)  # M1A2 SEPv3
     buf += b"\x00" * 8
     buf += struct.pack(">fff", 0.0, 0.0, 0.0)               # velocity
     buf += struct.pack(">ddd", x_m, y_m, z_m)               # location (doubles)

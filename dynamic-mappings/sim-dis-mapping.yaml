@@ -54,7 +54,7 @@ processor_resources:
       let et = $src.dis_entity_type
       # Ontology keys use underscore delimiters (not dots) because Bloblang's
       # .get("a.b.c") treats dots as path separators and cannot reach a flat
-      # key like "1.1.225.1.3.1.0".
+      # key like "1.1.225.1.1.18.0".
       #
       # parse_json() represents integers as `json.Number` rather than Go int —
       # `%d` cannot format that and would emit literal "%!d(json.Number=1)"
