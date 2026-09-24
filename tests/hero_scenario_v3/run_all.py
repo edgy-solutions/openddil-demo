@@ -56,6 +56,21 @@ TESTS = [
     "test_32_ui_ddil_disconnect_banner.py",
     "test_33_ui_ddil_reconnect_clears.py",
     "test_34_ui_demo_mock_banners.py",
+
+    # Releasability egress gate -- ADR-0043.
+    # Both SKIP cleanly when their dependencies are down (test_50 needs
+    # redpanda-hq + topaz + egress-gate-c2; test_51 needs postgres-hq), so a
+    # default pass on a stack without the releasability services still runs.
+    "test_50_egress_gate_counts.py",
+    "test_51_egress_read_agreement.py",
+
+    # NOTE -- test_35 through test_49 EXIST ON DISK AND ARE NOT LISTED HERE.
+    # They were found unregistered while adding the two above. A test that
+    # exists and is not registered reports green to whoever runs it by name
+    # and is absent from every other run, so the suite reads as covering
+    # ground nothing re-checks. Each needs a reason it is or is not runnable
+    # in a default pass before it is added; that audit has not been done.
+    # Recorded in openddil-contracts/decisions/FOLLOW-UPS.md, 2026-09-23.
 ]
 
 
