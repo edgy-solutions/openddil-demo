@@ -182,18 +182,18 @@ services:
       - ../openddil-logistics-sim/config:/app/config:ro
 
   # --------------------------------------------------------------------------
-  # Redpanda Connect — 3 DIS-mapper instances per ADR-0023 Phase 6a
-  # (ontology mount applies to all)
+  # Redpanda Connect -- 3 DIS-mapper instances per ADR-0023 Phase 6a
   # --------------------------------------------------------------------------
-  redpanda-connect-01: &connect_dev
-    volumes:
-      - ../openddil-contracts/ontology:/ontology:ro
-
-  redpanda-connect-02:
-    <<: *connect_dev
-
-  redpanda-connect-03:
-    <<: *connect_dev
+  # NO /ontology MOUNT HERE, DELIBERATELY. This file used to bind
+  # ../openddil-contracts/ontology onto /ontology for all three connectors.
+  # Compose merges volumes BY CONTAINER PATH, so that entry SHADOWED the base
+  # file's assembled overlay volume: the base said one thing and the
+  # connectors saw another, invisibly, because both mounts are a directory of
+  # ontology files that parses. What the overlay adds -- releasability.yaml --
+  # was simply absent, so the ingress mapping's file() read nothing, no record
+  # carried a label, and the stack was indistinguishable from a fleet nobody
+  # had declared. The assembled mount lives in docker-compose.yml beside
+  # ontology-overlay, and only there. See ADR-0043.
 
   # --------------------------------------------------------------------------
   # Projector — 3 instances per ADR-0023 Phase 6a (one per edge cluster)

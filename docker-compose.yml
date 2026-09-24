@@ -138,6 +138,71 @@ services:
       - "19092:19092"
       - "19093:19093"
       - "19644:19644"
+    # THE HQ BROKER HAD NO HEALTHCHECK while two services declared they waited
+    # on its health — and `depends_on: condition: service_healthy` against a
+    # container with no healthcheck is not a slow start, it is a hard refusal:
+    #
+    #   dependency failed to start: container ...-redpanda-hq-1
+    #   has no healthcheck configured
+    #
+    # which means `docker compose up logistics-sim` has not been able to start
+    # logistics-sim at all. Found while wiring the egress gate, which declared
+    # the same dependency and hit the same wall. Same probe the three edge
+    # brokers use. ADR-0043 §4.6 / LR-0043-D.
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # =============================================================================
+  # Ontology overlay (ADR-0043)
+  # =============================================================================
+  # /ontology IS TWO DIRECTORIES, and compose could not say so. The chart
+  # assembles it -- contracts/ontology first, demo/ontology on top -- and
+  # every consumer sees one directory. Compose mounted only the contracts
+  # half, so releasability.yaml was absent, the ingress mapping's
+  # `file(path: "/ontology/releasability.yaml")` read nothing, and EVERY
+  # RECORD ON THE COMPOSE STACK WAS UNLABELLED -- indistinguishable from a
+  # fleet nobody ever declared.
+  #
+  # WHY A VOLUME AND NOT A SECOND BIND MOUNT. Binding the one demo file into
+  # a read-only contracts directory fails outright:
+  #     create mountpoint for /ontology/releasability.yaml:
+  #     read-only file system
+  # and binding it into a WRITABLE one succeeds by creating a zero-byte
+  # releasability.yaml inside the contracts repo on the host. A zero-byte
+  # declaration parses as a fleet of no assets, so that workaround's failure
+  # mode is a stack that labels nothing while every mount looks correct. The
+  # two empty directories still sitting in ontology/ named after contracts
+  # files are the fossil of an earlier attempt at it.
+  #
+  # So: one throwaway container assembles the overlay into a named volume
+  # with the precedence the chart uses, and every consumer mounts the result
+  # read-only. Idempotent; re-runs on every `up`.
+  ontology-overlay:
+    image: busybox:1.36
+    container_name: openddil-demo-ontology-overlay
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        rm -rf /out/* || true
+        cp -a /contracts/. /out/
+        # Files only. ontology/ contains directories named after contracts
+        # files (see above); copying one over a real contracts entry would
+        # replace a populated ontology file with an empty folder.
+        for f in /demo/*.yaml; do
+          [ -f "$$f" ] && cp -a "$$f" /out/
+        done
+        echo "INFO: /ontology assembled (contracts + demo overlay):"
+        ls -la /out
+    volumes:
+      - ../openddil-contracts/ontology:/contracts:ro
+      - ./ontology:/demo:ro
+      - ontology:/out
+    restart: "no"
 
   redpanda-init:
     image: docker.redpanda.com/redpandadata/redpanda:latest
@@ -324,6 +389,16 @@ services:
               -c retention.ms=3600000 \
               || true
         done
+        # ADR-0043 Arc 2 Slice 2 — what the egress gate has ADMITTED toward
+        # the C2 stand-in. HQ ONLY, and deliberately not created on the edge
+        # brokers: a topic that exists on a tier is a topic something on that
+        # tier can produce to, and the gate's whole claim is that there is
+        # ONE boundary. Mirrors asset-logistics-status's config exactly
+        # (compacted, 8 partitions, keyed by asset_id) so that a difference
+        # between what the source holds and what this holds is a decision the
+        # gate made, never an artifact of how the two topics were configured.
+        echo "INFO: Initializing egress topics on redpanda-hq..."
+        rpk -X brokers=redpanda-hq:19092 topic create egress-c2-status             -p 8 -r 1             -c cleanup.policy=compact             -c min.cleanable.dirty.ratio=0.1             -c segment.ms=60000             -c retention.ms=-1             || true
         echo "INFO: All topics initialized across all 3 edge brokers + hq."
 
   postgres-hq:
@@ -606,11 +681,15 @@ services:
       - ./openddil-base-connect.yaml:/connect.yaml
       - ./dynamic-mappings:/mappings
       - ../openddil-contracts/proto:/proto
-      - ../openddil-contracts/ontology:/ontology:ro
+      - ontology:/ontology:ro
     command: ["--chilled", "run", "-r", "/mappings/*.yaml", "/connect.yaml"]
     depends_on:
-      - redpanda-edge-01
-      - toxiproxy
+      redpanda-edge-01:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_started
+      ontology-overlay:
+        condition: service_completed_successfully
 
   redpanda-connect-02:
     container_name: openddil-demo-redpanda-connect-02
@@ -621,11 +700,15 @@ services:
       - ./openddil-base-connect.yaml:/connect.yaml
       - ./dynamic-mappings:/mappings
       - ../openddil-contracts/proto:/proto
-      - ../openddil-contracts/ontology:/ontology:ro
+      - ontology:/ontology:ro
     command: ["--chilled", "run", "-r", "/mappings/*.yaml", "/connect.yaml"]
     depends_on:
-      - redpanda-edge-02
-      - toxiproxy
+      redpanda-edge-02:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_started
+      ontology-overlay:
+        condition: service_completed_successfully
 
   redpanda-connect-03:
     container_name: openddil-demo-redpanda-connect-03
@@ -636,11 +719,15 @@ services:
       - ./openddil-base-connect.yaml:/connect.yaml
       - ./dynamic-mappings:/mappings
       - ../openddil-contracts/proto:/proto
-      - ../openddil-contracts/ontology:/ontology:ro
+      - ontology:/ontology:ro
     command: ["--chilled", "run", "-r", "/mappings/*.yaml", "/connect.yaml"]
     depends_on:
-      - redpanda-edge-03
-      - toxiproxy
+      redpanda-edge-03:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_started
+      ontology-overlay:
+        condition: service_completed_successfully
 
   # NOTE: the `simulator` service was removed in Phase 4b (ADR-0019 era).
   # Real ingestion goes through DIS / sim-a / proprietary feeds; the UI now
@@ -913,10 +1000,12 @@ services:
       PYTHONPATH:              /proto:/app/src
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
-      - ../openddil-contracts/ontology:/ontology:ro
+      - ontology:/ontology:ro
     ports:
       - "9081:9081"
     depends_on:
+      ontology-overlay:
+        condition: service_completed_successfully
       redpanda-edge-01:
         condition: service_healthy
       redpanda-init:
@@ -975,8 +1064,24 @@ services:
       LOGISTICS_SIM_INPUT_TOPIC:          telemetry-latest-state
       LOGISTICS_SIM_CONSUMER_GROUP_PREFIX: logistics-sim
       LOGISTICS_SIM_CONFIG_PATH:          /app/config/default.yaml
+      # ADR-0043: THE PRODUCER LABELS. The declaration is read from the same
+      # overlaid /ontology the ingress mapping reads, so the sensor path and
+      # the element path cannot label the same asset two different ways.
+      LOGISTICS_SIM_RELEASABILITY_PATH:   /ontology/releasability.yaml
+      # DELIBERATELY UNSET, and this comment is the reason. A site nation here
+      # would label every asset this instance emits, including assets the
+      # declaration does not name — which is a blanket default wearing the
+      # costume of deployment identity, and the exact thing the declaration's
+      # own `default_originator_nation: null` refuses. An undeclared asset
+      # stays unlabelled and is refused at the gate, visibly. Set it only for
+      # a deployment whose site genuinely authors everything it emits.
+      #   LOGISTICS_SIM_SITE_NATION:      ATL
       LOG_LEVEL:                          INFO
+    volumes:
+      - ontology:/ontology:ro
     depends_on:
+      ontology-overlay:
+        condition: service_completed_successfully
       redpanda-edge-01:
         condition: service_healthy
       redpanda-edge-02:
@@ -1154,9 +1259,114 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # =============================================================================
+  # Releasability PDP + egress gate (ADR-0029 / ADR-0043, Arc 2 Slice 2)
+  # =============================================================================
+  # The chart has had a Topaz seat since 0.1.37; compose has not, which meant
+  # the read gate's decisions could only ever be exercised on a cluster. Slice
+  # 2's central claim is that egress and read evaluate ONE predicate, and a
+  # claim about two components agreeing is untestable while only one of them
+  # can be started. So the PDP comes to compose.
+  #
+  # NOT a second source of truth: policy/topaz-config.yaml copies the chart's
+  # `topaz-hq-config` verbatim in every block that changes an answer, and the
+  # bundle is assembled from the same three files the chart's init containers
+  # copy. Only the transport differs — bind mounts here, an init-container
+  # copy there.
+  topaz:
+    # PINNED to the same digest the chart pins, for the same reason: this
+    # build REJECTS two config keys its own published schema documents, so
+    # "whatever `latest` resolves to" and "the thing we verified" are not the
+    # same component. See values.yaml releasability.topaz.image.
+    image: ghcr.io/aserto-dev/topaz:0.33.16
+    container_name: openddil-demo-topaz
+    # THE PROVEN INVOCATION. `run` alone exits with
+    #   required flag(s) "config-file" not set
+    command: ["run", "--config-file", "/config/config.yaml"]
+    ports:
+      # 8383 is the authorizer's HTTP gateway — what pep.py and the egress
+      # gate both POST to. Exposed on the host so the agreement test can ask
+      # the same PDP the services ask, rather than a mock standing in for it.
+      - "8383:8383"
+    volumes:
+      - ./policy/topaz-config.yaml:/config/config.yaml:ro
+      - ./policy/.manifest:/policy/.manifest:ro
+      - ./policy/releasability.rego:/policy/releasability.rego:ro
+      # THE RENAME IS CALLED OUT HERE TOO, as it is in the chart and in
+      # users.yaml's own header. The reviewed artifact is policy/users.yaml;
+      # OPA's bundle convention names data files `data.yaml` and the
+      # .manifest declares roots ["openddil"], so data outside that root is
+      # refused outright. Same content, different name — said out loud,
+      # because a silent rename in transport is how a reviewed file and a
+      # running file drift apart.
+      #
+      # To exercise the other corpus, point this line at users-promoted.yaml
+      # and recreate the container. That is compose's equivalent of the
+      # chart's `kubectl set env ... OPENDDIL_POLICY_VARIANT=users-promoted`.
+      - ./policy/users.yaml:/policy/openddil/data.yaml:ro
+    # The directory store wants a writable path. Ephemeral on purpose: nothing
+    # in Slice 1 or Slice 2 writes to the directory — entitlements are
+    # asserted in the corpus, not stored as relationships — so persisting it
+    # would preserve nothing and would let a stale db outlive a corpus change.
+    tmpfs:
+      - /db
+    restart: unless-stopped
+
+  # THE SINGLE BOUNDARY through which logistics status leaves this tier toward
+  # a C2. Consumes asset-logistics-status, decides each record against ONE
+  # destination's entitlement, forwards what is admitted to egress-c2-status
+  # byte for byte, and writes a decision line for every record either way.
+  #
+  # COMPOSE-ONLY SCAFFOLDING. It borrows the projector image because that
+  # image already carries confluent_kafka and protobuf and the gate needs
+  # nothing else; the source is bind-mounted rather than baked. That is fine
+  # for proving the decision and is NOT fine for anything that ships — a
+  # component enforcing release must be built, pinned and mirrored like every
+  # other. Ledger row LR-0043-C.
+  egress-gate-c2:
+    image: ghcr.io/edgy-solutions/openddil/projector:latest
+    pull_policy: always
+    container_name: openddil-demo-egress-gate-c2
+    entrypoint: ["python", "-u", "/app/egress/main.py"]
+    environment:
+      OPENDDIL_EGRESS_BROKERS:      redpanda-hq:19092
+      OPENDDIL_EGRESS_SOURCE_TOPIC: asset-logistics-status
+      OPENDDIL_EGRESS_SINK_TOPIC:   egress-c2-status
+      # The destination is a SUBJECT, not a fourth kind of thing: a system
+      # principal with `nations`, declared in the same corpus the seats are
+      # declared in. If this id is absent from the corpus the gate refuses
+      # every record with `destination_unknown` — which is a broken link, not
+      # a policy outcome, and is logged as its own reason so the two can
+      # never be read as the same event.
+      OPENDDIL_EGRESS_DESTINATION:  "system:c2-stand-in-atl"
+      OPENDDIL_TOPAZ_URL:           http://topaz:8383
+      LOG_LEVEL:                    INFO
+      PYTHONPATH:                   /proto:/app
+    volumes:
+      - ./egress:/app/egress:ro
+      - ../openddil-contracts/gen/python:/proto:ro
+    depends_on:
+      redpanda-hq:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      topaz:
+        condition: service_started
+    # `on-failure` and NOT `unless-stopped`: the gate exits non-zero when the
+    # PDP will not answer, and a gate that silently restart-loops into a
+    # working state is a gate whose outage nobody saw. Restarting on failure
+    # is right; restarting after a clean stop is not.
+    restart: on-failure
+
   frontend:
     image: ghcr.io/edgy-solutions/openddil/frontend:latest
     pull_policy: always
     container_name: openddil-demo-frontend
     ports:
       - "3017:80"
+
+volumes:
+  # The assembled /ontology. Rebuilt by ontology-overlay on every `up`, so it
+  # is a cache of two source directories and never a place anything is
+  # authored: `docker compose down -v` loses nothing.
+  ontology: {}
