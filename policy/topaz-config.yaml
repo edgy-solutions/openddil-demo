@@ -1,0 +1,47 @@
+# Topaz configuration — COMPOSE ONLY.
+#
+# The chart's authoritative copy is openddil-helm/openddil-demo/templates/
+# releasability.yaml (`topaz-hq-config`). This file exists because the
+# releasability stack was chart-only until Slice 2, which meant the read
+# gate's own PDP could not be exercised without a cluster — and the egress
+# gate's central claim (ONE predicate, proven by agreement with the read
+# path) is a claim about two components that must both be running.
+#
+# KEEP THE TWO IN STEP. The `version`, `opa` and `api.services.authorizer`
+# blocks below are the chart's, verbatim, because a compose PDP answering
+# differently from the cluster PDP would make every compose measurement a
+# statement about compose. The paths differ (bind mounts rather than an
+# init-container copy) and nothing else should.
+#
+# VERIFIED against topazd 0.33.16 by running it. `plugins` and
+# `decision_logger` — both documented online and present in the published
+# JSON schema — are REJECTED by this build with "'config.Config' has invalid
+# keys". So TOPAZ LOGS NO DECISIONS: each PEP's own decision log is the audit
+# trail, not defence in depth alongside a second independent record.
+version: 2
+logging:
+  prod: true
+  log_level: info
+directory:
+  db_path: /db/hq.db
+  request_timeout: 5s
+api:
+  health:
+    listen_address: "0.0.0.0:9494"
+  services:
+    authorizer:
+      grpc:
+        connection_timeout_seconds: 2
+        listen_address: "0.0.0.0:8282"
+      gateway:
+        listen_address: "0.0.0.0:8383"
+        # Plaintext on the compose network, as in the chart. The deployment
+        # boundary is the trust boundary; revisit with mTLS.
+        http: true
+opa:
+  instance_id: openddil-hq
+  graceful_shutdown_period_seconds: 2
+  local_bundles:
+    paths:
+      - /policy
+    skip_verification: true

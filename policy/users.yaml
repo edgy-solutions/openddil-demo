@@ -85,7 +85,7 @@
 #
 # Found by swapping corpora during a demo rehearsal and watching the
 # recorded policy_version correctly NOT change.
-version: users-2026-09-08
+version: users-2026-09-23
 
 users:
   # ---------------------------------------------------------------------------
@@ -161,6 +161,65 @@ users:
     role: regional-operator
     asserted_by: cnogradi
     asserted_on: 2026-09-08
+
+  # ---------------------------------------------------------------------------
+  # THE DESTINATION — a C2 stand-in, and a SUBJECT rather than a fourth
+  # attribute category (ADR-0043 / Arc 2 Slice 2)
+  # ---------------------------------------------------------------------------
+  # ADR-0029 §2 names three categories — subject, resource, environment — and
+  # the egress gate needed to know which one a DESTINATION is. It is a
+  # subject. The framework already has subjects with `nations`; a system
+  # principal with `nations` is the same thing without a person behind it,
+  # and modelling it as anything else would have meant a second release rule
+  # for the second gate.
+  #
+  # That is why `releasability.rego` did not change for Slice 2. It answers
+  # exactly "which nations may this subject see" and its header forbids row
+  # logic, so it was already destination-agnostic. The whole of the
+  # destination model is this row.
+  #
+  # ONE NATION, AND ATL SPECIFICALLY. A single-nation destination is the
+  # discriminating case against a fleet declared in two: it admits the ATL
+  # fleet, refuses the BDR fleet, and admits the one shared ATL asset by the
+  # authorship clause rather than the containment one. A two-nation
+  # destination would admit everything and prove nothing.
+  #
+  # WHAT IT ADMITS IS NOT A LEAK, AND IS STATED HERE SO IT IS NOT READ AS ONE.
+  # This destination receives ATL-authored records whose `releasable_to` is
+  # empty. An ATL C2 sees what an ATL person sees, because anything else
+  # would say a nation cannot hand its own data to its own C2.
+  #
+  # -----------------------------------------------------------------------
+  # THE KEY IS NOT AN OIDC `sub`, AND THAT IS A WEAKER RUNG — SAID OUT LOUD
+  # -----------------------------------------------------------------------
+  # Every other row above is keyed on an opaque, stable identifier minted by
+  # an identity provider, for the reasons in this file's header. A system
+  # principal has no `sub`: nothing authenticates it as a person, and its
+  # identifier is ASSERTED BY DEPLOYMENT CONFIGURATION — the same string the
+  # egress gate is started with.
+  #
+  # So the property that makes `sub` safe — that a re-issued name produces a
+  # subject nobody has entitled — does not hold here. A deployment that
+  # renames its link, or a second deployment that reuses the name, inherits
+  # this row's entitlement. The prefix makes the difference legible in a
+  # diff rather than hiding it behind a UUID-shaped string that would imply
+  # a guarantee this row does not have.
+  #
+  # Closing that gap means authenticating the link itself (mTLS, a service
+  # identity) and keying on what that authentication yields. Out of scope
+  # for Slice 2, recorded rather than left to be discovered.
+  "system:c2-stand-in-atl":
+    username: c2-stand-in-atl          # documentation; nothing reads it
+    display_name: C2 Stand-in (Atlantia)
+    nations: [ATL]
+    clearance: ""                      # unused; the classification axis is
+                                       # fenced and the gate refuses records
+                                       # carrying a marking it cannot read
+    # ROLE IS RECORDED AND DECIDES NOTHING, exactly as for the human rows.
+    # `allowed_nations` is the whole of the filter at both gates.
+    role: observer
+    asserted_by: cnogradi
+    asserted_on: 2026-09-23
 
 # -----------------------------------------------------------------------------
 # DELIBERATELY ABSENT: 44444444-4444-4444-8444-444444444444 (observer.unlisted)

@@ -48,7 +48,7 @@
 #
 # Found by swapping corpora during a demo rehearsal and watching the
 # recorded policy_version correctly NOT change.
-version: users-promoted-2026-09-05
+version: users-promoted-2026-09-23
 
 users:
   "11111111-1111-4111-8111-111111111111":
@@ -82,6 +82,21 @@ users:
     role: regional-operator
     asserted_by: cnogradi
     asserted_on: 2026-09-05
+
+  # THE DESTINATION, carried into this variant too — see users.yaml for the
+  # reasoning. It is here because the variant swap must not change what the
+  # EGRESS gate can decide: a corpus without this row makes every record
+  # refused with `destination_unknown`, which is a broken link wearing the
+  # costume of a policy change. The promotion beat is about a PERSON gaining
+  # a nation; the destination is untouched by it and must stay untouched.
+  "system:c2-stand-in-atl":
+    username: c2-stand-in-atl
+    display_name: C2 Stand-in (Atlantia)
+    nations: [ATL]
+    clearance: ""
+    role: observer
+    asserted_by: cnogradi
+    asserted_on: 2026-09-23
 
 # observer.unlisted stays absent here too. A promotion demo that quietly
 # also entitled the unlisted subject would destroy the default-deny beat, and
