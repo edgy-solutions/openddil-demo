@@ -110,6 +110,16 @@ def main() -> int:
     print("Hero Scenario v3 (OSS) — DIS Ingestion + CM Lifecycle + Fusion Rules")
     print("=" * 60)
 
+    tests = discover()
+    print(f"... discovered {len(tests)} tests")
+    newly = [t for t in tests if t in UNRUN_BEFORE_DISCOVERY]
+    if newly:
+        print(f"... {len(newly)} of them were never run by this runner "
+              "before it discovered instead of registering:")
+        for t in newly:
+            print(f"      {t}")
+    print()
+
     # Warm-up gate: don't run a single test until the pipeline's consumer
     # groups have joined and settled. Running against a cold pipeline is the
     # Phase 3.6 flaky-test class — the failures look like real bugs but are
@@ -121,16 +131,6 @@ def main() -> int:
         print("GATE FAILED — pipeline did not warm up; not running tests.")
         print("Check `docker compose ps` and the redpanda-connect / cm-service logs.")
         return 2
-
-    tests = discover()
-    print(f"... discovered {len(tests)} tests")
-    newly = [t for t in tests if t in UNRUN_BEFORE_DISCOVERY]
-    if newly:
-        print(f"... {len(newly)} of them were never run by this runner "
-              "before it discovered instead of registering:")
-        for t in newly:
-            print(f"      {t}")
-    print()
 
     results = []
     for t in tests:
