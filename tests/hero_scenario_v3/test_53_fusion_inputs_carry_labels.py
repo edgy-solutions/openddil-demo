@@ -24,12 +24,27 @@ system's own answer -- Restate's `/subscriptions` admin endpoint, which is
 what actually wires Kafka to fusion handlers. A new input appears here the
 moment it is registered, whether or not anyone remembered this file.
 
-The decoder registry is keyed on the fusion HANDLER, not the topic, because
-the handler is what determines the payload shape; a new topic bound to an
-existing handler is covered automatically. A discovered handler with no
-decoder here is a HARD FAILURE, never a skip: an unchecked fusion input is
-precisely the hole this test exists to close, and reporting "nothing wrong
-found" about a topic nobody read would be the same lie in a new place.
+The registry is keyed on the HANDLER, not the topic, because the handler is
+what determines the payload shape; a new topic bound to an existing handler
+is covered automatically. A discovered handler with no entry here is a HARD
+FAILURE, never a skip: an unchecked input is precisely the hole this test
+exists to close, and reporting "nothing wrong found" about a topic nobody
+read would be the same lie in a new place.
+
+The discovery is not narrowed to fusion, and that is deliberate. Restate
+answers for every service it wires, and on a full stack the answer is wider
+than fusion alone -- cm-service reads `raw-sensor-stream` too, and its own
+output is a fusion input. The rule is about the topics, so checking every
+consumer of them is the stronger claim and costs nothing.
+
+Each handler's Spec also records WHETHER its payload is expected to carry
+the labels at all, because "this shape has no nation field" and "this record
+lost its nation" look identical from the outside and mean opposite things.
+`apply_cm_event` is the case that forced the distinction: a `CmEvent` is a
+maintenance action record with no provenance field, so it makes no claim
+about origin and cm-service must take the label from telemetry instead. That
+judgement is written down with its reason rather than inferred, because
+getting it wrong in either direction is a real error.
 
 WHY IT INJECTS
 `asset-telemetry-windows` is a fusion input that COMPOSE CANNOT FILL BY
@@ -129,6 +144,15 @@ SETTLE_S = 20.0
 READ_CAP = 500
 
 DOCKER_TIMEOUT_S = 60
+
+# A consume gets its own, longer budget. `describe` asks the broker one
+# question; a consume drains up to READ_CAP records and did time out at 60s
+# against the hq cluster's `asset-cm-state`, which holds a couple of hundred.
+# A consume that times out is reported as "could not be read", which is
+# honest but costs a whole topic's coverage -- and coverage lost to
+# impatience reads exactly like coverage lost to an empty topic, which is the
+# confusion this test exists to prevent.
+CONSUME_TIMEOUT_S = 180
 
 
 # ---------------------------------------------------------------------------
@@ -256,15 +280,54 @@ def _dec_cm_state(raw: bytes) -> tuple[str, str, list[str]]:
                           "AsMaintainedConfiguration")(raw)
 
 
-DECODERS = {
-    "on_proprietary_update": _dec_proto(
-        "openddil.telemetry.v1.telemetry_pb2", "EntityTelemetryEvent"),
-    "on_derived_sustainment": _dec_proto(
-        "openddil.telemetry.v1.telemetry_pb2", "EntityTelemetryEvent"),
-    "on_telemetry_window": _dec_proto(
-        "openddil.logistics.v1.windowed_telemetry_pb2", "WindowedTelemetry"),
-    "on_cm_state_change": _dec_cm_state,
-    "on_capability_snapshot": _dec_json,
+class Spec:
+    """How to read one handler's payload, and whether it should be labelled.
+
+    `labelled` is a JUDGEMENT and is written down rather than inferred,
+    because "this shape has no nation field" and "this record lost its
+    nation" look identical from the outside and mean opposite things. A
+    handler marked False is saying: the contract for this payload carries no
+    releasability label, and the consumer must take the label from somewhere
+    that does. Getting that wrong in either direction is a real error --
+    marking a labelled shape False hides a dropped label, and marking an
+    unlabelled shape True makes the test demand a field the contract does
+    not have."""
+
+    def __init__(self, decode, labelled: bool, why: str = ""):
+        self.decode = decode
+        self.labelled = labelled
+        self.why = why
+
+
+_TELEMETRY = _dec_proto("openddil.telemetry.v1.telemetry_pb2",
+                        "EntityTelemetryEvent")
+
+HANDLERS = {
+    # --- Silver telemetry, labelled at ingress and carried from there -----
+    "on_proprietary_update": Spec(_TELEMETRY, True),
+    # cm-service reads the SAME topic and the SAME shape. Its own output,
+    # asset-cm-state, is a fusion input, so this is where cm-service gets
+    # the label it later propagates.
+    "observe": Spec(_TELEMETRY, True),
+    "on_derived_sustainment": Spec(_TELEMETRY, True),
+    "on_telemetry_window": Spec(
+        _dec_proto("openddil.logistics.v1.windowed_telemetry_pb2",
+                   "WindowedTelemetry"), True),
+    "on_cm_state_change": Spec(_dec_cm_state, True),
+    "on_capability_snapshot": Spec(_dec_json, True),
+
+    # --- an action record, not an observation ----------------------------
+    "apply_cm_event": Spec(
+        _dec_proto("openddil.configuration.v1.cm_events_pb2", "CmEvent"),
+        False,
+        "CmEvent has no provenance field at all -- it is event_id, asset_id, "
+        "recorded_at, recorded_by, work_order_ref and a oneof of maintenance "
+        "actions. It records what a maintainer DID to an asset, not an "
+        "observation of the asset, so it makes no claim about national "
+        "origin and has no author to attribute one to. cm-service takes the "
+        "label from telemetry via `observe` and must not take it from here: "
+        "deriving a nation from who logged a work order would be exactly the "
+        "inference ADR-0029 refuses."),
 }
 
 
@@ -290,16 +353,27 @@ def watermarks(container: str, topic: str) -> dict[int, tuple[int, int]] | None:
     return out or None
 
 
-def consume(container: str, topic: str, n: int) -> list[tuple[int, int, bytes]]:
-    """Exactly `n` records from the start as (partition, offset, value).
+def consume(container: str, topic: str, cap: int) -> list[tuple[int, int, bytes]]:
+    """Every retained record, from the start, as (partition, offset, value).
 
-    `-n` is load-bearing: `rpk topic consume` without a record count tails
-    forever and would hang the suite. The count comes from the watermarks,
-    so it is never larger than what is there to read."""
+    Termination is load-bearing: `rpk topic consume` with no bound tails
+    forever and would hang the suite. `-o :end` bounds it at the log's
+    current end, which is a fact the broker knows; `-n cap` is only a
+    ceiling on how much this test is willing to read.
+
+    The bound is deliberately NOT a record count derived from the
+    watermarks. On a compacted topic -- `asset-cm-state` is
+    `cleanup.policy=compact` -- offsets are sparse, so `high_watermark -
+    log_start` counts offsets rather than records and overestimates. Asking
+    for 221 records from a topic compaction had left 16 in made rpk sit
+    waiting for 205 that will never arrive, and the topic was then reported
+    as "could not be read". That is precisely the disguise this test exists
+    to strip off: a fusion input dropping out of coverage for a reason that
+    has nothing to do with whether its records are labelled."""
     r = subprocess.run(
         ["docker", "exec", container, "rpk", "topic", "consume", topic,
-         "-o", "start", "-n", str(n), "-f", "%p %o %v{base64}\n"],
-        capture_output=True, text=True, timeout=DOCKER_TIMEOUT_S,
+         "-o", ":end", "-n", str(cap), "-f", "%p %o %v{base64}\n"],
+        capture_output=True, text=True, timeout=CONSUME_TIMEOUT_S,
     )
     if r.returncode != 0:
         raise RuntimeError(f"rpk consume {topic}: {r.stderr.strip()[:200]}")
@@ -384,14 +458,24 @@ def main() -> None:
         print(f"    {c}/{t} -> {h}")
     print()
 
-    unknown = [h for h in handlers if h not in DECODERS]
+    unknown = [h for h in handlers if h not in HANDLERS]
     if unknown:
         fail_(TEST,
-              f"fusion consumes {unknown} and this test has no decoder for "
-              "them. A fusion input nobody reads is exactly the gap this "
-              "test exists to close, so an unknown handler is a failure, "
-              "not a skip. Add a decoder to DECODERS.")
+              f"the stack subscribes {unknown} to Kafka and this test has no "
+              "entry for them. A subscribed topic nobody reads is exactly "
+              "the gap this test exists to close, so an unknown handler is a "
+              "failure, not a skip. Add a Spec to HANDLERS, and decide "
+              "deliberately whether that payload is expected to carry the "
+              "labels.")
         return
+
+    out_of_scope = sorted({h for h in handlers if not HANDLERS[h].labelled})
+    if out_of_scope:
+        print("handler(s) whose payload carries no releasability label by "
+              "contract, checked for decodability only:")
+        for h in out_of_scope:
+            print(f"    {h}: {HANDLERS[h].why}")
+        print()
 
     try:
         declared, default_nation = read_declaration()
@@ -487,29 +571,37 @@ def main() -> None:
         if wm is None:
             unreadable.append(f"{cluster}/{topic}: topic not describable")
             continue
+        # Only ever a yes/no about emptiness. See consume(): on a compacted
+        # topic this arithmetic counts offsets, not records.
         available = sum(hi - lo for lo, hi in wm.values())
         if available <= 0:
             unexercised.append(f"{cluster}/{topic}")
             continue
         base = baseline.get((cluster, topic), {})
         try:
-            records = consume(container, topic, min(available, READ_CAP))
+            records = consume(container, topic, READ_CAP)
         except Exception as exc:  # noqa: BLE001
             unreadable.append(f"{cluster}/{topic}: {exc}")
             continue
 
+        spec = HANDLERS[handler]
         bad = old = fresh = 0
         for partition, offset, raw in records:
             is_history = offset < base.get(partition, 0)
             try:
-                asset_id, nation, rel = DECODERS[handler](raw)
+                asset_id, nation, rel = spec.decode(raw)
             except Exception as exc:  # noqa: BLE001
+                # A record the consumer cannot decode is a violation whatever
+                # the payload's labelling contract says: an undecodable
+                # record reads as unlabelled, which is the legal answer that
+                # hides everything.
                 complaint = (f"a record did not decode as the shape "
-                             f"{handler} expects ({exc}); fusion would read "
-                             "it as unlabelled")
+                             f"{handler} expects ({exc}); the consumer would "
+                             "read it as unlabelled")
                 asset_id = ""
             else:
-                complaint = judge(asset_id, nation, rel) if asset_id else None
+                complaint = (judge(asset_id, nation, rel)
+                             if asset_id and spec.labelled else None)
             if is_history:
                 checked_historic += 1
             else:
@@ -536,8 +628,9 @@ def main() -> None:
         if old:
             note += f", {old} older violation(s) reported as history"
         status = "ok" if bad == 0 else f"{bad} violation(s)"
-        print(f"    {cluster}/{topic}: {len(records)} of {available} records "
-              f"read ({note}) -- {status}")
+        capped = " (capped)" if len(records) >= READ_CAP else ""
+        print(f"    {cluster}/{topic}: {len(records)} record(s) read{capped} "
+              f"({note}) -- {status}")
 
     print()
     print(f"judged {checked} records written at or after this run's baseline "
