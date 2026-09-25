@@ -180,12 +180,24 @@ services:
   # So: one throwaway container assembles the overlay into a named volume
   # with the precedence the chart uses, and every consumer mounts the result
   # read-only. Idempotent; re-runs on every `up`.
+  #
+  # AND IT REFUSES TO FINISH IF THE RESULT DECLARES NOBODY. Every consumer
+  # below waits on this service completing successfully, so a declaration
+  # that resolves to zero assets stops the whole stack rather than producing
+  # a stack that labels nothing -- which is a LEGAL answer under
+  # deny-unlabeled, and therefore silent. See
+  # scripts/check-releasability-declaration.py.
+  #
+  # The image is the projector's because the check needs a YAML parser and
+  # that image already carries Python and PyYAML. Compose-only scaffolding:
+  # nothing of the projector runs here, and under helm the overlay is the
+  # chart's own and this service does not exist.
   ontology-overlay:
-    image: busybox:1.36
+    image: ghcr.io/edgy-solutions/openddil/projector:latest
+    pull_policy: always
     container_name: openddil-demo-ontology-overlay
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - sh
-      - -c
       - |
         set -e
         rm -rf /out/* || true
@@ -198,9 +210,11 @@ services:
         done
         echo "INFO: /ontology assembled (contracts + demo overlay):"
         ls -la /out
+        python /scripts/check-releasability-declaration.py /out/releasability.yaml
     volumes:
       - ../openddil-contracts/ontology:/contracts:ro
       - ./ontology:/demo:ro
+      - ./scripts:/scripts:ro
       - ontology:/out
     restart: "no"
 
