@@ -16,6 +16,7 @@ Usage:
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,52 +27,69 @@ PY = sys.executable
 sys.path.insert(0, str(HERE))
 from _helpers import wait_for_pipeline_ready  # noqa: E402
 
-TESTS = [
-    # DIS sidecar + Silver translation (Phase 2.5)
-    "test_01_binary_pdu_acceptance.py",
-    "test_02_malformed_pdu_resilience.py",
-    "test_03_non_entity_state_dropped.py",
-    "test_04_ontology_enrichment.py",
-    "test_05_ontology_fallback.py",
-    "test_06_sustainment_absent.py",
-    "test_07_kafka_resilience.py",
-    "test_08_truth_serum.py",
-    "test_09_angle_quantity_roundtrip.py",
-    "test_10_position_quantity_roundtrip.py",
-    # cm-service lifecycle (Phase 3) — driven entirely by DIS data
-    "test_12_cm_first_seen_init.py",
-    "test_13_mod_compliance_flow.py",
-    "test_14_critical_alert.py",
-    "test_15_no_realert_on_stable_critical.py",
-    "test_16_resolved_alert.py",
-    # Pure-Python fusion rules unit tests (Phase 3.5) — no customer shapes
-    "test_24_fusion_rules_unit.py",
-    # Playwright UI smoke tests (Phase 4d). Drive a headless browser against
-    # the running frontend. SKIP gracefully if Playwright / a browser binary
-    # is not installed — see _ui_helpers.py. Tests 32/33 exercise the real
-    # toxiproxy hq-link DDIL mechanic (ADR-0021), not a UI simulation.
-    "test_29_ui_maintainer_view_loads.py",
-    "test_30_ui_regional_aggregation.py",
-    "test_31_ui_hq_aggregate_metrics.py",
-    "test_32_ui_ddil_disconnect_banner.py",
-    "test_33_ui_ddil_reconnect_clears.py",
-    "test_34_ui_demo_mock_banners.py",
+# --------------------------------------------------------------------------
+# Discovery, not registration.
+# --------------------------------------------------------------------------
+# This runner used to carry a hand-maintained TESTS list. It ended at
+# test_34 while test_35 through test_49 sat on disk beside it, so fifteen
+# tests ran only when somebody named them individually -- green to their
+# author on the day they were written, and absent from every run since. A
+# runner that must be edited to see a test is a correct runner that runs
+# nothing, and the omission is invisible precisely because the suite it
+# prints is internally consistent: every test it names, it runs.
+#
+# So it discovers. A test file that exists is a test file that runs, and
+# adding one is `git add`, not `git add` plus an edit here. The cost is
+# that a half-finished test now fails the suite instead of being silently
+# excluded, which is the right way round: a file named test_* that cannot
+# run is a fact somebody should see.
+#
+# The contract for a discovered file is unchanged and unenforced by
+# anything but convention: run standalone under this interpreter, print
+# `PASS:` / `SKIP:` / `FAIL:` as the LAST line, exit 0 or 1.
 
-    # Releasability egress gate -- ADR-0043.
-    # Both SKIP cleanly when their dependencies are down (test_50 needs
-    # redpanda-hq + topaz + egress-gate-c2; test_51 needs postgres-hq), so a
-    # default pass on a stack without the releasability services still runs.
-    "test_50_egress_gate_counts.py",
-    "test_51_egress_read_agreement.py",
+# The fifteen that discovery picks up and the hand list never did. This is
+# not a registry -- nothing reads it to decide what to run. It exists so
+# the first discovering runs can say out loud what had been unrun, and it
+# should be DELETED once these have been through a pass and their results
+# are no longer news. Recorded in
+# openddil-contracts/decisions/FOLLOW-UPS.md, 2026-09-23.
+UNRUN_BEFORE_DISCOVERY = frozenset({
+    "test_35_prognostics_distance_derivation.py",
+    "test_36_prognostics_engine_hours.py",
+    "test_37_prognostics_terrain_integral.py",
+    "test_38_prognostics_barrel_life_dormant.py",
+    "test_39_prognostics_to_fusion_integration.py",
+    "test_40_multi_edge_attribution.py",
+    "test_41_per_edge_entity_isolation.py",
+    "test_42_windowed_emission_per_edge.py",
+    "test_43_faust_regional_multi_cluster_consumption.py",
+    "test_44_region_fleet_summary_aggregates.py",
+    "test_45_region_wear_trends_from_derived_sustainment.py",
+    "test_46_region_top_factors_topn.py",
+    "test_47_dual_sum_sanity.py",
+    "test_48_regional_pulldown_scope.py",
+    "test_49_maintainer_edge_pulldown_scope.py",
+})
 
-    # NOTE -- test_35 through test_49 EXIST ON DISK AND ARE NOT LISTED HERE.
-    # They were found unregistered while adding the two above. A test that
-    # exists and is not registered reports green to whoever runs it by name
-    # and is absent from every other run, so the suite reads as covering
-    # ground nothing re-checks. Each needs a reason it is or is not runnable
-    # in a default pass before it is added; that audit has not been done.
-    # Recorded in openddil-contracts/decisions/FOLLOW-UPS.md, 2026-09-23.
-]
+_NUM = re.compile(r"^test_(\d+)")
+
+
+def _order(name: str) -> tuple[int, str]:
+    """Sort by the numeric prefix, so test_9 precedes test_10.
+
+    Every test here happens to be zero-padded to two digits, which makes
+    lexicographic order correct today and wrong on the first three-digit
+    test. Sorting on the number costs one regex and removes the trap.
+    """
+    m = _NUM.match(name)
+    return (int(m.group(1)) if m else 10**9, name)
+
+
+def discover() -> list[str]:
+    """Every `test_*.py` beside this file, in numeric order."""
+    return sorted((p.name for p in HERE.glob("test_*.py")), key=_order)
+
 
 
 def run_one(script: str) -> tuple[str, str, str]:
@@ -104,8 +122,18 @@ def main() -> int:
         print("Check `docker compose ps` and the redpanda-connect / cm-service logs.")
         return 2
 
+    tests = discover()
+    print(f"... discovered {len(tests)} tests")
+    newly = [t for t in tests if t in UNRUN_BEFORE_DISCOVERY]
+    if newly:
+        print(f"... {len(newly)} of them were never run by this runner "
+              "before it discovered instead of registering:")
+        for t in newly:
+            print(f"      {t}")
+    print()
+
     results = []
-    for t in TESTS:
+    for t in tests:
         print(f"... running {t}")
         results.append(run_one(t))
 
