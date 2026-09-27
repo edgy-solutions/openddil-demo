@@ -1,0 +1,87 @@
+# =============================================================================
+# DIS ENTITY-KIND ADMISSION GATE (ingress)
+# =============================================================================
+# Answers ONE question: may an entity of this DIS kind become an OpenDDIL
+# asset? It deliberately does NOT answer "what platform is this", which is
+# sim-dis-mapping.yaml's job against the ontology overlay. Two questions, two
+# files: an entity can be fully resolvable and still not be a fleet member,
+# and a munition is exactly that case.
+#
+# WHY THIS EXISTS. A DIS Entity State PDU with kind=2 (MUNITION) is not
+# rejected and not recognised by the resolver — it takes the unconditional
+# `_default` fallback, becomes platform_variant=UNKNOWN, and enters the fleet
+# as an asset. Measured end-to-end under compose on 2026-09-26: one PDU in,
+# one asset out. Two properties make that worse than a cosmetic problem:
+#
+#   * `kind` is NOT in the asset_id. The id is dis:<site>:<application>:<entity>,
+#     so no fleet query can exclude munitions by key pattern. The only
+#     discriminator is a payload field nothing downstream reads.
+#   * There is no eviction path. A round that is admitted once stays a member
+#     for the life of the state stores, so a live-fire run grows the fleet
+#     monotonically and every asset count on screen includes spent rounds.
+#
+# So the gate is the guard until the asset-lifecycle design lands
+# (openddil-contracts/decisions/DESIGN-2026-09-26-asset-lifecycle.md). It is
+# not that design and does not substitute for it: this refuses membership at
+# the door, which is a different act from ending a membership that exists.
+#
+# THE DROP IS A NUMBER, NOT SILENCE. Every gated message increments
+# `dis_ingress_kind_dropped{kind="<n>"}` on the Connect metrics endpoint
+# (:4196/metrics, Prometheus by default — no `metrics:` block required). Read
+# it directly; see the note on scraping at the bottom of this file.
+#
+# CONFIGURATION. `DIS_ADMITTED_ENTITY_KINDS` is a comma-separated list of DIS
+# entity kinds, default `1` (PLATFORM). Env interpolation carries the default,
+# so the gate is ON with no chart change. Setting it to a blank value admits
+# NOTHING — that is honoured literally rather than second-guessed, because an
+# operator who declares an empty set has declared one, and the consequence is
+# instantly loud (Silver goes flat and the counter spikes) rather than silent.
+#
+# MUNITION ROWS STILL BELONG IN THE ONTOLOGY. Admission and resolution are
+# independent: coverage should still reach zero UNKNOWN on kind=2 tuples per
+# ADR-0016, and adding them changes nothing here. Resolving a thing and
+# admitting a thing are not the same claim.
+# =============================================================================
+processor_resources:
+  - label: dis_kind_gate
+    switch:
+      # Not-admitted arm. `.int64()` before `.string()` for the same reason
+      # sim-dis-mapping.yaml coerces before formatting: parse_json() yields
+      # json.Number, and stringifying that directly does not give "2".
+      - check: '!("${DIS_ADMITTED_ENTITY_KINDS:1}".split(",").map_each(k -> k.trim()).contains(this.dis_entity_type.kind.or(0).int64().string()))'
+        processors:
+          # Label cardinality is bounded by construction: DIS entity kind is a
+          # single octet, so this series can never exceed 256 members.
+          - metric:
+              type: counter
+              name: dis_ingress_kind_dropped
+              labels:
+                kind: '${! this.dis_entity_type.kind.or(0).int64().string() }'
+
+          # DEBUG, not INFO, and deliberately. A munition in flight emits
+          # Entity State PDUs for the whole flight, so one log line per gated
+          # message is a flood at exactly the moment the operator needs the
+          # log readable. The counter is the signal; this line is for when
+          # somebody is already investigating and wants the ids.
+          - log:
+              level: DEBUG
+              message: 'dis_kind_gate dropped entity=${! this.entity_id_urn.or("<no urn>") } kind=${! this.dis_entity_type.kind.or(0).int64() } admitted=${DIS_ADMITTED_ENTITY_KINDS:1}'
+
+          # `root = deleted()`, NOT an error. A gated kind is a policy
+          # decision, not malformed data: routing it to ingress-dlq would fill
+          # the dead-letter topic with correctly-formed messages we chose not
+          # to keep, and would make the DLQ depth meaningless as a health
+          # signal. Deleting inside the `try` block does not trigger `catch`.
+          - mapping: 'root = deleted()'
+
+# NOTE ON SCRAPING, stated because the counter is only half a signal without
+# it: nothing currently scrapes port 4196. There is no ServiceMonitor and no
+# prometheus.io/scrape annotation in the chart — values.yaml carries
+# `httpPort: 4196` and nothing collects from it. Until that exists the counter
+# is read directly:
+#
+#   kubectl exec -n openddil <connect-pod> -- \
+#     wget -qO- http://localhost:4196/metrics | grep dis_ingress_kind_dropped
+#
+# A series that is absent means nothing was gated, which is the same thing a
+# missing scrape looks like — so read it before concluding the feed is clean.

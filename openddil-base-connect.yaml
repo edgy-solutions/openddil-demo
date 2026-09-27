@@ -53,6 +53,14 @@ pipeline:
           } else {
             this
           }
+      # ADMISSION BEFORE RESHAPING. The gate runs on the parsed DIS-shape
+      # object and drops entity kinds that are not admitted (default: kind=1,
+      # PLATFORM), counting each drop per kind. It must stay AHEAD of
+      # sim_dis_mapping: once that resource has run, `dis_entity_type.kind`
+      # has moved under `asset.` and the message is an asset-shaped event —
+      # gating there would be refusing something already built.
+      # See dynamic-mappings/dis-kind-gate.yaml for why kind=2 needs this.
+      - resource: "dis_kind_gate"
       - resource: "sim_dis_mapping"
       - mapping: |
           meta asset_id = this.asset.asset_id
