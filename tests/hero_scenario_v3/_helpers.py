@@ -40,6 +40,13 @@ HTTP_DIAG_URL   = "http://127.0.0.1:9999/"
 
 TOPIC_BRONZE    = "ingress-dis-raw"
 TOPIC_SILVER    = "raw-sensor-stream"
+TOPIC_DLQ       = "ingress-dlq"
+
+# Redpanda Connect's own Prometheus endpoint. It is NOT published to the host
+# in docker-compose (only the diagnostic 9999 is), so it is scraped by shelling
+# into the container the same way topic_high_watermark shells in for rpk.
+CONNECT_SVC          = "redpanda-connect-01"
+CONNECT_METRICS_PORT = 4196
 
 # ADR-0023 Phase 6a: 3-edge topology. Default rpk targets edge-01 broker
 # (existing tests 35-39 are pinned to edge-01 by convention); multi-edge
@@ -339,26 +346,31 @@ def consume_topic_records(topic: str, n: int, timeout_s: int = 15,
     """
     Like `consume_topic` but returns the full wrapper records from rpk.
     Reads the last N records from each partition individually so we never
-    block waiting for records that don't exist. `offset` is accepted for
-    backward compatibility but interpreted only as "default behavior."
+    block waiting for records that don't exist — which it now actually does,
+    by clamping to LOG-START-OFFSET and reading an explicit offset range.
+    See `_partition_offsets` for the hang this sentence used to describe
+    rather than prevent. `offset` is accepted for backward compatibility and
+    is IGNORED; every caller passing `offset="-10"` or `offset="start"` gets
+    identical behaviour, so do not read a caller's value as intent.
     """
     records: list[dict] = []
     deadline = time.monotonic() + timeout_s
 
-    for partition, hw in _partition_watermarks(topic).items():
-        if hw <= 0:
+    for partition, (log_start, hw) in _partition_offsets(topic).items():
+        if hw <= log_start:
             continue
         if time.monotonic() >= deadline:
             break
-        want = min(n, hw)
-        start_offset = max(0, hw - want)
+        # Clamp to what the log still holds, then ask for an explicit RANGE.
+        # `-o start:end` exits on its own at `end`; `-n count` waits for a
+        # count and hangs when retention has removed the difference.
+        start_offset = max(log_start, hw - n)
         remaining = max(1, int(deadline - time.monotonic()))
         cmd = _docker_compose_cmd() + [
             "exec", "-T", REDPANDA_SVC,
             "rpk", "topic", "consume", topic,
             "-p", str(partition),
-            "-o", str(start_offset),
-            "-n", str(want),
+            "-o", f"{start_offset}:{hw}",
         ]
         try:
             proc = subprocess.run(
@@ -411,29 +423,34 @@ def consume_topic_binary(topic: str, n: int, timeout_s: int = 15,
     """
     Consume binary records and return raw bytes per record.
 
-    `n` is interpreted as "up to N most recent records per partition". We
-    iterate partitions individually so each `rpk` invocation exits cleanly
-    once the partition is exhausted (rpk has no global timeout flag and will
-    hang if asked for more records than exist).
+    `n` is interpreted as "up to N most recent records per partition", where
+    "available" means at or above LOG-START-OFFSET, not at or above 0. We
+    iterate partitions individually and read an explicit offset range, so
+    each `rpk` invocation exits on its own; rpk has no global timeout flag
+    and WILL hang if asked via `-n` for more records than exist, and the
+    Python-side `timeout` does not save us (see `_partition_offsets`).
+
+    `offset` is accepted for backward compatibility and is IGNORED.
     """
     delim = b"<<HERO_V3_DELIM>>"
     out: list[bytes] = []
     deadline = time.monotonic() + timeout_s
 
-    for partition, hw in _partition_watermarks(topic).items():
-        if hw <= 0:
+    for partition, (log_start, hw) in _partition_offsets(topic).items():
+        if hw <= log_start:
             continue
         if time.monotonic() >= deadline:
             break
-        want = min(n, hw)
-        start_offset = max(0, hw - want)
+        # Clamp to what the log still holds, then ask for an explicit RANGE.
+        # `-o start:end` exits on its own at `end`; `-n count` waits for a
+        # count and hangs when retention has removed the difference.
+        start_offset = max(log_start, hw - n)
         remaining = max(1, int(deadline - time.monotonic()))
         cmd = _docker_compose_cmd() + [
             "exec", "-T", REDPANDA_SVC,
             "rpk", "topic", "consume", topic,
             "-p", str(partition),
-            "-o", str(start_offset),
-            "-n", str(want),
+            "-o", f"{start_offset}:{hw}",
             f"--format=%v{delim.decode()}",
         ]
         try:
@@ -450,8 +467,26 @@ def consume_topic_binary(topic: str, n: int, timeout_s: int = 15,
     return out
 
 
-def _partition_watermarks(topic: str) -> dict[int, int]:
-    """Map partition_id -> high_watermark for the topic."""
+def _partition_offsets(topic: str) -> dict[int, tuple[int, int]]:
+    """
+    Map partition_id -> (log_start_offset, high_watermark).
+
+    BOTH BOUNDS, AND THAT IS THE POINT (2026-09-27). This used to return the
+    high-watermark alone, and both consumers then computed `start = hw - n`
+    and passed `-n n`. That arithmetic assumes offset 0 is still readable. It
+    is not: `raw-sensor-stream` carries `retention.ms=86400000`, so on any
+    stack older than a day the log start has advanced and `hw - n` can point
+    BELOW it. rpk then delivers the records that exist and BLOCKS FOREVER
+    waiting for the rest, because `-n` is a count to wait for, not a limit.
+
+    Measured on compose: LOG-START-OFFSET 202, HIGH-WATERMARK 211 — nine
+    records. `consume_topic_binary(n=80)` asked from 131 for 80 and hung past
+    110s against its own `timeout_s=20`, because `subprocess.run(timeout=)`
+    kills `docker compose` but not the `rpk` grandchild holding the pipe, so
+    the reap that follows has no timeout at all. A test that hangs is worse
+    than one that fails: `run_all.py` has no per-test timeout, so one wedged
+    test wedges the whole suite and reports nothing about anything.
+    """
     cmd = _docker_compose_cmd() + [
         "exec", "-T", REDPANDA_SVC,
         "rpk", "topic", "describe", topic, "--print-partitions",
@@ -461,16 +496,51 @@ def _partition_watermarks(topic: str) -> dict[int, int]:
                               timeout=10, text=True)
     except subprocess.TimeoutExpired:
         return {}
-    result: dict[int, int] = {}
+    result: dict[int, tuple[int, int]] = {}
     for line in proc.stdout.splitlines():
-        m = re.match(r"\s*(\d+)\s+\d+\s+\d+\s+\[\d+\]\s+\d+\s+(\d+)", line)
-        if m:
-            result[int(m.group(1))] = int(m.group(2))
+        # PARTITION LEADER EPOCH REPLICAS LOG-START-OFFSET HIGH-WATERMARK.
+        # Index the two offsets from the RIGHT: REPLICAS prints as one header
+        # column but N tokens (`[0]` at RF=1, `[0 1 2]` at RF=3), so any
+        # left-anchored pattern breaks the moment replication changes.
+        m = re.match(r"\s*(\d+)\s", line)
+        if not m:
+            continue
+        toks = line.split()
+        if len(toks) < 2:
+            continue
+        try:
+            log_start, hw = int(toks[-2]), int(toks[-1])
+        except ValueError:
+            continue
+        result[int(m.group(1))] = (log_start, hw)
     return result
 
 
 def topic_high_watermark(topic: str) -> int | None:
-    """Return the total message count across all partitions, or None on error."""
+    """Return the total message count across all partitions, or None on error.
+
+    READS THE HEADER RATHER THAN COUNTING COLUMNS (fixed 2026-09-27). This
+    function used to match
+
+        r"\s*\d+\s+\d+\s+(\d+)\s+(\d+)\s+"
+
+    which assumes the columns are PARTITION LEADER EPOCH HIGH-WATERMARK. The
+    rpk in use prints
+
+        PARTITION  LEADER  EPOCH  REPLICAS  LOG-START-OFFSET  HIGH-WATERMARK
+
+    and `[0]` is not `\d+`, so the pattern matched NO line and the function
+    returned 0 for every topic -- never None, so no caller could tell. Both
+    callers used it as `topic_high_watermark(t) or 0` to assert "nothing new
+    landed", which made those assertions `0 > 0`: permanently false, and
+    therefore permanently passing. A check that cannot fail is not a check.
+
+    The column is located by NAME from the header, and indexed FROM THE RIGHT.
+    Indexing from the left would reintroduce the same class of bug the moment a
+    topic has RF>1, because rpk prints replicas as `[0 1 2]` -- one header
+    column, three whitespace-separated tokens. HIGH-WATERMARK sits to the right
+    of REPLICAS, so counting from the end steps over that hazard entirely.
+    """
     cmd = _docker_compose_cmd() + [
         "exec", "-T", REDPANDA_SVC,
         "rpk", "topic", "describe", topic, "--print-partitions",
@@ -480,12 +550,36 @@ def topic_high_watermark(topic: str) -> int | None:
                               timeout=10, text=True)
     except subprocess.TimeoutExpired:
         return None
+
+    lines = proc.stdout.splitlines()
+    from_end = None
+    for line in lines:
+        cols = line.split()
+        if "HIGH-WATERMARK" in cols:
+            from_end = len(cols) - cols.index("HIGH-WATERMARK")
+            break
+    if from_end is None:
+        # No header: the topic does not exist, rpk errored, or the output shape
+        # changed again. None, not 0 -- so a caller that cares can tell.
+        return None
+
+    # A missing topic is NOT zero messages. rpk prints the header and no data
+    # rows for a topic that does not exist, so summing to 0 would make
+    # "absent" and "present but empty" the same answer -- which is the
+    # ambiguity this whole function was just fixed for. A topic that exists
+    # always reports at least one partition, so seeing no partition row at all
+    # is the error case.
     total = 0
-    for line in proc.stdout.splitlines():
-        m = re.match(r"\s*\d+\s+\d+\s+(\d+)\s+(\d+)\s+", line)
-        if m:
-            total += int(m.group(2))
-    return total
+    rows = 0
+    for line in lines:
+        cols = line.split()
+        if len(cols) < from_end or "HIGH-WATERMARK" in cols:
+            continue
+        tok = cols[-from_end]
+        if tok.isdigit():
+            total += int(tok)
+            rows += 1
+    return total if rows else None
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +588,53 @@ def topic_high_watermark(topic: str) -> int | None:
 def scrape_metrics(url: str = METRICS_URL, timeout_s: int = 5) -> str:
     with urllib.request.urlopen(url, timeout=timeout_s) as resp:
         return resp.read().decode()
+
+
+def scrape_connect_metrics(service: str = CONNECT_SVC,
+                          timeout_s: int = 10) -> str:
+    """Scrape Redpanda Connect's /metrics from inside the container.
+
+    Connect exposes Prometheus on its http port by default -- there is no
+    `metrics:` block in openddil-base-connect.yaml and none is needed. The port
+    is not mapped to the host, so this goes through `docker compose exec`
+    rather than urllib. Returns "" on any failure, so a caller can tell
+    "endpoint unreachable" from "series absent" only if it checks for empty.
+    """
+    cmd = _docker_compose_cmd() + [
+        "exec", "-T", service,
+        "wget", "-qO-", f"http://localhost:{CONNECT_METRICS_PORT}/metrics",
+    ]
+    try:
+        proc = subprocess.run(cmd, cwd=str(COMPOSE_DIR), capture_output=True,
+                              timeout=timeout_s, text=True)
+    except subprocess.TimeoutExpired:
+        return ""
+    return proc.stdout
+
+
+def metric_value_labeled(text: str, name: str,
+                         labels: dict | None = None) -> float:
+    """Like metric_value, but matches a SUBSET of the labels present.
+
+    metric_value builds the label block as an exact string, which cannot match
+    a Redpanda Connect metric: Connect appends its own `label` and `path`
+    labels to every series a `metric` processor emits, e.g.
+
+      dis_ingress_kind_dropped{kind="2",label="",path="root.processor_..."} 1
+
+    so requiring an exact set would silently return 0.0 and read as "nothing
+    was dropped" -- the exact failure mode the counter exists to prevent.
+    Returns 0.0 if not found.
+    """
+    lookaheads = ""
+    for k, v in (labels or {}).items():
+        lookaheads += r"(?=[^}]*" + re.escape(f'{k}="{v}"') + ")"
+    pattern = re.compile(
+        r"^" + re.escape(name) + r"\{" + lookaheads + r"[^}]*\}\s+([0-9eE+\-.]+)$",
+        re.MULTILINE,
+    )
+    m = pattern.search(text)
+    return float(m.group(1)) if m else 0.0
 
 
 def metric_value(text: str, name: str, labels: dict | None = None) -> float:
