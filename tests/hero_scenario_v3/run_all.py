@@ -9,14 +9,17 @@ customer overlay is mounted.
 
 Exit code:
   0 = all tests PASS or SKIP
-  1 = any test FAIL
+  1 = any test FAIL or TIMEOUT
+  2 = warm-up gate failed (no tests run)
 
 Usage:
   python tests/hero_scenario_v3/run_all.py
 """
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -91,11 +94,85 @@ def discover() -> list[str]:
     return sorted((p.name for p in HERE.glob("test_*.py")), key=_order)
 
 
+# --------------------------------------------------------------------------
+# Per-test timeout.
+# --------------------------------------------------------------------------
+# A test that FAILS reports. A test that HANGS reports nothing about anything,
+# and because this runner is sequential, it takes the rest of the suite with
+# it. That happened on 2026-09-27: `consume_topic_binary` asked rpk via `-n`
+# for records that retention had deleted, rpk waited for them forever, and
+# test_05 sat past fifteen minutes while the five tests queued behind it never
+# ran. The suite produced no verdict at all -- not a failure, an absence.
+#
+# The helper bug is fixed, but the runner's exposure to it was the real
+# defect: nothing bounded a test. This does.
+#
+# TIMEOUT is its own verdict, not a FAIL, because the two have different causes
+# and different fixes. A FAIL means the code under test is wrong. A TIMEOUT
+# usually means the TEST is wrong -- a consumer waiting on records that will
+# never arrive -- and collapsing it into FAIL sends you looking in the wrong
+# place. It counts as a failure for the exit code either way.
+TEST_TIMEOUT_S = int(os.getenv("HERO_TEST_TIMEOUT_S", "300"))
 
-def run_one(script: str) -> tuple[str, str, str]:
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """
+    Kill the test AND its descendants.
+
+    THIS IS THE PART THAT IS EASY TO GET WRONG, and getting it wrong
+    reproduces the bug inside the fix. These tests shell out to
+    `docker compose exec ... rpk`, so killing the direct child leaves rpk alive
+    holding the stdout pipe, and the reap that follows blocks forever with no
+    timeout of its own -- which is precisely how `subprocess.run(timeout=20)`
+    was measured taking 110s+ and then not returning. So the whole process
+    group goes, not just the child.
+    """
+    if os.name == "nt":
+        # No os.killpg on Windows; taskkill /T walks the tree.
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                       capture_output=True)
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+
+def run_one(script: str, timeout_s: int = TEST_TIMEOUT_S) -> tuple[str, str, str]:
     path = HERE / script
-    proc = subprocess.run([PY, str(path)], capture_output=True, text=True)
-    out = (proc.stdout + proc.stderr).strip()
+
+    # New process group / session, so _kill_tree can take the descendants too.
+    if os.name == "nt":
+        spawn = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        spawn = {"start_new_session": True}
+
+    proc = subprocess.Popen(
+        [PY, str(path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **spawn,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            # Whatever it managed to print before it wedged is often the clue.
+            stdout, stderr = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            stdout, stderr = "", ""
+        tail = (stdout + stderr).strip().splitlines()
+        where = f" last output: {tail[-1]}" if tail else " no output at all"
+        return script, "TIMEOUT", (
+            f"exceeded {timeout_s}s and was killed with its children;"
+            f"{where}"
+        )
+
+    out = (stdout + stderr).strip()
     last = out.splitlines()[-1] if out else ""
     if last.startswith("PASS:"):
         verdict = "PASS"
@@ -112,6 +189,8 @@ def main() -> int:
 
     tests = discover()
     print(f"... discovered {len(tests)} tests")
+    print(f"... per-test timeout {TEST_TIMEOUT_S}s "
+          f"(HERO_TEST_TIMEOUT_S to change)")
     newly = [t for t in tests if t in UNRUN_BEFORE_DISCOVERY]
     if newly:
         print(f"... {len(newly)} of them were never run by this runner "
@@ -143,12 +222,20 @@ def main() -> int:
     n_pass = sum(1 for _, v, _ in results if v == "PASS")
     n_skip = sum(1 for _, v, _ in results if v == "SKIP")
     n_fail = sum(1 for _, v, _ in results if v == "FAIL")
+    n_timeout = sum(1 for _, v, _ in results if v == "TIMEOUT")
+    markers = {"PASS": "[OK]", "SKIP": "[~~]", "FAIL": "[XX]", "TIMEOUT": "[..]"}
     for name, verdict, line in results:
-        marker = {"PASS": "[OK]", "SKIP": "[~~]", "FAIL": "[XX]"}[verdict]
-        print(f"  {marker} {name:42s} {verdict:5s}  {line}")
+        print(f"  {markers[verdict]} {name:42s} {verdict:7s}  {line}")
     print()
-    print(f"PASS: {n_pass}   SKIP: {n_skip}   FAIL: {n_fail}")
-    return 0 if n_fail == 0 else 1
+    print(f"PASS: {n_pass}   SKIP: {n_skip}   FAIL: {n_fail}   "
+          f"TIMEOUT: {n_timeout}")
+    if n_timeout:
+        print()
+        print("A TIMEOUT is not a FAIL. The test never reached a verdict, so it")
+        print("says nothing about the code it was meant to check -- treat the")
+        print("test as the first suspect, usually a consumer waiting on records")
+        print("that will never arrive.")
+    return 0 if (n_fail + n_timeout) == 0 else 1
 
 
 if __name__ == "__main__":
