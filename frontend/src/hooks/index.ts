@@ -72,3 +72,11 @@ export {
   useAssetElementTelemetry,
   type AssetElementOperational,
 } from './useAssetElementTelemetry';
+// Not an Electric shape hook — see its own file header for why.
+export {
+  useEgressAdmission,
+  EGRESS_PANE_URL,
+  type DecisionRecord,
+  type DecisionsResponse,
+  type EgressAdmissionResult,
+} from './useEgressAdmission';

@@ -1372,6 +1372,40 @@ services:
     # is right; restarting after a clean stop is not.
     restart: on-failure
 
+  # THE PANE'S READ SURFACE. Same borrowed projector image as egress-gate-c2
+  # (asyncpg + pyyaml, nothing pane_api.py needs is missing), same gate.py,
+  # same Topaz — a SEPARATE process from the worker on purpose (see
+  # pane_api.py's module docstring): main.py's loop is a blocking Kafka
+  # consumer, and grafting a synchronous HTTP handler onto it would mean one
+  # either blocks the other or shares state neither was written to share.
+  # COMPOSE-ONLY SCAFFOLDING, same ledger row as egress-gate-c2 (LR-0043-C).
+  egress-pane-api:
+    image: ghcr.io/edgy-solutions/openddil/projector:latest
+    pull_policy: always
+    container_name: openddil-demo-egress-pane-api
+    entrypoint: ["python", "-u", "/app/egress/pane_api.py"]
+    environment:
+      OPENDDIL_EGRESS_PANE_PORT:   "8090"
+      OPENDDIL_EGRESS_DESTINATION: "system:c2-stand-in-atl"
+      OPENDDIL_TOPAZ_URL:          http://topaz:8383
+      POSTGRES_DSN:                postgres://postgres:password@postgres-hq:5432/openddil
+      LOG_LEVEL:                   INFO
+      PYTHONPATH:                  /app
+    volumes:
+      - ./egress:/app/egress:ro
+    ports:
+      - "8090:8090"
+    depends_on:
+      ontology-overlay:
+        condition: service_completed_successfully
+      postgres-hq:
+        condition: service_healthy
+      atlas-init:
+        condition: service_completed_successfully
+      topaz:
+        condition: service_started
+    restart: unless-stopped
+
   frontend:
     image: ghcr.io/edgy-solutions/openddil/frontend:latest
     pull_policy: always
