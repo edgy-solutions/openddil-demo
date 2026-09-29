@@ -91,3 +91,70 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           target: production
+
+  # The egress gate and its pane: one image, two commands (see the header of
+  # egress/Dockerfile). It differs from the two jobs above in one way, and the
+  # difference is forced: the build context is the WORKSPACE ROOT, not a
+  # directory of this repo, because the generated protos it bakes in come from
+  # openddil-contracts. So both repos are checked out as siblings and codegen
+  # runs first -- the same layout openddil-helm's build-bundle.yml uses.
+  #
+  # THE TEST STAGE RUNS HERE, and nothing in this job has to ask for it. The
+  # runtime stage copies a file the test stage writes only when pytest exits
+  # 0, so buildx cannot build `runtime` without running the tests, and a
+  # failing test fails this step before anything is pushed. `target: runtime`
+  # is named so that stays true if a stage is ever added after it.
+  build-egress:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout openddil-demo (self)
+        uses: actions/checkout@v4
+        with:
+          path: openddil-demo
+
+      - name: Checkout openddil-contracts
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/openddil-contracts
+          path: openddil-contracts
+
+      # gen/ is gitignored in openddil-contracts. Without this the proto COPY
+      # fails with "path not found in build context" -- which is the intended
+      # failure, better than an image that ships without its stubs.
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Generate Python proto bindings in openddil-contracts
+        run: |
+          make -C openddil-contracts python
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          REG=ghcr.io/${{ github.repository_owner }}/openddil/egress
+          T="$REG:latest"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            T="$T,$REG:${{ github.ref_name }}"
+          fi
+          echo "tags=$T" >> "$GITHUB_OUTPUT"
+
+      - name: Build, test and push egress
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: openddil-demo/egress/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          target: runtime
