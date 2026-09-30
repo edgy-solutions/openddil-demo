@@ -41,10 +41,27 @@
 # independent: coverage should still reach zero UNKNOWN on kind=2 tuples per
 # ADR-0016, and adding them changes nothing here. Resolving a thing and
 # admitting a thing are not the same claim.
+#
+# REMOVALS PASS BY PDU TYPE. A Remove Entity record has no dis_entity_type,
+# so the kind check read it as 0 and dropped every one: no fleet member could
+# ever be removed (ADR-0044). This gate is stateless, so it cannot tell a
+# fleet member's removal from a munition's, and it does not try. Resolving a
+# removal against the asset ids that exist is done where those ids live: the
+# projector and the Silver-consuming objects drop a removal for a key they
+# have never seen and count it. A removal therefore never creates the asset
+# this gate refused.
 # =============================================================================
 processor_resources:
   - label: dis_kind_gate
     switch:
+      # Removal arm: pass. Must come before the kind arm, which would drop
+      # every removal as kind 0. `noop`, not an empty list: `processors: []`
+      # passes lint and then fails to build at runtime, which takes the whole
+      # gate down with it.
+      - check: 'this.pdu_type.or("") == "remove_entity"'
+        processors:
+          - noop: {}
+
       # Not-admitted arm. `.int64()` before `.string()` for the same reason
       # sim-dis-mapping.yaml coerces before formatting: parse_json() yields
       # json.Number, and stringifying that directly does not give "2".
