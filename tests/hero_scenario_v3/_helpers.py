@@ -206,6 +206,22 @@ def send_http(payload: dict) -> int:
 # ---------------------------------------------------------------------------
 # DIS PDU synthesis (Entity State PDU, IEEE 1278.1)
 # ---------------------------------------------------------------------------
+def build_remove_entity_pdu(site: int = 1, application: int = 1,
+                            entity: int = 4773) -> bytes:
+    """A Remove Entity PDU (type 12, family 5) for site/application/entity.
+
+    Same layout dis_sim.py sends through Open-DIS: the originator is the
+    sim's own site/application with entity 0, the receiving id is the entity
+    being removed, request id 0. 28 bytes: header 12, two entity ids, 4.
+    """
+    buf = bytearray()
+    buf += struct.pack(">BBBBIHBB", 7, 1, 12, 5, 0, 28, 0, 0)
+    buf += struct.pack(">HHH", site, application, 0)
+    buf += struct.pack(">HHH", site, application, entity)
+    buf += struct.pack(">I", 0)
+    return bytes(buf)
+
+
 def build_entity_state_pdu(
     site: int = 1,
     application: int = 1,
@@ -610,6 +626,37 @@ def scrape_connect_metrics(service: str = CONNECT_SVC,
     except subprocess.TimeoutExpired:
         return ""
     return proc.stdout
+
+
+def scrape_service_metrics(service: str, port: int,
+                           timeout_s: int = 10) -> str:
+    """Scrape a Python service's prometheus_client endpoint from inside its
+    container. The projector and the Restate services do not publish their
+    metrics ports to the host, and their images carry python but not wget.
+    Returns "" on any failure, as scrape_connect_metrics does.
+    """
+    script = ("import urllib.request;print(urllib.request.urlopen("
+              f"'http://localhost:{port}/metrics',timeout=5).read().decode())")
+    cmd = _docker_compose_cmd() + [
+        "exec", "-T", service, "python", "-c", script,
+    ]
+    try:
+        proc = subprocess.run(cmd, cwd=str(COMPOSE_DIR), capture_output=True,
+                              timeout=timeout_s, text=True)
+    except subprocess.TimeoutExpired:
+        return ""
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def metric_sum(text: str, name: str) -> float | None:
+    """Sum every series of `name`, labelled or not. None if there is no
+    series at all, so "never registered" is not read as "zero"."""
+    pattern = re.compile(
+        r"^" + re.escape(name) + r"(?:\{[^}]*\})?\s+([0-9eE+\-.]+)$",
+        re.MULTILINE,
+    )
+    vals = [float(v) for v in pattern.findall(text)]
+    return sum(vals) if vals else None
 
 
 def metric_value_labeled(text: str, name: str,
