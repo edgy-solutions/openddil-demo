@@ -621,10 +621,19 @@ services:
       OPENDDIL_EDGE_ID:   edge-01
       OPENDDIL_REGION_ID: region-east
       LOG_LEVEL:          INFO
+    # /ontology carries dis_appearance.yaml. Without it the appearance decoder
+    # is inert (appearance.py logs "appearance not decoded"), every record's
+    # appearance is {}, and the mapping never sets health_state or
+    # operational_status. The chart mounts it (templates/edge.yaml); compose
+    # did not.
+    volumes:
+      - ontology:/ontology:ro
     depends_on:
       redpanda-edge-01:
         condition: service_healthy
       redpanda-init:
+        condition: service_completed_successfully
+      ontology-overlay:
         condition: service_completed_successfully
     restart: unless-stopped
 
@@ -643,10 +652,19 @@ services:
       OPENDDIL_EDGE_ID:   edge-02
       OPENDDIL_REGION_ID: region-east
       LOG_LEVEL:          INFO
+    # /ontology carries dis_appearance.yaml. Without it the appearance decoder
+    # is inert (appearance.py logs "appearance not decoded"), every record's
+    # appearance is {}, and the mapping never sets health_state or
+    # operational_status. The chart mounts it (templates/edge.yaml); compose
+    # did not.
+    volumes:
+      - ontology:/ontology:ro
     depends_on:
       redpanda-edge-02:
         condition: service_healthy
       redpanda-init:
+        condition: service_completed_successfully
+      ontology-overlay:
         condition: service_completed_successfully
     restart: unless-stopped
 
@@ -665,10 +683,19 @@ services:
       OPENDDIL_EDGE_ID:   edge-03
       OPENDDIL_REGION_ID: region-west
       LOG_LEVEL:          INFO
+    # /ontology carries dis_appearance.yaml. Without it the appearance decoder
+    # is inert (appearance.py logs "appearance not decoded"), every record's
+    # appearance is {}, and the mapping never sets health_state or
+    # operational_status. The chart mounts it (templates/edge.yaml); compose
+    # did not.
+    volumes:
+      - ontology:/ontology:ro
     depends_on:
       redpanda-edge-03:
         condition: service_healthy
       redpanda-init:
+        condition: service_completed_successfully
+      ontology-overlay:
         condition: service_completed_successfully
     restart: unless-stopped
 
