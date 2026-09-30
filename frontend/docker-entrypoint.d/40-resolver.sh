@@ -73,6 +73,37 @@ else
     echo "40-resolver.sh: session gate OFF — the shell is public (no OIDC PEP configured)"
 fi
 
+# __EGRESS_PANE_UPSTREAM__ / __EGRESS_PANE_PORT__ / __EGRESS_PANE_OFF__
+#
+# The egress admission pane (egress/pane_api.py) is HUB-ONLY: it exists only
+# where the chart's releasability.enabled renders egress.yaml's
+# egress-pane-api Deployment. Tier frontends never receive
+# OPENDDIL_EGRESS_PANE_UPSTREAM, so the default here is EMPTY, and empty
+# means "not at this tier" rather than "guess a host and let it 502".
+#
+# A variable proxy_pass with an upstream that can never resolve fails as a
+# 502/resolver error on first request — indistinguishable from an outage. A
+# literal `return 404` said in advance is the honest answer: this tier has no
+# pane to reach.
+egress_pane_upstream="${OPENDDIL_EGRESS_PANE_UPSTREAM:-}"
+egress_pane_port="${OPENDDIL_EGRESS_PANE_PORT:-8090}"
+if [ -n "$egress_pane_upstream" ]; then
+    sed -i "s/__EGRESS_PANE_UPSTREAM__/${egress_pane_upstream}/g" "$conf"
+    sed -i "s/__EGRESS_PANE_PORT__/${egress_pane_port}/g" "$conf"
+    sed -i "s|__EGRESS_PANE_OFF__||g" "$conf"
+    echo "40-resolver.sh: egress pane -> ${egress_pane_upstream}:${egress_pane_port}"
+else
+    # Still substitute the other two placeholders — with harmless values,
+    # never left in the config — so `nginx -t` parses a complete location
+    # block (a literal port after $upstream_egress_pane: and a proxy_pass
+    # directive nginx can validate syntactically) even though the `return
+    # 404` above makes both unreachable at runtime.
+    sed -i "s/__EGRESS_PANE_UPSTREAM__/unset-no-egress-pane-at-this-tier/g" "$conf"
+    sed -i "s/__EGRESS_PANE_PORT__/8090/g" "$conf"
+    sed -i "s|__EGRESS_PANE_OFF__|default_type application/json; return 404 '{\"error\":\"no egress pane at this tier\"}';|g" "$conf"
+    echo "40-resolver.sh: egress pane -> none (404) — no OPENDDIL_EGRESS_PANE_UPSTREAM set"
+fi
+
 # A placeholder that survives substitution becomes a hostname nginx cannot
 # resolve, and the failure surfaces as a 502 on the first request rather
 # than at start-up. Fail here instead, where the message can say which one.

@@ -18,13 +18,18 @@
 // be one.
 import { useEffect, useState } from 'react';
 
-// Compose publishes the pane API on its own host port; there is no
-// same-origin proxy for it the way Helm mode proxies `/electric/` (see
-// nginx.conf). A relative override is still honoured if one is ever fronted
-// with a proxy, since `fetch` resolves a relative path against the page's
-// own origin without any extra work here.
+// Same-origin by default: nginx.conf's `location /egress/` proxies this
+// path to egress-pane-api (compose) / `<release>-egress-pane-api` (Helm),
+// same idiom as `/electric/`, and it is BEHIND __SESSION_GATE__ — the pane
+// returns per-record release decisions (asset ids, originator nations), the
+// same class of data the gate on `location /` protects. Fetching a
+// cross-origin host here would both reach the wrong pane on a workstation
+// running more than one stack under Docker Desktop and bypass that gate
+// entirely, so `/egress` (not `http://localhost:8090`) is the default.
+// VITE_EGRESS_PANE_URL remains as an escape hatch for anyone fronting the
+// pane a different way.
 export const EGRESS_PANE_URL =
-  (import.meta.env.VITE_EGRESS_PANE_URL ?? 'http://localhost:8090').replace(/\/$/, '');
+  (import.meta.env.VITE_EGRESS_PANE_URL ?? '/egress').replace(/\/$/, '');
 
 export interface DecisionRecord {
   asset_id: string;

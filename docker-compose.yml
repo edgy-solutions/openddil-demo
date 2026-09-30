@@ -1410,6 +1410,14 @@ services:
     image: ghcr.io/edgy-solutions/openddil/frontend:latest
     pull_policy: always
     container_name: openddil-demo-frontend
+    # Same-origin route to the egress admission pane (nginx.conf's
+    # `location /egress/`, substituted by docker-entrypoint.d/40-resolver.sh).
+    # `egress-pane-api` is the compose SERVICE name, which is what Docker's
+    # embedded DNS resolves — not `openddil-demo-egress-pane-api`, the
+    # container_name.
+    environment:
+      OPENDDIL_EGRESS_PANE_UPSTREAM: egress-pane-api
+      OPENDDIL_EGRESS_PANE_PORT:     "8090"
     ports:
       - "3017:80"
 
