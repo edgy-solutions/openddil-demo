@@ -26,6 +26,66 @@ processor_resources:
       root.event_id = uuid_v4()
       root.schema_revision = 1
 
+      if $src.pdu_type.or("") == "remove_entity" {
+        # =====================================================================
+        # REMOVE ENTITY (ADR-0044 slice A, PDU type 12)
+        # =====================================================================
+        # This is the signal ADR-0044 §"Alignment"/"The signal" calls the
+        # largest gap on the DIS side: not a health or kinematics update, but
+        # "this entity is gone". dis_ingestor.py's _extract_remove_entity()
+        # already refused every claim it wasn't sure of (wildcard/ALL_ENTITIES
+        # receiving ids never reach this record at all — see its docstring),
+        # so everything left here is a single concrete entity being removed.
+        #
+        # DELIBERATELY MINIMAL. No kinematics, no sustainment, no other
+        # operational_state axis: a Remove Entity PDU carries none of that,
+        # and this mapping is pure reshaping (ADR-0007) — inventing values
+        # for axes the wire signal is silent on would be exactly the
+        # violation the health/power blocks below go to such lengths to
+        # avoid for Entity State PDUs.
+        #
+        # Asset identity — dis_entity_id here is the REMOVED entity (DIS's
+        # receiving entity id; see dis_ingestor.py for why that's the one).
+        root.asset.asset_id                  = $src.entity_id_urn
+        root.asset.dis_entity_id.site        = $src.dis_entity_id.site
+        root.asset.dis_entity_id.application = $src.dis_entity_id.application
+        root.asset.dis_entity_id.entity      = $src.dis_entity_id.entity
+
+        root.provenance.producer_id     = "dis-ingestor-binary"
+        root.provenance.source_protocol = "DIS/IEEE-1278.1-binary"
+        root.provenance.sample_time     = $src.ingest_timestamp
+        root.provenance.ingest_time     = now()
+        root.provenance.classification  = "U"
+
+        # Origin-node provenance — same stamps and same rationale as the
+        # Entity State branch below (ADR-0022 / ADR-0023, Phase 6a).
+        root.provenance.edge_id   = $src.provenance.edge_id.or("")
+        root.provenance.region_id = $src.provenance.region_id.or("")
+
+        # Releasability labels — same lookup, same no-default rule as the
+        # Entity State branch below (ADR-0029 §3 / Arc 2 Slice 1). Verified
+        # this lookup needs no entity-type fields: releasability.yaml keys
+        # `assets` by entity_id_urn, not by the DIS EntityType 7-tuple, and
+        # a Remove Entity record has no dis_entity_type at all — the ontology
+        # lookup a few lines down (platform_type/platform_variant/etc.) is
+        # the one that keys on entity type, and this branch does not run it.
+        let rel_doc = file(path: "/ontology/releasability.yaml", no_cache: true).parse_yaml()
+        let rel_default = if $rel_doc.default_originator_nation != null {
+          {"originator_nation": $rel_doc.default_originator_nation,
+           "releasable_to": []}
+        } else { {} }
+        let rel = $rel_doc.assets.get($src.entity_id_urn).or($rel_default)
+        root.provenance.originator_nation = $rel.originator_nation.or(deleted())
+        root.provenance.releasable_to     = $rel.releasable_to.or(deleted())
+
+        # The one claim this signal makes. OPERATIONAL_STATUS_REMOVED is a
+        # terminal lifecycle state ADR-0044's two-column model has a column
+        # for; it is not a health axis and does not touch health_state,
+        # power_state, or any other operational_state field.
+        root.operational_state.operational_status = "OPERATIONAL_STATUS_REMOVED"
+
+      } else {
+
       # Asset identity — URN from DIS is canonical until identity resolver overwrites it
       root.asset.asset_id   = $src.entity_id_urn
       root.asset.callsign   = $src.marking.or("")
@@ -228,6 +288,27 @@ processor_resources:
         _ => deleted()
       }
 
+      # --- lifecycle axis (ADR-0044 slice A) --------------------------------
+      # operational_status is the two-column lifecycle model's own axis, not
+      # a restatement of health_state above — a DESTROYED entity is BOTH
+      # HEALTH_STATE_FAILED (an impairment claim) and
+      # OPERATIONAL_STATUS_DESTROYED (a lifecycle claim); ADR-0044 keeps them
+      # as separate columns and this mapping keeps them as separate fields.
+      #
+      # Same no-claim-from-silence rule as health_state and power_state
+      # above: DESTROYED and deactivated are POSITIVE claims the appearance
+      # bits actually made; everything else — SLIGHT/MODERATE damage, no
+      # appearance data at all, deactivated absent or false — is deleted(),
+      # never OPERATIONAL_STATUS_OPERATIONAL. Entity State PDUs carry no
+      # signal that means "this entity is fine" (ADR-0007: no math, no
+      # inference); OPERATIONAL only ever comes from an explicit source, and
+      # DIS appearance is not one for this axis.
+      root.operational_state.operational_status = match {
+        $ax.damage.or("") == "DESTROYED" => "OPERATIONAL_STATUS_DESTROYED",
+        $ax.deactivated.or(false)        => "OPERATIONAL_STATUS_DEACTIVATED",
+        _ => deleted()
+      }
+
       # --- kills as subsystem faults ---------------------------------------
       # Carried as active_fault_codes in the "SUBSYS:HEALTH" form fusion's
       # _eval_subsystems already parses — so this needs NO contract change and
@@ -248,3 +329,5 @@ processor_resources:
       ].filter(v -> v != null)
 
       root.sustainment.health.weapons_fault = $ax.firepower_kill.or(false)
+
+      }
