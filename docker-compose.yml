@@ -1433,6 +1433,83 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # THE C2 STAND-IN FOR THE COT BRIDGE. taky (PyPI `taky`, open-source CoT/TAK
+  # server) terminates the plaintext CoT TCP link the adapter below writes to.
+  # Pinned exact version, installed into a pinned base image at container
+  # start rather than baked into an image of our own — same trade as
+  # egress-gate-c2's borrowed image: fine for proving the translation, not
+  # fine for anything that ships. COMPOSE-ONLY SCAFFOLDING, ledger row
+  # LR-0043-C.
+  #
+  # Config keys (egress/tak/taky.conf) are read from the installed
+  # taky==0.10 package, not guessed — see that file's header comment for
+  # taky/config.py line citations. SSL is off and the port is plaintext 8087,
+  # both stated explicitly in that file even though they are also taky's
+  # unconfigured defaults.
+  tak-server:
+    image: python:3.11.9-slim
+    container_name: openddil-demo-tak-server
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        pip install --no-cache-dir taky==0.10
+        mkdir -p /var/taky
+        exec taky -c /etc/taky/taky.conf -l info
+    volumes:
+      - ./egress/tak/taky.conf:/etc/taky/taky.conf:ro
+    ports:
+      - "8087:8087"
+    healthcheck:
+      # A bare TCP connect, not an HTTP probe: CoT over this port is a raw
+      # XML stream, not HTTP, so this is the same check an operator's "is
+      # anything listening" would be.
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('localhost', 8087), 2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  # THE COT TRANSLATOR. Consumes ONLY egress-gate-c2's sink topic
+  # (egress-c2-status) and writes one CoT event per record to tak-server. It
+  # is not a second release decision — see egress/cot_adapter.py's module
+  # docstring for the fence and why it is not one. COMPOSE-ONLY SCAFFOLDING,
+  # same borrowed-image trade and same ledger row as egress-gate-c2
+  # (LR-0043-C).
+  egress-cot-adapter-c2:
+    image: ghcr.io/edgy-solutions/openddil/projector:latest
+    pull_policy: always
+    container_name: openddil-demo-egress-cot-adapter-c2
+    entrypoint: ["python", "-u", "/app/egress/cot_adapter.py"]
+    environment:
+      OPENDDIL_COT_BROKERS:       redpanda-hq:19092
+      OPENDDIL_COT_SOURCE_TOPIC:  egress-c2-status
+      OPENDDIL_COT_GROUP:         egress-cot-adapter-c2
+      OPENDDIL_COT_TAK_HOST:      tak-server
+      OPENDDIL_COT_TAK_PORT:      "8087"
+      OPENDDIL_COT_STALE_S:       "300"
+      OPENDDIL_COT_TYPE:          a-u-G
+      LOG_LEVEL:                  INFO
+      PYTHONPATH:                 /proto:/app
+    volumes:
+      - ./egress:/app/egress:ro
+      - ../openddil-contracts/gen/python:/proto:ro
+    depends_on:
+      redpanda-hq:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      tak-server:
+        condition: service_healthy
+      egress-gate-c2:
+        condition: service_started
+    # `on-failure`, same reasoning as egress-gate-c2: a persistent TAK
+    # connect failure exits the process non-zero rather than looping quietly
+    # into a working-looking state.
+    restart: on-failure
+
   frontend:
     image: ghcr.io/edgy-solutions/openddil/frontend:latest
     pull_policy: always
