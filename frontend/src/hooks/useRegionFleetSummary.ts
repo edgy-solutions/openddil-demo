@@ -31,6 +31,16 @@ export interface RegionFleetSummary {
   degraded: number;
   critical: number;
   non_operational: number;
+  /**
+   * ADR-0044 §3: terminal operational-status partitions. nominal/degraded/
+   * critical/non_operational above count only assets WITHOUT a terminal
+   * operational-status claim; these three count the assets that have one.
+   * Older rows (pre-rollout) won't carry these columns yet — num() below
+   * defaults absent/undefined to 0, same as every other count here.
+   */
+  destroyed: number;
+  deactivated: number;
+  removed: number;
   asset_count: number;
   observed_at: string | null;
   /** How many releasability-class partials this subject could see. */
@@ -49,6 +59,9 @@ function mapRow(row: Record<string, any>): RawPartial {
     degraded: num(row.degraded),
     critical: num(row.critical),
     non_operational: num(row.non_operational),
+    destroyed: num(row.destroyed),
+    deactivated: num(row.deactivated),
+    removed: num(row.removed),
     asset_count: num(row.asset_count),
     observed_at: row.observed_at ?? null,
   };
@@ -67,6 +80,9 @@ export function useRegionFleetSummary(): ShapeResult<RegionFleetSummary> {
         degraded: p.degraded,
         critical: p.critical,
         non_operational: p.non_operational,
+        destroyed: p.destroyed,
+        deactivated: p.deactivated,
+        removed: p.removed,
         asset_count: p.asset_count,
         observed_at: p.observed_at,
         partial_count: 1,
@@ -77,6 +93,9 @@ export function useRegionFleetSummary(): ShapeResult<RegionFleetSummary> {
     acc.degraded += p.degraded;
     acc.critical += p.critical;
     acc.non_operational += p.non_operational;
+    acc.destroyed += p.destroyed;
+    acc.deactivated += p.deactivated;
+    acc.removed += p.removed;
     acc.asset_count += p.asset_count;
     acc.partial_count += 1;
     // OLDEST wins, deliberately. A region's summary is only as current as its

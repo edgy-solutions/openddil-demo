@@ -73,6 +73,15 @@ export default function RegionFleetSummary() {
               <th className="text-right pb-1">
                 <span className="text-red-400">N-O</span>
               </th>
+              <th className="text-right pb-1">
+                <span className="text-slate-400">destroyed</span>
+              </th>
+              <th className="text-right pb-1">
+                <span className="text-slate-400">deactivated</span>
+              </th>
+              <th className="text-right pb-1">
+                <span className="text-slate-400">removed</span>
+              </th>
               <th className="text-right pb-1">assets</th>
               <th className="text-right pb-1">observed</th>
             </tr>
@@ -88,6 +97,9 @@ export default function RegionFleetSummary() {
                 <td className="py-1 text-right text-amber-300">{r.degraded}</td>
                 <td className="py-1 text-right text-orange-300">{r.critical}</td>
                 <td className="py-1 text-right text-red-300">{r.non_operational}</td>
+                <td className="py-1 text-right text-slate-300">{r.destroyed}</td>
+                <td className="py-1 text-right text-slate-300">{r.deactivated}</td>
+                <td className="py-1 text-right text-slate-300">{r.removed}</td>
                 <td className="py-1 text-right">{r.asset_count}</td>
                 <td className="py-1 text-right text-slate-400">
                   {relativeAge(r.observed_at)}
