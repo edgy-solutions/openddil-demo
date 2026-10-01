@@ -28,10 +28,10 @@ import { deployment } from '../deployment';
 
 export function SignedOut() {
   // The overlay's logo when a deployment sets one; the OpenDDIL mark
-  // otherwise. `public/openddil.jpg` is served by the frontend's own nginx
-  // and is deliberately NOT behind the session gate — a login screen that
-  // cannot load its own image is a worse failure than a public logo.
-  const logo = deployment().logo || '/openddil.jpg';
+  // otherwise. `public/brand/logo.png` is served by the frontend's own
+  // nginx and is deliberately NOT behind the session gate — a login screen
+  // that cannot load its own image is a worse failure than a public logo.
+  const logo = deployment().logo || '/brand/logo.png';
 
   return (
     <div className="h-screen w-screen bg-slate-950 text-slate-300 font-mono
