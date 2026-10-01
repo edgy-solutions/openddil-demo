@@ -60,17 +60,16 @@ EVENT_RE = re.compile(rb"<event\b.*?</event>", re.DOTALL)
 def build_proto(nation: str, releasable: list, asset_id: str, nonce: int) -> bytes:
     """Same provenance shape as test_50's build_proto, plus a `status` block
     so the adapter has something to carry onto `openddil_status` and a
-    status_revision this run can filter on. `status.asset_id` is also set to
-    the nonce per the build spec; it never reaches the wire's `uid` or
-    `openddil_status/@asset_id`, because build_event() in cot_adapter.py
-    prefers the Kafka key (the real asset id, forwarded byte-for-byte by the
-    gate) over `status.asset_id` for both."""
+    status_revision this run can filter on. `status.asset_id` is the real
+    asset id, the same as the Kafka key: the HQ projector keys
+    asset_logistics_status by it, so a nonce here would write one phantom
+    asset row per run. Only status_revision carries the nonce."""
     from openddil.logistics.v1 import logistics_status_pb2
 
     msg = logistics_status_pb2.AssetLogisticsStatusUpdate()
     msg.provenance.originator_nation = nation
     msg.provenance.releasable_to.extend(releasable)
-    msg.status.asset_id = str(nonce)
+    msg.status.asset_id = asset_id
     msg.status.status_revision = nonce
     return msg.SerializeToString()
 
