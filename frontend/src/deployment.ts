@@ -331,10 +331,36 @@ export function parseTier(raw: unknown): TierConfig | undefined {
   };
 }
 
+/** Applies a branding overlay ({title?, logo?} from /branding/branding.json)
+ *  on top of an already-resolved Deployment. Returns a COPY — `d` is never
+ *  mutated.
+ *
+ *  Narrow and allow-listed on purpose: `b` is unauthenticated input (the
+ *  /branding/ nginx location is deliberately ungated so the sign-in screen
+ *  can show it), so this function is the only gate between that input and
+ *  the running app. It touches `title` and `logo` ONLY, each applied only
+ *  when it is a string that is non-empty after trim. Everything else about
+ *  `b` — wrong type, not an object, extra keys — is ignored. In particular
+ *  it must NEVER read fobs/map/tier/liveness off `b`: those carry topology,
+ *  and topology must only ever arrive through the gated /deployment/ path. */
+export function applyBranding(d: Deployment, b: unknown): Deployment {
+  if (!b || typeof b !== 'object' || Array.isArray(b)) return { ...d };
+  const raw = b as Record<string, unknown>;
+  const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+  const logo = typeof raw.logo === 'string' ? raw.logo.trim() : '';
+  return {
+    ...d,
+    title: title || d.title,
+    logo: logo || d.logo,
+  };
+}
+
 /**
- * Fetch optional overlay deployment config, then apply document.title and
- * the favicon. Call once before the first render. Any failure (no overlay,
- * 404, bad JSON) leaves the OpenDDIL defaults in place — it never throws.
+ * Fetch optional overlay deployment config, then the optional branding
+ * overlay (which overrides deployment.json's title and logo only — never
+ * its topology), then apply document.title and the favicon. Call once
+ * before the first render. Any failure (no overlay, 404, bad JSON) leaves
+ * the prior state in place — it never throws.
  */
 export async function loadDeployment(): Promise<void> {
   try {
@@ -359,6 +385,18 @@ export async function loadDeployment(): Promise<void> {
     }
   } catch {
     // No overlay reachable — keep the OpenDDIL defaults.
+  }
+  // Branding overlay — same-origin, ungated (see frontend/nginx.conf). Its
+  // own try/catch: a bad or absent branding.json must leave `active`
+  // (deployment.json's title/logo, or the OpenDDIL defaults) untouched.
+  try {
+    const res = await fetch('/branding/branding.json', { cache: 'no-store' });
+    if (res.ok) {
+      const j = await res.json();
+      active = applyBranding(active, j);
+    }
+  } catch {
+    // No branding overlay reachable — keep whatever title/logo we have.
   }
   document.title = active.title;
   if (active.logo) {
