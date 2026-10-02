@@ -32,6 +32,33 @@ DATA_DIR = os.getenv("STUB_SINK_DIR", "/data")
 PORT = int(os.getenv("STUB_SINK_PORT", "8080"))
 KIND_FIELD = os.getenv("STUB_SINK_KIND_FIELD", "kind")
 ID_FIELD = os.getenv("STUB_SINK_ID_FIELD", "id")
+# Where the stand-in's own outgoing artifacts live -- ADR-0046 v2 §5: a
+# destination with intake returns artifacts of a declared kind, and this is
+# the stand-in for that return path. Unset, or set to a file that is not
+# there, is not an error: an intake poll against a destination with nothing
+# to return yet gets `{"items": []}`, not a failure.
+ARTIFACTS_PATH = os.getenv("OPENDDIL_STUB_ARTIFACTS_PATH")
+
+
+def _load_artifacts(path: str | os.PathLike | None) -> list[Any]:
+    """The list `GET /artifacts` serves, read once at startup -- not
+    re-read per request, so a file edited after the process starts has no
+    effect until the next restart, the same lifetime `ReceivedStore` gives
+    the received log's on-disk file. Anything that is not a JSON list at
+    that path (absent env, missing file, malformed JSON, a JSON value that
+    is not a list) is `[]`, never an error: this stand-in has nothing to
+    return until it is given something, and that is a fact an intake poll
+    reads as an empty page, not a fault."""
+    if not path:
+        return []
+    candidate = Path(path)
+    if not candidate.is_file():
+        return []
+    try:
+        data = json.loads(candidate.read_text(encoding="utf-8"))
+    except ValueError:
+        return []
+    return data if isinstance(data, list) else []
 
 
 class ReceivedStore:
@@ -105,7 +132,7 @@ class ReceivedStore:
             }
 
 
-def make_handler(store: ReceivedStore) -> type[BaseHTTPRequestHandler]:
+def make_handler(store: ReceivedStore, artifacts: list[Any] = ()) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "openddil-stub-sink/1.0"
 
@@ -149,6 +176,9 @@ def make_handler(store: ReceivedStore) -> type[BaseHTTPRequestHandler]:
             if self.path == "/received":
                 self._send_json(200, store.summary())
                 return
+            if self.path == "/artifacts":
+                self._send_json(200, {"items": list(artifacts)})
+                return
             self._send_json(404, {"error": "not found"})
 
     return Handler
@@ -157,9 +187,11 @@ def make_handler(store: ReceivedStore) -> type[BaseHTTPRequestHandler]:
 def make_server(
     directory: str | os.PathLike, *, host: str = "0.0.0.0", port: int = 0,
     kind_field: str = KIND_FIELD, id_field: str = ID_FIELD,
+    artifacts_path: str | os.PathLike | None = ARTIFACTS_PATH,
 ) -> ThreadingHTTPServer:
     store = ReceivedStore(directory, kind_field=kind_field, id_field=id_field)
-    return ThreadingHTTPServer((host, port), make_handler(store))
+    artifacts = _load_artifacts(artifacts_path)
+    return ThreadingHTTPServer((host, port), make_handler(store, artifacts))
 
 
 def main() -> int:

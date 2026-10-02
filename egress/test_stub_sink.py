@@ -114,6 +114,39 @@ def test_restart_over_same_dir_keeps_counts(tmp_path):
         _stop(server2, thread2)
 
 
+def test_artifacts_unset_env_serves_empty_items(running_server):
+    base_url, _ = running_server
+    status, body = _get(base_url, "/artifacts")
+    assert status == 200
+    assert body == {"items": []}
+
+
+def test_artifacts_missing_file_serves_empty_items(tmp_path):
+    server, thread = _start(tmp_path, artifacts_path=str(tmp_path / "does-not-exist.json"))
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, body = _get(base_url, "/artifacts")
+        assert status == 200
+        assert body == {"items": []}
+    finally:
+        _stop(server, thread)
+
+
+def test_artifacts_served_from_configured_path(tmp_path):
+    artifacts_path = tmp_path / "artifacts.json"
+    items = [{"id": "a1", "kind": "KindA"}, {"id": "a2", "kind": "KindA"}]
+    artifacts_path.write_text(json.dumps(items), encoding="utf-8")
+
+    server, thread = _start(tmp_path, artifacts_path=str(artifacts_path))
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, body = _get(base_url, "/artifacts")
+        assert status == 200
+        assert body == {"items": items}
+    finally:
+        _stop(server, thread)
+
+
 def test_authorization_value_never_appears_in_file_or_logs(running_server, caplog):
     base_url, data_dir = running_server
     secret = "super-secret-token-xyz"
