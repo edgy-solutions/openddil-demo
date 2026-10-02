@@ -41,7 +41,7 @@ SINK_TOPIC = "egress-c2-status"
 GATE_CONTAINER = "openddil-demo-egress-gate-c2"
 
 # THE PREDICTION, as literals.
-PREDICTED_ADMITTED = 8
+PREDICTED_ADMITTED = 9
 PREDICTED_REFUSED_NO_OVERLAP = 6
 
 # The two red-check records. Keys outside the declared fleet's id space, so a
@@ -165,9 +165,9 @@ def main() -> int:
         return 0
 
     fleet = declared_fleet()
-    if len(fleet) != 14:
+    if len(fleet) != 15:
         skip_(TEST,
-              f"declaration has {len(fleet)} assets; the prediction is for 14")
+              f"declaration has {len(fleet)} assets; the prediction is for 15")
         return 0
 
     # THE TRAILING Z IS load-BEARING. `docker logs --since` reads a
@@ -248,7 +248,7 @@ def main() -> int:
         fail_(TEST, "; ".join(problems))
         return 1
 
-    pass_(TEST, f"admitted {len(admitted_fleet)}/14 as predicted; "
+    pass_(TEST, f"admitted {len(admitted_fleet)}/15 as predicted; "
                 f"refusals {by_reason}")
     return 0
 

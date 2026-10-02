@@ -109,6 +109,7 @@ assets:
   "dis:1:1:1005": { originator_nation: ATL, releasable_to: [] }
   "dis:1:1:1006": { originator_nation: ATL, releasable_to: [] }
   "dis:1:1:1007": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1008": { originator_nation: ATL, releasable_to: [] }
 
   # --- Borduria (BDR) --------------------------------------------------------
   "dis:2:1:1000": { originator_nation: BDR, releasable_to: [] }

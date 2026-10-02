@@ -50,7 +50,7 @@ ADAPTER_CONTAINER = "openddil-demo-egress-cot-adapter-c2"
 PROBE_UID = "openddil-c2-probe"
 
 # THE PREDICTION, as literals (PREDICT.md P1-P5).
-PREDICTED_COT_EVENTS = 8          # distinct admitted uids carrying this nonce
+PREDICTED_COT_EVENTS = 9          # distinct admitted uids carrying this nonce
 PREDICTED_COT_FOR_REFUSED = 0     # of the 6 no_nation_overlap refusals
 PREDICTED_COT_FOR_REDCHECK = 0    # of the 2 red-check records
 
@@ -151,9 +151,9 @@ def main() -> int:
             return 0
 
     fleet = t50.declared_fleet()
-    if len(fleet) != 14:
+    if len(fleet) != 15:
         skip_(TEST,
-              f"declaration has {len(fleet)} assets; the prediction is for 14")
+              f"declaration has {len(fleet)} assets; the prediction is for 15")
         return 0
 
     nonce = int(time.time() * 1000)
