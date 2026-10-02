@@ -40,19 +40,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gate import (  # noqa: E402
-    REASON_UNDECODABLE,
-    AuthzUnavailable,
-    Decision,
-    EgressGate,
-    new_decision_id,
-)
+from gate import AuthzUnavailable, EgressGate  # noqa: E402
+from kinds import load_kinds  # noqa: E402
+from routes import GROUP, Route, load_routes, run_once  # noqa: E402
 
 BROKERS = os.getenv("OPENDDIL_EGRESS_BROKERS", "redpanda-hq:19092")
-SOURCE_TOPIC = os.getenv("OPENDDIL_EGRESS_SOURCE_TOPIC", "asset-logistics-status")
-SINK_TOPIC = os.getenv("OPENDDIL_EGRESS_SINK_TOPIC", "egress-c2-status")
-GROUP = os.getenv("OPENDDIL_EGRESS_GROUP", "egress-gate-c2")
-DESTINATION = os.getenv("OPENDDIL_EGRESS_DESTINATION", "system:c2-stand-in-atl")
+# The route table's own home. When unset there is one route built from the
+# legacy env vars — see routes.py's module docstring.
+ROUTES_PATH = os.getenv("OPENDDIL_EGRESS_ROUTES_PATH")
+# Where kind schemas live, when any route declares one. A deployment with no
+# kinds at all (every destination that existed before this pass) need not
+# have this directory, and its absence is not an error. Deliberately not
+# named `kinds/` next to `kinds.py` — a module and a same-named sibling
+# directory on the same path is an import hazard, not just a style choice.
+KINDS_DIR = Path(os.getenv(
+    "OPENDDIL_EGRESS_KINDS_DIR", str(Path(__file__).parent / "kind-schemas")))
 POLL_TIMEOUT = float(os.getenv("OPENDDIL_EGRESS_POLL_TIMEOUT", "1.0"))
 
 logging.basicConfig(
@@ -98,27 +100,58 @@ def decode(payload: bytes) -> dict:
     return MessageToDict(msg, preserving_proto_field_name=True)
 
 
+def _load_known_kinds() -> dict:
+    if not KINDS_DIR.is_dir():
+        return {}
+    return load_kinds(KINDS_DIR)
+
+
+def _build_gates(routes: list[Route], kinds_map: dict) -> dict[Route, EgressGate]:
+    """One gate per route — `for_destination` once each. Any
+    `AuthzUnavailable` exits the process rather than starting with a route
+    that has no entitlement; see the module docstring."""
+    gates: dict[Route, EgressGate] = {}
+    for route in routes:
+        validator = kinds_map.get(route.kind) if route.kind else None
+        gate = EgressGate.for_destination(
+            route.destination, kind=route.kind, kind_validator=validator)
+        gates[route] = gate
+        log.info(
+            "gate open: route=%s destination=%s nations=%s known=%s kind=%s "
+            "accepts=%s policy=%s corpus=%s registry=%s %s -> %s",
+            route.name, gate.destination, list(gate.nations), gate.destination_known,
+            gate.kind, list(gate.accepts), gate.policy_version, gate.corpus_version,
+            gate.registry_version, route.source_topic, route.sink_topic,
+        )
+    return gates
+
+
 def main() -> int:
     from confluent_kafka import Consumer, Producer  # noqa: PLC0415
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
+    kinds_map = _load_known_kinds()
+
     try:
-        gate = EgressGate.for_destination(DESTINATION)
+        routes = load_routes(ROUTES_PATH, kinds_map.keys())
+    except Exception as exc:  # noqa: BLE001 — a bad route table must not start the gate
+        log.error("FATAL: route table failed to load: %s", exc)
+        return 2
+
+    try:
+        gates = _build_gates(routes, kinds_map)
     except AuthzUnavailable as exc:
         # Exit rather than start. See the module docstring: a gate that runs
         # with no entitlement is indistinguishable from a gate refusing
         # correctly, and that ambiguity is the operator's whole problem.
-        log.error("FATAL: no policy decision for destination %r: %s", DESTINATION, exc)
+        log.error("FATAL: no policy decision for one or more routes: %s", exc)
         return 2
 
-    log.info(
-        "gate open: destination=%s nations=%s known=%s policy=%s corpus=%s "
-        "%s -> %s",
-        gate.destination, list(gate.nations), gate.destination_known,
-        gate.policy_version, gate.corpus_version, SOURCE_TOPIC, SINK_TOPIC,
-    )
+    routes_by_topic: dict[str, list[Route]] = {}
+    for route in routes:
+        routes_by_topic.setdefault(route.source_topic, []).append(route)
 
     consumer = Consumer({
         "bootstrap.servers": BROKERS,
@@ -130,52 +163,24 @@ def main() -> int:
         "enable.auto.commit": False,
     })
     producer = Producer({"bootstrap.servers": BROKERS})
-    consumer.subscribe([SOURCE_TOPIC])
+    consumer.subscribe(sorted(routes_by_topic))
 
     seen = 0
     try:
         while _running:
-            msg = consumer.poll(POLL_TIMEOUT)
-            if msg is None:
-                continue
-            if msg.error():
-                log.warning("consumer error: %s", msg.error())
-                continue
-
-            seen += 1
-            key = msg.key().decode("utf-8", "replace") if msg.key() else None
-            try:
-                record = decode(msg.value())
-            except Exception as exc:  # noqa: BLE001
-                decision = Decision(
-                    decision_id=new_decision_id(), allowed=False,
-                    reason=REASON_UNDECODABLE, record_class="undecodable",
-                    destination=gate.destination,
-                    destination_nations=gate.nations, label=None, key=key,
-                    policy_version=gate.policy_version,
-                    corpus_version=gate.corpus_version, detail=str(exc),
-                )
-                gate.counts[REASON_UNDECODABLE] = gate.counts.get(REASON_UNDECODABLE, 0) + 1
-            else:
-                decision = gate.decide(record, key=key)
-
-            EgressGate.log(decision)
-
-            if decision.allowed:
-                # Forwarded BYTE FOR BYTE. The gate decides; it does not
-                # translate, redact or re-encode. A gate that rewrote the
-                # payload would be making a second decision — about what the
-                # destination gets to see WITHIN an admitted record — with
-                # nothing in the log saying it had.
-                producer.produce(SINK_TOPIC, value=msg.value(), key=msg.key())
-                producer.poll(0)
-
-            consumer.commit(msg, asynchronous=False)
+            if run_once(
+                consumer, producer,
+                routes_by_topic=routes_by_topic, gates=gates,
+                decode=decode, poll_timeout=POLL_TIMEOUT,
+            ):
+                seen += 1
     finally:
         producer.flush(10)
         consumer.close()
-        log.info("gate closed: saw %d records; %s", seen,
-                 json.dumps(gate.counts, sort_keys=True))
+        for route in routes:
+            gate = gates[route]
+            log.info("gate closed: route=%s; %d records polled total; %s",
+                      route.name, seen, json.dumps(gate.counts, sort_keys=True))
     return 0
 
 

@@ -108,6 +108,17 @@ REASON_AUTHZ_UNAVAILABLE = "authz_unavailable"
 #: that did not happen.
 REASON_UNDECODABLE = "undecodable"
 
+#: The gate has a declared kind and the destination's `accepts` list (from
+#: the topaz answer) does not include it. Checked before the record is read
+#: at all: a destination that never agreed to receive this kind must not
+#: have its answer depend on what a given record happens to contain.
+REASON_KIND_NOT_ACCEPTED = "kind_not_accepted"
+
+#: The record failed the kind's declared schema. The detail is the
+#: validator's own error message (truncated), so the remedy is legible
+#: without re-running the validator by hand.
+REASON_SCHEMA_INVALID = "schema_invalid"
+
 ADMIT = "admit"
 
 
@@ -187,9 +198,17 @@ class Decision:
     detail: str = ""
     ts: str = field(default_factory=lambda: time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    # Added for the route table (routes.py). All three
+    # default to None and `as_json` omits a None key outright, so a gate
+    # built without a kind or route — every destination that existed before
+    # this pass — logs byte-identical JSON to today, apart from the id and
+    # ts.
+    kind: str | None = None
+    route: str | None = None
+    registry_version: str | None = None
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        out = {
             "decision_id": self.decision_id,
             "gate": "egress",
             "outcome": "admit" if self.allowed else "refuse",
@@ -205,6 +224,13 @@ class Decision:
             "detail": self.detail,
             "ts": self.ts,
         }
+        if self.kind is not None:
+            out["kind"] = self.kind
+        if self.route is not None:
+            out["route"] = self.route
+        if self.registry_version is not None:
+            out["registry_version"] = self.registry_version
+        return out
 
 
 def new_decision_id() -> str:
@@ -387,6 +413,12 @@ def ask_topaz(subject: str) -> dict[str, Any]:
             "corpus_version": bindings.get("corpus_version", "unknown"),
             "role": bindings.get("role", "observer"),
             "subject_known": bool(bindings["subject_known"]),
+            # The policy answer: both total, an older policy may omit either.
+            # Absent `accepts` is `[]`, absent `registry_version` is
+            # "unknown" — this must not become a new way to refuse an
+            # otherwise-fine answer.
+            "accepts": sorted(set(bindings.get("accepts") or [])),
+            "registry_version": bindings.get("registry_version", "unknown"),
         }
     except Exception as exc:  # noqa: BLE001
         raise AuthzUnavailable(f"unparseable topaz answer: {exc}") from exc
@@ -412,6 +444,10 @@ class EgressGate:
         policy_version: str = "unknown",
         corpus_version: str = "unknown",
         destination_known: bool = True,
+        accepts: Iterable[str] = (),
+        registry_version: str = "unknown",
+        kind: str | None = None,
+        kind_validator: Callable[[Mapping], str | None] | None = None,
     ) -> None:
         self.destination = destination
         self.nations = tuple(sorted(
@@ -419,11 +455,21 @@ class EgressGate:
         self.policy_version = policy_version
         self.corpus_version = corpus_version
         self.destination_known = destination_known
+        self.accepts = tuple(accepts)
+        self.registry_version = registry_version
+        self.kind = kind
+        self.kind_validator = kind_validator
         self._predicate = compile_predicate(self.nations)
         self.counts: dict[str, int] = {}
 
     @classmethod
-    def for_destination(cls, destination: str) -> "EgressGate":
+    def for_destination(
+        cls,
+        destination: str,
+        *,
+        kind: str | None = None,
+        kind_validator: Callable[[Mapping], str | None] | None = None,
+    ) -> "EgressGate":
         """Ask the PDP once, then compile. Raises `AuthzUnavailable` — which
         the caller must NOT treat as a refusal of any particular record; it is
         a statement that no record can be decided at all."""
@@ -434,6 +480,10 @@ class EgressGate:
             policy_version=answer["policy_version"],
             corpus_version=answer["corpus_version"],
             destination_known=answer["subject_known"],
+            accepts=answer["accepts"],
+            registry_version=answer["registry_version"],
+            kind=kind,
+            kind_validator=kind_validator,
         )
 
     def _tally(self, key: str) -> None:
@@ -446,6 +496,11 @@ class EgressGate:
         the gate has a bug rather than a policy."""
         record_class = classify(record)
         label = extract_label(record)
+        # `registry_version` only means anything alongside a declared kind —
+        # see the Decision docstring note on why a kind-less gate must not
+        # grow this key.
+        decision_kind = self.kind
+        decision_registry_version = self.registry_version if self.kind is not None else None
 
         def refuse(reason: str, detail: str = "", lbl: Label | None = label) -> Decision:
             return Decision(
@@ -454,18 +509,32 @@ class EgressGate:
                 destination_nations=self.nations, label=lbl, key=key,
                 policy_version=self.policy_version,
                 corpus_version=self.corpus_version, detail=detail,
+                kind=decision_kind, registry_version=decision_registry_version,
             )
 
         # Order matters, and it is the order of CERTAINTY, not of likelihood.
         # An unknown destination and an unevaluated marking are both refusals
         # this gate can make without consulting the record's audience at all;
         # deciding audience first would log a nation-overlap verdict for a
-        # record that was never eligible to be evaluated on that axis.
+        # record that was never eligible to be evaluated on that axis. A
+        # kind the destination never agreed to receive, and a record that
+        # fails that kind's own schema, are the same kind of certainty:
+        # neither needs the record's audience read at all, so both are
+        # decided before classification and overlap ever run.
         if not self.destination_known:
             decision = refuse(
                 REASON_DESTINATION_UNKNOWN,
                 f"destination {self.destination!r} is not in the entitlements corpus",
             )
+        elif self.kind is not None and self.kind not in self.accepts:
+            decision = refuse(
+                REASON_KIND_NOT_ACCEPTED,
+                f"destination {self.destination!r} does not accept kind "
+                f"{self.kind!r} (accepts={list(self.accepts)})",
+            )
+        elif (self.kind_validator is not None
+                and (schema_error := self.kind_validator(record)) is not None):
+            decision = refuse(REASON_SCHEMA_INVALID, schema_error[:300])
         elif (marking := carries_classification(record)) is not None:
             decision = refuse(
                 REASON_CLASSIFICATION,
@@ -481,6 +550,7 @@ class EgressGate:
                 destination_nations=self.nations, label=label, key=key,
                 policy_version=self.policy_version,
                 corpus_version=self.corpus_version,
+                kind=decision_kind, registry_version=decision_registry_version,
             )
         else:
             decision = refuse(

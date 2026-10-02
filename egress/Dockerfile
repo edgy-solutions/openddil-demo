@@ -54,22 +54,35 @@ ENV PATH="/opt/venv/bin:$PATH"
 # asyncpg          — the pane's only read path (pane_api.py)
 # protobuf         — must match the grpcio-tools major that generated the
 #                    stubs in openddil-contracts/gen/python
+# jsonschema       — kind schema validation (kinds.py) only. gate.py does not
+#                    import it and never will; see the note below.
 #
 # gate.py itself pulls in nothing: it reaches the PDP over urllib from the
 # standard library. That is worth keeping true. The decision path is the part
 # that must not fail for an environmental reason, and every dependency it does
-# not have is a failure mode it cannot have.
+# not have is a failure mode it cannot have. kinds.py owns the jsonschema
+# import for exactly the same reason gate.py owns none of it.
 RUN uv pip install --no-cache \
         "confluent-kafka>=2.0.0,<3.0.0" \
         "asyncpg>=0.29.0,<1.0.0" \
-        "protobuf>=6.30.0,<7.0.0"
+        "protobuf>=6.30.0,<7.0.0" \
+        "jsonschema>=4.18,<5"
 
 # ---------- Stage 2: Tests ----------
-# The gate's 32 unit tests (test_gate.py) plus the CoT adapter's 13
-# (test_cot_adapter.py) — 45 total — run against the code that is about to be
-# baked in, with no PDP, no broker and no network. The adapter's tests moved
-# in here alongside the gate's because `cot_adapter.py` now ships from this
-# same image to a cluster (see egress/tak/Dockerfile and
+# ALL test_*.py in this directory — the gate's 38 (test_gate.py), the kind
+# registry's 2 (test_kinds.py), the route table's 6 (test_routes.py), the
+# CoT adapter's 13 (test_cot_adapter.py) and the pane's 4 (test_pane_api.py)
+# — 63 total — run against the code that is about to be baked in, with no
+# PDP, no broker, no Postgres and no network.
+#
+# test_pane_api.py RUNS HERE TOO, where it used to be excluded by name. It
+# needs nothing this stage doesn't already have: `asyncpg` is already in the
+# builder venv this stage inherits, and the tests inject fakes for both of
+# `pane_api.build_decisions`'s I/O seams (`EgressGate.for_destination` and
+# the `RECORD_SOURCE` fetch functions) the same way test_gate.py injects the
+# PDP answer — no Postgres connection is ever attempted. The adapter's tests
+# moved in here alongside the gate's because `cot_adapter.py` now ships from
+# this same image to a cluster (see egress/tak/Dockerfile and
 # templates/egress.yaml's `<rel>-egress-cot-adapter-c2` Deployment): the same
 # "a failing test cannot produce an image" guarantee the gate already had has
 # to cover the adapter too, now that a pod runs it.
@@ -87,7 +100,7 @@ ENV PYTHONPATH=/proto:/app
 COPY openddil-contracts/gen/python /proto
 COPY openddil-demo/egress /app
 WORKDIR /app
-RUN python -m pytest test_gate.py test_cot_adapter.py -q && touch /tests-passed
+RUN python -m pytest -q && touch /tests-passed
 
 # ---------- Stage 3: Runtime ----------
 FROM python:3.11-slim AS runtime

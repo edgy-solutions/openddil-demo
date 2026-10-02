@@ -30,7 +30,9 @@ from gate import (  # noqa: E402
     CLASS_UNLABELLED,
     REASON_CLASSIFICATION,
     REASON_DESTINATION_UNKNOWN,
+    REASON_KIND_NOT_ACCEPTED,
     REASON_NO_OVERLAP,
+    REASON_SCHEMA_INVALID,
     REASON_UNLABELLED,
     EgressGate,
     Label,
@@ -277,3 +279,75 @@ def test_the_containment_clause_is_exercised_by_live_data():
               if (d := gate.decide(rec(n, r), key=k)).allowed
               and d.label.originator_nation == "ATL"]
     assert len(shared) == 1
+
+
+# --- kind, accepts and schema --------------------------------------------------
+# Neutral fixture names per the rule: `system:dest-a`, `KindA` — no consumer
+# or kind name from a real registry appears here.
+
+def test_kind_not_accepted_short_circuits_before_the_overlap_check():
+    """The destination's `accepts` lacks the gate's declared kind: refused on
+    that basis alone, even though this exact record's audience would
+    otherwise admit it against the destination's nations."""
+    gate = EgressGate("system:dest-a", ["ATL"], accepts=["KindB"], kind="KindA")
+    d = gate.decide(rec("ATL", []))
+    assert not d.allowed and d.reason == REASON_KIND_NOT_ACCEPTED
+
+
+def test_schema_invalid_carries_the_validators_detail():
+    gate = EgressGate(
+        "system:dest-a", ["ATL"], accepts=["KindA"], kind="KindA",
+        kind_validator=lambda record: "asset_id: 'asset_id' is a required property",
+    )
+    d = gate.decide(rec("ATL", []))
+    assert not d.allowed and d.reason == REASON_SCHEMA_INVALID
+    assert d.detail == "asset_id: 'asset_id' is a required property"
+
+
+def test_schema_invalid_detail_is_truncated_to_300_characters():
+    gate = EgressGate(
+        "system:dest-a", ["ATL"], accepts=["KindA"], kind="KindA",
+        kind_validator=lambda record: "x" * 500,
+    )
+    d = gate.decide(rec("ATL", []))
+    assert d.reason == REASON_SCHEMA_INVALID
+    assert len(d.detail) == 300
+
+
+def test_missing_accepts_refuses_a_kind_gate_but_a_no_kind_gate_is_unchanged():
+    """An older policy answer omits `accepts` entirely — treated as `[]`. A
+    kind gate refuses kind_not_accepted; a gate with no declared kind must
+    not start rejecting answers that lack it, and behaves exactly as today."""
+    kind_gate = EgressGate("system:dest-a", ["ATL"], kind="KindA")
+    plain_gate = EgressGate("system:dest-a", ["ATL"])
+    assert kind_gate.decide(rec("ATL", [])).reason == REASON_KIND_NOT_ACCEPTED
+    assert plain_gate.decide(rec("ATL", [])).allowed
+
+
+def test_kind_gate_falls_through_to_the_overlap_check_once_kind_and_schema_pass():
+    """A destination with nations [ATL] accepting
+    KindA, and a valid KindA record labelled BDR/[BDR], is refused on the
+    releasability axis exactly as a no-kind gate would be — the kind and
+    schema checks are a gate IN FRONT of the existing predicate, not a
+    replacement for it. The same record labelled ATL/[ATL] admits."""
+    gate = EgressGate(
+        "system:dest-a", ["ATL"], accepts=["KindA"], kind="KindA",
+        kind_validator=lambda record: None,  # always a valid KindA record
+    )
+    refused = gate.decide(rec("BDR", ["BDR"]))
+    assert not refused.allowed and refused.reason == REASON_NO_OVERLAP
+
+    admitted = gate.decide(rec("ATL", ["ATL"]))
+    assert admitted.allowed and admitted.reason == ADMIT
+
+
+def test_as_json_without_kind_or_route_matches_todays_key_set():
+    """A gate built without a kind or route — every destination that existed
+    before this pass — logs byte-identical JSON to today, apart from the id
+    and ts: none of `kind`, `route` or `registry_version` appear."""
+    d = ATL_GATE().decide(rec("ATL", ["BDR"]), key="dis:1:1:1000")
+    assert sorted(d.as_json().keys()) == sorted([
+        "decision_id", "gate", "outcome", "reason", "class", "destination",
+        "destination_nations", "key", "originator_nation", "releasable_to",
+        "policy_version", "corpus_version", "detail", "ts",
+    ])
