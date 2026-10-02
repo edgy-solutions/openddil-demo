@@ -26,7 +26,9 @@ from assembler import (  # noqa: E402
     AssemblerConfigError,
     AssemblerRoute,
     _RouteState,
+    PartsBook,
     assemble,
+    build_picture,
     episodes,
     handle_cm_state_message,
     load_assembler_config,
@@ -373,3 +375,41 @@ def test_assembler_config_refuses_a_duplicate_name(tmp_path):
     with pytest.raises(AssemblerConfigError) as exc:
         load_assembler_config(cfg, ["KindA"])
     assert "duplicate" in str(exc.value)
+
+
+# --- the spare section: installed CI, then the deployment's slot map --------
+
+def _parts_book():
+    book = PartsBook()
+    for site, n in (("edge-03", 0), ("region-b", 2)):
+        book.ingest({"site": site, "part_ref": "part:x", "item": "x unit", "on_hand": n})
+    return book
+
+
+def _picture(state, episode, part_refs=None):
+    return asyncio.run(build_picture(
+        state, episode, "edge-03", read_asset=_no_picture, parts=_parts_book(),
+        part_refs=part_refs))
+
+
+def test_an_empty_ci_id_takes_the_part_the_slot_map_names():
+    state = cm_state(discrepancies=[discrepancy()],
+                     installed=[{"slot_id": "SLOT-1", "ci_id": "", "installed_at_ns": 0}])
+    picture = _picture(state, episodes(state)[0], part_refs={"SLOT-1": "part:x"})
+    assert picture["spare"] == {"part_ref": "part:x", "item": "x unit",
+                                "on_hand_here": 0, "on_hand": {"edge-03": 0, "region-b": 2}}
+
+
+def test_an_empty_ci_id_and_no_slot_map_leaves_the_spare_absent():
+    state = cm_state(discrepancies=[discrepancy()],
+                     installed=[{"slot_id": "SLOT-1", "ci_id": "", "installed_at_ns": 0}])
+    assert "spare" not in _picture(state, episodes(state)[0])
+
+
+def test_assembler_config_refuses_a_part_refs_that_is_not_a_string_map(tmp_path):
+    cfg = tmp_path / "assembler.json"
+    cfg.write_text(json.dumps([{"name": "a", "kind": "KindA", "trigger_topic": "t",
+                                "output_topic": "o", "part_refs": {"SLOT-1": 3}}]))
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "part_refs" in str(exc.value)

@@ -325,6 +325,7 @@ async def build_picture(
     *,
     read_asset: ReadAsset,
     parts: PartsBook,
+    part_refs: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The full candidate picture for one episode — `{readiness, lifecycle,
     factors, rollup, spare}` — before `assemble` filters it down to the
@@ -344,11 +345,17 @@ async def build_picture(
         if reading.get("factors") is not None:
             sections["factors"] = reading["factors"]
 
-    part_ref = _installed_part_ref(cm_state, episode.component)
-    if part_ref:
+    # The installed CI's own reference first; then the part the deployment
+    # says fills this slot. The first that the parts records know wins.
+    candidates = (_installed_part_ref(cm_state, episode.component),
+                  (part_refs or {}).get(episode.component))
+    for part_ref in candidates:
+        if not part_ref:
+            continue
         spare = parts.lookup(part_ref, owning_tier)
         if spare is not None:
             sections["spare"] = spare
+            break
 
     return sections
 
@@ -365,13 +372,21 @@ class AssemblerRoute:
     """One row of `OPENDDIL_ASSEMBLER_CONFIG`: a trigger topic (cm-state) to
     read episodes from, an optional parts topic to keep `PartsBook` fed, a
     kind to assemble into, and the output topic to produce assembled
-    records to."""
+    records to.
+
+    `part_refs` maps a component (a slot id) to the part reference the
+    parts records use for it, as (component, part_ref) pairs. It is the
+    deployment's statement of which part fills a slot, used when the CI
+    installed in the slot does not itself name a part the parts records
+    carry (an empty `ci_id` is common: a slot known to the baseline with
+    no CI recorded)."""
 
     name: str
     kind: str
     trigger_topic: str
     output_topic: str
     parts_topic: str | None = None
+    part_refs: tuple[tuple[str, str], ...] = ()
 
 
 def _entry_label(entry: object, index: int) -> str:
@@ -384,7 +399,7 @@ def load_assembler_config(
     path: str | os.PathLike, known_kinds: Iterable[str],
 ) -> list[AssemblerRoute]:
     """Load `OPENDDIL_ASSEMBLER_CONFIG`: a JSON list of `{name, kind,
-    trigger_topic, parts_topic?, output_topic}` entries. Names must be
+    trigger_topic, parts_topic?, output_topic, part_refs?}` entries. Names must be
     unique and non-empty; `kind` must be one whose declarations name an
     `owning_tier` and an `episode` (`known_kinds`). A
     bad file raises `AssemblerConfigError` naming the entry — the caller
@@ -419,9 +434,18 @@ def load_assembler_config(
         if missing:
             raise AssemblerConfigError(f"{label}: missing required field(s) {missing}")
 
+        part_refs = entry.get("part_refs", {})
+        if not isinstance(part_refs, Mapping) or not all(
+                isinstance(k, str) and k and isinstance(v, str) and v
+                for k, v in part_refs.items()):
+            raise AssemblerConfigError(
+                f"{label}: 'part_refs' must map non-empty component strings to "
+                "non-empty part reference strings")
+
         routes.append(AssemblerRoute(
             name=name, kind=kind, trigger_topic=entry["trigger_topic"],
             output_topic=entry["output_topic"], parts_topic=entry.get("parts_topic"),
+            part_refs=tuple(sorted(part_refs.items())),
         ))
     return routes
 
@@ -475,6 +499,7 @@ async def _produce_episode(
             picture = await build_picture(
                 cm_state, episode, owning_tier,
                 read_asset=read_asset, parts=state.parts,
+                part_refs=dict(state.route.part_refs),
             )
             break
         except Exception:  # noqa: BLE001 — retried, then re-raised
