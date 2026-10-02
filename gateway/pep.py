@@ -150,6 +150,13 @@ except oidc.AuthError as _exc:
 # stronger for coming from a demonstrated pattern with a demonstrated remedy.
 DENY_MARKER = "TOPAZ AUTHZ DENIED"
 
+# The egress pane's `kind` query param, forwarded verbatim when present and
+# nowhere else validated before it reaches the pane. Short, opaque, no
+# spaces or path-breaking characters -- the same shape as the kind registry
+# itself uses (kinds.py), not a schema this gateway has any business
+# knowing.
+KIND_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
+
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s [pep] %(message)s",
@@ -1142,6 +1149,12 @@ class Pep(BaseHTTPRequestHandler):
                        status=400, marker="GATEWAY REFUSED (PRE-PDP)")
             return
 
+        kind = (params.get("kind") or [""])[0]
+        if kind and not KIND_RE.match(kind):
+            self._deny("invalid kind", subject="", resource=path,
+                       status=400, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
         try:
             subject, _principal, _session = self._resolve_principal()
         except oidc.AuthError as exc:
@@ -1164,10 +1177,14 @@ class Pep(BaseHTTPRequestHandler):
             self._deny(cause, subject=subject, resource=f"egress:{dest}")
             return
 
-        # ONLY destination is forwarded -- nothing else from the client
-        # query reaches the pane. See /v1/shape's PASSTHROUGH_PARAMS for the
-        # equivalent discipline on the read path.
-        url = f"{EGRESS_PANE}/decisions?" + urllib.parse.urlencode({"destination": dest})
+        # ONLY destination and (when present and validated) kind are
+        # forwarded -- nothing else from the client query reaches the pane.
+        # See /v1/shape's PASSTHROUGH_PARAMS for the equivalent discipline on
+        # the read path.
+        forward = {"destination": dest}
+        if kind:
+            forward["kind"] = kind
+        url = f"{EGRESS_PANE}/decisions?" + urllib.parse.urlencode(forward)
 
         def _upstream_unavailable(detail: str) -> None:
             # AN UPSTREAM FAULT, NOT A POLICY DENY -- mirrors how the read

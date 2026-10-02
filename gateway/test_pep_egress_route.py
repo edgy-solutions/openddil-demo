@@ -15,6 +15,7 @@ import os
 import sys
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -221,3 +222,35 @@ def test_no_pane_at_this_tier_is_404(pep_factory):
     code, body, _ = _get(url + Q, "op.atl")
     assert code == 404
     assert "records" not in body
+
+
+def test_kind_is_forwarded_to_the_pane(pep_url):
+    code, _, _ = _get(
+        pep_url + "/egress/decisions?destination=system%3Ax&kind=records.v1",
+        "op.atl",
+    )
+    assert code == 200
+    assert state["pane_query"] == "/decisions?destination=system%3Ax&kind=records.v1"
+
+
+def test_absent_kind_forwards_only_destination(pep_url):
+    _get(pep_url + Q, "op.atl")
+    assert state["pane_query"] == "/decisions?destination=system%3Ax"
+
+
+def test_blank_kind_is_treated_as_absent(pep_url):
+    code, _, _ = _get(pep_url + "/egress/decisions?destination=system%3Ax&kind=", "op.atl")
+    assert code == 200
+    assert state["pane_query"] == "/decisions?destination=system%3Ax"
+
+
+@pytest.mark.parametrize("bad_kind", ["has space", "slash/es", "semi;colon"])
+def test_invalid_kind_is_denied_before_the_pane_is_asked(pep_url, bad_kind):
+    code, body, _ = _get(
+        pep_url + "/egress/decisions?destination=system%3Ax&kind="
+        + urllib.parse.quote(bad_kind, safe=""),
+        "op.atl",
+    )
+    assert code == 400
+    assert body["cause"] == "invalid kind"
+    assert state["pane_calls"] == 0
