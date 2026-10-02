@@ -447,11 +447,19 @@ services:
     # The arigaio/atlas image has no shell — `atlas` is the entrypoint, so
     # `command:` carries only the subcommand args. Matches the atlas-init
     # block in openddil-stack/docker-compose.yml.
+    # --tx-mode none: six migrations carry their own BEGIN/COMMIT. Under the
+    # default per-file transaction, that COMMIT ends Atlas's transaction early;
+    # the file and its revision row commit, then Atlas's own commit finds the
+    # connection idle and exits 1 ("unexpected transaction status idle"). A
+    # fresh store crashed once per such file: 6 times, then succeeded on the 7th.
+    # Files that need atomicity carry their own BEGIN/COMMIT.
     command:
       - "migrate"
       - "apply"
       - "--dir"
       - "file:///schema/migrations"
+      - "--tx-mode"
+      - "none"
       - "--url"
       - "postgres://postgres:password@postgres-hq:5432/openddil?sslmode=disable"
     restart: "no"
