@@ -273,6 +273,19 @@ def test_logout_url_is_none_when_the_provider_is_unreachable(oidc, monkeypatch):
     assert oidc.logout_url("t") is None
 
 
+def test_stale_login_form_restarts_rather_than_denies(oidc):
+    """Keycloak's answer to a re-submitted login form (back button,
+    double-click). The user is usually already signed in by the first
+    submit; a deny page there reads as a refusal of a signed-in user."""
+    assert oidc.is_stale_login_form("temporarily_unavailable")
+
+
+def test_other_provider_errors_stay_denies(oidc):
+    for err in ("access_denied", "login_required", "invalid_request",
+                "server_error", "", None):
+        assert not oidc.is_stale_login_form(err)
+
+
 def test_half_configured_oidc_refuses_to_start(monkeypatch):
     """A gateway that silently fell back to header mode because a secret was
     missing would be a fail-open wearing a configuration error as a

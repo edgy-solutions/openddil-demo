@@ -423,6 +423,23 @@ def complete_login(code: str, state: str) -> tuple[dict, str]:
     return verify_id_token(id_token, nonce=entry["nonce"]), id_token
 
 
+def is_stale_login_form(error: str | None) -> bool:
+    """The provider is saying "this login form was already used or has
+    expired; start again", not refusing anyone.
+
+    Keycloak sends `temporarily_unavailable` (description
+    `authentication_expired`) when a login form is submitted whose
+    authentication session already completed: the back button after signing
+    in, a double-clicked Sign in, a browser restoring the login tab. Measured
+    on a deployment: the first submit signs the user in, the second lands
+    here. Rendering it as a deny shows a signed-in user a refusal.
+
+    No loop is possible: the provider only sends this in answer to a form
+    POST, and the restart ("/") never posts one. Every other error stays a
+    deny."""
+    return error == "temporarily_unavailable"
+
+
 def logout_url(id_token: str | None) -> str | None:
     """Where to send the browser to end the PROVIDER'S session, or None.
 

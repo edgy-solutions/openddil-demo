@@ -555,6 +555,16 @@ class Pep(BaseHTTPRequestHandler):
 
         if path == "/auth/callback":
             q = urllib.parse.parse_qs(parsed.query)
+            if oidc.is_stale_login_form((q.get("error") or [""])[0]):
+                # A used or expired login form, not a refusal; see
+                # oidc.is_stale_login_form. "/" either shows the session the
+                # first submit already made or starts a fresh sign-in.
+                record_decision(decision_id=new_decision_id(),
+                                outcome="login_restart",
+                                cause=q["error"][0], resource="callback")
+                self._send(302, b"", [("Location", "/"),
+                                      ("Cache-Control", "no-store")])
+                return True
             if "error" in q:
                 self._deny("identity provider returned " + q["error"][0],
                            subject="", resource="callback")
