@@ -53,6 +53,21 @@ pipeline:
           } else {
             this
           }
+      # DIS EVENT REPORT DIVERSION, AHEAD OF dis_kind_gate. An Event Report
+      # PDU (pdu_type "event_report") reports a condition ABOUT an entity --
+      # for example a built-in test's fault report -- not the entity's own
+      # state, so it is not the kind-admission gate's or sim_dis_mapping's
+      # concern at all. dis_event_report decides on its own (configuration,
+      # unset by default) whether to forward it to cm-intake as a CmEvent;
+      # either way the record is deleted here and never reaches raw-sensor-
+      # stream. Entity State and Remove Entity records are untouched: this
+      # switch has no case for them, and an unmatched switch case passes a
+      # message through unchanged. See dynamic-mappings/dis-event-report.yaml.
+      - switch:
+          - check: 'this.pdu_type.or("") == "event_report"'
+            processors:
+              - resource: "dis_event_report"
+
       # ADMISSION BEFORE RESHAPING. The gate runs on the parsed DIS-shape
       # object and drops entity kinds that are not admitted (default: kind=1,
       # PLATFORM), counting each drop per kind. It must stay AHEAD of

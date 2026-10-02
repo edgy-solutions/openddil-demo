@@ -1,0 +1,178 @@
+# =============================================================================
+# DIS EVENT REPORT -> CmEvent (ingress, ahead of dis_kind_gate)
+# =============================================================================
+# A DIS Event Report PDU (type 21) reports a condition ABOUT an entity -- for
+# example a built-in test's fault report -- rather than describing the
+# entity's own kinematic/health state. It is not a fleet-asset update
+# (dis_kind_gate's and sim_dis_mapping's job) and it never becomes a
+# raw-sensor-stream record: this file redirects it, in full, before it
+# reaches either of those. See openddil-base-connect.yaml for where this
+# runs in the pipeline.
+#
+# THE INTERPRETATION IS CONFIGURATION. This file hard-codes no event type,
+# datum id, or fault code. The DIS wire format assigns no fixed meaning to a
+# fixed or variable datum's numeric id -- that meaning is a deployment's
+# integration choice, not a protocol fact -- so every one of those is an env
+# value, unset by default. Unset, this path forwards nothing (see
+# dis_event_report's switch, case 1).
+#
+# WHY A SEPARATE PATH, NOT SOMETHING sim_dis_mapping EMITS: a fault report is
+# not sustainment telemetry, and CmEvent is not EntityTelemetryEvent.
+# cm-intake (the CM event log's one write surface) is a different HTTP
+# destination from raw-sensor-stream's Kafka topic entirely, so the shapes
+# and sinks diverge from the first field onward.
+# =============================================================================
+processor_resources:
+  # ---------------------------------------------------------------------------
+  # dis_event_report_cm_event -- pure mapping. Builds the CmEvent JSON body
+  # only. It does not decide whether to run (dis_event_report's switch does
+  # that, below) and it does not send anything (the http step after it does).
+  # ---------------------------------------------------------------------------
+  - label: dis_event_report_cm_event
+    mapping: |
+      let component_datum_id = "${CM_EVENT_REPORT_COMPONENT_DATUM:}"
+      let fault_code_datum_id = "${CM_EVENT_REPORT_FAULT_CODE_DATUM:}"
+      let description_datum_id = "${CM_EVENT_REPORT_DESCRIPTION_DATUM:}"
+
+      let asset_id = this.entity_id_urn
+      let component = this.variable_datums.get($component_datum_id).or("").string().trim()
+      let fault_code = this.variable_datums.get($fault_code_datum_id).or("").string().trim()
+
+      # DETERMINISTIC eventId, not uuid_v4(). A scheduled or repeating
+      # built-in-test report of the SAME fault on the SAME component is one
+      # report of one episode, not a new one each sweep -- cm-service keys
+      # the episode by (asset, component, fault_code), and a redelivered
+      # eventId is a no-op there. Hashing the identity triple (deliberately
+      # NOT the timestamp -- two sweeps of the same fault must collide)
+      # gives the same eventId for the same episode every time this mapping
+      # runs, with no state kept anywhere to make that true. The operator
+      # form's report (gateway/pep.py, a uuid4) is a DIFFERENT source on the
+      # same episode by design, not a duplicate of this one.
+      let seed = "event-report|" + $asset_id + "|" + $component + "|" + $fault_code
+      let digest = $seed.hash("sha256").encode("hex")
+      let event_id = $digest.slice(0, 8) + "-" + $digest.slice(8, 12) + "-" + $digest.slice(12, 16) + "-" + $digest.slice(16, 20) + "-" + $digest.slice(20, 32)
+
+      root.eventId = $event_id
+      root.assetId = $asset_id
+
+      # ingest_timestamp arrives as ISO 8601 with a "+00:00" offset
+      # (openddil-sensor-ingest / Python's isoformat()); protojson's
+      # Timestamp wants RFC 3339 with a "Z" suffix for UTC. Re-parsed and
+      # re-formatted rather than string-munged, so a non-UTC offset (should
+      # one ever appear upstream) converts correctly instead of being
+      # truncated.
+      root.recordedAt = this.ingest_timestamp.ts_parse("2006-01-02T15:04:05.999999999Z07:00").ts_format("2006-01-02T15:04:05.999999999Z07:00", "UTC")
+
+      root.recordedBy = "${CM_EVENT_REPORT_RECORDED_BY:system:dis-event-report}"
+
+      let description_value = if $description_datum_id != "" {
+        this.variable_datums.get($description_datum_id)
+      } else {
+        null
+      }
+
+      root.manualDiscrepancy.component = $component
+      root.manualDiscrepancy.faultCode = $fault_code
+      root.manualDiscrepancy.description = $description_value.or("reported by built-in test")
+      root.manualDiscrepancy.severity = "${CM_EVENT_REPORT_SEVERITY:MAJOR}"
+      root.manualDiscrepancy.source = "${CM_EVENT_REPORT_SOURCE:telemetry_bit}"
+
+  # ---------------------------------------------------------------------------
+  # dis_event_report -- the gate. Decides whether a parsed Event Report
+  # record becomes a CmEvent forwarded to cm-intake, and is the only
+  # resource in this file referenced from openddil-base-connect.yaml.
+  # ---------------------------------------------------------------------------
+  - label: dis_event_report
+    switch:
+      # 1. UNCONFIGURED. No event type or no intake URL configured means
+      # this deployment has not turned this feature on; forward nothing,
+      # and say so with a number rather than a log flood (same rationale as
+      # dis_kind_gate's counter-over-log-line choice).
+      - check: '"${CM_EVENT_REPORT_TYPE:}" == "" || "${CM_INTAKE_URL:}" == ""'
+        processors:
+          - metric:
+              type: counter
+              name: dis_event_report_dropped
+              labels:
+                reason: "unconfigured"
+          - mapping: "root = deleted()"
+
+      # 2. ANOTHER EVENT TYPE. Configured, but this is not the event type
+      # this deployment interprets as a CM report (DIS Event Report PDUs
+      # carry many other event types this path has no opinion on).
+      - check: 'this.event_type.or(-1).int64().string() != "${CM_EVENT_REPORT_TYPE:}"'
+        processors:
+          - metric:
+              type: counter
+              name: dis_event_report_dropped
+              labels:
+                reason: "event_type_not_configured"
+          - mapping: "root = deleted()"
+
+      # 3. MISSING DATUM. The configured event type arrived, but the
+      # component or fault-code datum this deployment was told to read is
+      # absent or blank. This is a counted, policy-level drop -- NOT a DLQ
+      # case: malformed input is not what this is. See dis_kind_gate.yaml's
+      # `root = deleted()` note for the same reasoning applied there.
+      - check: |
+          this.variable_datums.get("${CM_EVENT_REPORT_COMPONENT_DATUM:}").or("").string().trim() == "" ||
+          this.variable_datums.get("${CM_EVENT_REPORT_FAULT_CODE_DATUM:}").or("").string().trim() == ""
+        processors:
+          - metric:
+              type: counter
+              name: dis_event_report_dropped
+              labels:
+                reason: "missing_datum"
+          - mapping: "root = deleted()"
+
+      # 4. OTHERWISE: build the CmEvent and forward it. `check: ""` is an
+      # explicit always-true default case, not an absence of one: a switch
+      # case that never matches lets the message pass through UNCHANGED
+      # (see dis_kind_gate.yaml, whose admitted-kind arm relies on exactly
+      # that passthrough) -- here that would forward the raw DIS record on
+      # to dis_kind_gate instead of deleting it, which is the bug this case
+      # exists to not reintroduce.
+      - check: ""
+        processors:
+          - resource: "dis_event_report_cm_event"
+
+          # The URL's placeholder default ("http://unset.invalid/") is
+          # reached only by config-build checks (lint, and "connect starts
+          # with every CM_* variable unset") -- a real message never sees
+          # it, because case 1 above deletes every message before this case
+          # runs when CM_INTAKE_URL is unset. It exists so this processor
+          # is a syntactically valid http target at build time with no CM_*
+          # variables set; it is never dialed.
+          - http:
+              url: "${CM_INTAKE_URL:http://unset.invalid/}"
+              verb: POST
+              headers:
+                Content-Type: application/json
+              timeout: 5s
+
+          # A failed POST (after the http processor's own retries) leaves the
+          # message flagged, and flagged messages still run the steps below,
+          # so the outcome is counted by the flag, never assumed. A lost
+          # report is not retried here: a scheduled built-in test resends the
+          # same eventId on its next sweep, and cm-intake treats it as new
+          # until one lands.
+          - switch:
+              - check: errored()
+                processors:
+                  - log:
+                      level: WARN
+                      message: 'dis_event_report intake_failed asset=${! this.assetId } error=${! error() }'
+                  - metric:
+                      type: counter
+                      name: dis_event_report_dropped
+                      labels:
+                        reason: "intake_failed"
+              - check: ""
+                processors:
+                  - metric:
+                      type: counter
+                      name: dis_event_report_forwarded
+
+          # Nothing from this path goes on to raw-sensor-stream: cm-intake
+          # (http, above) is the only sink an Event Report CmEvent has.
+          - mapping: "root = deleted()"

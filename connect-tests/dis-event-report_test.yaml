@@ -1,0 +1,183 @@
+# =============================================================================
+# Unit tests for dynamic-mappings/dis-event-report.yaml.
+# =============================================================================
+# Run via ./run.sh (wraps `connect test`, the pinned image, and
+# MSYS_NO_PATHCONV=1 on the docker call). This directory is deliberately NOT
+# dynamic-mappings/: that directory is loaded wholesale as a processor
+# resources glob by openddil-base-connect.yaml (and by cm-intake's
+# neighbours), so a *_test.yaml file dropped in there would be parsed as a
+# resource file too.
+#
+# TARGETING, AND WHY IT LOOKS LIKE THIS: `connect test` cannot target a
+# label imported via -r/--resources ("it is not currently possible to
+# target resources imported separate to the test file" -- confirmed against
+# this exact pinned image). The supported alternative is a JSON Pointer
+# into the external file itself: "<path>#/processor_resources/<index>".
+# That means these tests are pinned to dis-event-report.yaml's
+# processor_resources ARRAY ORDER, not to the labels by name:
+#   index 0 = dis_event_report_cm_event (the pure mapping)
+#   index 1 = dis_event_report          (the gate -- the switch)
+# If that file's processor_resources list is reordered, update the indices
+# below to match.
+#
+# FIXTURE VALUES are the neutral ones the spec requires: event type 9001,
+# datum ids 70001 (component) / 70002 (fault code) / 70003 (description),
+# fault code FC-0001, component slot-a. The asset id (dis:9:9:9001) is
+# synthetic and distinct from any real site numbering used elsewhere in
+# this repo.
+# =============================================================================
+tests:
+  # ---------------------------------------------------------------------------
+  # dis_event_report_cm_event -- direct tests of the mapping, independent of
+  # the gate's event-type/datum checks.
+  # ---------------------------------------------------------------------------
+  - name: cm_event golden fixture
+    target_processors: "../dynamic-mappings/dis-event-report.yaml#/processor_resources/0"
+    environment:
+      CM_EVENT_REPORT_COMPONENT_DATUM: "70001"
+      CM_EVENT_REPORT_FAULT_CODE_DATUM: "70002"
+      CM_EVENT_REPORT_DESCRIPTION_DATUM: "70003"
+    input_batch:
+      - json_content:
+          entity_id_urn: "dis:9:9:9001"
+          ingest_timestamp: "2026-10-02T12:34:56.789012+00:00"
+          variable_datums:
+            "70001": "slot-a"
+            "70002": "FC-0001"
+            "70003": "fan unit overtemp"
+    output_batches:
+      - - json_equals:
+            assetId: "dis:9:9:9001"
+            eventId: "432a3343-efd9-cbcc-3666-a81b8b5f55f5"
+            recordedAt: "2026-10-02T12:34:56.789012Z"
+            recordedBy: "system:dis-event-report"
+            manualDiscrepancy:
+              component: "slot-a"
+              faultCode: "FC-0001"
+              description: "fan unit overtemp"
+              severity: "MAJOR"
+              source: "telemetry_bit"
+
+  - name: cm_event re-ingest with a different timestamp keeps the same eventId
+    target_processors: "../dynamic-mappings/dis-event-report.yaml#/processor_resources/0"
+    environment:
+      CM_EVENT_REPORT_COMPONENT_DATUM: "70001"
+      CM_EVENT_REPORT_FAULT_CODE_DATUM: "70002"
+      CM_EVENT_REPORT_DESCRIPTION_DATUM: "70003"
+    input_batch:
+      - json_content:
+          entity_id_urn: "dis:9:9:9001"
+          ingest_timestamp: "2026-10-05T00:00:00+00:00"
+          variable_datums:
+            "70001": "slot-a"
+            "70002": "FC-0001"
+            "70003": "fan unit overtemp"
+    output_batches:
+      - - bloblang: 'this.eventId == "432a3343-efd9-cbcc-3666-a81b8b5f55f5" && this.recordedAt == "2026-10-05T00:00:00Z"'
+
+  - name: cm_event a different fault code gets a different eventId
+    target_processors: "../dynamic-mappings/dis-event-report.yaml#/processor_resources/0"
+    environment:
+      CM_EVENT_REPORT_COMPONENT_DATUM: "70001"
+      CM_EVENT_REPORT_FAULT_CODE_DATUM: "70002"
+      CM_EVENT_REPORT_DESCRIPTION_DATUM: "70003"
+    input_batch:
+      - json_content:
+          entity_id_urn: "dis:9:9:9001"
+          ingest_timestamp: "2026-10-02T12:34:56.789012+00:00"
+          variable_datums:
+            "70001": "slot-a"
+            "70002": "FC-0002"
+            "70003": "fan unit overtemp"
+    output_batches:
+      - - bloblang: 'this.eventId == "2ab9c341-537a-69c8-1500-7a7367ae9db3" && this.eventId != "432a3343-efd9-cbcc-3666-a81b8b5f55f5"'
+
+  - name: cm_event no description datum configured falls back to the default text
+    target_processors: "../dynamic-mappings/dis-event-report.yaml#/processor_resources/0"
+    environment:
+      CM_EVENT_REPORT_COMPONENT_DATUM: "70001"
+      CM_EVENT_REPORT_FAULT_CODE_DATUM: "70002"
+      # CM_EVENT_REPORT_DESCRIPTION_DATUM deliberately absent.
+    input_batch:
+      - json_content:
+          entity_id_urn: "dis:9:9:9001"
+          ingest_timestamp: "2026-10-02T12:34:56.789012+00:00"
+          variable_datums:
+            "70001": "slot-a"
+            "70002": "FC-0001"
+            "70003": "fan unit overtemp"
+    output_batches:
+      - - bloblang: 'this.manualDiscrepancy.description == "reported by built-in test"'
+
+  # ---------------------------------------------------------------------------
+  # dis_event_report -- the gate. CM_INTAKE_URL below points at a loopback
+  # port nothing listens on: if any of the three negative cases below ever
+  # reached the http step (a regression in the switch's case order), the
+  # test would fail loudly on a connection error instead of passing
+  # silently, which is the point -- "the http step must not run in these".
+  # ---------------------------------------------------------------------------
+  - name: gate another event type is deleted, http never runs
+    target_processors: "../dynamic-mappings/dis-event-report.yaml#/processor_resources/1"
+    environment:
+      CM_EVENT_REPORT_TYPE: "9001"
+      CM_EVENT_REPORT_COMPONENT_DATUM: "70001"
+      CM_EVENT_REPORT_FAULT_CODE_DATUM: "70002"
+      CM_INTAKE_URL: "http://127.0.0.1:1/unused"
+    input_batch:
+      - json_content:
+          pdu_type: "event_report"
+          entity_id_urn: "dis:9:9:9001"
+          event_type: 4242
+          ingest_timestamp: "2026-10-02T12:34:56.789012+00:00"
+          variable_datums:
+            "70001": "slot-a"
+            "70002": "FC-0001"
+    output_batches: []
+
+  - name: gate a missing component datum is deleted, http never runs
+    target_processors: "../dynamic-mappings/dis-event-report.yaml#/processor_resources/1"
+    environment:
+      CM_EVENT_REPORT_TYPE: "9001"
+      CM_EVENT_REPORT_COMPONENT_DATUM: "70001"
+      CM_EVENT_REPORT_FAULT_CODE_DATUM: "70002"
+      CM_INTAKE_URL: "http://127.0.0.1:1/unused"
+    input_batch:
+      - json_content:
+          pdu_type: "event_report"
+          entity_id_urn: "dis:9:9:9001"
+          event_type: 9001
+          ingest_timestamp: "2026-10-02T12:34:56.789012+00:00"
+          variable_datums:
+            "70002": "FC-0001"
+    output_batches: []
+
+  - name: gate a blank fault code datum is deleted, http never runs
+    target_processors: "../dynamic-mappings/dis-event-report.yaml#/processor_resources/1"
+    environment:
+      CM_EVENT_REPORT_TYPE: "9001"
+      CM_EVENT_REPORT_COMPONENT_DATUM: "70001"
+      CM_EVENT_REPORT_FAULT_CODE_DATUM: "70002"
+      CM_INTAKE_URL: "http://127.0.0.1:1/unused"
+    input_batch:
+      - json_content:
+          pdu_type: "event_report"
+          entity_id_urn: "dis:9:9:9001"
+          event_type: 9001
+          ingest_timestamp: "2026-10-02T12:34:56.789012+00:00"
+          variable_datums:
+            "70001": "slot-a"
+            "70002": "   "
+    output_batches: []
+
+  - name: gate unconfigured env deletes an event_report
+    target_processors: "../dynamic-mappings/dis-event-report.yaml#/processor_resources/1"
+    input_batch:
+      - json_content:
+          pdu_type: "event_report"
+          entity_id_urn: "dis:9:9:9001"
+          event_type: 9001
+          ingest_timestamp: "2026-10-02T12:34:56.789012+00:00"
+          variable_datums:
+            "70001": "slot-a"
+            "70002": "FC-0001"
+    output_batches: []
