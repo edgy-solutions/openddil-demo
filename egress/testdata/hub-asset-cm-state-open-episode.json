@@ -1,0 +1,287 @@
+{
+  "asset_id": "dis:1:1:1008",
+  "baseline_id": "MRAD_Sensor-Baseline-2026.1",
+  "as_of_ns": 1790976029512664064,
+  "installed": [
+    {
+      "slot_id": "tr_module",
+      "ci_id": "",
+      "installed_at_ns": 0
+    },
+    {
+      "slot_id": "power_supply",
+      "ci_id": "",
+      "installed_at_ns": 0
+    },
+    {
+      "slot_id": "cooling_fan",
+      "ci_id": "",
+      "installed_at_ns": 0
+    },
+    {
+      "slot_id": "processor",
+      "ci_id": "",
+      "installed_at_ns": 0
+    }
+  ],
+  "mod_status": [
+    {
+      "mod_id": "MWO-2024-117",
+      "state": 2,
+      "applied_at_ns": 0,
+      "applied_by_work_order": ""
+    },
+    {
+      "mod_id": "MWO-2025-088",
+      "state": 2,
+      "applied_at_ns": 0,
+      "applied_by_work_order": ""
+    }
+  ],
+  "discrepancies": [
+    {
+      "discrepancy_id": "f04eb09b-4784-5812-a929-79c44c4c5ef7",
+      "type": 5,
+      "description": "Slot 'tr_module' present but ci_id unknown (asset has not been verified)",
+      "severity": 3,
+      "recommended_action": "Perform inspection to record installed CI in slot tr_module",
+      "related_ci_id": "",
+      "related_mod_id": "",
+      "detected_at_ns": 1790976029512664064,
+      "advisory_provenance": {
+        "basis": 1,
+        "producer": "cm-service/discrepancy-analyzer",
+        "producer_version": "1.0.0",
+        "config_hash": "MRAD_Sensor-Baseline-2026.1@2026.1",
+        "model_artifact_hash": "",
+        "rule_id": "authorized-ci.unverified",
+        "inputs": [
+          "baseline:MRAD_Sensor-Baseline-2026.1",
+          "slot:tr_module"
+        ],
+        "confidence": 0.0,
+        "confidence_kind": 0,
+        "limitations": [
+          4,
+          1,
+          2
+        ],
+        "generated_at_ns": 1790976029512664064
+      },
+      "component": "",
+      "fault_code": "",
+      "sources": []
+    },
+    {
+      "discrepancy_id": "f04eb09b-4784-5812-a929-79c44c4c5ef7",
+      "type": 5,
+      "description": "Slot 'power_supply' present but ci_id unknown (asset has not been verified)",
+      "severity": 3,
+      "recommended_action": "Perform inspection to record installed CI in slot power_supply",
+      "related_ci_id": "",
+      "related_mod_id": "",
+      "detected_at_ns": 1790976029512664064,
+      "advisory_provenance": {
+        "basis": 1,
+        "producer": "cm-service/discrepancy-analyzer",
+        "producer_version": "1.0.0",
+        "config_hash": "MRAD_Sensor-Baseline-2026.1@2026.1",
+        "model_artifact_hash": "",
+        "rule_id": "authorized-ci.unverified",
+        "inputs": [
+          "baseline:MRAD_Sensor-Baseline-2026.1",
+          "slot:power_supply"
+        ],
+        "confidence": 0.0,
+        "confidence_kind": 0,
+        "limitations": [
+          4,
+          1,
+          2
+        ],
+        "generated_at_ns": 1790976029512664064
+      },
+      "component": "",
+      "fault_code": "",
+      "sources": []
+    },
+    {
+      "discrepancy_id": "f04eb09b-4784-5812-a929-79c44c4c5ef7",
+      "type": 5,
+      "description": "Slot 'cooling_fan' present but ci_id unknown (asset has not been verified)",
+      "severity": 3,
+      "recommended_action": "Perform inspection to record installed CI in slot cooling_fan",
+      "related_ci_id": "",
+      "related_mod_id": "",
+      "detected_at_ns": 1790976029512664064,
+      "advisory_provenance": {
+        "basis": 1,
+        "producer": "cm-service/discrepancy-analyzer",
+        "producer_version": "1.0.0",
+        "config_hash": "MRAD_Sensor-Baseline-2026.1@2026.1",
+        "model_artifact_hash": "",
+        "rule_id": "authorized-ci.unverified",
+        "inputs": [
+          "baseline:MRAD_Sensor-Baseline-2026.1",
+          "slot:cooling_fan"
+        ],
+        "confidence": 0.0,
+        "confidence_kind": 0,
+        "limitations": [
+          4,
+          1,
+          2
+        ],
+        "generated_at_ns": 1790976029512664064
+      },
+      "component": "",
+      "fault_code": "",
+      "sources": []
+    },
+    {
+      "discrepancy_id": "f04eb09b-4784-5812-a929-79c44c4c5ef7",
+      "type": 5,
+      "description": "Slot 'processor' present but ci_id unknown (asset has not been verified)",
+      "severity": 3,
+      "recommended_action": "Perform inspection to record installed CI in slot processor",
+      "related_ci_id": "",
+      "related_mod_id": "",
+      "detected_at_ns": 1790976029512664064,
+      "advisory_provenance": {
+        "basis": 1,
+        "producer": "cm-service/discrepancy-analyzer",
+        "producer_version": "1.0.0",
+        "config_hash": "MRAD_Sensor-Baseline-2026.1@2026.1",
+        "model_artifact_hash": "",
+        "rule_id": "authorized-ci.unverified",
+        "inputs": [
+          "baseline:MRAD_Sensor-Baseline-2026.1",
+          "slot:processor"
+        ],
+        "confidence": 0.0,
+        "confidence_kind": 0,
+        "limitations": [
+          4,
+          1,
+          2
+        ],
+        "generated_at_ns": 1790976029512664064
+      },
+      "component": "",
+      "fault_code": "",
+      "sources": []
+    },
+    {
+      "discrepancy_id": "951d4cff-cee3-5d6b-9ad0-162c7e23102e",
+      "type": 1,
+      "description": "Mod 'MWO-2024-117' ('ECP-2024-A: T/R module GaN MMIC cooling rework') state=PENDING (OVERDUE)",
+      "severity": 4,
+      "recommended_action": "OVERDUE: apply MWO-2024-117 immediately",
+      "related_ci_id": "",
+      "related_mod_id": "MWO-2024-117",
+      "detected_at_ns": 1790976029512664064,
+      "advisory_provenance": {
+        "basis": 1,
+        "producer": "cm-service/discrepancy-analyzer",
+        "producer_version": "1.0.0",
+        "config_hash": "MRAD_Sensor-Baseline-2026.1@2026.1",
+        "model_artifact_hash": "",
+        "rule_id": "required-mod.overdue",
+        "inputs": [
+          "baseline:MRAD_Sensor-Baseline-2026.1",
+          "mod:MWO-2024-117"
+        ],
+        "confidence": 0.0,
+        "confidence_kind": 0,
+        "limitations": [
+          4,
+          1,
+          2,
+          3
+        ],
+        "generated_at_ns": 1790976029512664064
+      },
+      "component": "",
+      "fault_code": "",
+      "sources": []
+    },
+    {
+      "discrepancy_id": "814cc63e-c9da-5227-b01b-feba88652f3b",
+      "type": 1,
+      "description": "Mod 'MWO-2025-088' ('ECP-2025-B: cryptographic module firmware update') state=PENDING",
+      "severity": 3,
+      "recommended_action": "Apply MWO-2025-088 before 2026-12-31T00:00:00Z",
+      "related_ci_id": "",
+      "related_mod_id": "MWO-2025-088",
+      "detected_at_ns": 1790976029512664064,
+      "advisory_provenance": {
+        "basis": 1,
+        "producer": "cm-service/discrepancy-analyzer",
+        "producer_version": "1.0.0",
+        "config_hash": "MRAD_Sensor-Baseline-2026.1@2026.1",
+        "model_artifact_hash": "",
+        "rule_id": "required-mod.pending",
+        "inputs": [
+          "baseline:MRAD_Sensor-Baseline-2026.1",
+          "mod:MWO-2025-088"
+        ],
+        "confidence": 0.0,
+        "confidence_kind": 0,
+        "limitations": [
+          4,
+          1,
+          2,
+          3
+        ],
+        "generated_at_ns": 1790976029512664064
+      },
+      "component": "",
+      "fault_code": "",
+      "sources": []
+    }
+  ],
+  "overall_status": 4,
+  "lifecycle": 2,
+  "last_observed_at_ns": 1790976029512664064,
+  "last_alerted_status": 4,
+  "manual_discrepancies": [
+    {
+      "discrepancy_id": "0ea67581-27b8-59c9-b2db-12f82e30ede9",
+      "type": 0,
+      "description": "T/R array module BIT fault",
+      "severity": 3,
+      "recommended_action": "",
+      "related_ci_id": "",
+      "related_mod_id": "",
+      "detected_at_ns": 1790975604456256000,
+      "advisory_provenance": {
+        "basis": 0,
+        "producer": "",
+        "producer_version": "",
+        "config_hash": "",
+        "model_artifact_hash": "",
+        "rule_id": "",
+        "inputs": [],
+        "confidence": 0.0,
+        "confidence_kind": 0,
+        "limitations": [],
+        "generated_at_ns": 0
+      },
+      "component": "tr_module",
+      "fault_code": "MRAD-ARR-0417",
+      "sources": [
+        {
+          "source": "telemetry_bit",
+          "reported_by": "system:dis-event-report",
+          "event_id": "df266509-3e75-0293-4900-3c37a656ebb8",
+          "reported_at_ns": 1790975604456256000,
+          "description": "T/R array module BIT fault"
+        }
+      ]
+    }
+  ],
+  "edge_id": "edge-01",
+  "region_id": "region-east",
+  "originator_nation": "ATL",
+  "releasable_to": []
+}

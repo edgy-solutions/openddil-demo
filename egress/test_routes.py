@@ -16,6 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import delivery  # noqa: E402
 import routes as routes_mod  # noqa: E402
 from gate import ADMIT, REASON_NO_OVERLAP, EgressGate  # noqa: E402
 from routes import Route, RouteError, load_routes, run_once  # noqa: E402
@@ -120,14 +121,29 @@ class _FakeConsumer:
 
 
 class _FakeProducer:
-    def __init__(self):
-        self.produced = []
+    """`produce` only queues a callback; `flush` is what actually invokes
+    it — the same two-step shape `delivery.send_one` relies on against a
+    real `confluent_kafka.Producer`. `fail=True` has every delivery report
+    back an error, standing in for a broker that refused the write."""
 
-    def produce(self, topic, value=None, key=None):
+    def __init__(self, *, fail=False):
+        self.produced = []
+        self.fail = fail
+        self._pending = []
+
+    def produce(self, topic, value=None, key=None, callback=None):
         self.produced.append((topic, value, key))
+        self._pending.append((callback, topic, key))
 
     def poll(self, timeout):
         pass
+
+    def flush(self, timeout):
+        for callback, topic, key in self._pending:
+            if callback is not None:
+                callback(f"broker refused {topic}" if self.fail else None, None)
+        self._pending.clear()
+        return 0
 
 
 def test_two_route_fan_out_decides_both_produces_only_admitted_commits_once(monkeypatch):
@@ -166,3 +182,35 @@ def test_two_route_fan_out_decides_both_produces_only_admitted_commits_once(monk
 
     assert producer.produced == [("sink-a", message.value(), b"k1")]
     assert consumer.committed == [message]
+
+
+def test_a_failed_sink_delivery_raises_and_the_offset_is_not_committed(monkeypatch):
+    route_a = Route(name="to-a", source_topic="asset-status",
+                     destination="system:dest-a", sink_topic="sink-a")
+    gate_a = EgressGate("system:dest-a", ["ATL"])  # will admit
+
+    record = {"asset_id": "dis:1:1:1000", "originator_nation": "ATL", "releasable_to": []}
+    message = _FakeMessage("asset-status", b"k1", json.dumps(record).encode())
+
+    consumer = _FakeConsumer([message])
+    producer = _FakeProducer(fail=True)
+
+    logged = []
+    monkeypatch.setattr(routes_mod.EgressGate, "log",
+                         staticmethod(lambda d: logged.append(d)))
+
+    with pytest.raises(delivery.DeliveryFailed):
+        run_once(
+            consumer, producer,
+            routes_by_topic={"asset-status": [route_a]},
+            gates={route_a: gate_a},
+            decode=lambda payload: json.loads(payload.decode()),
+            poll_timeout=1.0,
+        )
+
+    # The DECISION was logged (the decision was made) even though the sink
+    # write that followed it was never confirmed delivered.
+    assert len(logged) == 1
+    assert logged[0].allowed and logged[0].reason == ADMIT
+
+    assert consumer.committed == []

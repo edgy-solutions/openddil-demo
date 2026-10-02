@@ -58,6 +58,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
+import delivery
 import pointer
 from kinds import Declarations
 
@@ -424,6 +425,32 @@ class Designation:
     basis: str
 
 
+def _lifecycle_name(cm_state: Mapping[str, Any]) -> str | None:
+    """`cm_state["lifecycle"]` the way a kind's `string|null` pointer wants
+    it, never cm-service's wire shape as-is.
+
+    Hub `asset-cm-state` carries this as proto3 JSON, which renders an enum
+    as its bare integer, not its name — postgres and every kind schema want
+    the name (`LIFECYCLE_ACTIVE`, not `2`). A string already in that shape
+    passes through unchanged (both are real on this wire: a producer that
+    already translated needs no second pass). `None` stays `None`. An int
+    this process's proto build has no name for becomes `None` — one episode
+    missing a lifecycle is not worth refusing the whole record for — logged
+    once, naming the asset and the value, rather than raised."""
+    value = cm_state.get("lifecycle")
+    if value is None or isinstance(value, str):
+        return value
+
+    from openddil.configuration.v1 import as_maintained_pb2  # noqa: PLC0415 — only this branch needs it
+
+    try:
+        return as_maintained_pb2.LifecycleState.Name(value)
+    except ValueError:
+        log.warning(
+            "unknown lifecycle value %r for asset %s", value, cm_state.get("asset_id"))
+        return None
+
+
 async def build_picture(
     cm_state: Mapping[str, Any],
     episode: Episode,
@@ -445,7 +472,7 @@ async def build_picture(
     level when `read_asset` supplied them — not picture sections themselves
     (no real kind names them), just how `assemble` learns each source's own
     timestamp for `provenance[]` without reading postgres itself."""
-    sections: dict[str, Any] = {"lifecycle": cm_state.get("lifecycle")}
+    sections: dict[str, Any] = {"lifecycle": _lifecycle_name(cm_state)}
 
     asset_id = cm_state.get("asset_id")
     reading = await read_asset(asset_id) if asset_id else None
@@ -754,6 +781,25 @@ def _decode(payload: bytes) -> dict:
     return json.loads(payload.decode("utf-8"))
 
 
+def _make_produce(producer) -> Callable[[str, bytes, bytes], None]:
+    """The `produce` callable `_produce_episode` is given: one call, one
+    message, confirmed delivered before returning.
+
+    Separated from `_main_async` so it is exercised directly against a fake
+    producer rather than only through a live `confluent_kafka.Producer` —
+    this one function is the entire fix for the bug where a produce that
+    silently failed still looked like success: raises `delivery.
+    DeliveryFailed` if the broker never confirms, which reaches
+    `_produce_episode` before it touches `last_produced`/the counters, and
+    reaches the runner's loop before `consumer.commit`, so neither one
+    advances past a record that was never actually delivered."""
+
+    def produce(topic: str, value: bytes, key: bytes) -> None:
+        delivery.send_one(producer, topic, value, key)
+
+    return produce
+
+
 async def _main_async() -> int:
     from confluent_kafka import Consumer, Producer  # noqa: PLC0415
 
@@ -805,9 +851,7 @@ async def _main_async() -> int:
     producer = Producer({"bootstrap.servers": BROKERS})
     consumer.subscribe(sorted(topics))
 
-    def produce(topic: str, value: bytes, key: bytes) -> None:
-        producer.produce(topic, value=value, key=key)
-        producer.poll(0)
+    produce = _make_produce(producer)
 
     last_counter_log = asyncio.get_event_loop().time()
     try:
@@ -826,8 +870,10 @@ async def _main_async() -> int:
                         state.parts.ingest(record)
                     for state in trigger_states.get(topic, []):
                         # Not committed until produced — a postgres error
-                        # that exhausts the retry budget raises out of here
-                        # and this message's offset is never committed.
+                        # that exhausts the retry budget, or a produce whose
+                        # delivery `produce()` above never confirms, raises
+                        # out of here and this message's offset is never
+                        # committed.
                         await handle_cm_state_message(
                             state, record, read_asset=read_asset,
                             now=datetime.now(timezone.utc), produce=produce,

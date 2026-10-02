@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,10 +23,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import delivery  # noqa: E402
 from assembler import (  # noqa: E402
     AssemblerConfigError,
     AssemblerRoute,
     _RouteState,
+    _make_produce,
     Designation,
     PartsBook,
     assemble,
@@ -36,7 +39,9 @@ from assembler import (  # noqa: E402
     record_key,
 )
 from gate import ADMIT, REASON_NO_OVERLAP, REASON_UNLABELLED, EgressGate  # noqa: E402
-from kinds import Declarations, EpisodeDecl, load_declarations, load_kinds  # noqa: E402
+from kinds import Declarations, EpisodeDecl, load_declarations, load_kinds, validator_for  # noqa: E402
+
+TESTDATA = Path(__file__).parent / "testdata"
 
 NOW = datetime(2026, 10, 2, tzinfo=timezone.utc)
 
@@ -261,6 +266,181 @@ def test_an_empty_fault_code_produces_no_record():
 def test_a_resolved_discrepancy_absent_from_the_list_produces_no_record():
     state = _route_state()
     assert _produced(state, cm_state(discrepancies=[])) == []
+
+
+# --- lifecycle: the enum name, not the wire integer --------------------------
+
+# Reuses KIND_A_DECL's own pointers (`/context` for the picture) rather than
+# a second declarations fixture — the point here is the VALUE at
+# `lifecycle`, not where it lands.
+LIFECYCLE_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+        "context": {
+            "type": "object",
+            "properties": {"lifecycle": {"type": ["string", "null"]}},
+        },
+    },
+}
+
+
+def _assembled_lifecycle(lifecycle_value):
+    state = cm_state(lifecycle=lifecycle_value, discrepancies=[discrepancy()])
+    episode = episodes(state)[0]
+    picture = asyncio.run(build_picture(
+        state, episode, "edge-03", read_asset=_no_picture, parts=PartsBook()))
+    return assemble("KindA", KIND_A_DECL, LIFECYCLE_SCHEMA, state, episode, picture, NOW)
+
+
+def test_an_integer_lifecycle_is_normalised_to_its_enum_name_and_validates():
+    record = _assembled_lifecycle(2)
+    assert record["context"]["lifecycle"] == "LIFECYCLE_ACTIVE"
+    error = validator_for(LIFECYCLE_SCHEMA)(record)
+    assert error is None, error
+
+
+def test_a_string_lifecycle_passes_through_unchanged():
+    record = _assembled_lifecycle("INSTALLED")
+    assert record["context"]["lifecycle"] == "INSTALLED"
+
+
+def test_an_unknown_integer_lifecycle_becomes_none_and_warns(caplog):
+    with caplog.at_level(logging.WARNING, logger="egress.assembler"):
+        record = _assembled_lifecycle(999)
+    assert record["context"]["lifecycle"] is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("999" in m and "dis:1:1:1000" in m for m in messages)
+
+
+# --- lifecycle on a real captured hub record ---------------------------------
+
+FAULT_EVENT_DECL = Declarations(
+    key="/id",
+    label="/label",
+    owning_tier="/owning_tier",
+    episode=EpisodeDecl(asset="/asset", component="/component", fault_code="/fault_code"),
+    observed_at="/observed_at",
+    sources="/sources",
+    picture="/picture",
+)
+
+
+def _load_testdata(name):
+    return json.loads((TESTDATA / name).read_text())
+
+
+async def _some_readiness_and_rollup(asset_id):  # noqa: ARG001 — the injected read_asset
+    # `fault-event.schema.json` requires `readiness`/`battle_condition` in
+    # the picture; `_no_picture` (no hub postgres row) would leave both
+    # absent, which is a real, valid outcome `assemble` handles fine but
+    # not what this test is isolating — the lifecycle normalisation.
+    return {"readiness": {"operational_status": "FMC"}, "rollup": {"overall_severity": 1}}
+
+
+def test_real_open_episode_hub_record_normalises_lifecycle_and_validates():
+    """`hub-asset-cm-state-open-episode.json` is a real captured hub
+    `asset-cm-state` message — proto3 JSON, so `lifecycle` (and every other
+    enum on it) arrives as a bare integer, not a name. This is the shape
+    that made every assembled record fail `schema_invalid` before the fix:
+    run against the unfixed `_lifecycle_name`, this test fails because
+    `record["picture"]["lifecycle"]` is the int `2`, which the schema below
+    refuses (only `string`/`null` are allowed there)."""
+    state = _load_testdata("hub-asset-cm-state-open-episode.json")
+    found = episodes(state)
+    assert len(found) == 1
+    episode = found[0]
+
+    picture = asyncio.run(build_picture(
+        state, episode, state.get("edge_id") or state.get("region_id") or "",
+        read_asset=_some_readiness_and_rollup, parts=PartsBook()))
+    schema = _load_testdata("fault-event.schema.json")
+    record = assemble("FaultEvent", FAULT_EVENT_DECL, schema, state, episode, picture, NOW)
+
+    error = validator_for(schema)(record)
+    assert error is None, error
+    assert record["picture"]["lifecycle"] == "LIFECYCLE_ACTIVE"
+
+
+def test_real_no_episode_hub_record_yields_zero_episodes():
+    state = _load_testdata("hub-asset-cm-state-no-episode.json")
+    assert episodes(state) == []
+
+
+# --- no "produced" bookkeeping before delivery is confirmed ------------------
+
+class _FakeDeliveryProducer:
+    """Mimics confluent_kafka.Producer's async-delivery shape: `produce`
+    only queues a callback, `flush` is what actually invokes it — the same
+    two calls `delivery.send_one` makes against a real producer."""
+
+    def __init__(self, *, fail=False):
+        self.fail = fail
+        self.sent: list[tuple[str, bytes, bytes]] = []
+        self._pending = []
+
+    def produce(self, topic, value=None, key=None, callback=None):
+        self.sent.append((topic, value, key))
+        self._pending.append((callback, topic, key))
+
+    def flush(self, timeout):
+        for callback, topic, key in self._pending:
+            if callback is not None:
+                callback(f"boom:{topic}:{key!r}" if self.fail else None, None)
+        self._pending.clear()
+        return 0
+
+
+def test_the_real_produce_closure_raises_when_the_broker_never_confirms():
+    """`_make_produce` is the entire fix: before it existed, `_main_async`
+    built `produce` from a bare `producer.produce()` + `poll(0)`, which
+    never raised no matter what the broker did, so a silently failed
+    produce looked exactly like a successful one. This fails on that old
+    closure (there is no `_make_produce` to import) and on any closure that
+    does not wait for the delivery report."""
+    failing = _FakeDeliveryProducer(fail=True)
+    produce = _make_produce(failing)
+    with pytest.raises(delivery.DeliveryFailed):
+        produce("sink-topic", b"payload", b"key")
+
+
+def test_the_real_produce_closure_returns_once_delivery_is_confirmed():
+    succeeding = _FakeDeliveryProducer(fail=False)
+    produce = _make_produce(succeeding)
+    produce("sink-topic", b"payload", b"key")  # must not raise
+    assert succeeding.sent == [("sink-topic", b"payload", b"key")]
+
+
+def test_a_failed_delivery_raises_and_leaves_bookkeeping_unchanged_then_a_retry_succeeds():
+    state = _route_state()
+    message = cm_state(discrepancies=[discrepancy()])
+
+    failing = _FakeDeliveryProducer(fail=True)
+    with pytest.raises(delivery.DeliveryFailed):
+        asyncio.run(handle_cm_state_message(
+            state, message, read_asset=_no_picture, now=NOW, produce=_make_produce(failing)))
+    assert state.last_produced == {}
+    assert state.counters == {"records": 0, "revisions": 0, "sources": 0}
+
+    succeeding = _FakeDeliveryProducer(fail=False)
+    asyncio.run(handle_cm_state_message(
+        state, message, read_asset=_no_picture, now=NOW, produce=_make_produce(succeeding)))
+    assert len(succeeding.sent) == 1
+    assert state.counters["records"] == 1
+    assert state.counters["revisions"] == 0
+
+
+def test_happy_path_counters_and_last_produced_advance_only_after_delivery():
+    state = _route_state()
+    message = cm_state(discrepancies=[discrepancy()])
+    producer = _FakeDeliveryProducer(fail=False)
+
+    asyncio.run(handle_cm_state_message(
+        state, message, read_asset=_no_picture, now=NOW, produce=_make_produce(producer)))
+
+    assert len(producer.sent) == 1
+    assert state.counters["records"] == 1
+    assert len(state.last_produced) == 1
 
 
 # --- an unlabelled cm-state refuses at the gate, through label_pointer -------

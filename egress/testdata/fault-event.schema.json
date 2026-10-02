@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FaultEvent",
+  "type": "object",
+  "required": ["picture"],
+  "properties": {
+    "picture": {
+      "type": "object",
+      "required": ["lifecycle", "readiness", "battle_condition"],
+      "properties": {
+        "lifecycle": {"type": ["string", "null"]},
+        "readiness": {"type": "object"},
+        "battle_condition": {"type": "object"}
+      }
+    }
+  }
+}

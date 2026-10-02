@@ -1,0 +1,17 @@
+{
+  "asset_id": "dis:2:1:1000",
+  "baseline_id": "",
+  "as_of_ns": 0,
+  "installed": [],
+  "mod_status": [],
+  "discrepancies": [],
+  "overall_status": 0,
+  "lifecycle": 1,
+  "last_observed_at_ns": 1790976031844598016,
+  "last_alerted_status": 0,
+  "manual_discrepancies": [],
+  "edge_id": "edge-02",
+  "region_id": "region-east",
+  "originator_nation": "BDR",
+  "releasable_to": []
+}

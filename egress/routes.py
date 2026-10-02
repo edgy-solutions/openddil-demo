@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
+import delivery
 from gate import Decision, EgressGate, REASON_UNDECODABLE, new_decision_id
 
 log = logging.getLogger("egress.routes")
@@ -132,11 +133,19 @@ def run_once(
 ) -> bool:
     """Poll once. Decide the message by every route whose source topic
     matches, log one decision per matching route, produce to each admitted
-    sink, then commit once.
+    sink confirmed delivered, then commit once.
 
     Returns `True` when a message was processed, `False` on an empty poll
     (a consumer error counts as empty — it is logged and left for the next
     poll), so the caller can just keep calling this until told to stop.
+
+    Raises `delivery.DeliveryFailed` when an admitted route's sink write is
+    not confirmed delivered — `main.py`'s caller has no `try/except` around
+    this call, on purpose: the same fail-stop shape `assembler.py` uses for
+    an exhausted postgres retry. The DECISION for that route was already
+    logged (the decision was made); what did not happen is the commit a few
+    lines down, so this message's offset is retried from the last commit
+    after a restart rather than being skipped.
 
     No `confluent_kafka` import here: `consumer` and `producer` are used only
     through `.poll`, `.error`, `.topic`, `.key`, `.value`, `.commit` and
@@ -178,9 +187,16 @@ def run_once(
             EgressGate.log(decision)
             if decision.allowed:
                 # Forwarded byte for byte — see gate.py's module docstring on
-                # why the gate decides and never re-encodes.
-                producer.produce(route.sink_topic, value=msg.value(), key=msg.key())
-                producer.poll(0)
+                # why the gate decides and never re-encodes. Raises before
+                # the commit below if the broker never confirms it.
+                try:
+                    delivery.send_one(producer, route.sink_topic, msg.value(), msg.key())
+                except delivery.DeliveryFailed as exc:
+                    log.error(
+                        "sink delivery failed: route=%s key=%s error=%s",
+                        route.name, key, exc.error,
+                    )
+                    raise
 
     consumer.commit(msg, asynchronous=False)
     return True
