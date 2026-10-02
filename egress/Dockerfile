@@ -62,11 +62,17 @@ ENV PATH="/opt/venv/bin:$PATH"
 # that must not fail for an environmental reason, and every dependency it does
 # not have is a failure mode it cannot have. kinds.py owns the jsonschema
 # import for exactly the same reason gate.py owns none of it.
+#
+# PyYAML        — intake.py's config loader accepts a .yaml/.yml config file
+#                 as well as JSON (ADR-0046 v2 §5-6); gate.py's own
+#                 stdlib-only rule above does not apply to it, since intake's
+#                 config loading is nowhere near the decision path.
 RUN uv pip install --no-cache \
         "confluent-kafka>=2.0.0,<3.0.0" \
         "asyncpg>=0.29.0,<1.0.0" \
         "protobuf>=6.30.0,<7.0.0" \
-        "jsonschema>=4.18,<5"
+        "jsonschema>=4.18,<5" \
+        "PyYAML>=6.0,<7"
 
 # ---------- Stage 2: Tests ----------
 # ALL test_*.py in this directory — the gate's 43 (test_gate.py), the kind
@@ -81,7 +87,7 @@ RUN uv pip install --no-cache \
 # needs nothing this stage doesn't already have: `asyncpg` is already in the
 # builder venv this stage inherits, and the tests inject fakes for both of
 # `pane_api.build_decisions`'s I/O seams (`EgressGate.for_destination` and
-# the `RECORD_SOURCE` fetch functions) the same way test_gate.py injects the
+# `_fetch_records_by_kind`) the same way test_gate.py injects the
 # PDP answer — no Postgres connection is ever attempted. The adapter's tests
 # moved in here alongside the gate's because `cot_adapter.py` now ships from
 # this same image to a cluster (see egress/tak/Dockerfile and
