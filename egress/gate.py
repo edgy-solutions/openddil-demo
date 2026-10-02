@@ -452,6 +452,11 @@ def ask_topaz(subject: str) -> dict[str, Any]:
             # otherwise-fine answer.
             "accepts": sorted(set(bindings.get("accepts") or [])),
             "registry_version": bindings.get("registry_version", "unknown"),
+            # ADR-0046 v2 §5-6. Absent (an older policy, or a subject with
+            # no opinion) is False — the same "a new total field must not
+            # become a new way to refuse an otherwise-fine answer" rule
+            # `accepts`/`registry_version` already follow.
+            "trust_on_behalf_of": bool(bindings.get("trust_on_behalf_of", False)),
         }
     except Exception as exc:  # noqa: BLE001
         raise AuthzUnavailable(f"unparseable topaz answer: {exc}") from exc
@@ -479,6 +484,7 @@ class EgressGate:
         destination_known: bool = True,
         accepts: Iterable[str] = (),
         registry_version: str = "unknown",
+        trust_on_behalf_of: bool = False,
         kind: str | None = None,
         kind_validator: Callable[[Mapping], str | None] | None = None,
         label_pointer: str | None = None,
@@ -491,6 +497,12 @@ class EgressGate:
         self.destination_known = destination_known
         self.accepts = tuple(accepts)
         self.registry_version = registry_version
+        # ADR-0046 v2 §5-6. Whether an on_behalf_of assertion sourced from
+        # this destination may be trusted by an intake poll. Carried here,
+        # not just read off `ask_topaz`'s answer, for the same reason
+        # `accepts` is: a gate built once shares one compiled answer for its
+        # whole life, and this is part of that answer.
+        self.trust_on_behalf_of = trust_on_behalf_of
         self.kind = kind
         self.kind_validator = kind_validator
         # Where this kind's own schema says its label lives. None (every
@@ -523,6 +535,7 @@ class EgressGate:
             destination_known=answer["subject_known"],
             accepts=answer["accepts"],
             registry_version=answer["registry_version"],
+            trust_on_behalf_of=answer["trust_on_behalf_of"],
             kind=kind,
             kind_validator=kind_validator,
             label_pointer=label_pointer,

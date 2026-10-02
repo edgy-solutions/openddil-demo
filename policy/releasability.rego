@@ -187,6 +187,19 @@ default accepts := []
 accepts := sort(subject_record.accepts)
 
 # ---------------------------------------------------------------------------
+# trust_on_behalf_of — may this subject assert an on_behalf_of subject?
+# ---------------------------------------------------------------------------
+# Total, like every other decision field. Most subjects — every human, every
+# destination with no intake — carry no `trust_on_behalf_of` at all, and
+# `false` is exactly as meaningful there as it is for a destination that
+# declares the key explicitly false: a subject not positively trusted to
+# speak for another is not trusted, and that must not require a corpus
+# author to say so for every entry that doesn't need it.
+default trust_on_behalf_of := false
+
+trust_on_behalf_of if subject_record.trust_on_behalf_of == true
+
+# ---------------------------------------------------------------------------
 # registry_version — WHICH registry snapshot (shipped + deployment) produced
 # this subject_record, distinct from corpus_version (users.yaml's version)
 # and from policy_version (the rules). Three different things move on three
@@ -234,6 +247,10 @@ decision := {
 	# ADR-0046 §7. Which record kinds this subject (ordinarily a destination)
 	# may receive. Total via its own default; see the note above `accepts`.
 	"accepts": accepts,
+	# ADR-0046 v2 §5-6. Whether an intake poll may trust an on_behalf_of
+	# assertion sourced from this subject. Total via its own default; see
+	# the note above `trust_on_behalf_of`.
+	"trust_on_behalf_of": trust_on_behalf_of,
 	# WHICH REGISTRY SNAPSHOT — shipped + deployment, independently of
 	# corpus_version (users.yaml) and policy_version (the rules). See the
 	# note above `registry_version`.
