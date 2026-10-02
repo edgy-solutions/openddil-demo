@@ -152,6 +152,20 @@ jobs:
         with:
           path: openddil-demo
 
+      # No workflow in this repo runs policy/ or gateway/ tests as a CI step
+      # (gateway has no build job of its own, and policy/ ships no image);
+      # this job is the closest in purpose because it is the only one that
+      # runs any Python tests at all (the egress test stage below). The
+      # entitlements corpus and its version log are read by both egress's
+      # and gateway's PDP calls, so a stale version here is exactly the kind
+      # of drift this build should catch before it ships.
+      - name: Check entitlements corpus version discipline
+        run: |
+          python3 openddil-demo/policy/check_corpus_version.py \
+            openddil-demo/policy/users.yaml openddil-demo/policy/users.versions
+          python3 openddil-demo/policy/check_corpus_version.py \
+            openddil-demo/policy/users-promoted.yaml openddil-demo/policy/users-promoted.versions
+
       - name: Checkout openddil-contracts
         uses: actions/checkout@v4
         with:
