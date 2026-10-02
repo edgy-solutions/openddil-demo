@@ -68,6 +68,26 @@ WHAT THIS MODULE MUST NOT DO
 Produce, write, or create anything. It calls `EgressGate.for_destination`
 and `EgressGate.decide` — the exact functions `main.py` calls — and nothing
 in this file re-implements or paraphrases a clause of the release predicate.
+
+A SECOND RECORD SOURCE — ADR-0046 s5 (maintenance bridge)
+`system:mmis-stand-in` is not another C2 destination: it is the third gate
+instance ADR-0046 s5 describes (source `maint-actions-decided`, sink
+`egress-mmis-actions`), reading `maintenance_actions` — the owning tier's
+local decisions about arrived `MaintenanceAction`s — instead of
+`asset_logistics_status`. `RECORD_SOURCE` below is the whole of that
+branch: a destination-to-fetch-function map, consulted once per request.
+Every destination not named in it reads `asset_logistics_status`, which is
+also what an UNKNOWN destination does — that was already true before this
+map existed (the old code asked Postgres for that one table regardless of
+`destination`), and this change does not narrow it. The fetched rows are
+still decided through the exact same `EgressGate.for_destination(...).decide
+(record)` call as any C2 record, built as a `{"originator_nation":
+..., "releasable_to": ...}` label dict so the gate reads a maintenance
+action's label exactly the way it reads an asset's — one predicate, one
+label shape, no second extraction path. The work-order fields
+(`action_id`, `event_id`, `owning_tier`, `work_order`, `approval_chain`,
+`decided_at`, `provenance`) ride beside the decision in the response but
+play no part in deciding it.
 """
 from __future__ import annotations
 
@@ -134,26 +154,84 @@ async def _fetch_all_records() -> list[dict[str, Any]]:
     ]
 
 
+async def _fetch_maintenance_actions() -> list[dict[str, Any]]:
+    """Every row in `maintenance_actions` (ADR-0046 s5) — the owning tier's
+    local decisions about arrived `MaintenanceAction`s, released toward
+    `system:mmis-stand-in`. Unscoped for the same reason `_fetch_all_records`
+    is: the gate decides whatever is in this table, not a declared subset,
+    and an unlabelled action must render as the refusal it is rather than
+    vanish. `ORDER BY action_id` only for a stable response order."""
+    conn = await asyncpg.connect(POSTGRES_DSN)
+    try:
+        rows = await conn.fetch(
+            "SELECT action_id, event_id, asset_id, owning_tier, "
+            "originator_nation, releasable_to, work_order, approval_chain, "
+            "provenance, decided_at "
+            "FROM maintenance_actions ORDER BY action_id"
+        )
+    finally:
+        await conn.close()
+    return [
+        {
+            "action_id": row["action_id"],
+            "event_id": row["event_id"],
+            "asset_id": row["asset_id"],
+            "owning_tier": row["owning_tier"],
+            "originator_nation": row["originator_nation"],
+            "releasable_to": list(row["releasable_to"] or []),
+            "work_order": json.loads(row["work_order"]),
+            "approval_chain": json.loads(row["approval_chain"]),
+            "provenance": json.loads(row["provenance"]) if row["provenance"] else {},
+            "decided_at": row["decided_at"].isoformat(),
+        }
+        for row in rows
+    ]
+
+
+# Destination -> fetch function. See the module docstring's "A SECOND RECORD
+# SOURCE" section. `.get(destination, _fetch_all_records)` below is the
+# whole of the branch: anything not named here, including a destination this
+# corpus has never declared, reads `asset_logistics_status` — exactly what
+# every destination did before this map existed.
+RECORD_SOURCE: dict[str, Any] = {
+    "system:mmis-stand-in": _fetch_maintenance_actions,
+}
+
+# The extra fields a maintenance-action record carries beside the decision —
+# present only when the row came from `_fetch_maintenance_actions`.
+_ACTION_FIELDS = (
+    "action_id", "event_id", "owning_tier", "work_order", "approval_chain",
+    "decided_at", "provenance",
+)
+
+
 def build_decisions(destination: str) -> dict[str, Any]:
     """One destination's whole answer, decided record by record through the
     real gate. Raises `AuthzUnavailable` when the PDP could not be asked at
     all — the caller must surface that as an outage, not as 14 refusals."""
     gate = EgressGate.for_destination(destination)  # the one PDP call
 
-    wire_records = asyncio.run(_fetch_all_records())
+    fetch = RECORD_SOURCE.get(destination, _fetch_all_records)
+    wire_records = asyncio.run(fetch())
 
     records = []
     admitted = 0
     for label in wire_records:
         asset_id = label["asset_id"]
+        # A maintenance action is keyed by action_id, not asset_id — several
+        # actions can target the same asset — but the gate is built so the
+        # SAME label shape (originator_nation/releasable_to) decides either
+        # record kind; nothing here re-derives or re-reads the label
+        # differently per source.
+        key = label.get("action_id", asset_id)
         decision = gate.decide(
             {"originator_nation": label["originator_nation"],
              "releasable_to": label["releasable_to"]},
-            key=asset_id,
+            key=key,
         )
         if decision.allowed:
             admitted += 1
-        records.append({
+        record = {
             "asset_id": asset_id,
             "originator_nation": label["originator_nation"],
             "releasable_to": label["releasable_to"],
@@ -162,7 +240,11 @@ def build_decisions(destination: str) -> dict[str, Any]:
             # a refusal reason a reader should have to filter back out.
             "reason": None if decision.allowed else decision.reason,
             "decision_id": decision.decision_id,
-        })
+        }
+        for field in _ACTION_FIELDS:
+            if field in label:
+                record[field] = label[field]
+        records.append(record)
 
     return {
         "destination": destination,

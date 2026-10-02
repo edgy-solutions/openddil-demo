@@ -98,6 +98,24 @@ users:
     asserted_by: cnogradi
     asserted_on: 2026-09-23
 
+  "system:maint-iagent":
+    username: maint-iagent
+    display_name: Maintenance iagent (workflow plane)
+    nations: [ATL, BDR]
+    clearance: ""
+    role: observer
+    asserted_by: cnogradi
+    asserted_on: 2026-10-02
+
+  "system:mmis-stand-in":
+    username: mmis-stand-in
+    display_name: Maintenance Management Stand-in
+    nations: [ATL, BDR]
+    clearance: ""
+    role: observer
+    asserted_by: cnogradi
+    asserted_on: 2026-10-02
+
 # observer.unlisted stays absent here too. A promotion demo that quietly
 # also entitled the unlisted subject would destroy the default-deny beat, and
 # it would do it in the file nobody re-reads.

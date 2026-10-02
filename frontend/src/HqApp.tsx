@@ -26,6 +26,7 @@ import HqHeader from './components/hq/HqHeader';
 import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
 import HqWorkOrders from './components/hq/HqWorkOrders';
+import MaintenanceActionsPane from './components/releasability/MaintenanceActionsPane';
 import EdgeAttribution from './components/hq/EdgeAttribution';
 import RegionFleetSummary from './components/hq/RegionFleetSummary';
 import MunitionsInventory from './components/hq/MunitionsInventory';
@@ -375,6 +376,7 @@ export default function HqApp() {
           <WearTrendsTheater wearTrends={regionWearTrends.data} />
           <HqDigitalTwin wanActive={!severed} />
           <HqWorkOrders wanActive={!severed} />
+          <MaintenanceActionsPane />
         </div>
       </main>
     </div>

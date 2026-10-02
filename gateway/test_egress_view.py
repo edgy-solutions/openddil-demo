@@ -131,3 +131,59 @@ def test_unknown_top_level_key_does_not_appear_in_output():
 def test_malformed_input_raises_value_error(bad_payload):
     with pytest.raises(ValueError):
         filter_decisions(bad_payload, ["ATL"])
+
+
+# =============================================================================
+# ADR-0046 s5 — the SAME filter over the maintenance pane's record shape
+# =============================================================================
+# `filter_decisions` reads only `originator_nation`/`releasable_to`/`allowed`
+# off each record, and a maintenance action carries those three under those
+# exact names (egress/pane_api.py's `build_decisions`) beside its work-order
+# fields -- so this is the SAME function, over the SAME two clauses, proving
+# no change in this file was needed for a second record source. F1-F4 below
+# are all admitted by the gate (the mmis destination holds [ATL, BDR]) except
+# F4, which never reaches a nation-overlap decision at all -- unlabelled.
+def _action_record(action_id, originator_nation, releasable_to=()):
+    return {
+        "action_id": action_id,
+        "event_id": f"{action_id}-event",
+        "asset_id": f"{action_id}-asset",
+        "owning_tier": "edge-01",
+        "originator_nation": originator_nation,
+        "releasable_to": list(releasable_to),
+        "work_order": {"task": "remove and replace array module"},
+        "approval_chain": [],
+        "decided_at": "2026-10-02T00:00:00+00:00",
+        "allowed": originator_nation is not None,
+        "reason": None if originator_nation is not None else "unlabelled",
+        "decision_id": f"dec-{action_id}",
+    }
+
+
+F1_ATL = _action_record("fixture-maint-1", "ATL")
+F2_BDR = _action_record("fixture-maint-2", "BDR")
+F3_ATL_RELEASABLE_BDR = _action_record("fixture-maint-3", "ATL", releasable_to=["BDR"])
+F4_UNLABELLED = _action_record("fixture-maint-4", None)
+
+MMIS_PAYLOAD = _payload([F1_ATL, F2_BDR, F3_ATL_RELEASABLE_BDR, F4_UNLABELLED])
+MMIS_PAYLOAD["destination"] = "system:mmis-stand-in"
+
+
+@pytest.mark.parametrize("nations,expected_ids,admitted,refused,withheld", [
+    (["ATL"], {"fixture-maint-1", "fixture-maint-3"}, 2, 0, 1),
+    (["BDR"], {"fixture-maint-2", "fixture-maint-3"}, 2, 0, 1),
+    (["ATL", "BDR"], {"fixture-maint-1", "fixture-maint-2", "fixture-maint-3"}, 3, 0, 1),
+])
+def test_maintenance_action_payload_filters_like_any_other_record(
+    nations, expected_ids, admitted, refused, withheld,
+):
+    view = filter_decisions(MMIS_PAYLOAD, nations)
+    ids = {r["action_id"] for r in view["records"]}
+    assert ids == expected_ids
+    assert view["admitted"] == admitted
+    assert view["refused"] == refused
+    assert view["withheld"] == withheld
+    # Work-order fields survive the filter unmodified -- the whitelist is at
+    # the payload's top level only; a visible record is forwarded whole.
+    for record in view["records"]:
+        assert "work_order" in record
