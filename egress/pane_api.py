@@ -69,25 +69,16 @@ Produce, write, or create anything. It calls `EgressGate.for_destination`
 and `EgressGate.decide` — the exact functions `main.py` calls — and nothing
 in this file re-implements or paraphrases a clause of the release predicate.
 
-A SECOND RECORD SOURCE — ADR-0046 s5 (maintenance bridge)
-`system:mmis-stand-in` is not another C2 destination: it is the third gate
-instance ADR-0046 s5 describes (source `maint-actions-decided`, sink
-`egress-mmis-actions`), reading `maintenance_actions` — the owning tier's
-local decisions about arrived `MaintenanceAction`s — instead of
-`asset_logistics_status`. `RECORD_SOURCE` below is the whole of that
-branch: a destination-to-fetch-function map, consulted once per request.
-Every destination not named in it reads `asset_logistics_status`, which is
-also what an UNKNOWN destination does — that was already true before this
-map existed (the old code asked Postgres for that one table regardless of
-`destination`), and this change does not narrow it. The fetched rows are
-still decided through the exact same `EgressGate.for_destination(...).decide
-(record)` call as any C2 record, built as a `{"originator_nation":
-..., "releasable_to": ...}` label dict so the gate reads a maintenance
-action's label exactly the way it reads an asset's — one predicate, one
-label shape, no second extraction path. The work-order fields
-(`action_id`, `event_id`, `owning_tier`, `work_order`, `approval_chain`,
-`decided_at`, `provenance`) ride beside the decision in the response but
-play no part in deciding it.
+A GENERIC RECORD KIND, SELECTED BY `kind` — no per-destination code
+`GET /decisions?destination=D&kind=K` reads `intake_records` (ADR-0046 s5's
+generic record store), filtered to rows already admitted at intake time for
+kind `K`, and re-decides each one fresh through
+`EgressGate.for_destination(D, kind=K)` — the destination's own nations and
+`accepts` list, not intake's. A destination whose `accepts` does not list
+`K` refuses every row `kind_not_accepted`; `EgressGate.decide` makes that
+call itself, from the `kind` it was constructed with, so nothing here
+re-implements the check. No destination-to-fetch-function map and no
+per-kind branch: one query, one gate call, for any `K` the table holds.
 """
 from __future__ import annotations
 
@@ -154,100 +145,113 @@ async def _fetch_all_records() -> list[dict[str, Any]]:
     ]
 
 
-async def _fetch_maintenance_actions() -> list[dict[str, Any]]:
-    """Every row in `maintenance_actions` (ADR-0046 s5) — the owning tier's
-    local decisions about arrived `MaintenanceAction`s, released toward
-    `system:mmis-stand-in`. Unscoped for the same reason `_fetch_all_records`
-    is: the gate decides whatever is in this table, not a declared subset,
-    and an unlabelled action must render as the refusal it is rather than
-    vanish. `ORDER BY action_id` only for a stable response order."""
+async def _fetch_records_by_kind(kind: str) -> list[dict[str, Any]]:
+    """Every row of one kind in `intake_records` (ADR-0046 s5's generic
+    record store) that intake already admitted -- `decision->>'allowed'`
+    only, because a row intake refused (bad schema, no label at all) is not
+    re-litigated here. What IS re-decided, fresh, is whether THIS
+    destination's gate admits it; intake's decision and this pane's decision
+    answer different questions; the two are not expected to agree. `ORDER BY
+    key` only for a stable response order across requests."""
     conn = await asyncpg.connect(POSTGRES_DSN)
     try:
         rows = await conn.fetch(
-            "SELECT action_id, event_id, asset_id, owning_tier, "
-            "originator_nation, releasable_to, work_order, approval_chain, "
-            "provenance, decided_at "
-            "FROM maintenance_actions ORDER BY action_id"
+            "SELECT kind, key, originator_nation, releasable_to, owning_tier, "
+            "body, decision, decided_at FROM intake_records WHERE kind = $1 "
+            "AND (decision->>'allowed')::boolean ORDER BY key",
+            kind,
         )
     finally:
         await conn.close()
     return [
         {
-            "action_id": row["action_id"],
-            "event_id": row["event_id"],
-            "asset_id": row["asset_id"],
-            "owning_tier": row["owning_tier"],
+            "key": row["key"],
             "originator_nation": row["originator_nation"],
             "releasable_to": list(row["releasable_to"] or []),
-            "work_order": json.loads(row["work_order"]),
-            "approval_chain": json.loads(row["approval_chain"]),
-            "provenance": json.loads(row["provenance"]) if row["provenance"] else {},
+            "owning_tier": row["owning_tier"],
+            "body": json.loads(row["body"]),
             "decided_at": row["decided_at"].isoformat(),
         }
         for row in rows
     ]
 
 
-# Destination -> fetch function. See the module docstring's "A SECOND RECORD
-# SOURCE" section. `.get(destination, _fetch_all_records)` below is the
-# whole of the branch: anything not named here, including a destination this
-# corpus has never declared, reads `asset_logistics_status` — exactly what
-# every destination did before this map existed.
-RECORD_SOURCE: dict[str, Any] = {
-    "system:mmis-stand-in": _fetch_maintenance_actions,
-}
-
-# The extra fields a maintenance-action record carries beside the decision —
-# present only when the row came from `_fetch_maintenance_actions`.
-_ACTION_FIELDS = (
-    "action_id", "event_id", "owning_tier", "work_order", "approval_chain",
-    "decided_at", "provenance",
-)
-
-
-def build_decisions(destination: str) -> dict[str, Any]:
+def build_decisions(destination: str, kind: str | None = None) -> dict[str, Any]:
     """One destination's whole answer, decided record by record through the
     real gate. Raises `AuthzUnavailable` when the PDP could not be asked at
-    all — the caller must surface that as an outage, not as 14 refusals."""
-    gate = EgressGate.for_destination(destination)  # the one PDP call
+    all — the caller must surface that as an outage, not as 14 refusals.
 
-    fetch = RECORD_SOURCE.get(destination, _fetch_all_records)
-    wire_records = asyncio.run(fetch())
+    No `kind`: exactly today's asset_logistics_status path, byte-identical
+    to before `kind` existed. A `kind`: `intake_records`, filtered to that
+    kind, through the SAME gate call -- `EgressGate.for_destination` takes
+    `kind` itself and `decide` refuses `kind_not_accepted` on its own when
+    the destination's `accepts` does not list it; nothing here re-implements
+    that check.
+    """
+    gate = EgressGate.for_destination(destination, kind=kind)  # the one PDP call
 
+    if kind is None:
+        wire_records = asyncio.run(_fetch_all_records())
+        records = []
+        admitted = 0
+        for label in wire_records:
+            asset_id = label["asset_id"]
+            decision = gate.decide(
+                {"originator_nation": label["originator_nation"],
+                 "releasable_to": label["releasable_to"]},
+                key=asset_id,
+            )
+            if decision.allowed:
+                admitted += 1
+            records.append({
+                "asset_id": asset_id,
+                "originator_nation": label["originator_nation"],
+                "releasable_to": label["releasable_to"],
+                "allowed": decision.allowed,
+                # null on admit — `allowed` already says so, and "admit" is
+                # not a refusal reason a reader should have to filter back
+                # out.
+                "reason": None if decision.allowed else decision.reason,
+                "decision_id": decision.decision_id,
+            })
+        return {
+            "destination": destination,
+            "policy_version": gate.policy_version,
+            "corpus_version": gate.corpus_version,
+            "admitted": admitted,
+            "refused": len(records) - admitted,
+            "records": records,
+        }
+
+    kind_records = asyncio.run(_fetch_records_by_kind(kind))
     records = []
     admitted = 0
-    for label in wire_records:
-        asset_id = label["asset_id"]
-        # A maintenance action is keyed by action_id, not asset_id — several
-        # actions can target the same asset — but the gate is built so the
-        # SAME label shape (originator_nation/releasable_to) decides either
-        # record kind; nothing here re-derives or re-reads the label
-        # differently per source.
-        key = label.get("action_id", asset_id)
+    for row in kind_records:
         decision = gate.decide(
-            {"originator_nation": label["originator_nation"],
-             "releasable_to": label["releasable_to"]},
-            key=key,
+            {"originator_nation": row["originator_nation"],
+             "releasable_to": row["releasable_to"]},
+            key=row["key"],
         )
         if decision.allowed:
             admitted += 1
-        record = {
-            "asset_id": asset_id,
-            "originator_nation": label["originator_nation"],
-            "releasable_to": label["releasable_to"],
+        body = row["body"]
+        records.append({
+            "key": row["key"],
+            # Display convenience only, read from `body` -- never used to
+            # decide the record. See the module docstring.
+            "asset_id": body.get("asset_id") if isinstance(body, dict) else None,
+            "originator_nation": row["originator_nation"],
+            "releasable_to": row["releasable_to"],
             "allowed": decision.allowed,
-            # null on admit — `allowed` already says so, and "admit" is not
-            # a refusal reason a reader should have to filter back out.
             "reason": None if decision.allowed else decision.reason,
             "decision_id": decision.decision_id,
-        }
-        for field in _ACTION_FIELDS:
-            if field in label:
-                record[field] = label[field]
-        records.append(record)
-
+            "owning_tier": row["owning_tier"],
+            "decided_at": row["decided_at"],
+            "body": body,
+        })
     return {
         "destination": destination,
+        "kind": kind,
         "policy_version": gate.policy_version,
         "corpus_version": gate.corpus_version,
         "admitted": admitted,
@@ -286,9 +290,10 @@ class PaneApi(BaseHTTPRequestHandler):
 
         params = urllib.parse.parse_qs(parsed.query)
         destination = (params.get("destination") or [DEFAULT_DESTINATION])[0]
+        kind = (params.get("kind") or [None])[0]
 
         try:
-            payload = build_decisions(destination)
+            payload = build_decisions(destination, kind=kind)
         except AuthzUnavailable as exc:
             # NOT a refused-records response. See gate.py: an outage and a
             # deny are different events, and rendering an outage as "0
