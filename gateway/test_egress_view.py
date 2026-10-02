@@ -123,6 +123,51 @@ def test_unknown_top_level_key_does_not_appear_in_output():
     assert "fleet_summary" not in view
 
 
+def _kind_record(key, originator_nation, releasable_to=(), allowed=True,
+                  asset_id=None):
+    return {
+        "key": key,
+        "asset_id": asset_id,
+        "originator_nation": originator_nation,
+        "releasable_to": list(releasable_to),
+        "allowed": allowed,
+        "reason": None if allowed else "no_nation_overlap",
+        "decision_id": f"dec-{key}",
+        "owning_tier": "edge-01",
+        "decided_at": "2026-10-02T00:00:00+00:00",
+        "body": {"asset_id": asset_id} if asset_id else {},
+    }
+
+
+def test_kind_path_record_with_null_asset_id_passes_through_visible():
+    """A generic `kind` record carries `key`/`body` and may carry a null
+    `asset_id` -- this filter reads only originator_nation/releasable_to/
+    allowed, so it must not care. Visible, admitted, body intact."""
+    record = _kind_record("rec-1", "ATL", asset_id=None)
+    payload = _payload([record])
+    view = filter_decisions(payload, ["ATL"])
+    assert len(view["records"]) == 1
+    shown = view["records"][0]
+    assert shown["key"] == "rec-1"
+    assert shown["asset_id"] is None
+    assert shown["body"] == {}
+    assert view["admitted"] == 1
+
+
+def test_kind_path_unlabelled_record_is_withheld_with_no_body_leaked():
+    """An unlabelled kind record is a count only -- its key/body must not
+    appear anywhere in the output, same as the asset path's unlabelled
+    record."""
+    record = _kind_record("rec-secret", None, allowed=False,
+                          asset_id="should-not-leak")
+    payload = _payload([record])
+    view = filter_decisions(payload, ["ATL", "BDR"])
+    assert view["records"] == []
+    assert view["withheld"] == 1
+    assert "rec-secret" not in str(view)
+    assert "should-not-leak" not in str(view)
+
+
 @pytest.mark.parametrize("bad_payload", [
     "not a dict",
     {"destination": "x", "records": "not a list"},
@@ -134,15 +179,15 @@ def test_malformed_input_raises_value_error(bad_payload):
 
 
 # =============================================================================
-# ADR-0046 s5 — the SAME filter over the maintenance pane's record shape
+# ADR-0046 s5 — the SAME filter over a kind-selected record's shape
 # =============================================================================
 # `filter_decisions` reads only `originator_nation`/`releasable_to`/`allowed`
-# off each record, and a maintenance action carries those three under those
-# exact names (egress/pane_api.py's `build_decisions`) beside its work-order
-# fields -- so this is the SAME function, over the SAME two clauses, proving
-# no change in this file was needed for a second record source. F1-F4 below
-# are all admitted by the gate (the mmis destination holds [ATL, BDR]) except
-# F4, which never reaches a nation-overlap decision at all -- unlabelled.
+# off each record, and a record of a declared kind carries those three under
+# those exact names (egress/pane_api.py's `build_decisions`) beside its `key`
+# and `body` -- so this is the SAME function, over the SAME two clauses, for a
+# second record source. F1-F4 below are all admitted by the gate (the test
+# destination holds [ATL, BDR]) except F4, which never reaches a
+# nation-overlap decision at all -- unlabelled.
 def _action_record(action_id, originator_nation, releasable_to=()):
     return {
         "action_id": action_id,
@@ -151,7 +196,7 @@ def _action_record(action_id, originator_nation, releasable_to=()):
         "owning_tier": "edge-01",
         "originator_nation": originator_nation,
         "releasable_to": list(releasable_to),
-        "work_order": {"task": "remove and replace array module"},
+        "work_order": {"task": "replace a module"},
         "approval_chain": [],
         "decided_at": "2026-10-02T00:00:00+00:00",
         "allowed": originator_nation is not None,
@@ -160,24 +205,24 @@ def _action_record(action_id, originator_nation, releasable_to=()):
     }
 
 
-F1_ATL = _action_record("fixture-maint-1", "ATL")
-F2_BDR = _action_record("fixture-maint-2", "BDR")
-F3_ATL_RELEASABLE_BDR = _action_record("fixture-maint-3", "ATL", releasable_to=["BDR"])
-F4_UNLABELLED = _action_record("fixture-maint-4", None)
+F1_ATL = _action_record("fixture-rec-1", "ATL")
+F2_BDR = _action_record("fixture-rec-2", "BDR")
+F3_ATL_RELEASABLE_BDR = _action_record("fixture-rec-3", "ATL", releasable_to=["BDR"])
+F4_UNLABELLED = _action_record("fixture-rec-4", None)
 
-MMIS_PAYLOAD = _payload([F1_ATL, F2_BDR, F3_ATL_RELEASABLE_BDR, F4_UNLABELLED])
-MMIS_PAYLOAD["destination"] = "system:mmis-stand-in"
+RECORDS_PAYLOAD = _payload([F1_ATL, F2_BDR, F3_ATL_RELEASABLE_BDR, F4_UNLABELLED])
+RECORDS_PAYLOAD["destination"] = "system:records-dest-test"
 
 
 @pytest.mark.parametrize("nations,expected_ids,admitted,refused,withheld", [
-    (["ATL"], {"fixture-maint-1", "fixture-maint-3"}, 2, 0, 1),
-    (["BDR"], {"fixture-maint-2", "fixture-maint-3"}, 2, 0, 1),
-    (["ATL", "BDR"], {"fixture-maint-1", "fixture-maint-2", "fixture-maint-3"}, 3, 0, 1),
+    (["ATL"], {"fixture-rec-1", "fixture-rec-3"}, 2, 0, 1),
+    (["BDR"], {"fixture-rec-2", "fixture-rec-3"}, 2, 0, 1),
+    (["ATL", "BDR"], {"fixture-rec-1", "fixture-rec-2", "fixture-rec-3"}, 3, 0, 1),
 ])
-def test_maintenance_action_payload_filters_like_any_other_record(
+def test_kind_record_payload_filters_like_any_other_record(
     nations, expected_ids, admitted, refused, withheld,
 ):
-    view = filter_decisions(MMIS_PAYLOAD, nations)
+    view = filter_decisions(RECORDS_PAYLOAD, nations)
     ids = {r["action_id"] for r in view["records"]}
     assert ids == expected_ids
     assert view["admitted"] == admitted
