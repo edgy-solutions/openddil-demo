@@ -48,6 +48,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import egress_view
 import oidc
 
 # --- configuration ----------------------------------------------------------
@@ -56,6 +57,14 @@ TOPAZ = os.environ["OPENDDIL_TOPAZ_URL"].rstrip("/")
 LISTEN_PORT = int(os.getenv("OPENDDIL_PEP_PORT", "8080"))
 SUBJECT_HEADER = os.getenv("OPENDDIL_SUBJECT_HEADER", "X-OpenDDIL-Subject")
 TOPAZ_TIMEOUT = float(os.getenv("OPENDDIL_TOPAZ_TIMEOUT", "2.0"))
+
+# THE EGRESS PANE, REACHED THROUGH THIS PEP RATHER THAN DIRECTLY. The
+# pane (egress/pane_api.py) answers once, for every nation on the wire; this
+# PEP is the only place a viewer's own nations are known, so it is the only
+# place that answer can be narrowed before it reaches a browser. Empty means
+# "no pane at this tier", same meaning as ELECTRIC/TOPAZ being required: a
+# deployment that has not wired a pane gets a clean 404, not a guess.
+EGRESS_PANE = os.getenv("OPENDDIL_EGRESS_PANE_URL", "").rstrip("/")
 
 # --- how much of a shape this process is willing to hold at once -------------
 #
@@ -655,6 +664,115 @@ class Pep(BaseHTTPRequestHandler):
         self._deny("unknown auth route", subject="", resource=path, status=404)
         return True
 
+    # --- egress pane route ---------------------------------------------------
+    def _handle_egress(self, parsed) -> None:
+        """Serve /egress/decisions: the pane's answer, narrowed to what this
+        viewer may see. Reached directly, the pane gave every signed-in
+        profile the same records, whichever nations they held.
+
+        THE PANE HAS NO PER-VIEWER CONCEPT -- it answers once, for every
+        nation on the wire (see egress/pane_api.py). This is therefore the
+        only place a viewer's own nations can be applied, and it applies
+        them with `egress_view.filter_decisions`, the SAME visibility rule
+        as `policy_predicate` above, restated over JSON records instead of a
+        SQL predicate. There is no branch below that returns the pane's
+        answer unfiltered.
+        """
+        path = parsed.path
+        if not EGRESS_PANE:
+            self._deny("no egress pane at this tier", subject="", resource=path,
+                       status=404, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        if path != "/egress/decisions":
+            self._deny("unknown path", subject="", resource=path, status=404)
+            return
+
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        dest = (params.get("destination") or [""])[0]
+        if not dest:
+            self._deny("missing destination", subject="", resource=path,
+                       status=400, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError as exc:
+            self._deny(str(exc), subject="", resource=f"egress:{dest}", status=401)
+            return
+
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject,
+                       resource=f"egress:{dest}", status=503)
+            return
+
+        if not decision["allow"]:
+            # Same causes as the read path -- copied verbatim, not
+            # paraphrased, so the two surfaces never drift apart in wording.
+            cause = ("subject not in the entitlements corpus"
+                     if not decision["subject_known"]
+                     else "subject holds no nation entitlements")
+            self._deny(cause, subject=subject, resource=f"egress:{dest}")
+            return
+
+        # ONLY destination is forwarded -- nothing else from the client
+        # query reaches the pane. See /v1/shape's PASSTHROUGH_PARAMS for the
+        # equivalent discipline on the read path.
+        url = f"{EGRESS_PANE}/decisions?" + urllib.parse.urlencode({"destination": dest})
+
+        def _upstream_unavailable(detail: str) -> None:
+            # AN UPSTREAM FAULT, NOT A POLICY DENY -- mirrors how the read
+            # path records an Electric upstream failure: outcome="allow",
+            # never a deny, because authorization was never in question here.
+            log.error("egress pane upstream error user=%s resource=%s: %s",
+                      subject, dest, detail)
+            record_decision(decision_id=new_decision_id(), outcome="allow",
+                            subject=subject, resource=f"egress:{dest}",
+                            policy_version=decision["policy_version"],
+                            corpus_version=decision["corpus_version"],
+                            allowed_nations=decision["allowed_nations"],
+                            upstream_error=detail)
+            self._send(502, json.dumps({"error": "egress pane unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                status = resp.status
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 503:
+                # THE PANE'S OWN "PDP unavailable" ANSWER -- relayed
+                # verbatim, body and all, because the UI renders this
+                # specific shape (see useEgressAdmission.ts's 503 branch).
+                self._send(503, exc.read(), [("Content-Type", "application/json")])
+                return
+            _upstream_unavailable(f"HTTP {exc.code}")
+            return
+        except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+            _upstream_unavailable(str(exc))
+            return
+
+        if status != 200:
+            _upstream_unavailable(f"HTTP {status}")
+            return
+
+        try:
+            payload = json.loads(raw)
+            view = egress_view.filter_decisions(payload, decision["allowed_nations"])
+        except (ValueError, TypeError) as exc:
+            _upstream_unavailable(str(exc))
+            return
+
+        record_decision(decision_id=new_decision_id(), outcome="allow",
+                        subject=subject, resource=f"egress:{dest}",
+                        policy_version=decision["policy_version"],
+                        corpus_version=decision["corpus_version"],
+                        allowed_nations=decision["allowed_nations"],
+                        shown=len(view["records"]), withheld=view["withheld"])
+        self._send(200, json.dumps(view).encode(),
+                   [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/healthz":
@@ -664,6 +782,9 @@ class Pep(BaseHTTPRequestHandler):
             self.wfile.write(b"ok")
             return
         if self._handle_auth(parsed):
+            return
+        if parsed.path.startswith("/egress/"):
+            self._handle_egress(parsed)
             return
         if not parsed.path.startswith("/v1/shape"):
             self._deny("unknown path", subject="", resource=parsed.path, status=404)
@@ -864,6 +985,7 @@ class Pep(BaseHTTPRequestHandler):
 def main() -> None:
     log.info("read-path PEP listening on :%s", LISTEN_PORT)
     log.info("  electric:  %s", ELECTRIC)
+    log.info("  egress pane: %s", EGRESS_PANE or "(none)")
     log.info("  topaz:     %s", TOPAZ)
     # THE AUTH MODE IS ANNOUNCED AT BOOT, ONCE, LOUDLY. An operator asking
     # "is this thing actually authenticating?" should not have to infer the
