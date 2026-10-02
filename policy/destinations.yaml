@@ -1,0 +1,43 @@
+# =============================================================================
+# The destination registry — ADR-0046 §7 lands this; this file ships EMPTY
+# =============================================================================
+# A destination is a registry entry, and topaz resolves it the same way it
+# resolves a human subject: by key, in `releasability.rego`. This file is
+# that registry's SHIPPED copy, and it ships with no entries on purpose.
+#
+# WHY EMPTY. Concrete destinations name a real downstream system — which C2,
+# which bridge, which nations it may see. None of that belongs in an
+# open-source default: a shipped destination would either be fictional
+# (useless) or real (a leak). So the registry a deployment actually runs is a
+# values file OUTSIDE this repository and openddil-helm, supplied as a chart
+# overlay (`releasability.destinations` in values.yaml) and rendered into a
+# ConfigMap the deployment owns. This file exists only so every deployment —
+# with or without an overlay — loads the SAME subtree shape.
+#
+# PRECEDENCE, LOW TO HIGH:
+#   1. `data.openddil.users` — the human/system corpus (policy/users.yaml).
+#   2. `data.openddil.destinations` — THIS file, shipped, always `entries: {}`.
+#   3. `data.openddil.destinations_deployment` — the deployment overlay, if
+#      the chart rendered one. Wins over both of the above for any key it
+#      names, and a key it does NOT name falls through to 2, then 1.
+# `releasability.rego` resolves a subject in exactly this order, and a
+# subject present in an earlier (lower-numbered) source never falls through
+# to a later one accidentally — each lookup either resolves or is skipped
+# whole.
+#
+# An entry has this shape:
+#   "system:<name>":
+#     display_name: <string, for the reader of a diff; nothing reads it>
+#     nations: [<nation>, ...]       # same field the human corpus uses
+#     accepts: [<kind>, ...]         # which record kinds this destination
+#                                    # is entitled to receive, sorted
+#     asserted_by: <who approved this entry>
+#     asserted_on: <date>
+#
+# TEST FIXTURES USE NEUTRAL NAMES (`system:dest-a`, `system:dest-b`) and never
+# a real destination's name. See egress/test_*.py for the shape; the compose
+# proof exercises this file against a TEST overlay that is never committed.
+# =============================================================================
+
+version: destinations-2026-10-02
+entries: {}

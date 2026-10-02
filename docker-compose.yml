@@ -1412,6 +1412,13 @@ services:
       # and recreate the container. That is compose's equivalent of the
       # chart's `kubectl set env ... OPENDDIL_POLICY_VARIANT=users-promoted`.
       - ./policy/users.yaml:/policy/openddil/data.yaml:ro
+      # THE SHIPPED DESTINATION REGISTRY (ADR-0046 §7). Always `entries: {}`
+      # here — concrete destinations are a deployment overlay, which lives
+      # outside this repo entirely and is NOT mounted by default. To exercise
+      # one locally, add a docker-compose.override.yml that mounts a second
+      # file at /policy/openddil/destinations_deployment/data.yaml and
+      # recreate the container; topaz reads policy only at start.
+      - ./policy/destinations.yaml:/policy/openddil/destinations/data.yaml:ro
     # The directory store wants a writable path. Ephemeral on purpose: nothing
     # in Slice 1 or Slice 2 writes to the directory — entitlements are
     # asserted in the corpus, not stored as relationships — so persisting it

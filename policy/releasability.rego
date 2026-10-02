@@ -28,6 +28,24 @@
 #   * No classification axis yet. `clearance` is carried on the subject and
 #     unused in Slice 1 — adding the axis later is a rule here plus a column,
 #     not an architecture change (§2).
+#
+# -----------------------------------------------------------------------------
+# THE DESTINATION REGISTRY, AND ITS PRECEDENCE OVER THE SUBJECT CORPUS
+# -----------------------------------------------------------------------------
+# A destination (ADR-0046 §7) is a registry entry, resolved by the same
+# `subject_record` lookup as a human or system subject — see below. Three
+# sources feed it, LOW TO HIGH:
+#   1. data.openddil.users                  — policy/users.yaml
+#   2. data.openddil.destinations           — policy/destinations.yaml,
+#                                              shipped, always `entries: {}`
+#   3. data.openddil.destinations_deployment — a deployment's own overlay,
+#                                              rendered only when the chart
+#                                              was given one
+# A higher source WINS for any key it names; a key it does not name falls
+# through to the next source down. All three subtrees are OPTIONAL — an
+# absent file (an older bundle with no destinations.yaml, a deployment with
+# no overlay) means that subtree is simply undefined, and every rule below
+# stays total regardless of which subtrees exist.
 package openddil.releasability
 
 # The policy version stamped into every gateway decision record. ADR-0029 §6
@@ -37,16 +55,33 @@ package openddil.releasability
 # own cadence and is auditable through git.
 policy_version := "arc2-slice1-v1"
 
-# The subject's entitlement record, or undefined when the subject is unknown.
-# `input.subject` is whatever the gateway authenticated — this policy does not
-# authenticate, and must not be given a way to.
-# Read from data.openddil.users, NOT data.users. The bundle's .manifest
-# declares `roots: ["openddil"]`, and OPA refuses a bundle whose data falls
-# outside its declared roots — so the entitlements are loaded at
-# /policy/openddil/data.yaml and land under data.openddil. The reviewed file
-# is still `users.yaml`; the path and the name are both changed by transport,
-# which is why both are called out here and at the copy site.
-subject_record := data.openddil.users[input.subject]
+# The subject's entitlement record, or undefined when the subject is unknown
+# to ALL THREE sources. `input.subject` is whatever the gateway authenticated
+# — this policy does not authenticate, and must not be given a way to.
+# Read from data.openddil.*, NOT data.users or data.destinations*. The
+# bundle's .manifest declares `roots: ["openddil"]`, and OPA refuses a bundle
+# whose data falls outside its declared roots — so every source below is
+# loaded under its own data.yaml and lands under data.openddil. The reviewed
+# files are still `users.yaml` / `destinations.yaml` / the deployment's own
+# overlay; the path and the name are changed by transport in every case,
+# which is why it is called out here and at each copy site.
+#
+# PRECEDENCE: deployment overlay, else the shipped registry, else the subject
+# corpus — see the header note above. `else` on a bare ref means "try the
+# next source when this one is undefined", so a subject present in an
+# earlier-checked source never falls through to a later one: each branch
+# either resolves whole or is skipped whole, never partially.
+subject_record := v if {
+	v := data.openddil.destinations_deployment.entries[input.subject]
+}
+
+else := v if {
+	v := data.openddil.destinations.entries[input.subject]
+}
+
+else := v if {
+	v := data.openddil.users[input.subject]
+}
 
 # ---------------------------------------------------------------------------
 # allowed_nations — THE decision
@@ -130,7 +165,43 @@ corpus_version := data.openddil.version
 
 default subject_known := false
 
+# True if ANY of the three sources has the subject — not just the one that
+# ultimately wins `subject_record`. A subject shadowed by a higher source is
+# still a known subject; `subject_record` picks which ENTRY decides, this
+# asks whether any entry exists at all.
+subject_known if data.openddil.destinations_deployment.entries[input.subject]
+
+subject_known if data.openddil.destinations.entries[input.subject]
+
 subject_known if data.openddil.users[input.subject]
+
+# ---------------------------------------------------------------------------
+# accepts — which record kinds a destination is entitled to receive
+# ---------------------------------------------------------------------------
+# Total, like every other decision field. A human subject's record carries no
+# `accepts`, and the empty default is exactly as meaningful there as it is
+# for a destination with nothing declared: "accepts nothing" is a safe,
+# auditable default, not a missing feature.
+default accepts := []
+
+accepts := sort(subject_record.accepts)
+
+# ---------------------------------------------------------------------------
+# registry_version — WHICH registry snapshot (shipped + deployment) produced
+# this subject_record, distinct from corpus_version (users.yaml's version)
+# and from policy_version (the rules). Three different things move on three
+# different cadences; conflating any two of them is how a decision record
+# stops being able to answer "what was in force when this was decided?".
+# ---------------------------------------------------------------------------
+default shipped_registry_version := "none"
+
+shipped_registry_version := data.openddil.destinations.version
+
+default deployment_registry_version := "none"
+
+deployment_registry_version := data.openddil.destinations_deployment.version
+
+registry_version := sprintf("%s+%s", [shipped_registry_version, deployment_registry_version])
 
 # ---------------------------------------------------------------------------
 # decision — what the gateway actually asks for
@@ -160,4 +231,11 @@ decision := {
 	# The second axis. Affordances, not rows — see the note above.
 	"role": role,
 	"subject_known": subject_known,
+	# ADR-0046 §7. Which record kinds this subject (ordinarily a destination)
+	# may receive. Total via its own default; see the note above `accepts`.
+	"accepts": accepts,
+	# WHICH REGISTRY SNAPSHOT — shipped + deployment, independently of
+	# corpus_version (users.yaml) and policy_version (the rules). See the
+	# note above `registry_version`.
+	"registry_version": registry_version,
 }
