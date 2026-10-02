@@ -127,3 +127,33 @@ def test_key_and_label_alone_load_with_no_episode(tmp_path):
 
     assert (decl.key, decl.label) == ("/ref", "/marking")
     assert decl.owning_tier is None and decl.episode is None
+
+
+# --- provenance --------------------------------------------------------
+
+def test_a_block_with_provenance_loads(tmp_path):
+    declared = dict(KIND_A_DECLARED)
+    declared["x-openddil"] = dict(KIND_A_DECLARED["x-openddil"], provenance="/prov")
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(declared))
+
+    decl = load_declarations(tmp_path)["KindA"]
+
+    assert decl.provenance == "/prov"
+
+
+def test_a_schema_without_provenance_is_unchanged(tmp_path):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(KIND_A_DECLARED))
+
+    decl = load_declarations(tmp_path)["KindA"]
+
+    assert decl.provenance is None
+
+
+def test_a_non_string_provenance_is_refused(tmp_path):
+    declared = dict(KIND_A_DECLARED)
+    declared["x-openddil"] = dict(KIND_A_DECLARED["x-openddil"], provenance=123)
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(declared))
+
+    with pytest.raises(Exception) as exc:
+        load_declarations(tmp_path)
+    assert "KindA.schema.json" in str(exc.value)

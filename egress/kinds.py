@@ -93,6 +93,7 @@ class Declarations:
     observed_at: str | None = None
     sources: str | None = None
     picture: str | None = None
+    provenance: str | None = None
 
 
 def _require_pointer(block: Mapping, name: str) -> str:
@@ -100,6 +101,15 @@ def _require_pointer(block: Mapping, name: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{name!r} must be a JSON pointer string, got {value!r}")
     return value
+
+
+def _optional_pointer(block: Mapping, name: str) -> str | None:
+    """Like `_require_pointer`, but `name` absent from `block` is not an
+    error — it just means this kind does not declare that pointer. Present
+    and not a string is still refused, same as a required pointer."""
+    if name not in block:
+        return None
+    return _require_pointer(block, name)
 
 
 def load_declarations(directory: str | Path) -> dict[str, "Declarations"]:
@@ -145,6 +155,7 @@ def load_declarations(directory: str | Path) -> dict[str, "Declarations"]:
                 observed_at=block.get("observed_at"),
                 sources=block.get("sources"),
                 picture=block.get("picture"),
+                provenance=_optional_pointer(block, "provenance"),
             )
         except Exception as exc:  # noqa: BLE001 — re-raised naming the file
             raise ValueError(

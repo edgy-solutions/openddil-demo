@@ -70,11 +70,11 @@ RUN uv pip install --no-cache \
 
 # ---------- Stage 2: Tests ----------
 # ALL test_*.py in this directory — the gate's 43 (test_gate.py), the kind
-# registry's 6 (test_kinds.py), the route table's 6 (test_routes.py), the
+# registry's 9 (test_kinds.py), the route table's 6 (test_routes.py), the
 # CoT adapter's 13 (test_cot_adapter.py), the pane's 4 (test_pane_api.py),
-# the JSON-pointer helper's 20 (test_pointer.py), the assembler's 21
+# the JSON-pointer helper's 20 (test_pointer.py), the assembler's 35
 # (test_assembler.py), the forwarder's 9 (test_forwarder.py) and the stub
-# sink's 6 (test_stub_sink.py) — 128 total — run against the code that is
+# sink's 6 (test_stub_sink.py) — 145 total — run against the code that is
 # about to be baked in, with no PDP, no broker, no Postgres and no network.
 #
 # test_pane_api.py RUNS HERE TOO, where it used to be excluded by name. It

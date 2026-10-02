@@ -124,6 +124,17 @@ def _rfc3339(ns: int) -> str:
     return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _rfc3339_from_dt(dt: datetime | None) -> str | None:
+    """A postgres `timestamptz` column's own value -> the same RFC 3339
+    shape `_rfc3339` produces from nanoseconds. `None` (a NULL column, or a
+    row this process never read) stays `None` — never defaulted to `now()`,
+    which would be the assembler's clock standing in for a source's own
+    timestamp."""
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _label_from_cm_state(cm_state: Mapping[str, Any]) -> dict[str, Any] | None:
     """The label to write at the kind's `label` pointer, straight from the
     cm-state record — never derived, never defaulted to a tier guess. `None`
@@ -159,6 +170,51 @@ def _properties_at(schema: Mapping[str, Any], ptr: str) -> frozenset[str]:
         return frozenset()
     properties = node.get("properties")
     return frozenset(properties.keys()) if isinstance(properties, Mapping) else frozenset()
+
+
+def _provenance_entries(
+    cm_state: Mapping[str, Any], episode: Episode, picture: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """`{row_key, observed_at?}` for every source `picture` was actually
+    read from, in the fixed order the rule specifies. `observed_at` is
+    always that source's OWN timestamp, read off `cm_state`/`picture`,
+    never `now()` — this function takes no clock at all. A source this
+    process did not read (no postgres row, no spare resolved) contributes
+    no entry; a source it did read but that carries no timestamp column
+    (or a NULL one) contributes an entry with no `observed_at`."""
+    entries: list[dict[str, Any]] = [{"row_key": f"asset_cm_state:{episode.asset}"}]
+    last_observed_ns = cm_state.get("last_observed_at_ns")
+    if last_observed_ns:
+        entries[0]["observed_at"] = _rfc3339(last_observed_ns)
+
+    if picture.get("readiness") is not None:
+        entry: dict[str, Any] = {"row_key": f"telemetry_latest_state:{episode.asset}"}
+        observed_at = picture.get("readiness_observed_at")
+        if observed_at:
+            entry["observed_at"] = observed_at
+        entries.append(entry)
+
+    if picture.get("rollup") is not None:
+        entry = {"row_key": f"asset_logistics_status:{episode.asset}"}
+        observed_at = picture.get("rollup_observed_at")
+        if observed_at:
+            entry["observed_at"] = observed_at
+        entries.append(entry)
+
+    spare = picture.get("spare")
+    part_ref = spare.get("part_ref") if isinstance(spare, Mapping) else None
+    if part_ref:
+        for spares_entry in picture.get("spares") or []:
+            site = spares_entry.get("site")
+            if not site:
+                continue
+            entry = {"row_key": f"parts-availability:{site}:{part_ref}"}
+            observed_at = spares_entry.get("as_of")
+            if observed_at:
+                entry["observed_at"] = observed_at
+            entries.append(entry)
+
+    return entries
 
 
 def assemble(
@@ -204,6 +260,9 @@ def assemble(
     if decl.sources:
         pointer.set(out, decl.sources, list(episode.sources))
 
+    if decl.provenance:
+        pointer.set(out, decl.provenance, _provenance_entries(cm_state, episode, picture))
+
     if decl.picture:
         allowed = _properties_at(schema, decl.picture)
         filtered = {k: v for k, v in picture.items() if k in allowed}
@@ -238,10 +297,19 @@ class PartsBook:
         site = record.get("site")
         if not part_ref or not site:
             return
-        self._by_ref.setdefault(part_ref, {})[site] = {
+        entry: dict[str, Any] = {
             "item": record.get("item"),
             "on_hand": record.get("on_hand", 0),
         }
+        # Carried only when THIS record has them — a record that never
+        # mentions `lead_time_days` must not make a site look like it has a
+        # lead time of zero, and a record whose `lead_time_days` genuinely
+        # IS zero must not be told apart from "never carried" by `or`/`get`
+        # defaulting, hence the explicit membership check.
+        for field_name in ("as_of", "lead_time_days", "source"):
+            if field_name in record:
+                entry[field_name] = record[field_name]
+        self._by_ref.setdefault(part_ref, {})[site] = entry
 
     def lookup(self, part_ref: str, owning_tier: str) -> dict[str, Any] | None:
         sites = self._by_ref.get(part_ref)
@@ -249,11 +317,23 @@ class PartsBook:
             return None
         item = next((v["item"] for v in sites.values() if v.get("item") is not None), None)
         on_hand = {site: v.get("on_hand", 0) for site, v in sites.items()}
+        spares: list[dict[str, Any]] = []
+        for site in sorted(sites):
+            entry = sites[site]
+            spare_entry: dict[str, Any] = {"site": site, "on_hand": entry.get("on_hand", 0)}
+            if "lead_time_days" in entry:
+                spare_entry["lead_time_days"] = entry["lead_time_days"]
+            if "source" in entry:
+                spare_entry["source"] = entry["source"]
+            if "as_of" in entry:
+                spare_entry["as_of"] = _rfc3339(entry["as_of"])
+            spares.append(spare_entry)
         return {
             "part_ref": part_ref,
             "item": item,
             "on_hand_here": on_hand.get(owning_tier),
             "on_hand": on_hand,
+            "spares": spares,
         }
 
 
@@ -288,25 +368,32 @@ async def read_asset(asset_id: str) -> dict[str, Any] | None:
     conn = await asyncpg.connect(POSTGRES_DSN)
     try:
         telemetry = await conn.fetchrow(
-            "SELECT operational_status, reporting_status "
+            "SELECT operational_status, reporting_status, last_sample_at "
             "FROM telemetry_latest_state WHERE asset_id = $1", asset_id,
         )
         logistics = await conn.fetchrow(
-            "SELECT overall_severity, constraining_factors "
+            "SELECT overall_severity, constraining_factors, computed_at "
             "FROM asset_logistics_status WHERE asset_id = $1", asset_id,
         )
     finally:
         await conn.close()
 
     readiness = None
+    readiness_observed_at = None
     if telemetry is not None:
         readiness = {
             "operational_status": telemetry["operational_status"],
             "reporting_status": telemetry["reporting_status"],
         }
+        # `last_sample_at` is the row's own domain timestamp (the latest
+        # sample's instant, projector-populated from the event's own
+        # provenance.sample_time) — not `updated_at`, which is the row's
+        # last-write housekeeping column, not a source timestamp.
+        readiness_observed_at = _rfc3339_from_dt(telemetry["last_sample_at"])
 
     rollup = None
     factors = None
+    rollup_observed_at = None
     if logistics is not None:
         rollup = {"overall_severity": logistics["overall_severity"]}
         raw_factors = logistics["constraining_factors"]
@@ -314,8 +401,27 @@ async def read_asset(asset_id: str) -> dict[str, Any] | None:
             factors = json.loads(raw_factors) if raw_factors else []
         else:
             factors = raw_factors if raw_factors is not None else []
+        # `computed_at` is when logistics-sim computed this severity row
+        # (projector-populated from the status message's own `computed_at`)
+        # — again not `updated_at`.
+        rollup_observed_at = _rfc3339_from_dt(logistics["computed_at"])
 
-    return {"readiness": readiness, "rollup": rollup, "factors": factors}
+    return {
+        "readiness": readiness, "rollup": rollup, "factors": factors,
+        "readiness_observed_at": readiness_observed_at,
+        "rollup_observed_at": rollup_observed_at,
+    }
+
+
+@dataclass(frozen=True)
+class Designation:
+    """One asset's battle-condition designation, from an assembler route's
+    config: whether it is mission-essential, and why. Never defaulted —
+    an asset with no `Designation` gets no `mission_essential`/`basis` at
+    all, not a guessed `False`."""
+
+    mission_essential: bool
+    basis: str
 
 
 async def build_picture(
@@ -326,24 +432,46 @@ async def build_picture(
     read_asset: ReadAsset,
     parts: PartsBook,
     part_refs: Mapping[str, str] | None = None,
+    designations: Mapping[str, Designation] | None = None,
 ) -> dict[str, Any]:
     """The full candidate picture for one episode — `{readiness, lifecycle,
-    factors, rollup, spare}` — before `assemble` filters it down to the
-    sections a kind's schema actually names. A section this process could
-    not fill (no postgres row, no installed part for the slot) is simply
-    absent from the returned dict; `assemble` never sees a guessed value for
-    it."""
+    factors, rollup, spare, spares, battle_condition}` — before `assemble`
+    filters it down to the sections a kind's schema actually names. A
+    section this process could not fill (no postgres row, no installed part
+    for the slot, no designation) is simply absent from the returned dict;
+    `assemble` never sees a guessed value for it.
+
+    `readiness_observed_at`/`rollup_observed_at` also ride along at the top
+    level when `read_asset` supplied them — not picture sections themselves
+    (no real kind names them), just how `assemble` learns each source's own
+    timestamp for `provenance[]` without reading postgres itself."""
     sections: dict[str, Any] = {"lifecycle": cm_state.get("lifecycle")}
 
     asset_id = cm_state.get("asset_id")
     reading = await read_asset(asset_id) if asset_id else None
+    rollup: Mapping[str, Any] | None = None
     if reading:
         if reading.get("readiness") is not None:
             sections["readiness"] = reading["readiness"]
+            if reading.get("readiness_observed_at"):
+                sections["readiness_observed_at"] = reading["readiness_observed_at"]
         if reading.get("rollup") is not None:
-            sections["rollup"] = reading["rollup"]
+            rollup = reading["rollup"]
+            sections["rollup"] = rollup
+            if reading.get("rollup_observed_at"):
+                sections["rollup_observed_at"] = reading["rollup_observed_at"]
         if reading.get("factors") is not None:
             sections["factors"] = reading["factors"]
+
+    battle_condition: dict[str, Any] = {}
+    if rollup is not None and rollup.get("overall_severity") is not None:
+        battle_condition["overall_severity"] = rollup["overall_severity"]
+    designation = (designations or {}).get(asset_id) if asset_id else None
+    if designation is not None:
+        battle_condition["mission_essential"] = designation.mission_essential
+        battle_condition["basis"] = designation.basis
+    if battle_condition:
+        sections["battle_condition"] = battle_condition
 
     # The installed CI's own reference first; then the part the deployment
     # says fills this slot. The first that the parts records know wins.
@@ -354,7 +482,10 @@ async def build_picture(
             continue
         spare = parts.lookup(part_ref, owning_tier)
         if spare is not None:
+            spares = spare.pop("spares", None)
             sections["spare"] = spare
+            if spares:
+                sections["spares"] = spares
             break
 
     return sections
@@ -387,6 +518,11 @@ class AssemblerRoute:
     output_topic: str
     parts_topic: str | None = None
     part_refs: tuple[tuple[str, str], ...] = ()
+    # One `Designation` per asset_id this route's deployment has declared
+    # mission-essential (or explicitly not), as (asset_id, Designation)
+    # pairs — `dict(...)` at the point of use, the same convention
+    # `part_refs` uses.
+    battle_condition: tuple[tuple[str, "Designation"], ...] = ()
 
 
 def _entry_label(entry: object, index: int) -> str:
@@ -442,10 +578,34 @@ def load_assembler_config(
                 f"{label}: 'part_refs' must map non-empty component strings to "
                 "non-empty part reference strings")
 
+        raw_battle_condition = entry.get("battle_condition", {})
+        if not isinstance(raw_battle_condition, Mapping):
+            raise AssemblerConfigError(f"{label}: 'battle_condition' must be a JSON object")
+        battle_condition: list[tuple[str, Designation]] = []
+        for asset_id, designated in raw_battle_condition.items():
+            if not isinstance(asset_id, str) or not asset_id:
+                raise AssemblerConfigError(
+                    f"{label}: 'battle_condition' keys must be non-empty asset id strings")
+            if not isinstance(designated, Mapping):
+                raise AssemblerConfigError(
+                    f"{label}: battle_condition[{asset_id!r}] must be a JSON object")
+            mission_essential = designated.get("mission_essential")
+            if not isinstance(mission_essential, bool):
+                raise AssemblerConfigError(
+                    f"{label}: battle_condition[{asset_id!r}].mission_essential must be a "
+                    "bool, not coerced from another type")
+            basis = designated.get("basis")
+            if not isinstance(basis, str) or not basis:
+                raise AssemblerConfigError(
+                    f"{label}: battle_condition[{asset_id!r}].basis must be a non-empty string")
+            battle_condition.append(
+                (asset_id, Designation(mission_essential=mission_essential, basis=basis)))
+
         routes.append(AssemblerRoute(
             name=name, kind=kind, trigger_topic=entry["trigger_topic"],
             output_topic=entry["output_topic"], parts_topic=entry.get("parts_topic"),
             part_refs=tuple(sorted(part_refs.items())),
+            battle_condition=tuple(battle_condition),
         ))
     return routes
 
@@ -500,6 +660,7 @@ async def _produce_episode(
                 cm_state, episode, owning_tier,
                 read_asset=read_asset, parts=state.parts,
                 part_refs=dict(state.route.part_refs),
+                designations=dict(state.route.battle_condition),
             )
             break
         except Exception:  # noqa: BLE001 — retried, then re-raised

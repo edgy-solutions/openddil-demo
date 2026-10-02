@@ -26,6 +26,7 @@ from assembler import (  # noqa: E402
     AssemblerConfigError,
     AssemblerRoute,
     _RouteState,
+    Designation,
     PartsBook,
     assemble,
     build_picture,
@@ -413,3 +414,262 @@ def test_assembler_config_refuses_a_part_refs_that_is_not_a_string_map(tmp_path)
     with pytest.raises(AssemblerConfigError) as exc:
         load_assembler_config(cfg, ["KindA"])
     assert "part_refs" in str(exc.value)
+
+
+# --- the spares section -------------------------------------------------
+
+def test_partsbook_lookup_builds_a_spares_entry_per_site_sorted_by_site():
+    book = PartsBook()
+    book.ingest({"site": "site-b", "part_ref": "part:p-1", "item": "widget", "on_hand": 2})
+    book.ingest({"site": "site-a", "part_ref": "part:p-1", "item": "widget", "on_hand": 5,
+                 "lead_time_days": 0, "source": "feed-a", "as_of": 1_700_000_000_000_000_000})
+
+    spare = book.lookup("part:p-1", "site-a")
+
+    assert spare["spares"] == [
+        {"site": "site-a", "on_hand": 5, "lead_time_days": 0,
+         "source": "feed-a", "as_of": "2023-11-14T22:13:20Z"},
+        {"site": "site-b", "on_hand": 2},
+    ]
+
+
+def test_build_picture_emits_spares_as_its_own_section_next_to_unchanged_spare():
+    book = PartsBook()
+    book.ingest({"site": "site-a", "part_ref": "part:p-1", "item": "widget", "on_hand": 5})
+    book.ingest({"site": "site-b", "part_ref": "part:p-1", "item": "widget", "on_hand": 2})
+    state = cm_state(discrepancies=[discrepancy(component="slot-a")],
+                      installed=[{"slot_id": "slot-a", "ci_id": "", "installed_at_ns": 0}])
+
+    picture = asyncio.run(build_picture(
+        state, episodes(state)[0], "site-a", read_asset=_no_picture, parts=book,
+        part_refs={"slot-a": "part:p-1"}))
+
+    assert picture["spare"] == {"part_ref": "part:p-1", "item": "widget",
+                                 "on_hand_here": 5, "on_hand": {"site-a": 5, "site-b": 2}}
+    assert picture["spares"] == [
+        {"site": "site-a", "on_hand": 5},
+        {"site": "site-b", "on_hand": 2},
+    ]
+
+
+# --- the battle_condition section ---------------------------------------
+
+async def _rollup_only(asset_id):  # noqa: ARG001 — the injected read_asset
+    return {"readiness": None, "rollup": {"overall_severity": "RED"}, "factors": None}
+
+
+def test_build_picture_battle_condition_merges_rollup_and_designation():
+    state = cm_state(asset_id="asset-1", discrepancies=[discrepancy()])
+    episode = episodes(state)[0]
+    designations = {"asset-1": Designation(mission_essential=True, basis="primary strike asset")}
+
+    picture = asyncio.run(build_picture(
+        state, episode, "edge-03", read_asset=_rollup_only, parts=PartsBook(),
+        designations=designations))
+
+    assert picture["battle_condition"] == {
+        "overall_severity": "RED", "mission_essential": True, "basis": "primary strike asset"}
+
+
+def test_build_picture_battle_condition_undesignated_has_no_mission_essential_key():
+    state = cm_state(asset_id="asset-2", discrepancies=[discrepancy()])
+    episode = episodes(state)[0]
+    designations = {"asset-1": Designation(mission_essential=True, basis="x")}
+
+    picture = asyncio.run(build_picture(
+        state, episode, "edge-03", read_asset=_rollup_only, parts=PartsBook(),
+        designations=designations))
+
+    assert picture["battle_condition"] == {"overall_severity": "RED"}
+    assert "mission_essential" not in picture["battle_condition"]
+    assert "basis" not in picture["battle_condition"]
+
+
+def test_build_picture_battle_condition_absent_with_neither_rollup_nor_designation():
+    state = cm_state(discrepancies=[discrepancy()])
+    episode = episodes(state)[0]
+
+    picture = asyncio.run(build_picture(
+        state, episode, "edge-03", read_asset=_no_picture, parts=PartsBook()))
+
+    assert "battle_condition" not in picture
+
+
+def test_load_assembler_config_battle_condition_loads_cleanly(tmp_path):
+    cfg = tmp_path / "assembler.json"
+    cfg.write_text(json.dumps([{"name": "a", "kind": "KindA", "trigger_topic": "t",
+                                "output_topic": "o",
+                                "battle_condition": {"asset-1": {
+                                    "mission_essential": True, "basis": "primary strike asset"}}}]))
+
+    routes = load_assembler_config(cfg, ["KindA"])
+
+    assert dict(routes[0].battle_condition) == {
+        "asset-1": Designation(mission_essential=True, basis="primary strike asset")}
+
+
+def test_load_assembler_config_battle_condition_non_bool_mission_essential_raises(tmp_path):
+    cfg = tmp_path / "assembler.json"
+    cfg.write_text(json.dumps([{"name": "a", "kind": "KindA", "trigger_topic": "t",
+                                "output_topic": "o",
+                                "battle_condition": {"asset-1": {
+                                    "mission_essential": "yes", "basis": "x"}}}]))
+
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "asset-1" in str(exc.value)
+
+
+def test_load_assembler_config_battle_condition_empty_basis_raises(tmp_path):
+    cfg = tmp_path / "assembler.json"
+    cfg.write_text(json.dumps([{"name": "a", "kind": "KindA", "trigger_topic": "t",
+                                "output_topic": "o",
+                                "battle_condition": {"asset-1": {
+                                    "mission_essential": True, "basis": ""}}}]))
+
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "asset-1" in str(exc.value)
+
+
+def test_battle_condition_requiring_mission_essential_fails_validator_for_undesignated_asset(tmp_path):
+    """The gate's own schema, not the assembler, is what makes this
+    fail-closed: a schema that requires `/picture/battle_condition/
+    mission_essential` sees a `context.battle_condition` with no
+    `mission_essential` key and refuses the record — exactly the
+    schema_invalid path the rule describes."""
+    schema = json.loads(json.dumps(KIND_A_FULL_SCHEMA))  # deep copy
+    schema["properties"]["context"] = {
+        "type": "object",
+        "properties": {
+            "battle_condition": {
+                "type": "object",
+                "required": ["mission_essential"],
+                "properties": {
+                    "overall_severity": {"type": "string"},
+                    "mission_essential": {"type": "boolean"},
+                    "basis": {"type": "string"},
+                },
+            },
+        },
+    }
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(schema))
+    validators = load_kinds(tmp_path)
+    decl = load_declarations(tmp_path)["KindA"]
+
+    state = cm_state(discrepancies=[discrepancy()], originator_nation="ATL", releasable_to=["ATL"])
+    episode = episodes(state)[0]
+    record = assemble("KindA", decl, schema, state, episode,
+                       picture={"battle_condition": {"overall_severity": "RED"}}, now=NOW)
+
+    assert record["context"]["battle_condition"] == {"overall_severity": "RED"}
+    assert validators["KindA"](record) is not None
+
+
+# --- provenance[] -------------------------------------------------------
+
+PROVENANCE_DECL = Declarations(
+    key="/ref", label="/marking", owning_tier="/tier",
+    episode=EpisodeDecl(asset="/subject", component="/what/part", fault_code="/what/code"),
+    picture="/context", provenance="/prov",
+)
+
+
+def test_assemble_no_provenance_key_when_not_declared():
+    state = cm_state(discrepancies=[discrepancy()])
+    episode = episodes(state)[0]
+
+    record = assemble("KindA", KIND_A_DECL, {}, state, episode, picture={}, now=NOW)
+
+    assert "prov" not in record
+
+
+def test_assemble_provenance_omits_cm_state_observed_at_when_missing():
+    state = cm_state(discrepancies=[discrepancy()])  # no last_observed_at_ns
+    episode = episodes(state)[0]
+
+    record = assemble("KindA", PROVENANCE_DECL, {}, state, episode, picture={}, now=NOW)
+
+    assert record["prov"] == [{"row_key": "asset_cm_state:dis:1:1:1000"}]
+
+
+def test_assemble_provenance_lists_sources_in_order_with_their_own_timestamps():
+    """Every observed_at below is a value injected into the fixture, never
+    `NOW` — proving the assembler's own clock is never consulted."""
+    state = cm_state(discrepancies=[discrepancy()])
+    state["last_observed_at_ns"] = 1_700_000_000_000_000_000
+    episode = episodes(state)[0]
+    picture = {
+        "readiness": {"operational_status": "FMC"},
+        "readiness_observed_at": "2026-01-01T00:00:00Z",
+        "rollup": {"overall_severity": "GREEN"},
+        "rollup_observed_at": "2026-01-02T00:00:00Z",
+        "spare": {"part_ref": "part:p-1", "item": "widget", "on_hand_here": 5,
+                  "on_hand": {"site-a": 5, "site-b": 2}},
+        "spares": [
+            {"site": "site-a", "on_hand": 5, "as_of": "2026-01-03T00:00:00Z"},
+            {"site": "site-b", "on_hand": 2},
+        ],
+    }
+
+    record = assemble("KindA", PROVENANCE_DECL, {}, state, episode, picture=picture, now=NOW)
+
+    assert record["prov"] == [
+        {"row_key": "asset_cm_state:dis:1:1:1000", "observed_at": "2023-11-14T22:13:20Z"},
+        {"row_key": "telemetry_latest_state:dis:1:1:1000", "observed_at": "2026-01-01T00:00:00Z"},
+        {"row_key": "asset_logistics_status:dis:1:1:1000", "observed_at": "2026-01-02T00:00:00Z"},
+        {"row_key": "parts-availability:site-a:part:p-1", "observed_at": "2026-01-03T00:00:00Z"},
+        {"row_key": "parts-availability:site-b:part:p-1"},
+    ]
+
+
+def test_assemble_provenance_omits_a_source_that_contributed_nothing():
+    state = cm_state(discrepancies=[discrepancy()])
+    state["last_observed_at_ns"] = 1_700_000_000_000_000_000
+    episode = episodes(state)[0]
+
+    record = assemble("KindA", PROVENANCE_DECL, {}, state, episode, picture={}, now=NOW)
+
+    assert record["prov"] == [
+        {"row_key": "asset_cm_state:dis:1:1:1000", "observed_at": "2023-11-14T22:13:20Z"}]
+
+
+def test_provenance_end_to_end_through_build_picture_and_assemble():
+    """`read_asset`'s injected timestamps thread all the way through
+    `build_picture` into `assemble`'s provenance list — the seam the rule
+    requires stays DB-free."""
+    async def _reading(asset_id):  # noqa: ARG001
+        return {
+            "readiness": {"operational_status": "FMC", "reporting_status": "REPORTING"},
+            "rollup": {"overall_severity": "GREEN"},
+            "factors": [],
+            "readiness_observed_at": "2026-02-01T00:00:00Z",
+            "rollup_observed_at": "2026-02-02T00:00:00Z",
+        }
+
+    book = PartsBook()
+    book.ingest({"site": "site-a", "part_ref": "part:p-1", "item": "widget",
+                 "on_hand": 5, "as_of": 1_700_000_000_000_000_000})
+
+    state = cm_state(discrepancies=[discrepancy(component="slot-a")],
+                      installed=[{"slot_id": "slot-a", "ci_id": "", "installed_at_ns": 0}])
+    state["last_observed_at_ns"] = 1_700_000_000_000_000_000
+    episode = episodes(state)[0]
+
+    picture = asyncio.run(build_picture(
+        state, episode, "edge-03", read_asset=_reading, parts=book,
+        part_refs={"slot-a": "part:p-1"}))
+
+    record = assemble("KindA", PROVENANCE_DECL, {}, state, episode, picture=picture, now=NOW)
+
+    row_keys = [entry["row_key"] for entry in record["prov"]]
+    assert row_keys == [
+        "asset_cm_state:dis:1:1:1000",
+        "telemetry_latest_state:dis:1:1:1000",
+        "asset_logistics_status:dis:1:1:1000",
+        "parts-availability:site-a:part:p-1",
+    ]
+    by_key = {entry["row_key"]: entry.get("observed_at") for entry in record["prov"]}
+    assert by_key["telemetry_latest_state:dis:1:1:1000"] == "2026-02-01T00:00:00Z"
+    assert by_key["asset_logistics_status:dis:1:1:1000"] == "2026-02-02T00:00:00Z"
+    assert by_key["parts-availability:site-a:part:p-1"] == "2023-11-14T22:13:20Z"
