@@ -65,8 +65,14 @@ RUN uv pip install --no-cache \
         "protobuf>=6.30.0,<7.0.0"
 
 # ---------- Stage 2: Tests ----------
-# The gate's 25 unit tests, run against the code that is about to be baked in,
-# with no PDP, no broker and no network.
+# The gate's 32 unit tests (test_gate.py) plus the CoT adapter's 13
+# (test_cot_adapter.py) — 45 total — run against the code that is about to be
+# baked in, with no PDP, no broker and no network. The adapter's tests moved
+# in here alongside the gate's because `cot_adapter.py` now ships from this
+# same image to a cluster (see egress/tak/Dockerfile and
+# templates/egress.yaml's `<rel>-egress-cot-adapter-c2` Deployment): the same
+# "a failing test cannot produce an image" guarantee the gate already had has
+# to cover the adapter too, now that a pod runs it.
 #
 # THIS STAGE IS NOT OPTIONAL, and the odd-looking COPY in the runtime stage is
 # what makes that true. Buildx skips a stage nothing depends on, so a test
@@ -81,7 +87,7 @@ ENV PYTHONPATH=/proto:/app
 COPY openddil-contracts/gen/python /proto
 COPY openddil-demo/egress /app
 WORKDIR /app
-RUN python -m pytest test_gate.py -q && touch /tests-passed
+RUN python -m pytest test_gate.py test_cot_adapter.py -q && touch /tests-passed
 
 # ---------- Stage 3: Runtime ----------
 FROM python:3.11-slim AS runtime
