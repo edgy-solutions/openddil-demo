@@ -115,6 +115,13 @@ CLIENT_SECRET = os.getenv("OPENDDIL_OIDC_CLIENT_SECRET", "")
 # wildcard redirect costs.
 REDIRECT_URI = os.getenv("OPENDDIL_OIDC_REDIRECT_URI", "")
 POST_LOGIN_PATH = os.getenv("OPENDDIL_OIDC_POST_LOGIN_PATH", "/")
+# Where the identity provider sends the browser after a sign-out. Defaults to
+# REDIRECT_URI because the provider only accepts a registered address, and
+# that one is registered already: the callback sees no code and no error and
+# sends the browser on to "/". A separate address would be a second
+# registration to keep in step on every realm this gateway is pointed at.
+POST_LOGOUT_REDIRECT_URI = os.getenv("OPENDDIL_OIDC_POST_LOGOUT_REDIRECT_URI",
+                                     "") or REDIRECT_URI
 SESSION_TTL = int(os.getenv("OPENDDIL_SESSION_TTL_SECONDS", "43200"))  # 12h
 COOKIE_NAME = os.getenv("OPENDDIL_SESSION_COOKIE", "openddil_session")
 COOKIE_SECURE = os.getenv("OPENDDIL_COOKIE_SECURE", "false").lower() == "true"
@@ -384,8 +391,9 @@ def begin_login() -> str:
     return f"{metadata()['authorization_endpoint']}?{q}"
 
 
-def complete_login(code: str, state: str) -> dict:
-    """Exchange the code for tokens and return the verified claims.
+def complete_login(code: str, state: str) -> tuple[dict, str]:
+    """Exchange the code for tokens. Return the verified claims and the raw
+    ID token, which sign-out hands back to the provider as `id_token_hint`.
 
     The state entry is consumed WHETHER OR NOT the exchange succeeds, so a
     replayed callback cannot retry against the same verifier."""
@@ -412,7 +420,38 @@ def complete_login(code: str, state: str) -> dict:
     id_token = tokens.get("id_token")
     if not id_token:
         raise AuthError("token endpoint returned no id_token")
-    return verify_id_token(id_token, nonce=entry["nonce"])
+    return verify_id_token(id_token, nonce=entry["nonce"]), id_token
+
+
+def logout_url(id_token: str | None) -> str | None:
+    """Where to send the browser to end the PROVIDER'S session, or None.
+
+    CLEARING OUR COOKIE IS NOT A SIGN-OUT. The provider keeps its own session
+    cookie, and the session gate sends a browser with no session to
+    /auth/login, so the provider signs the user straight back in without
+    showing a form. RP-initiated logout ends that session too.
+
+    `id_token_hint` is what lets the provider skip its "do you want to log
+    out?" page and come straight back. Without one (the gateway session had
+    already expired) the provider asks first, which is still a sign-out.
+
+    None when the provider publishes no end_session_endpoint or cannot be
+    reached; the caller then clears what it holds and sends the browser to
+    "/". A severed tier cannot end the provider's session either way."""
+    try:
+        endpoint = metadata().get("end_session_endpoint")
+    except AuthError as exc:
+        log.warning("sign-out without the provider: %s", exc)
+        return None
+    if not endpoint:
+        return None
+    params = {"client_id": CLIENT_ID,
+              "post_logout_redirect_uri": POST_LOGOUT_REDIRECT_URI}
+    if id_token:
+        params["id_token_hint"] = id_token
+    # NOT internalized, for the same reason as the authorization endpoint:
+    # the browser follows this URL, not this process.
+    return f"{endpoint}?{urllib.parse.urlencode(params)}"
 
 
 # --- sessions ----------------------------------------------------------------
@@ -425,7 +464,7 @@ _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
 
 
-def create_session(claims: dict) -> tuple[str, dict]:
+def create_session(claims: dict, id_token: str = "") -> tuple[str, dict]:
     """Mint a session from verified claims.
 
     THE SUBJECT IS `sub`, NEVER `email` OR `preferred_username`. Both of the
@@ -442,6 +481,9 @@ def create_session(claims: dict) -> tuple[str, dict]:
         "username": claims.get("preferred_username") or "",
         "email": claims.get("email") or "",
         "name": claims.get("name") or "",
+        # Kept for sign-out's `id_token_hint` and nothing else. Never sent to
+        # the browser: /auth/me builds its body field by field.
+        "id_token": id_token,
         "expires": min(time.time() + SESSION_TTL, float(claims.get("exp", 0))
                        or time.time() + SESSION_TTL),
     }

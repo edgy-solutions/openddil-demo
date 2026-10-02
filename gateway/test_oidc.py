@@ -223,6 +223,56 @@ def test_cookie_is_httponly_and_samesite(oidc):
     assert "Path=/" in header
 
 
+# --- sign-out ending the provider's session too -----------------------------
+# The defect: /auth/logout cleared the gateway's cookie and sent the browser
+# to "/". The session gate sent it on to /auth/login, the provider still held
+# its own session, and the user was signed straight back in with no form.
+
+END_SESSION = ISSUER + "/protocol/openid-connect/logout"
+
+
+def _logout_query(url):
+    import urllib.parse
+    base, _, q = url.partition("?")
+    return base, dict(urllib.parse.parse_qsl(q))
+
+
+def test_session_keeps_the_id_token_for_sign_out(oidc, key):
+    token = mint(key)
+    sid, session = oidc.create_session(oidc.verify_id_token(token), token)
+    assert oidc.get_session(sid)["id_token"] == token
+
+
+def test_logout_url_ends_the_provider_session(oidc, monkeypatch):
+    monkeypatch.setattr(oidc, "_meta", {"end_session_endpoint": END_SESSION})
+    base, q = _logout_query(oidc.logout_url("the.id.token"))
+    # Browser-facing: on the issuer's address, not an internal one.
+    assert base == END_SESSION
+    assert q == {"client_id": CLIENT_ID, "id_token_hint": "the.id.token",
+                 # The registered callback, so no realm change is needed.
+                 "post_logout_redirect_uri": "https://app.example/auth/callback"}
+
+
+def test_logout_url_without_a_token_still_signs_out(oidc, monkeypatch):
+    """An expired gateway session has no token to hint with. The provider
+    then asks before signing out, which is still a sign-out."""
+    monkeypatch.setattr(oidc, "_meta", {"end_session_endpoint": END_SESSION})
+    _, q = _logout_query(oidc.logout_url(None))
+    assert "id_token_hint" not in q and q["client_id"] == CLIENT_ID
+
+
+def test_logout_url_is_none_without_an_end_session_endpoint(oidc, monkeypatch):
+    monkeypatch.setattr(oidc, "_meta", {"issuer": ISSUER})
+    assert oidc.logout_url("t") is None
+
+
+def test_logout_url_is_none_when_the_provider_is_unreachable(oidc, monkeypatch):
+    def down():
+        raise oidc.AuthError("unreachable")
+    monkeypatch.setattr(oidc, "metadata", down)
+    assert oidc.logout_url("t") is None
+
+
 def test_half_configured_oidc_refuses_to_start(monkeypatch):
     """A gateway that silently fell back to header mode because a secret was
     missing would be a fail-open wearing a configuration error as a

@@ -561,13 +561,20 @@ class Pep(BaseHTTPRequestHandler):
                 return True
             code = (q.get("code") or [""])[0]
             state = (q.get("state") or [""])[0]
+            if not code and not state:
+                # The provider coming back from a sign-out (the callback is
+                # the post-logout address; see oidc.POST_LOGOUT_REDIRECT_URI).
+                # Nothing to exchange; "/" shows the sign-in.
+                self._send(302, b"", [("Location", "/"),
+                                      ("Cache-Control", "no-store")])
+                return True
             try:
-                claims = oidc.complete_login(code, state)
+                claims, id_token = oidc.complete_login(code, state)
             except oidc.AuthError as exc:
                 self._deny("login failed: " + str(exc), subject="",
                            resource="callback")
                 return True
-            sid, session = oidc.create_session(claims)
+            sid, session = oidc.create_session(claims, id_token)
             record_decision(decision_id=new_decision_id(), outcome="login",
                             subject=session["subject"],
                             username=session["username"] or None,
@@ -585,7 +592,10 @@ class Pep(BaseHTTPRequestHandler):
                 record_decision(decision_id=new_decision_id(),
                                 outcome="logout", subject=session["subject"],
                                 resource="session")
-            self._send(302, b"", [("Location", "/"),
+            # To the provider's sign-out when it has one, so its session ends
+            # with ours; see oidc.logout_url for why ours alone is not enough.
+            to = oidc.logout_url(session.get("id_token") if session else None)
+            self._send(302, b"", [("Location", to or "/"),
                                   ("Set-Cookie", oidc.clear_cookie_header()),
                                   ("Cache-Control", "no-store")])
             return True
