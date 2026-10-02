@@ -41,7 +41,7 @@ jobs:
       # peer-deps for lenient resolution. Same flag is documented in
       # package.json's local-install instructions.
       - run: npm ci --legacy-peer-deps
-      - run: npx tsc --noEmit
+      - run: npx tsc -b
 
   test:
     runs-on: ubuntu-latest
