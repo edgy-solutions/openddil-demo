@@ -31,42 +31,8 @@ import { useEffect, useState } from 'react';
 export const EGRESS_PANE_URL =
   (import.meta.env.VITE_EGRESS_PANE_URL ?? '/egress').replace(/\/$/, '');
 
-/** `work_order.parts[]` — ADR-0046 s4. One entry per part the task consumes. */
-export interface WorkOrderPart {
-  item: string;
-  part_ref: string;
-  quantity: number;
-  source_site: string;
-}
-
-/** `work_order.task_refs[]` — ADR-0046 s4: "the graph URI (the identifier,
- *  per ADR-0031's addendum), plus the data-module code as display
- *  provenance". `uri` is the identifier; `dmc` is display-only. */
-export interface WorkOrderTaskRef {
-  uri: string;
-  dmc?: string;
-}
-
-export interface WorkOrder {
-  task: string;
-  task_refs?: WorkOrderTaskRef[];
-  parts?: WorkOrderPart[];
-  /** 'approved' | 'rejected' — final values only; ADR-0046 s4: "there is no
-   *  pending state in OpenDDIL". */
-  outcome?: string;
-}
-
-/** One step of `approval_chain[]` — ADR-0046 s4. */
-export interface ApprovalStep {
-  step: number;
-  role: string;
-  approver_sub: string;
-  decision: string;
-  decided_at: string;
-}
-
 export interface DecisionRecord {
-  asset_id: string;
+  asset_id: string | null;
   originator_nation: string | null;
   releasable_to: string[];
   allowed: boolean;
@@ -74,18 +40,15 @@ export interface DecisionRecord {
    *  constants when refused; rendered verbatim, never matched against here. */
   reason: string | null;
   decision_id: string;
-  // The fields below are present only on a maintenance-action record
-  // (ADR-0046 s5, destination `system:mmis-stand-in`) — beside the asset
-  // fields above, never replacing them. `egress/pane_api.py`'s
-  // `build_decisions` is the one place that decides which fields a record
-  // carries; this interface only describes what can arrive.
-  action_id?: string;
-  event_id?: string;
+  // The fields below are present only on a `kind`-selected record (ADR-0046
+  // s5, `egress/pane_api.py`'s kind path over `intake_records`) — beside the
+  // asset fields above, never replacing them. `build_decisions` is the one
+  // place that decides which fields a record carries; this interface only
+  // describes what can arrive.
+  key?: string;
   owning_tier?: string;
-  work_order?: WorkOrder;
-  approval_chain?: ApprovalStep[];
   decided_at?: string;
-  provenance?: Record<string, unknown>;
+  body?: Record<string, unknown>;
 }
 
 export interface DecisionsResponse {
@@ -125,14 +88,15 @@ const INITIAL: EgressAdmissionResult = {
   policyUnavailableDetail: null,
 };
 
-export function useEgressAdmission(destination: string): EgressAdmissionResult {
+export function useEgressAdmission(destination: string, kind?: string): EgressAdmissionResult {
   const [result, setResult] = useState<EgressAdmissionResult>(INITIAL);
 
   useEffect(() => {
     let cancelled = false;
     setResult((prev) => ({ ...prev, isLoading: true, isError: false }));
 
-    const url = `${EGRESS_PANE_URL}/decisions?destination=${encodeURIComponent(destination)}`;
+    const url = `${EGRESS_PANE_URL}/decisions?destination=${encodeURIComponent(destination)}`
+      + (kind ? `&kind=${encodeURIComponent(kind)}` : '');
     fetch(url)
       .then(async (res) => {
         if (cancelled) return;
@@ -177,7 +141,7 @@ export function useEgressAdmission(destination: string): EgressAdmissionResult {
     return () => {
       cancelled = true;
     };
-  }, [destination]);
+  }, [destination, kind]);
 
   return result;
 }

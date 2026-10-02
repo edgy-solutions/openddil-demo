@@ -26,7 +26,8 @@ import HqHeader from './components/hq/HqHeader';
 import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
 import HqWorkOrders from './components/hq/HqWorkOrders';
-import MaintenanceActionsPane from './components/releasability/MaintenanceActionsPane';
+import ReleasedRecordsPane from './components/releasability/ReleasedRecordsPane';
+import { deployment } from './deployment';
 import EdgeAttribution from './components/hq/EdgeAttribution';
 import RegionFleetSummary from './components/hq/RegionFleetSummary';
 import MunitionsInventory from './components/hq/MunitionsInventory';
@@ -376,7 +377,18 @@ export default function HqApp() {
           <WearTrendsTheater wearTrends={regionWearTrends.data} />
           <HqDigitalTwin wanActive={!severed} />
           <HqWorkOrders wanActive={!severed} />
-          <MaintenanceActionsPane />
+          {/* ADR-0046 s5: zero, one, or several configured record panes —
+              a destination + kind + columns is configuration, not a
+              hard-coded component. No config => nothing rendered here. */}
+          {deployment().releasedRecordsPanes.map((p) => (
+            <ReleasedRecordsPane
+              key={`${p.destination}|${p.kind ?? ''}`}
+              title={p.title}
+              destination={p.destination}
+              kind={p.kind}
+              columns={p.columns}
+            />
+          ))}
         </div>
       </main>
     </div>

@@ -151,11 +151,37 @@ export interface TierConfig {
   parent?: string | null;
 }
 
+/** One configured column of a `ReleasedRecordsPane` — see
+ *  components/releasability/ReleasedRecordsPane.tsx. `pointer` is a JSON
+ *  pointer (RFC 6901) into a record's `body`. */
+export interface ReleasedRecordsColumnConfig {
+  header: string;
+  pointer: string;
+}
+
+/** One configured instance of `ReleasedRecordsPane` — a destination, an
+ *  optional kind, and the columns to render for it. Unconfigured means
+ *  none: the field is absent in the OSS default and in any deployment that
+ *  does not supply it, and HqApp renders nothing in that case rather than
+ *  a fixed, hard-coded pane (see ReleasedRecordsPane.tsx's own header on
+ *  why a destination is configuration, not code). */
+export interface ReleasedRecordsPaneConfig {
+  title: string;
+  destination: string;
+  kind?: string;
+  columns: ReleasedRecordsColumnConfig[];
+}
+
 export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
   /** Logo shown in the nav bar and used as the favicon. '' = none. */
   logo: string;
+  /** Configured `ReleasedRecordsPane` instances (ADR-0046 s5). Parsed
+   *  defensively by `parseReleasedRecordsPanes`: an entry with a missing or
+   *  non-string required field is dropped rather than rendered half-
+   *  configured. Absent or malformed in the overlay => []. */
+  releasedRecordsPanes: ReleasedRecordsPaneConfig[];
   /** Optional FOB list — populated by a deployment overlay. The 3D maps
    *  use this to place edge markers and to home positionless assets.
    *  Empty in the OSS default; the maps render an empty theater. */
@@ -209,6 +235,7 @@ const DEFAULT: Deployment = {
   fobs: [],
   liveness: DEFAULT_LIVENESS,
   tier: IMPLICIT_ROOT,
+  releasedRecordsPanes: [],
 };
 
 let active: Deployment = DEFAULT;
@@ -331,6 +358,44 @@ export function parseTier(raw: unknown): TierConfig | undefined {
   };
 }
 
+/** Parses `deployment.json`'s `releasedRecordsPanes`, defensively.
+ *
+ *  An entry is kept only when `title` and `destination` are non-empty
+ *  strings, `kind` (if present) is a string, and `columns` is an array of
+ *  `{header, pointer}` pairs where both fields are strings. Anything else
+ *  about the entry — wrong types, missing fields, a malformed column — drops
+ *  the WHOLE entry rather than rendering a half-configured pane: a pane
+ *  bound to a destination string that silently defaulted to '' would ask
+ *  the gate a question nobody configured, not render nothing (the same
+ *  reasoning `parseTier` applies to a partial tier identity).
+ *
+ *  Not an array at all, or absent => []. EXPORTED FOR TESTS, same reasoning
+ *  as `parseTier`: a parser is a decision, and decisions get direct tests. */
+export function parseReleasedRecordsPanes(raw: unknown): ReleasedRecordsPaneConfig[] {
+  if (!Array.isArray(raw)) return [];
+  const isColumn = (x: unknown): x is ReleasedRecordsColumnConfig => {
+    if (!x || typeof x !== 'object') return false;
+    const c = x as Record<string, unknown>;
+    return typeof c.header === 'string' && c.header.length > 0 && typeof c.pointer === 'string';
+  };
+  const out: ReleasedRecordsPaneConfig[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.title !== 'string' || !e.title.trim()) continue;
+    if (typeof e.destination !== 'string' || !e.destination.trim()) continue;
+    if (e.kind !== undefined && typeof e.kind !== 'string') continue;
+    if (!Array.isArray(e.columns) || !e.columns.every(isColumn)) continue;
+    out.push({
+      title: e.title,
+      destination: e.destination,
+      kind: e.kind as string | undefined,
+      columns: e.columns as ReleasedRecordsColumnConfig[],
+    });
+  }
+  return out;
+}
+
 /** Applies a branding overlay ({title?, logo?} from /branding/branding.json)
  *  on top of an already-resolved Deployment. Returns a COPY — `d` is never
  *  mutated.
@@ -381,6 +446,9 @@ export async function loadDeployment(): Promise<void> {
         tier: ('tier' in (j as object))
           ? parseTier((j as { tier?: unknown }).tier)
           : IMPLICIT_ROOT,
+        releasedRecordsPanes: parseReleasedRecordsPanes(
+          (j as { releasedRecordsPanes?: unknown }).releasedRecordsPanes,
+        ),
       };
     }
   } catch {
