@@ -129,6 +129,26 @@ expected_empty:
       nothing had ever asked the question at a tier.
 
 
+  intake_records:
+    stores: [tier]
+    reason: >-
+      Artifacts returned by a destination with intake are decided and stored
+      by the intake process, and in this deployment that process runs at the
+      ROOT store only. No tier projector has a writer for this table, so a
+      tier store has nothing that could populate it and its emptiness there
+      is structural rather than a stopped producer.
+      SCOPED TO TIERS ON PURPOSE. The root's copy holds rows and must keep
+      being checked -- an unscoped declaration here would mean that the day
+      the root's intake stopped writing, the gate that exists to notice it
+      would be the thing explaining it away.
+      REMOVE THIS ROW if the intake process is ever run per tier: at that
+      point a tier's emptiness would mean the tier's own intake had nothing
+      to report, which is a different claim than "there is no tier intake to
+      ask".
+      Declared 2026-10-03, the first gate run after per-tier stores reached
+      this table: edge-01, edge-02 and region-east all hold it empty and
+      undeclared.
+
   asset_telemetry_windows:
     reason: >-
       The windowing stage that would fill it is not producing here: the
