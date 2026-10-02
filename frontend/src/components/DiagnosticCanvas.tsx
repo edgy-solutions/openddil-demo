@@ -39,6 +39,9 @@ import {
     UnknownPlatformBadge,
     type SchematicProps,
 } from './platform-schematics';
+import FaultReportForm from './FaultReportForm';
+import { useCmState } from '../hooks';
+import { componentOptions } from '../lib/cmReport';
 
 const DEMO_MOCK = true;
 
@@ -168,6 +171,22 @@ export default function DiagnosticCanvas({
     // and uptimeHours are now props.
     const transitPhase = useTransitPhase(transitTriggerKey ?? null);
 
+    // "Report a fault" form, overlaid on this view like
+    // LocalFleetRadar overlays the sibling panel in MaintainerApp.
+    // Own useCmState subscription (not threaded from MaintainerApp)
+    // because DiagnosticCanvas is the one place this form renders, and
+    // CmState here is only needed for its installed[] slot_ids — the
+    // CmStateCard in the right rail already has its own subscription
+    // for display. componentOptions() derives the sorted/deduped
+    // component choices; the fault codes themselves come from the
+    // server (GET /cm/fault-codes), never hardcoded here.
+    const cm = useCmState(assetId ?? '');
+    const faultReportOverlay = (
+        <div className="absolute bottom-4 right-4 w-[280px] z-20">
+            <FaultReportForm assetId={assetId} components={componentOptions(cm.data[0])} />
+        </div>
+    );
+
     // MRAD-class variants get the dedicated multi-array detailed view --
     // BUT only when the asset is the per-site SENSOR subsystem
     // (asset_id ending in `_Sensor`). The chassis Unit assets (`*_radar`,
@@ -178,7 +197,12 @@ export default function DiagnosticCanvas({
     // comment block for the full rationale + the 2026-06-24 per-site
     // sensor identity fix that surfaced this distinction.
     if (platformVariant && MRAD_VARIANTS.has(platformVariant) && isPerSiteSensorAsset(assetId)) {
-        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} />;
+        return (
+            <>
+                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} />
+                {faultReportOverlay}
+            </>
+        );
     }
 
     if (assetType === 'RADAR') {
@@ -187,7 +211,12 @@ export default function DiagnosticCanvas({
         // SensorRadarSchematic. Retained as a maintainer-only debug aid;
         // ORBAT-named radar tiers (CUAS/VSHORAD/SHORAD/MRAD_Sensor) go
         // through the registry path below.
-        return <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} isPoweredOff={isPoweredOff} />;
+        return (
+            <>
+                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} isPoweredOff={isPoweredOff} />
+                {faultReportOverlay}
+            </>
+        );
     }
 
     const { title, subtitle } = titleForVariant(platformVariant);
@@ -237,6 +266,7 @@ export default function DiagnosticCanvas({
                     ? <SchematicComp degraded={degraded} operationalState={operationalState} />
                     : <UnknownPlatformBadge degraded={degraded} variant={platformVariant ?? 'UNKNOWN'} />}
             </Canvas>
+            {faultReportOverlay}
         </HudFrame>
     );
 }
