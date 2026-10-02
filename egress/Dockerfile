@@ -72,9 +72,10 @@ RUN uv pip install --no-cache \
 # ALL test_*.py in this directory — the gate's 43 (test_gate.py), the kind
 # registry's 6 (test_kinds.py), the route table's 6 (test_routes.py), the
 # CoT adapter's 13 (test_cot_adapter.py), the pane's 4 (test_pane_api.py),
-# the JSON-pointer helper's 20 (test_pointer.py) and the assembler's 18
-# (test_assembler.py) — 110 total — run against the code that is about to
-# be baked in, with no PDP, no broker, no Postgres and no network.
+# the JSON-pointer helper's 20 (test_pointer.py), the assembler's 21
+# (test_assembler.py), the forwarder's 9 (test_forwarder.py) and the stub
+# sink's 6 (test_stub_sink.py) — 128 total — run against the code that is
+# about to be baked in, with no PDP, no broker, no Postgres and no network.
 #
 # test_pane_api.py RUNS HERE TOO, where it used to be excluded by name. It
 # needs nothing this stage doesn't already have: `asyncpg` is already in the
