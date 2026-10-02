@@ -148,7 +148,12 @@ def test_atl_viewer_sees_only_atl_visible_records(pep_url):
     code, body, headers = _get(pep_url + Q, "op.atl")
     assert code == 200
     assert _ids(body) == ["atl-1", "atl-2", "bdr-rel-atl"]
-    assert (body["admitted"], body["refused"], body["withheld"]) == (2, 1, 2)
+    # withheld == 1, not 2: PANE_RECORDS has exactly one unlabelled record
+    # ("unlabelled"); bdr-1 is hidden from this ATL viewer too, but it is
+    # LABELLED (originator BDR), so it must not be counted here -- that
+    # would tell an ATL-only viewer how many BDR records exist, the leak
+    # AccessDenied.tsx rules out.
+    assert (body["admitted"], body["refused"], body["withheld"]) == (2, 1, 1)
     assert body["viewer_nations"] == ["ATL"]
     assert "fleet_summary" not in body
     assert headers.get("Cache-Control") == "no-store"
@@ -158,7 +163,9 @@ def test_bdr_viewer_sees_only_bdr_records(pep_url):
     code, body, _ = _get(pep_url + Q, "op.bdr")
     assert code == 200
     assert _ids(body) == ["bdr-1", "bdr-rel-atl"]
-    assert body["withheld"] == 3
+    # Same one unlabelled record -- not 3 (the old total-minus-shown count
+    # of every ATL record hidden from this BDR viewer).
+    assert body["withheld"] == 1
 
 
 def test_unlabelled_is_withheld_even_from_every_nation(pep_url):

@@ -114,14 +114,20 @@ describe('EgressAdmissionPane DecisionsView', () => {
 });
 
 // =============================================================================
-// PA: the egress pane behind the PEP — withheld/viewer_nations rendering
+// the egress pane behind the PEP — withheld/viewer_nations rendering
 // =============================================================================
 // Shaped like the PEP's filtered response (gateway/egress_view.py), not the
 // compose pane's own answer: `withheld` and `viewer_nations` are the two
 // fields the PEP adds, and they are optional on DecisionsResponse precisely
 // because compose's direct, unfiltered pane sends neither.
-describe('EgressAdmissionPane DecisionsView — withheld (PA)', () => {
-  const PARTIALLY_WITHHELD: DecisionsResponse = {
+//
+// `withheld` now counts only UNLABELLED records (gateway/egress_view.py),
+// never "records hidden from this viewer" -- a count of records belonging
+// to other nations is itself information about those nations
+// (releasability/AccessDenied.tsx). These fixtures are deliberately framed
+// as "N unlabelled records", not "N records hidden from this viewer".
+describe('EgressAdmissionPane DecisionsView — withheld', () => {
+  const SOME_UNLABELLED_WITHHELD: DecisionsResponse = {
     destination: 'system:c2-stand-in-atl',
     policy_version: 'policy-test',
     corpus_version: 'corpus-test',
@@ -132,15 +138,17 @@ describe('EgressAdmissionPane DecisionsView — withheld (PA)', () => {
     records: [admit('dis:1:1:1000')],
   };
 
-  it('renders the withheld line with the count and viewer nations', () => {
-    const html = renderToStaticMarkup(<DecisionsView data={PARTIALLY_WITHHELD} />);
-    expect(html).toContain('withheld');
+  it('renders the withheld line as unlabelled, shown to no one, with viewer nations', () => {
+    const html = renderToStaticMarkup(<DecisionsView data={SOME_UNLABELLED_WITHHELD} />);
     expect(html).toContain('2');
-    expect(html).toContain('ATL');
+    expect(html).toContain('withheld — unlabelled, so shown to no one, including fully entitled viewers');
+    expect(html).toContain('viewing as ATL');
     expect(html).toMatch(/2<\/span>[\s\S]*?withheld/);
+    // Never implies the count is about hidden nation-attributed records.
+    expect(html).not.toContain('not releasable to your nations');
   });
 
-  const ALL_WITHHELD: DecisionsResponse = {
+  const ALL_RECORDS_UNLABELLED: DecisionsResponse = {
     destination: 'system:c2-stand-in-atl',
     policy_version: 'policy-test',
     corpus_version: 'corpus-test',
@@ -151,12 +159,31 @@ describe('EgressAdmissionPane DecisionsView — withheld (PA)', () => {
     records: [],
   };
 
-  it('renders the all-withheld sentence, never "No records", when every record is withheld (ADR-0035)', () => {
-    const html = renderToStaticMarkup(<DecisionsView data={ALL_WITHHELD} />);
-    expect(html).toContain('All');
+  it('shows "no records visible" plus the withheld line when records is empty (ADR-0035)', () => {
+    const html = renderToStaticMarkup(<DecisionsView data={ALL_RECORDS_UNLABELLED} />);
+    expect(html).toContain('No records for this destination are visible to you.');
     expect(html).toContain('15');
-    expect(html).toContain('withheld from your view');
-    expect(html).not.toContain('No records for this destination.');
+    expect(html).toContain('withheld — unlabelled, so shown to no one, including fully entitled viewers');
+    // The old sentence implied withheld counted every hidden record -- it
+    // must not reappear.
+    expect(html).not.toContain('are withheld from your view');
+  });
+
+  const NO_RECORDS_NO_WITHHELD: DecisionsResponse = {
+    destination: 'system:c2-stand-in-atl',
+    policy_version: 'policy-test',
+    corpus_version: 'corpus-test',
+    admitted: 0,
+    refused: 0,
+    withheld: 0,
+    viewer_nations: ['ATL'],
+    records: [],
+  };
+
+  it('shows only "no records visible" when records is empty and withheld is 0', () => {
+    const html = renderToStaticMarkup(<DecisionsView data={NO_RECORDS_NO_WITHHELD} />);
+    expect(html).toContain('No records for this destination are visible to you.');
+    expect(html).not.toContain('withheld');
   });
 
   const NO_WITHHELD_FIELD: DecisionsResponse = {

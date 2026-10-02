@@ -58,10 +58,24 @@ export function DecisionsView({ data }: { data: DecisionsResponse }) {
         </div>
       </div>
 
+      {/* `withheld` counts only UNLABELLED records -- gateway/egress_view.py's
+          `filter_decisions` recomputes it that way, never as "records
+          hidden from this viewer": a count of records belonging to other
+          nations is itself information about those nations
+          (releasability/AccessDenied.tsx: "It never says how many rows
+          were withheld, or which nations they belong to. A count of what
+          you cannot see is information about it."). An unlabelled record
+          cannot be scoped to any nation, so it is shown to no one --
+          including a fully entitled viewer (ShapeErrorBanner.tsx: "withheld
+          from everyone, including fully entitled subjects") -- and saying
+          so leaks nothing. `viewer_nations`, if present, is still shown:
+          naming WHO is viewing is not the same as counting what was hidden
+          from them. */}
       {hasWithheld && (
         <div className="mb-1 text-[11px] text-slate-400">
-          <span className="font-mono text-amber-300">{data.withheld}</span> withheld — not
-          releasable to your nations ({(data.viewer_nations ?? []).join(', ')})
+          <span className="font-mono text-amber-300">{data.withheld}</span> withheld —
+          unlabelled, so shown to no one, including fully entitled viewers
+          {data.viewer_nations ? ` · viewing as ${data.viewer_nations.join(', ')}` : ''}
         </div>
       )}
 
@@ -78,17 +92,19 @@ export function DecisionsView({ data }: { data: DecisionsResponse }) {
         </div>
       )}
 
-      {total === 0 && hasWithheld ? (
-        // ADR-0035: absence must not render as something else. A viewer
-        // whose nations cover none of the pane's records saw EMPTY, which
-        // reads identically to "nothing for this destination" unless this
-        // branch says, explicitly, that something exists and is withheld.
+      {total === 0 ? (
+        // ADR-0035 still applies -- absence must not render as something
+        // else -- but the branch that used to say "All N records ... are
+        // withheld from your view" assumed `withheld` covered every record
+        // hidden from this viewer, which was exactly the leak this fix
+        // removes: `withheld` now counts only unlabelled records, so it is
+        // never a count of records belonging to other nations and must
+        // never be presented as one. The withheld line above (hasWithheld)
+        // already says what can safely be said; this line only reports
+        // that nothing is visible here, not how much is hidden or why.
         <div className="text-xs text-slate-500">
-          All <span className="font-mono text-amber-300">{data.withheld}</span> records for this
-          destination are withheld from your view.
+          No records for this destination are visible to you.
         </div>
-      ) : total === 0 ? (
-        <div className="text-xs text-slate-500">No records for this destination.</div>
       ) : (
         <table className="w-full text-xs font-mono">
           <thead>

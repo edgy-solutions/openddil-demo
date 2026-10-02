@@ -46,12 +46,14 @@ UNLABELLED = _record("dis:9:1:1000", None, releasable_to=[])
 
 def test_atl_viewer_sees_atl_and_atl_releasable_bdr():
     """ATL-originated is shown; BDR-originated releasable_to [ATL] is shown;
-    a BDR-only record is withheld."""
+    a BDR-only record is hidden -- but it is LABELLED (originator BDR), so it
+    is not counted in `withheld`: that would leak BDR's record volume to an
+    ATL-only viewer, exactly the AccessDenied rule this fix exists for."""
     payload = _payload([ATL_ADMIT, BDR_RELEASABLE_TO_ATL, BDR_ONLY])
     view = filter_decisions(payload, ["ATL"])
     ids = {r["asset_id"] for r in view["records"]}
     assert ids == {ATL_ADMIT["asset_id"], BDR_RELEASABLE_TO_ATL["asset_id"]}
-    assert view["withheld"] == 1
+    assert view["withheld"] == 0
 
 
 def test_atl_and_bdr_viewer_sees_both_nations():
@@ -71,11 +73,15 @@ def test_unlabelled_record_is_withheld_from_every_viewer_including_all_nations()
         assert view["withheld"] == 1
 
 
-def test_empty_nations_withholds_everything():
+def test_empty_nations_hides_everything_but_withholds_nothing_unlabelled():
+    """A viewer with no entitlements sees no records -- but all three are
+    LABELLED, so none is counted in `withheld`. `withheld` is not "how many
+    are hidden from me"; it is "how many are unlabelled", which for this
+    payload is zero regardless of who is asking."""
     payload = _payload([ATL_ADMIT, BDR_RELEASABLE_TO_ATL, BDR_ONLY])
     view = filter_decisions(payload, [])
     assert view["records"] == []
-    assert view["withheld"] == 3
+    assert view["withheld"] == 0
     assert view["viewer_nations"] == []
 
 
@@ -88,6 +94,24 @@ def test_counts_are_recomputed_over_visible_records_not_upstream():
     view = filter_decisions(payload, ["ATL"])
     assert view["admitted"] == 1
     assert view["refused"] == 1
+    assert view["withheld"] == 0
+
+
+def test_withheld_does_not_leak_other_nations_record_volume():
+    """THE LEAK CASE. An ATL viewer over 6 BDR-only records and 0 unlabelled
+    records must see withheld == 0 -- `total - shown` would have reported 6,
+    telling the ATL viewer exactly how many BDR records exist. Adding one
+    unlabelled record raises withheld to 1 -- unlabelled, so withheld from
+    every viewer, not a count of BDR's volume."""
+    bdr_only = [_record(f"dis:2:1:200{i}", "BDR") for i in range(6)]
+    payload = _payload(bdr_only)
+    view = filter_decisions(payload, ["ATL"])
+    assert view["records"] == []
+    assert view["withheld"] == 0
+
+    payload_with_unlabelled = _payload(bdr_only + [UNLABELLED])
+    view = filter_decisions(payload_with_unlabelled, ["ATL"])
+    assert view["records"] == []
     assert view["withheld"] == 1
 
 
