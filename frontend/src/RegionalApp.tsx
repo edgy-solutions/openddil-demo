@@ -32,6 +32,7 @@ import AssetDeepDive from './components/regional/AssetDeepDive';
 import EngagementWatchlist from './components/regional/EngagementWatchlist';
 import MunitionsInventory from './components/hq/MunitionsInventory';
 import AlertFeed from './components/AlertFeed';
+import ScopeControl from './components/ScopeControl';
 import {
   useFleetAssetsForRegion,
   useAllLogisticsStatus,
@@ -113,25 +114,14 @@ function RegionPulldown({
   // maintainer pulldown (§C.2) will be more prominent because it IS the
   // demo payoff (FOB transport). Asymmetry documented in follow-up #15.
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <span className="text-[10px] text-slate-500 uppercase tracking-wider">
-        {scopeLabel}
-      </span>
-      <select
-        value={selected ?? ''}
-        onChange={(e) => onSelect(e.target.value)}
-        className="bg-slate-800 border border-slate-700 text-slate-200 text-[11px] rounded px-2 py-1"
-        disabled={available.length === 0}
-      >
-        {available.length === 0 ? (
-          <option value="">{emptyLabel}</option>
-        ) : (
-          available.map((r) => (
-            <option key={r} value={r}>{r}</option>
-          ))
-        )}
-      </select>
-    </div>
+    <ScopeControl
+      variant="compact"
+      label={scopeLabel}
+      available={available}
+      selected={selected}
+      onSelect={onSelect}
+      emptyText={emptyLabel}
+    />
   );
 }
 

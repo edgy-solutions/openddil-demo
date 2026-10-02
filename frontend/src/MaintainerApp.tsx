@@ -270,11 +270,26 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // alphabetically, if no ?edge= URL param resolved one. Cold-start
   // tolerant: if no edges observed yet, stays null and pulldown shows
   // its "no edges observed yet" state.
+  //
+  // Also re-homes a STALE selection: a ?edge= naming an edge this viewer
+  // cannot see (wrong tier, or entitlement-filtered out) would otherwise
+  // leave selectedEdge pointing at nothing while ScopeControl's label
+  // names a different, real edge (available[0] in the single-scope case)
+  // -- scoped-to-nothing under a label that says otherwise. Wait for
+  // fleetAll to finish loading first so a mid-flight empty availableEdges
+  // doesn't get mistaken for "this edge doesn't exist".
   useEffect(() => {
-    if (selectedEdge) return;
+    if (!selectedEdge) {
+      if (availableEdges.length === 0) return;
+      setSelectedEdge(availableEdges[0]);
+      return;
+    }
+    if (fleetAll.isLoading) return;
     if (availableEdges.length === 0) return;
-    setSelectedEdge(availableEdges[0]);
-  }, [availableEdges, selectedEdge]);
+    if (!availableEdges.includes(selectedEdge)) {
+      setSelectedEdge(availableEdges[0]);
+    }
+  }, [availableEdges, selectedEdge, fleetAll.isLoading]);
 
   // Keep ?edge= in sync so reload / shared link lands on the same scope.
   useEffect(() => {
