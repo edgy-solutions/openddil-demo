@@ -75,17 +75,26 @@ class FakeTopaz(BaseHTTPRequestHandler):
 
 
 class FakeElectric(BaseHTTPRequestHandler):
-    """Answers the one bounded shape read the visibility check makes."""
+    """Answers the bounded shape read the visibility check makes. Reaches
+    up-to-date on the very first response, as a freshly-created shape with
+    nothing pending in its log would, so the check still makes exactly one
+    request per call -- these tests are about the write route, not about
+    the shape-log-following read itself (see test_pep_cm_visibility_read.py
+    for that)."""
 
     def log_message(self, *a):
         pass
 
     def do_GET(self):  # noqa: N802
         rows = state["visibility_rows"]
-        messages = [{"value": row} for row in rows]
+        messages = [{"key": row.get("asset_id", "row"), "value": row,
+                     "headers": {"operation": "insert"}} for row in rows]
+        messages.append({"headers": {"control": "up-to-date"}})
         out = json.dumps(messages).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(out)))
+        self.send_header("electric-handle", "fake-handle")
+        self.send_header("electric-offset", "0")
         self.end_headers()
         self.wfile.write(out)
 

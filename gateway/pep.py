@@ -517,26 +517,111 @@ def read_cm_visibility_row(asset_id: str, nations: list[str]) -> dict | None:
 
     Kept behind one small function on purpose, so another write path
     can stub this one read in its own tests without re-deriving it.
+
+    Electric answers an `offset=-1` GET with the snapshot taken when the
+    shape was FIRST CREATED, not with the table's live state -- a shape is
+    cached, so a later request for the same table+where gets that same
+    original snapshot back. Anything written since then lives only in the
+    shape's log, reached by following `electric-handle`/`electric-offset`.
+    This function keeps following that log, with no `live=true`, until a
+    message carries `headers.control == "up-to-date"`, applying each insert,
+    update (a merge -- an update may carry only the changed columns) and
+    delete in order, so the row returned reflects what Electric has actually
+    replicated rather than a point-in-time snapshot that may be hours stale.
     """
     where = compose(f"asset_id = {_sql_str(asset_id)}", policy_predicate(nations))
-    url = f"{ELECTRIC}/v1/shape?" + urllib.parse.urlencode({
-        "table": "asset_cm_state", "where": where, "offset": "-1",
-    })
-    try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            if resp.status != 200:
-                raise ElectricUnavailable(f"electric returned HTTP {resp.status}")
-            messages = json.load(resp)
-    except ElectricUnavailable:
-        raise
-    except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
-        raise ElectricUnavailable(f"electric unreachable: {exc}") from exc
-    if not isinstance(messages, list):
-        raise ElectricUnavailable("unexpected shape response shape")
-    for msg in messages:
-        if isinstance(msg, dict) and "value" in msg:
-            return msg["value"]
-    return None
+    base_params = {"table": "asset_cm_state", "where": where}
+    deadline = time.monotonic() + 10
+    handle: str | None = None
+    offset: str | None = None
+    restarted = False
+    rows: dict[str, dict] = {}
+
+    for _attempt in range(20):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ElectricUnavailable("electric visibility read exceeded its time budget")
+        params = dict(base_params)
+        if handle is None:
+            params["offset"] = "-1"
+        else:
+            params["handle"] = handle
+            params["offset"] = offset
+        url = f"{ELECTRIC}/v1/shape?" + urllib.parse.urlencode(params)
+        try:
+            with urllib.request.urlopen(url, timeout=min(10, remaining)) as resp:
+                status = resp.status
+                resp_headers = resp.headers
+                body = resp.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                status, resp_headers, body = 409, exc.headers, b""
+            else:
+                raise ElectricUnavailable(f"electric returned HTTP {exc.code}") from exc
+        except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+            raise ElectricUnavailable(f"electric unreachable: {exc}") from exc
+
+        if status == 409:
+            if restarted:
+                raise ElectricUnavailable("electric returned HTTP 409 twice")
+            restarted = True
+            handle, offset, rows = None, None, {}
+            continue
+        if status != 200:
+            raise ElectricUnavailable(f"electric returned HTTP {status}")
+
+        try:
+            messages = json.loads(body)
+        except Exception as exc:  # noqa: BLE001
+            raise ElectricUnavailable("unexpected shape response shape") from exc
+        if not isinstance(messages, list):
+            raise ElectricUnavailable("unexpected shape response shape")
+
+        up_to_date = False
+        must_refetch = False
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            msg_headers = msg.get("headers")
+            control = msg_headers.get("control") if isinstance(msg_headers, dict) else None
+            if control == "up-to-date":
+                up_to_date = True
+                continue
+            if control == "must-refetch":
+                must_refetch = True
+                break
+            key = msg.get("key") or asset_id
+            operation = msg_headers.get("operation") if isinstance(msg_headers, dict) else None
+            # A delete is honoured whether or not it carries a value: skipping
+            # it would leave a row visible that the shape has dropped.
+            if operation == "delete":
+                rows.pop(key, None)
+                continue
+            value = msg.get("value")
+            if not isinstance(value, dict):
+                continue
+            if operation == "update" and key in rows:
+                rows[key] = {**rows[key], **value}
+            else:
+                rows[key] = dict(value)
+
+        if must_refetch:
+            if restarted:
+                raise ElectricUnavailable("electric sent must-refetch twice")
+            restarted = True
+            handle, offset, rows = None, None, {}
+            continue
+
+        if up_to_date:
+            return next(iter(rows.values()), None)
+
+        new_handle = resp_headers.get("electric-handle") or resp_headers.get("electric-shape-id")
+        new_offset = resp_headers.get("electric-offset")
+        if not new_handle or new_offset is None:
+            raise ElectricUnavailable("electric response missing handle/offset header")
+        handle, offset = new_handle, new_offset
+
+    raise ElectricUnavailable("electric shape did not reach up-to-date within 20 requests")
 
 
 def _component_installed(row: dict, component: str) -> bool:
