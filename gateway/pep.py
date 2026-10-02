@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import sys
 import threading
@@ -46,6 +47,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import egress_view
@@ -65,6 +67,15 @@ TOPAZ_TIMEOUT = float(os.getenv("OPENDDIL_TOPAZ_TIMEOUT", "2.0"))
 # "no pane at this tier", same meaning as ELECTRIC/TOPAZ being required: a
 # deployment that has not wired a pane gets a clean 404, not a guess.
 EGRESS_PANE = os.getenv("OPENDDIL_EGRESS_PANE_URL", "").rstrip("/")
+
+# --- the CM write path --------------------------------------------------------
+# ONE route, one write, one topic. Empty means "not wired at this tier", the
+# same meaning ELECTRIC/TOPAZ/EGRESS_PANE being unset already carries: a
+# deployment that has not configured a write path gets a clean 404, not a
+# half-working route.
+CM_INTAKE_URL = os.getenv("OPENDDIL_CM_INTAKE_URL", "").rstrip("/")
+REPORT_SOURCE = os.getenv("OPENDDIL_REPORT_SOURCE", "operator_report")
+MAX_CM_BODY_BYTES = int(os.getenv("OPENDDIL_MAX_CM_BODY_BYTES", str(8 * 1024)))
 
 # --- how much of a shape this process is willing to hold at once -------------
 #
@@ -145,6 +156,27 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger("pep")
+
+def _load_fault_codes(path: str) -> list:
+    if not path:
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            codes = json.load(f)
+    except Exception as exc:  # noqa: BLE001 -- a config read, not a request
+        log.error("could not read OPENDDIL_FAULT_CODES_PATH=%s: %s", path, exc)
+        return []
+    if not isinstance(codes, list):
+        log.error("OPENDDIL_FAULT_CODES_PATH=%s is not a JSON list", path)
+        return []
+    return codes
+
+
+# Read once at import, like every other upstream config in this file. Tests
+# reach past this by setting the module attribute directly (see
+# test_pep_cm_write.py) rather than by re-importing, because this module's
+# fakes are started once per test module.
+FAULT_CODES = _load_fault_codes(os.getenv("OPENDDIL_FAULT_CODES_PATH", ""))
 
 # The decision log — ADR-0029 Phase 5's mechanism.
 #
@@ -467,6 +499,108 @@ def compose(client_where: str | None, policy_where: str) -> str:
     return "(" + client_where + ") AND (" + policy_where + ")"
 
 
+# --- the CM write path's own visibility check --------------------------------
+class ElectricUnavailable(Exception):
+    """The one bounded Electric shape read behind the CM visibility check
+    failed. A separate type from "zero rows", for the same reason
+    AuthzUnavailable is separate from a deny: one is an outage, the other is
+    a correctly scoped answer that this asset is not visible here."""
+
+
+def read_cm_visibility_row(asset_id: str, nations: list[str]) -> dict | None:
+    """One bounded, non-streaming read of asset_cm_state, filtered through
+    the SAME machinery the read path uses -- `compose`, `policy_predicate`,
+    `_sql_str` -- not a second decision about who may see what. Zero rows
+    means "not visible here", and the caller must read it that way rather
+    than as "does not exist": this write path never confirms or denies that
+    an asset id is real to someone it has not been shown to.
+
+    Kept behind one small function on purpose, so another write path
+    can stub this one read in its own tests without re-deriving it.
+    """
+    where = compose(f"asset_id = {_sql_str(asset_id)}", policy_predicate(nations))
+    url = f"{ELECTRIC}/v1/shape?" + urllib.parse.urlencode({
+        "table": "asset_cm_state", "where": where, "offset": "-1",
+    })
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            if resp.status != 200:
+                raise ElectricUnavailable(f"electric returned HTTP {resp.status}")
+            messages = json.load(resp)
+    except ElectricUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+        raise ElectricUnavailable(f"electric unreachable: {exc}") from exc
+    if not isinstance(messages, list):
+        raise ElectricUnavailable("unexpected shape response shape")
+    for msg in messages:
+        if isinstance(msg, dict) and "value" in msg:
+            return msg["value"]
+    return None
+
+
+def _component_installed(row: dict, component: str) -> bool:
+    """True when `component` names a slot_id in the row's `installed` list.
+    Electric may hand back a jsonb column already decoded or still as a JSON
+    string, depending on how the shape serialised it; both are accepted."""
+    installed = row.get("installed") if isinstance(row, dict) else None
+    if isinstance(installed, str):
+        try:
+            installed = json.loads(installed)
+        except ValueError:
+            installed = []
+    if not isinstance(installed, list):
+        return False
+    return any(isinstance(item, dict) and item.get("slot_id") == component
+               for item in installed)
+
+
+# asset_id has no existing pattern elsewhere in this file; component and
+# fault_code share one, since both are short opaque identifiers rather than
+# free text.
+_ASSET_ID_RE = re.compile(r"^[A-Za-z0-9:._-]{1,64}$")
+_COMPONENT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def _parse_discrepancy_body(payload) -> dict:
+    """The four validated fields, or raise ValueError(reason).
+
+    Unknown keys are ignored. `reported_by`, `recorded_by` and `source` are
+    never read here -- not validated, not ignored-with-a-warning, simply
+    never looked up -- because the only source this route trusts for who
+    reported something is the authenticated subject, and the only source for
+    where a report came from is OPENDDIL_REPORT_SOURCE.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("body must be a JSON object")
+    asset_id = payload.get("asset_id")
+    component = payload.get("component")
+    fault_code = payload.get("fault_code")
+    description = payload.get("description")
+    if not isinstance(asset_id, str) or not _ASSET_ID_RE.match(asset_id):
+        raise ValueError("invalid asset_id")
+    if not isinstance(component, str) or not _COMPONENT_RE.match(component):
+        raise ValueError("invalid component")
+    if not isinstance(fault_code, str) or not _COMPONENT_RE.match(fault_code):
+        raise ValueError("invalid fault_code")
+    if not isinstance(description, str) or not (1 <= len(description) <= 500):
+        raise ValueError("invalid description")
+    return {"asset_id": asset_id, "component": component,
+            "fault_code": fault_code, "description": description}
+
+
+def _cm_record(*, allowed: bool, subject: str, asset_id: str | None,
+               fault_code: str | None, event_id: str | None, reason: str) -> str:
+    """The one decision line for every /cm/discrepancy outcome from the PDP
+    call on, in the field names this write path's audit trail commits to."""
+    decision_id = new_decision_id()
+    record_decision(decision_id=decision_id, allowed=allowed,
+                    subject=subject or None, asset_id=asset_id,
+                    fault_code=fault_code, event_id=event_id, reason=reason,
+                    resource="cm:discrepancy")
+    return decision_id
+
+
 # --- the proxy --------------------------------------------------------------
 PASSTHROUGH_PARAMS = {"table", "offset", "handle", "live", "cursor", "columns", "replica"}
 
@@ -516,6 +650,233 @@ class Pep(BaseHTTPRequestHandler):
                            "reference": ref}).encode()
         self._send(status, body,
                    [("Content-Type", "application/json")] + (headers or []))
+
+    # --- CM write path ----------------------------------------------------------
+    def _content_length(self) -> int:
+        try:
+            return int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            return 0
+
+    def _drain_body(self) -> None:
+        length = self._content_length()
+        if length:
+            try:
+                self.rfile.read(length)
+            except Exception:  # noqa: BLE001 -- best-effort; a deny follows regardless
+                pass
+
+    def _content_type_is_json(self) -> bool:
+        # Parameters such as charset are allowed; only the media type is
+        # checked, exactly as a browser's own `fetch` would set it for a
+        # same-origin JSON POST.
+        ctype = self.headers.get("Content-Type", "")
+        return ctype.split(";", 1)[0].strip().lower() == "application/json"
+
+    def _origin_is_cross_site(self) -> bool:
+        # A MISSING Origin is allowed: a same-origin `fetch` may omit it, and
+        # a server-side caller has no browser origin to send. Defence in
+        # depth, not the only control -- the session cookie's own SameSite
+        # (OPENDDIL_COOKIE_SAMESITE) is the first line.
+        origin = self.headers.get("Origin")
+        if not origin:
+            return False
+        # Hostnames only: the edge proxy forwards `Host: $host`, which drops
+        # the port, while a browser's Origin keeps a non-default one.
+        host = urllib.parse.urlsplit("//" + self.headers.get("Host", "")).hostname or ""
+        origin_host = urllib.parse.urlsplit(origin).hostname or ""
+        return origin_host != host
+
+    def _cm_deny(self, status: int, reason: str, *, subject: str,
+                 asset_id: str | None = None, fault_code: str | None = None,
+                 event_id: str | None = None, headers: list | None = None) -> None:
+        decision_id = _cm_record(allowed=False, subject=subject, asset_id=asset_id,
+                                 fault_code=fault_code, event_id=event_id, reason=reason)
+        log.warning("CM WRITE REFUSED ref=%s reason=%s subject=%s asset_id=%s",
+                    decision_id, reason, subject or "<none>", asset_id or "-")
+        body = json.dumps({"error": "cm discrepancy refused", "cause": reason,
+                           "reference": decision_id}).encode()
+        self._send(status, body, [("Content-Type", "application/json")] + (headers or []))
+
+    def _cm_allow(self, *, subject: str, asset_id: str, fault_code: str,
+                  event_id: str) -> None:
+        _cm_record(allowed=True, subject=subject, asset_id=asset_id,
+                  fault_code=fault_code, event_id=event_id, reason="recorded")
+        self._send(202, json.dumps({"event_id": event_id}).encode(),
+                   [("Content-Type", "application/json")])
+
+    def _handle_cm_fault_codes(self, parsed) -> None:
+        if not FAULT_CODES:
+            self._deny("fault codes not configured at this tier", subject="",
+                       resource=parsed.path, status=404,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+        self._send(200, json.dumps(FAULT_CODES).encode(),
+                   [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
+
+    def _handle_cm_discrepancy(self, parsed) -> None:
+        path = parsed.path
+
+        # Not configured at this tier -> the route is absent, exactly as an
+        # unset EGRESS_PANE gives 404. Checked before anything else: whether
+        # the route exists is a fact about the deployment, not the request.
+        if not FAULT_CODES or not CM_INTAKE_URL:
+            self._drain_body()
+            self._deny("cm write route not configured at this tier", subject="",
+                       resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
+        # --- CSRF defence in depth, checked before the body and before Topaz.
+        if not self._content_type_is_json():
+            self._drain_body()
+            self._deny("Content-Type must be application/json", subject="",
+                       resource=path, status=415)
+            return
+        if self._origin_is_cross_site():
+            self._drain_body()
+            self._deny("cross-site origin", subject="", resource=path, status=403)
+            return
+
+        length = self._content_length()
+        if length > MAX_CM_BODY_BYTES:
+            # NOT drained -- a body this size is refused, not absorbed. The
+            # connection closes rather than desyncing a kept-alive socket on
+            # whatever bytes were never read.
+            self._deny("body too large", subject="", resource=path, status=413,
+                       headers=[("Connection", "close")])
+            return
+        raw = self.rfile.read(length) if length else b""
+
+        try:
+            payload = json.loads(raw or b"{}")
+        except ValueError:
+            self._send(400, json.dumps({"error": "malformed JSON body"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        # Step 1: the principal. No session -> 401, nothing sent upstream --
+        # and, deliberately, no decision recorded: there is no subject yet
+        # for a decision to be about. See step 2 onward for where recording
+        # starts.
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        asset_id_hint = payload.get("asset_id") if isinstance(payload, dict) else None
+        fault_code_hint = payload.get("fault_code") if isinstance(payload, dict) else None
+
+        # Step 2: Topaz, applied verbatim -- this file contains no
+        # authorization logic.
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._cm_deny(503, f"PDP unavailable: {exc}", subject=subject,
+                          asset_id=asset_id_hint, fault_code=fault_code_hint)
+            return
+        if not decision["allow"]:
+            cause = ("subject not in the entitlements corpus"
+                     if not decision["subject_known"]
+                     else "subject holds no nation entitlements")
+            self._cm_deny(403, cause, subject=subject, asset_id=asset_id_hint,
+                          fault_code=fault_code_hint)
+            return
+
+        # Step 3: validate the body.
+        try:
+            fields = _parse_discrepancy_body(payload)
+        except ValueError as exc:
+            self._cm_deny(400, str(exc), subject=subject, asset_id=asset_id_hint,
+                          fault_code=fault_code_hint)
+            return
+        asset_id = fields["asset_id"]
+        component = fields["component"]
+        fault_code = fields["fault_code"]
+        description = fields["description"]
+
+        # Step 4: the fault code must be one this tier was configured with.
+        entry = next((c for c in FAULT_CODES if c.get("code") == fault_code), None)
+        if entry is None:
+            self._cm_deny(400, "unknown fault code", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code)
+            return
+
+        # Step 5: visibility and slot check, through the read path's own
+        # predicate -- never a second decision about who may see the asset.
+        try:
+            row = read_cm_visibility_row(asset_id, decision["allowed_nations"])
+        except ElectricUnavailable as exc:
+            self._cm_deny(502, f"electric unavailable: {exc}", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code)
+            return
+        if row is None:
+            self._cm_deny(404, "asset not visible at this tier", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code)
+            return
+        if not _component_installed(row, component):
+            self._cm_deny(400, "component is not an installed slot on this asset",
+                          subject=subject, asset_id=asset_id, fault_code=fault_code)
+            return
+
+        # Step 6: build the CmEvent -- proto3 JSON field names, exactly as
+        # json_format.Parse expects them on the other end.
+        event_id = str(uuid.uuid4())
+        event = {
+            "eventId": event_id,
+            "assetId": asset_id,
+            "recordedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "recordedBy": subject,
+            "manualDiscrepancy": {
+                "description": description,
+                "severity": entry.get("severity", ""),
+                "source": REPORT_SOURCE,
+                "component": component,
+                "faultCode": fault_code,
+            },
+        }
+        event_body = json.dumps(event).encode()
+
+        # Step 7: hand it to cm-intake. A non-2xx or an exception is an
+        # upstream fault, never a deny -- authorization was never in
+        # question here, only whether the write landed.
+        req = urllib.request.Request(
+            CM_INTAKE_URL, data=event_body,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15):
+                pass  # 2xx -- urlopen raises HTTPError for anything else
+        except urllib.error.HTTPError as exc:
+            self._cm_deny(502, f"cm-intake returned HTTP {exc.code}", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code, event_id=event_id)
+            return
+        except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+            self._cm_deny(502, f"cm-intake unreachable: {exc}", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code, event_id=event_id)
+            return
+
+        # Step 9: recorded.
+        self._cm_allow(subject=subject, asset_id=asset_id, fault_code=fault_code,
+                       event_id=event_id)
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/cm/discrepancy":
+            self._handle_cm_discrepancy(parsed)
+            return
+        # Every other POST path is refused. The body is drained first so a
+        # kept-alive HTTP/1.1 socket is not left desynced by an unread
+        # request body ahead of whatever the client sends next.
+        self._drain_body()
+        self._deny("unknown path", subject="", resource=parsed.path, status=404)
 
     # --- authentication routes ------------------------------------------------
     def _sid(self):
@@ -785,6 +1146,9 @@ class Pep(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/egress/"):
             self._handle_egress(parsed)
+            return
+        if parsed.path == "/cm/fault-codes":
+            self._handle_cm_fault_codes(parsed)
             return
         if not parsed.path.startswith("/v1/shape"):
             self._deny("unknown path", subject="", resource=parsed.path, status=404)

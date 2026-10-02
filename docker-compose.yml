@@ -778,6 +778,65 @@ services:
       ontology-overlay:
         condition: service_completed_successfully
 
+  # =============================================================================
+  # cm-intake — 3 instances, one per edge. Each is the one CM event
+  # log's write surface for its edge: http_server -> protobuf from_json
+  # CmEvent -> kafka cm-events, key = asset_id. cm-service-bootstrap
+  # registers a cm-events subscription against all three edge brokers
+  # (CM_EDGE_CLUSTERS above), so all three need an intake in front of them.
+  #
+  # There is no PEP service in this compose file, so nothing proxies to
+  # these in the demo stack today; a compose proof posts straight to
+  # cm-intake. Only the -01 instance maps a host port, mirroring
+  # redpanda-connect-01's diagnostic-port convention above.
+  # =============================================================================
+  cm-intake-01:
+    container_name: openddil-demo-cm-intake-01
+    image: docker.redpanda.com/redpandadata/connect:latest
+    ports:
+      - "4197:4197"
+    environment:
+      REDPANDA_BROKER: redpanda-edge-01:9092
+    volumes:
+      - ./cm-intake.yaml:/connect.yaml
+      - ../openddil-contracts/proto:/proto
+    command: ["--chilled", "run", "/connect.yaml"]
+    depends_on:
+      redpanda-edge-01:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_started
+
+  cm-intake-02:
+    container_name: openddil-demo-cm-intake-02
+    image: docker.redpanda.com/redpandadata/connect:latest
+    environment:
+      REDPANDA_BROKER: redpanda-edge-02:9092
+    volumes:
+      - ./cm-intake.yaml:/connect.yaml
+      - ../openddil-contracts/proto:/proto
+    command: ["--chilled", "run", "/connect.yaml"]
+    depends_on:
+      redpanda-edge-02:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_started
+
+  cm-intake-03:
+    container_name: openddil-demo-cm-intake-03
+    image: docker.redpanda.com/redpandadata/connect:latest
+    environment:
+      REDPANDA_BROKER: redpanda-edge-03:9092
+    volumes:
+      - ./cm-intake.yaml:/connect.yaml
+      - ../openddil-contracts/proto:/proto
+    command: ["--chilled", "run", "/connect.yaml"]
+    depends_on:
+      redpanda-edge-03:
+        condition: service_healthy
+      toxiproxy:
+        condition: service_started
+
   # NOTE: the `simulator` service was removed in Phase 4b (ADR-0019 era).
   # Real ingestion goes through DIS / sim-a / proprietary feeds; the UI now
   # reads pipeline state from Postgres via ElectricSQL, not from a mock

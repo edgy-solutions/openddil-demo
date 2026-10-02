@@ -1,0 +1,99 @@
+logger:
+  level: INFO
+  format: logfmt
+  add_timestamp: true
+
+# =============================================================================
+# cm-intake — the one CM event log
+# =============================================================================
+# One HTTP route in, one Kafka topic out. The PEP is the only caller that
+# matters in a real deployment (it is the only thing a NetworkPolicy lets
+# reach this path at any tier), but this container does none of that
+# enforcement itself — it is a transport, not a second gate. By design the
+# same route also takes the BIT path added later: cm-events is the one CM
+# intake log, and everything downstream (Restate at each tier, the upward
+# relay) subscribes to it once rather than to one topic per report kind.
+# =============================================================================
+
+input:
+  http_server:
+    address: 0.0.0.0:4197
+    path: /cm-events
+    allowed_verbs: [ POST ]
+
+pipeline:
+  processors:
+    - try:
+      # BOUNDED, EXPLICITLY. The HTTP server has already buffered the body
+      # by the time any processor runs, so this is a stated ceiling on what
+      # is accepted rather than a streaming guard — the same ceiling the PEP
+      # itself enforces on the way in (OPENDDIL_MAX_CM_BODY_BYTES, default
+      # 8 KiB), so a body too large to be a real report is refused here too,
+      # not only at the gateway.
+      - mapping: |
+          root = if content().length() > 8192 {
+            throw("request body exceeds the 8 KiB bound")
+          } else {
+            this
+          }
+
+      # The key THIS topic is partitioned by. Refused up front — before the
+      # protobuf mapping — because a message with no asset id is not a
+      # malformed CmEvent, it is not a CmEvent at all: there is nothing to
+      # key it by, and nothing downstream could group it into an episode.
+      #
+      # A local variable carries the asset id rather than reading it back via
+      # meta("kafka_key") in the same mapping: a `meta` assignment earlier in
+      # a mapping is not visible to a `meta(...)` read later in that same
+      # mapping (confirmed empirically against this build), so reading back
+      # the just-set meta always saw null and refused every request.
+      - mapping: |
+          let asset_id = this.assetId.or("")
+          meta kafka_key = $asset_id
+          root = if $asset_id == "" {
+            throw("assetId is required")
+          } else {
+            this
+          }
+
+      # Proto3 JSON -> wire bytes. `from_json` is strict about unknown
+      # fields by construction (it is this strictness the compose proof
+      # exercises), so a client-side typo in a field name fails here rather
+      # than silently dropping the field it meant to set.
+      - protobuf:
+          operator: from_json
+          message: openddil.configuration.v1.CmEvent
+          import_paths: [ "/proto" ]
+
+    # Anything the try block threw -- oversize, no asset id, malformed JSON,
+    # an unmappable or unknown field -- lands here. Logged once, then handed
+    # to the `reject` output below so the HTTP caller's response reflects
+    # the actual produce outcome rather than the generic success a fire-and-
+    # forget accept would have given it.
+    - catch:
+      - log:
+          level: WARN
+          message: "cm-intake refused: ${! error() }"
+      - mapping: |
+          meta reject_reason = error()
+
+output:
+  switch:
+    cases:
+      - check: meta("reject_reason") != null
+        output:
+          reject: '${! meta("reject_reason") }'
+      - output:
+          # THE LEGACY kafka OUTPUT, on purpose: ack_replicas is what makes
+          # the produce synchronous all the way to the HTTP caller, so a
+          # broker that never acks the write surfaces as a failed HTTP
+          # response rather than a 2xx for a message that was never
+          # committed. http_server's own synchronous request handling is
+          # what ties that ack (or this component's reject above) back to
+          # the response the caller sees.
+          kafka:
+            addresses: [ "${REDPANDA_BROKER:redpanda-edge-01:9092}" ]
+            topic: cm-events
+            key: '${! meta("kafka_key") }'
+            ack_replicas: true
+            max_in_flight: 1
