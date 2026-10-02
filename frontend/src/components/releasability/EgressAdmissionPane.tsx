@@ -39,6 +39,10 @@ function tallyRefusals(records: DecisionRecord[]): [string, number][] {
 export function DecisionsView({ data }: { data: DecisionsResponse }) {
   const total = data.records.length;
   const tally = tallyRefusals(data.records);
+  // Present only when the PEP filtered this response — see
+  // useEgressAdmission.ts's `DecisionsResponse.withheld`. Compose's direct,
+  // unfiltered pane sends neither field, and the pane withholds nothing.
+  const hasWithheld = typeof data.withheld === 'number' && data.withheld > 0;
 
   return (
     <div>
@@ -54,6 +58,13 @@ export function DecisionsView({ data }: { data: DecisionsResponse }) {
         </div>
       </div>
 
+      {hasWithheld && (
+        <div className="mb-1 text-[11px] text-slate-400">
+          <span className="font-mono text-amber-300">{data.withheld}</span> withheld — not
+          releasable to your nations ({(data.viewer_nations ?? []).join(', ')})
+        </div>
+      )}
+
       {tally.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
           {/* A tally alongside the rows, not instead of them — the spec is
@@ -67,7 +78,16 @@ export function DecisionsView({ data }: { data: DecisionsResponse }) {
         </div>
       )}
 
-      {total === 0 ? (
+      {total === 0 && hasWithheld ? (
+        // ADR-0035: absence must not render as something else. A viewer
+        // whose nations cover none of the pane's records saw EMPTY, which
+        // reads identically to "nothing for this destination" unless this
+        // branch says, explicitly, that something exists and is withheld.
+        <div className="text-xs text-slate-500">
+          All <span className="font-mono text-amber-300">{data.withheld}</span> records for this
+          destination are withheld from your view.
+        </div>
+      ) : total === 0 ? (
         <div className="text-xs text-slate-500">No records for this destination.</div>
       ) : (
         <table className="w-full text-xs font-mono">

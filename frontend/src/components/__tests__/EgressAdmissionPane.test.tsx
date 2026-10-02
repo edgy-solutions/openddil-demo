@@ -112,3 +112,66 @@ describe('EgressAdmissionPane DecisionsView', () => {
     expect(admitCount).toBe(8);
   });
 });
+
+// =============================================================================
+// PA: the egress pane behind the PEP — withheld/viewer_nations rendering
+// =============================================================================
+// Shaped like the PEP's filtered response (gateway/egress_view.py), not the
+// compose pane's own answer: `withheld` and `viewer_nations` are the two
+// fields the PEP adds, and they are optional on DecisionsResponse precisely
+// because compose's direct, unfiltered pane sends neither.
+describe('EgressAdmissionPane DecisionsView — withheld (PA)', () => {
+  const PARTIALLY_WITHHELD: DecisionsResponse = {
+    destination: 'system:c2-stand-in-atl',
+    policy_version: 'policy-test',
+    corpus_version: 'corpus-test',
+    admitted: 1,
+    refused: 0,
+    withheld: 2,
+    viewer_nations: ['ATL'],
+    records: [admit('dis:1:1:1000')],
+  };
+
+  it('renders the withheld line with the count and viewer nations', () => {
+    const html = renderToStaticMarkup(<DecisionsView data={PARTIALLY_WITHHELD} />);
+    expect(html).toContain('withheld');
+    expect(html).toContain('2');
+    expect(html).toContain('ATL');
+    expect(html).toMatch(/2<\/span>[\s\S]*?withheld/);
+  });
+
+  const ALL_WITHHELD: DecisionsResponse = {
+    destination: 'system:c2-stand-in-atl',
+    policy_version: 'policy-test',
+    corpus_version: 'corpus-test',
+    admitted: 0,
+    refused: 0,
+    withheld: 15,
+    viewer_nations: ['BDR'],
+    records: [],
+  };
+
+  it('renders the all-withheld sentence, never "No records", when every record is withheld (ADR-0035)', () => {
+    const html = renderToStaticMarkup(<DecisionsView data={ALL_WITHHELD} />);
+    expect(html).toContain('All');
+    expect(html).toContain('15');
+    expect(html).toContain('withheld from your view');
+    expect(html).not.toContain('No records for this destination.');
+  });
+
+  const NO_WITHHELD_FIELD: DecisionsResponse = {
+    destination: 'system:c2-stand-in-atl',
+    policy_version: 'policy-test',
+    corpus_version: 'corpus-test',
+    admitted: 8,
+    refused: 21,
+    records: FIXTURE.records,
+    // withheld/viewer_nations intentionally absent — compose's direct pane.
+  };
+
+  it('renders exactly as before when withheld is absent (compose, unfiltered pane)', () => {
+    const html = renderToStaticMarkup(<DecisionsView data={NO_WITHHELD_FIELD} />);
+    expect(html).not.toContain('withheld');
+    expect(html).toMatch(/8<\/span>[\s\S]*?of[\s\S]*?29/);
+  });
+});

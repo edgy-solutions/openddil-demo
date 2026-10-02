@@ -49,6 +49,14 @@ export interface DecisionsResponse {
   admitted: number;
   refused: number;
   records: DecisionRecord[];
+  /** How many of the pane's records this viewer's nations do not cover —
+   *  present only when the PEP filtered this response (gateway/egress_view.py).
+   *  Optional because compose's direct, unfiltered pane sends neither this
+   *  nor `viewer_nations`. */
+  withheld?: number;
+  /** The nations the PEP resolved for this viewer (sorted), present under
+   *  the same condition as `withheld`. */
+  viewer_nations?: string[];
 }
 
 export interface EgressAdmissionResult {
@@ -85,13 +93,22 @@ export function useEgressAdmission(destination: string): EgressAdmissionResult {
         const body = await res.json().catch(() => null);
 
         if (res.status === 503 && body?.error) {
-          // pane_api.py's outage response — see its do_GET handler.
+          // Either pane_api.py's own outage response (`detail`) or the
+          // PEP's relayed one (`cause` — see pep.py's `_deny`, which never
+          // writes `detail`). The two surfaces disagree on the field name,
+          // not on the meaning, so both are read here rather than picking one.
+          const policyUnavailableDetail =
+            typeof body.detail === 'string'
+              ? body.detail
+              : typeof body.cause === 'string'
+                ? body.cause
+                : null;
           setResult({
             data: null,
             isLoading: false,
             isError: false,
             isPolicyUnavailable: true,
-            policyUnavailableDetail: typeof body.detail === 'string' ? body.detail : null,
+            policyUnavailableDetail,
           });
           return;
         }

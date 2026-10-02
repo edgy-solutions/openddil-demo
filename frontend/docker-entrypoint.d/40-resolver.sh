@@ -73,7 +73,8 @@ else
     echo "40-resolver.sh: session gate OFF — the shell is public (no OIDC PEP configured)"
 fi
 
-# __EGRESS_PANE_UPSTREAM__ / __EGRESS_PANE_PORT__ / __EGRESS_PANE_OFF__
+# __EGRESS_PANE_UPSTREAM__ / __EGRESS_PANE_PORT__ / __EGRESS_PANE_OFF__ /
+# __EGRESS_PANE_REWRITE__
 #
 # The egress admission pane (egress/pane_api.py) is HUB-ONLY: it exists only
 # where the chart's releasability.enabled renders egress.yaml's
@@ -85,22 +86,58 @@ fi
 # 502/resolver error on first request — indistinguishable from an outage. A
 # literal `return 404` said in advance is the honest answer: this tier has no
 # pane to reach.
+#
+# FOUR MODES, CHECKED IN THIS ORDER, because "an upstream is set" and
+# "the gate is on" and "go via the PEP" are three independent facts and the
+# wrong priority between them is how the cross-nation leak this closes got
+# shipped in the first place.
 egress_pane_upstream="${OPENDDIL_EGRESS_PANE_UPSTREAM:-}"
 egress_pane_port="${OPENDDIL_EGRESS_PANE_PORT:-8090}"
-if [ -n "$egress_pane_upstream" ]; then
+if [ "${OPENDDIL_EGRESS_PANE_VIA_PEP:-off}" = "on" ]; then
+    # (a) THROUGH THE PEP. Same upstream the read path already uses
+    # ($pep_upstream, computed above), on the PEP's own port, with the path
+    # left UNCHANGED — the PEP's own route expects `/egress/decisions`, not
+    # a stripped `/decisions`. The PEP asks Topaz for the viewer's nations
+    # and filters the pane's answer down to them before the browser ever
+    # sees it (gateway/egress_view.py); this location just has to not get in
+    # the way of that.
+    sed -i "s/__EGRESS_PANE_UPSTREAM__/${pep_upstream}/g" "$conf"
+    sed -i "s/__EGRESS_PANE_PORT__/8080/g" "$conf"
+    sed -i "s|__EGRESS_PANE_OFF__||g" "$conf"
+    sed -i "s|__EGRESS_PANE_REWRITE__||g" "$conf"
+    echo "40-resolver.sh: egress pane -> via PEP (${pep_upstream}:8080), path unchanged"
+elif [ -n "$egress_pane_upstream" ] && [ "${OPENDDIL_SESSION_GATE:-off}" = "on" ]; then
+    # (b) FAIL CLOSED. A direct pane upstream was set, AND the shell's
+    # session gate is on, AND we are not going via the PEP — that is a
+    # gated shell with an ungated hole straight to the pane behind it,
+    # which is the cross-nation leak this whole change closes. Refuse
+    # rather than serve the pane's unfiltered, every-nation answer to
+    # anyone who can reach this location.
+    sed -i "s/__EGRESS_PANE_UPSTREAM__/unset-egress-pane-via-pep-required/g" "$conf"
+    sed -i "s/__EGRESS_PANE_PORT__/8090/g" "$conf"
+    sed -i "s|__EGRESS_PANE_OFF__|default_type application/json; return 404 '{\"error\":\"egress pane is served through the PEP when the session gate is on\"}';|g" "$conf"
+    sed -i "s|__EGRESS_PANE_REWRITE__||g" "$conf"
+    echo "40-resolver.sh: WARNING egress pane -> blocked direct access behind a gated shell (set OPENDDIL_EGRESS_PANE_VIA_PEP=on instead)"
+elif [ -n "$egress_pane_upstream" ]; then
+    # (c) DIRECT, gate off — exactly today's behaviour. Correct only where
+    # there is no session to bypass, i.e. compose.
     sed -i "s/__EGRESS_PANE_UPSTREAM__/${egress_pane_upstream}/g" "$conf"
     sed -i "s/__EGRESS_PANE_PORT__/${egress_pane_port}/g" "$conf"
     sed -i "s|__EGRESS_PANE_OFF__||g" "$conf"
-    echo "40-resolver.sh: egress pane -> ${egress_pane_upstream}:${egress_pane_port}"
+    sed -i 's|__EGRESS_PANE_REWRITE__|rewrite ^/egress/(.*)$ /$1 break;|g' "$conf"
+    echo "40-resolver.sh: egress pane -> ${egress_pane_upstream}:${egress_pane_port} (direct)"
 else
-    # Still substitute the other two placeholders — with harmless values,
-    # never left in the config — so `nginx -t` parses a complete location
-    # block (a literal port after $upstream_egress_pane: and a proxy_pass
-    # directive nginx can validate syntactically) even though the `return
-    # 404` above makes both unreachable at runtime.
+    # (d) NOTHING SET — no pane at this tier, as today.
+    #
+    # Still substitute the other placeholders — with harmless values, never
+    # left in the config — so `nginx -t` parses a complete location block (a
+    # literal port after $upstream_egress_pane: and a proxy_pass directive
+    # nginx can validate syntactically) even though the `return 404` above
+    # makes both unreachable at runtime.
     sed -i "s/__EGRESS_PANE_UPSTREAM__/unset-no-egress-pane-at-this-tier/g" "$conf"
     sed -i "s/__EGRESS_PANE_PORT__/8090/g" "$conf"
     sed -i "s|__EGRESS_PANE_OFF__|default_type application/json; return 404 '{\"error\":\"no egress pane at this tier\"}';|g" "$conf"
+    sed -i "s|__EGRESS_PANE_REWRITE__||g" "$conf"
     echo "40-resolver.sh: egress pane -> none (404) — no OPENDDIL_EGRESS_PANE_UPSTREAM set"
 fi
 
