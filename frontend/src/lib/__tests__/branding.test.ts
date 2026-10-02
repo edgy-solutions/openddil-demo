@@ -19,6 +19,7 @@ const BASE: Deployment = {
   map: { image: '/map.png', bounds: { lat_min: 0, lat_max: 1, lon_min: 0, lon_max: 1 } },
   liveness: DEFAULT_LIVENESS,
   tier: { id: 'edge-01', scope: null, has_children: false, parent: 'region-east' },
+  releasedRecordsPanes: [],
 };
 
 describe('applyBranding', () => {
