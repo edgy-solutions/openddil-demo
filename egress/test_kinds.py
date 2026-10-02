@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from kinds import load_kinds  # noqa: E402
+from kinds import load_declarations, load_kinds  # noqa: E402
 
 # Neutral fixture name per the rule: `KindA`, not a real registry's kind.
 KIND_A_SCHEMA = {
@@ -51,3 +51,79 @@ def test_valid_and_invalid_instances_give_none_and_an_error(tmp_path):
     error = validators["KindA"]({})
     assert isinstance(error, str)
     assert error
+
+
+# --- load_declarations -----------------------------------------------------
+
+# Neutral fixture per the rule: pointers chosen to be distinct from each
+# other so a test that reads the wrong one fails loudly.
+KIND_A_DECLARED = dict(KIND_A_SCHEMA)
+KIND_A_DECLARED["x-openddil"] = {
+    "key": "/ref",
+    "label": "/marking",
+    "owning_tier": "/tier",
+    "episode": {
+        "asset": "/subject",
+        "component": "/what/part",
+        "fault_code": "/what/code",
+    },
+    "observed_at": "/what/seen_at",
+    "sources": "/reports",
+    "picture": "/context",
+}
+
+
+def test_load_declarations_reads_the_x_openddil_block(tmp_path):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(KIND_A_DECLARED))
+
+    declarations = load_declarations(tmp_path)
+
+    decl = declarations["KindA"]
+    assert decl.key == "/ref"
+    assert decl.label == "/marking"
+    assert decl.owning_tier == "/tier"
+    assert decl.episode.asset == "/subject"
+    assert decl.episode.component == "/what/part"
+    assert decl.episode.fault_code == "/what/code"
+    assert decl.observed_at == "/what/seen_at"
+    assert decl.sources == "/reports"
+    assert decl.picture == "/context"
+
+
+def test_load_declarations_missing_key_raises_naming_the_file(tmp_path):
+    broken = dict(KIND_A_DECLARED)
+    broken["x-openddil"] = {
+        "label": "/marking",
+        "owning_tier": "/tier",
+        "episode": {
+            "asset": "/subject",
+            "component": "/what/part",
+            "fault_code": "/what/code",
+        },
+    }
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(broken))
+
+    with pytest.raises(Exception) as exc:
+        load_declarations(tmp_path)
+    assert "KindA.schema.json" in str(exc.value)
+
+
+def test_a_schema_without_declarations_is_absent_not_an_error(tmp_path):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(KIND_A_DECLARED))
+    bare = {k: v for k, v in KIND_A_SCHEMA.items() if k != "x-openddil"}
+    (tmp_path / "KindB.schema.json").write_text(json.dumps(bare))
+
+    declarations = load_declarations(tmp_path)
+
+    assert set(declarations) == {"KindA"}
+
+
+def test_key_and_label_alone_load_with_no_episode(tmp_path):
+    only = {k: v for k, v in KIND_A_SCHEMA.items() if k != "x-openddil"}
+    only["x-openddil"] = {"key": "/ref", "label": "/marking"}
+    (tmp_path / "KindB.schema.json").write_text(json.dumps(only))
+
+    decl = load_declarations(tmp_path)["KindB"]
+
+    assert (decl.key, decl.label) == ("/ref", "/marking")
+    assert decl.owning_tier is None and decl.episode is None

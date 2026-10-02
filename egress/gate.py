@@ -53,6 +53,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping
 
+import pointer
+
 TOPAZ = os.getenv("OPENDDIL_TOPAZ_URL", "http://topaz:8383").rstrip("/")
 TOPAZ_TIMEOUT = float(os.getenv("OPENDDIL_TOPAZ_TIMEOUT", "2.0"))
 
@@ -310,13 +312,12 @@ def carries_classification(record: Mapping[str, Any]) -> str | None:
     return None
 
 
-def classify(record: Mapping[str, Any]) -> str:
-    """The record's releasability class — its shape, independent of any
-    destination. Predicting counts per class is only meaningful because this
-    function never looks at who is asking."""
-    if carries_classification(record):
-        return CLASS_CLASSIFIED
-    label = extract_label(record)
+def classify_label(label: Label) -> str:
+    """The releasability class of an ALREADY-EXTRACTED label. Factored out
+    of `classify` so a gate reading its label from a declared pointer
+    (`label_pointer`) classifies the SAME label it decides over, rather than
+    `classify` silently re-deriving a different one from the record's top
+    level / `provenance`."""
     if not label.is_labelled:
         return CLASS_UNLABELLED
     if label.originator_nation:
@@ -324,6 +325,38 @@ def classify(record: Mapping[str, Any]) -> str:
                 else CLASS_AUTHORED_NO_RELEASE)
     return (CLASS_AGGREGATE_RELEASED if label.releasable_to
             else CLASS_AGGREGATE_EMPTY)
+
+
+def classify(record: Mapping[str, Any]) -> str:
+    """The record's releasability class — its shape, independent of any
+    destination. Predicting counts per class is only meaningful because this
+    function never looks at who is asking.
+
+    Reads the label from the top level / `provenance`, exactly as
+    `extract_label` does. A gate with a `label_pointer` classifies through
+    `classify_label` directly in `decide`, not through this function — see
+    `classify_label`'s docstring."""
+    if carries_classification(record):
+        return CLASS_CLASSIFIED
+    return classify_label(extract_label(record))
+
+
+def extract_label_at(record: Mapping[str, Any], label_pointer: str) -> Label:
+    """Read the label from the mapping at `label_pointer`, for a kind that
+    declares where its own label lives rather than carrying it at the top
+    level or under `provenance`.
+
+    A missing mapping — the pointer does not resolve, or resolves to
+    something that is not an object — is UNLABELLED, not an error: the
+    declaration says where to look, and finding nothing there is exactly
+    the fact `REASON_UNLABELLED` exists to report."""
+    sub = pointer.get(record, label_pointer, default=None)
+    if not isinstance(sub, Mapping):
+        return Label(originator_nation=None, releasable_to=())
+    return Label(
+        originator_nation=_clean_nation(sub.get("originator_nation")),
+        releasable_to=_clean_nations(sub.get("releasable_to")),
+    )
 
 
 # --- the compile step -------------------------------------------------------
@@ -448,6 +481,7 @@ class EgressGate:
         registry_version: str = "unknown",
         kind: str | None = None,
         kind_validator: Callable[[Mapping], str | None] | None = None,
+        label_pointer: str | None = None,
     ) -> None:
         self.destination = destination
         self.nations = tuple(sorted(
@@ -459,6 +493,12 @@ class EgressGate:
         self.registry_version = registry_version
         self.kind = kind
         self.kind_validator = kind_validator
+        # Where this kind's own schema says its label lives. None (every
+        # destination that existed before kinds did, and any kind-less
+        # route today) means byte-identical behaviour to before this
+        # existed: the label comes from `extract_label` at the top level /
+        # `provenance`, exactly as always.
+        self.label_pointer = label_pointer
         self._predicate = compile_predicate(self.nations)
         self.counts: dict[str, int] = {}
 
@@ -469,6 +509,7 @@ class EgressGate:
         *,
         kind: str | None = None,
         kind_validator: Callable[[Mapping], str | None] | None = None,
+        label_pointer: str | None = None,
     ) -> "EgressGate":
         """Ask the PDP once, then compile. Raises `AuthzUnavailable` — which
         the caller must NOT treat as a refusal of any particular record; it is
@@ -484,6 +525,7 @@ class EgressGate:
             registry_version=answer["registry_version"],
             kind=kind,
             kind_validator=kind_validator,
+            label_pointer=label_pointer,
         )
 
     def _tally(self, key: str) -> None:
@@ -494,8 +536,20 @@ class EgressGate:
         returns a Decision, and every Decision is loggable. The number of
         decisions equals the number of records the gate saw; if it does not,
         the gate has a bug rather than a policy."""
-        record_class = classify(record)
-        label = extract_label(record)
+        # When a kind declares `label_pointer`, read the label from THERE and
+        # classify that same label — never a second, top-level read that
+        # could disagree with the one being decided over. None reproduces
+        # today's behaviour exactly: top level / `provenance`, via
+        # `extract_label`/`classify`.
+        if self.label_pointer is not None:
+            label = extract_label_at(record, self.label_pointer)
+            record_class = (
+                CLASS_CLASSIFIED if carries_classification(record) is not None
+                else classify_label(label)
+            )
+        else:
+            label = extract_label(record)
+            record_class = classify(record)
         # `registry_version` only means anything alongside a declared kind —
         # see the Decision docstring note on why a kind-less gate must not
         # grow this key.

@@ -1,0 +1,670 @@
+"""assembler.py — turns a CM episode into one record of a declared kind
+(ADR-0046, the assembler pass).
+
+cm-service publishes the whole `AsMaintainedRecord` for an asset on
+`asset-cm-state` every time anything about it changes. Nothing on that
+topic is shaped like a kind a destination has agreed to receive: a kind's
+schema wants one record per (asset, component, fault_code) EPISODE, with
+its own field names at its own pointers, carrying a picture built from
+several OTHER sources (hub postgres, the parts-availability topic). This
+module is the one place that gap is closed — pure functions that do the
+shaping, plus an injectable runner that feeds them from Kafka and postgres
+the same way `routes.run_once` feeds `gate.py` from Kafka and the PDP.
+
+WHAT "OPEN" MEANS HERE, AND WHY THERE IS NO STATUS FIELD TO READ
+The real `AsMaintainedRecord.manual_discrepancies` (cm-service
+`src/as_maintained/persistence_model.py`) has no resolved/status marker on
+a `DiscrepancyRecord` — not in the dataclass, not in the wire proto
+(`openddil-contracts/proto/openddil/configuration/v1/discrepancy.proto`),
+and cm-service has no code path that ever removes an entry from that list.
+An episode's only observable state is PRESENCE in `manual_discrepancies`
+with a non-empty `fault_code`; there is no "resolved" to read, only
+"still there" or "gone". `episodes()` below reflects exactly that: it
+filters the list it is given, and a cm-state message that no longer
+carries a given (component, fault_code) pair is how a resolved episode
+looks on this wire, not a flag on a record that stays.
+
+ONE PICTURE SOURCE AT A TIME, ONE RECORD SHAPE
+`assemble()` is pure and synchronous: it takes an already-read `picture`
+dict and already-looked-up `cm_state`/`episode` data and writes the
+declared pointers. The I/O that PRODUCES a `picture` dict — the hub
+postgres read and the in-memory parts-availability lookup — lives in
+`read_asset`/`PartsBook` below and is injected, the same seam
+`EgressGate.for_destination` gives `main.py` for the PDP.
+
+RESTART RE-EMITS, ON PURPOSE
+The runner's de-duplication key is `(record key, sorted source event_ids)`,
+held only in this process's memory. A restart starts that memory empty, so
+every still-open episode is assembled and produced again on the next
+cm-state message for its asset — with an UNCHANGED record key, because the
+key is a pure function of (kind, owning_tier, asset, component,
+fault_code), none of which restarting changes. That is a revision of a
+key a downstream consumer has already seen, not a duplicate record under a
+new key, which is exactly what an upsert-by-key destination (the gate's
+sink, and whatever reads it) needs: re-applying the same key is a no-op in
+meaning even though it is a re-send on the wire.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import signal as signal_module
+import sys
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
+
+import pointer
+from kinds import Declarations
+
+log = logging.getLogger("egress.assembler")
+
+POSTGRES_DSN = os.getenv(
+    "POSTGRES_DSN", "postgres://postgres:password@postgres-hq:5432/openddil")
+
+
+# --- episodes -----------------------------------------------------------
+
+@dataclass(frozen=True)
+class Episode:
+    """One open (asset, component, fault_code) episode, read off a
+    cm-state message's `manual_discrepancies`."""
+
+    asset: str
+    component: str
+    fault_code: str
+    detected_at_ns: int
+    sources: tuple[Mapping[str, Any], ...]
+
+
+def episodes(cm_state: Mapping[str, Any]) -> list[Episode]:
+    """The open discrepancies with a non-empty `fault_code`.
+
+    An empty `fault_code` is the unkeyed manual-discrepancy path (ADR-0018
+    §Amendment 2026-08-15) — not an episode, never assembled. There is no
+    separate "resolved" test here: see the module docstring. An entry
+    simply not present is the only way a resolved episode is represented on
+    this wire."""
+    asset = cm_state.get("asset_id", "")
+    out: list[Episode] = []
+    for disc in cm_state.get("manual_discrepancies", []) or []:
+        fault_code = disc.get("fault_code") or ""
+        if not fault_code:
+            continue
+        out.append(Episode(
+            asset=asset,
+            component=disc.get("component", ""),
+            fault_code=fault_code,
+            detected_at_ns=disc.get("detected_at_ns", 0) or 0,
+            sources=tuple(disc.get("sources", []) or []),
+        ))
+    return out
+
+
+def record_key(kind: str, owning_tier: str, asset: str, component: str, fault_code: str) -> str:
+    """The record's stable identity: one uuid5 per (kind, owning_tier,
+    asset, component, fault_code). Deterministic and re-derivable — a
+    restart, or a second process reading the same episode, computes the
+    identical key without consulting any store."""
+    seed = f"{kind}|{owning_tier}|{asset}|{component}|{fault_code}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def _rfc3339(ns: int) -> str:
+    """Nanoseconds since the epoch -> RFC 3339 UTC, second precision. The
+    detected time on a `DiscrepancyRecord` is `detected_at_ns`; everywhere
+    else on this wire that carries a timestamp as a string uses this same
+    shape, so a kind's `observed_at` pointer gets a value every other
+    timestamp field in the system already looks like."""
+    seconds = (ns or 0) / 1_000_000_000
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _label_from_cm_state(cm_state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The label to write at the kind's `label` pointer, straight from the
+    cm-state record — never derived, never defaulted to a tier guess. `None`
+    means write nothing at all: the gate then reads an absent mapping at
+    that pointer and refuses the record as unlabelled, which is the visible
+    failure this is supposed to produce when upstream has not labelled the
+    asset."""
+    nation = cm_state.get("originator_nation") or None
+    releasable = [n for n in (cm_state.get("releasable_to") or []) if n]
+    if not nation and not releasable:
+        return None
+    return {"originator_nation": nation, "releasable_to": releasable}
+
+
+def _properties_at(schema: Mapping[str, Any], ptr: str) -> frozenset[str]:
+    """The property names a schema declares at `ptr`, by walking
+    `properties` one reference token at a time. RFC 6901 pointers describe
+    INSTANCE paths; for a plain nested-object schema (every picture pointer
+    in this system is one) the schema path mirrors it exactly, one
+    `properties` lookup per token. Any token that does not resolve —
+    because the schema does not constrain that far, not because it is
+    malformed — yields no names, which `assemble` reads as "this schema
+    names nothing here", not as an error."""
+    node: Any = schema
+    for tok in pointer.tokens(ptr):
+        if not isinstance(node, Mapping):
+            return frozenset()
+        properties = node.get("properties")
+        if not isinstance(properties, Mapping) or tok not in properties:
+            return frozenset()
+        node = properties[tok]
+    if not isinstance(node, Mapping):
+        return frozenset()
+    properties = node.get("properties")
+    return frozenset(properties.keys()) if isinstance(properties, Mapping) else frozenset()
+
+
+def assemble(
+    kind: str,
+    decl: Declarations,
+    schema: Mapping[str, Any],
+    cm_state: Mapping[str, Any],
+    episode: Episode,
+    picture: Mapping[str, Any],
+    now: datetime,
+) -> dict[str, Any]:
+    """One episode -> one record of `kind`, at exactly the pointers `decl`
+    names. Pure: no I/O, no clock reads (`now` is passed in, used only if a
+    future declaration needs "assembled at" — today's declared fields do
+    not), no knowledge of any kind's field names beyond what `decl` says.
+
+    `picture` is the FULL candidate picture — whatever `{readiness,
+    lifecycle, factors, rollup, spare}` sections the caller could produce —
+    filtered here down to only the sections `schema` names under the
+    `picture` pointer's `properties`. A section the schema requires that
+    this process could not fill is simply absent from the filtered result;
+    the gate's schema check is what turns that into a visible
+    `schema_invalid` refusal, not a guess made here.
+    """
+    owning_tier = cm_state.get("edge_id") or cm_state.get("region_id") or ""
+
+    out: dict[str, Any] = {}
+    pointer.set(out, decl.key, record_key(
+        kind, owning_tier, episode.asset, episode.component, episode.fault_code))
+
+    label = _label_from_cm_state(cm_state)
+    if label is not None:
+        pointer.set(out, decl.label, label)
+
+    pointer.set(out, decl.owning_tier, owning_tier)
+    pointer.set(out, decl.episode.asset, episode.asset)
+    pointer.set(out, decl.episode.component, episode.component)
+    pointer.set(out, decl.episode.fault_code, episode.fault_code)
+
+    if decl.observed_at:
+        pointer.set(out, decl.observed_at, _rfc3339(episode.detected_at_ns))
+
+    if decl.sources:
+        pointer.set(out, decl.sources, list(episode.sources))
+
+    if decl.picture:
+        allowed = _properties_at(schema, decl.picture)
+        filtered = {k: v for k, v in picture.items() if k in allowed}
+        if filtered:
+            pointer.set(out, decl.picture, filtered)
+
+    return out
+
+
+# --- the picture: parts book + asset reading ------------------------------
+
+class PartsBook:
+    """The latest parts-availability record for every (part_ref, site) this
+    process has consumed, in memory only — "the latest records are kept in
+    memory from that topic" (no postgres table backs this topic). Fed by
+    `ingest` from the parts topic; read by `lookup` while assembling a
+    spare-picture section.
+
+    THE NEAREST-SITE RING IS NOT HERE, DELIBERATELY. Which sites are "near"
+    a given owning tier is logistics-sim's siting configuration, never a
+    field on any record on the wire. `lookup` reports stock at every site
+    this process has ever seen a record for and lets the caller (a kind's
+    schema, or whatever renders it) decide which of those are nearby — this
+    module does not invent a ring it was never given.
+    """
+
+    def __init__(self) -> None:
+        self._by_ref: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def ingest(self, record: Mapping[str, Any]) -> None:
+        part_ref = record.get("part_ref")
+        site = record.get("site")
+        if not part_ref or not site:
+            return
+        self._by_ref.setdefault(part_ref, {})[site] = {
+            "item": record.get("item"),
+            "on_hand": record.get("on_hand", 0),
+        }
+
+    def lookup(self, part_ref: str, owning_tier: str) -> dict[str, Any] | None:
+        sites = self._by_ref.get(part_ref)
+        if not sites:
+            return None
+        item = next((v["item"] for v in sites.values() if v.get("item") is not None), None)
+        on_hand = {site: v.get("on_hand", 0) for site, v in sites.items()}
+        return {
+            "part_ref": part_ref,
+            "item": item,
+            "on_hand_here": on_hand.get(owning_tier),
+            "on_hand": on_hand,
+        }
+
+
+def _installed_part_ref(cm_state: Mapping[str, Any], component: str) -> str | None:
+    """The part installed in the episode's component slot. `installed[]`
+    entries are `InstalledCiRecord {slot_id, ci_id, installed_at_ns}`
+    (cm-service `persistence_model.py`); `component` on a `DiscrepancyRecord`
+    IS a BOM slot_id (same file, same comment), so matching on `slot_id`
+    against the episode's `component` is not a guess — it is the same slot
+    identifier on both sides. `ci_id` is the installed part's reference."""
+    for entry in cm_state.get("installed", []) or []:
+        if entry.get("slot_id") == component:
+            ci_id = entry.get("ci_id")
+            return ci_id or None
+    return None
+
+
+ReadAsset = Callable[[str], Awaitable[Mapping[str, Any] | None]]
+
+
+async def read_asset(asset_id: str) -> dict[str, Any] | None:
+    """Default `read_asset`: one asyncpg connection per call, exactly the
+    `pane_api.py` pattern (`_fetch_all_records`) — a fresh connection asked
+    once per request rather than a held pool, because this is invoked once
+    per assembled record, not on a hot per-row path.
+
+    Returns the readiness + rollup/factors sections a `Picture` can use, or
+    `None` sections where hub postgres holds no row for this asset (a
+    section the assembler could not fill, not a guessed default)."""
+    import asyncpg  # noqa: PLC0415 — only this function needs it
+
+    conn = await asyncpg.connect(POSTGRES_DSN)
+    try:
+        telemetry = await conn.fetchrow(
+            "SELECT operational_status, reporting_status "
+            "FROM telemetry_latest_state WHERE asset_id = $1", asset_id,
+        )
+        logistics = await conn.fetchrow(
+            "SELECT overall_severity, constraining_factors "
+            "FROM asset_logistics_status WHERE asset_id = $1", asset_id,
+        )
+    finally:
+        await conn.close()
+
+    readiness = None
+    if telemetry is not None:
+        readiness = {
+            "operational_status": telemetry["operational_status"],
+            "reporting_status": telemetry["reporting_status"],
+        }
+
+    rollup = None
+    factors = None
+    if logistics is not None:
+        rollup = {"overall_severity": logistics["overall_severity"]}
+        raw_factors = logistics["constraining_factors"]
+        if isinstance(raw_factors, str):
+            factors = json.loads(raw_factors) if raw_factors else []
+        else:
+            factors = raw_factors if raw_factors is not None else []
+
+    return {"readiness": readiness, "rollup": rollup, "factors": factors}
+
+
+async def build_picture(
+    cm_state: Mapping[str, Any],
+    episode: Episode,
+    owning_tier: str,
+    *,
+    read_asset: ReadAsset,
+    parts: PartsBook,
+) -> dict[str, Any]:
+    """The full candidate picture for one episode — `{readiness, lifecycle,
+    factors, rollup, spare}` — before `assemble` filters it down to the
+    sections a kind's schema actually names. A section this process could
+    not fill (no postgres row, no installed part for the slot) is simply
+    absent from the returned dict; `assemble` never sees a guessed value for
+    it."""
+    sections: dict[str, Any] = {"lifecycle": cm_state.get("lifecycle")}
+
+    asset_id = cm_state.get("asset_id")
+    reading = await read_asset(asset_id) if asset_id else None
+    if reading:
+        if reading.get("readiness") is not None:
+            sections["readiness"] = reading["readiness"]
+        if reading.get("rollup") is not None:
+            sections["rollup"] = reading["rollup"]
+        if reading.get("factors") is not None:
+            sections["factors"] = reading["factors"]
+
+    part_ref = _installed_part_ref(cm_state, episode.component)
+    if part_ref:
+        spare = parts.lookup(part_ref, owning_tier)
+        if spare is not None:
+            sections["spare"] = spare
+
+    return sections
+
+
+# --- the runner ------------------------------------------------------------
+
+class AssemblerConfigError(ValueError):
+    """The assembler config file failed to load. The message names the
+    entry, the same convention `routes.RouteError` uses."""
+
+
+@dataclass(frozen=True)
+class AssemblerRoute:
+    """One row of `OPENDDIL_ASSEMBLER_CONFIG`: a trigger topic (cm-state) to
+    read episodes from, an optional parts topic to keep `PartsBook` fed, a
+    kind to assemble into, and the output topic to produce assembled
+    records to."""
+
+    name: str
+    kind: str
+    trigger_topic: str
+    output_topic: str
+    parts_topic: str | None = None
+
+
+def _entry_label(entry: object, index: int) -> str:
+    if isinstance(entry, Mapping) and entry.get("name") is not None:
+        return repr(entry["name"])
+    return f"entry #{index}"
+
+
+def load_assembler_config(
+    path: str | os.PathLike, known_kinds: Iterable[str],
+) -> list[AssemblerRoute]:
+    """Load `OPENDDIL_ASSEMBLER_CONFIG`: a JSON list of `{name, kind,
+    trigger_topic, parts_topic?, output_topic}` entries. Names must be
+    unique and non-empty; `kind` must be one whose declarations name an
+    `owning_tier` and an `episode` (`known_kinds`). A
+    bad file raises `AssemblerConfigError` naming the entry — the caller
+    (this module's `main`) turns that into exit code 2 rather than starting
+    with an entry it cannot run."""
+    raw = json.loads(Path(path).read_text())
+    if not isinstance(raw, list):
+        raise AssemblerConfigError(f"{path}: must be a JSON list of entries")
+
+    known = set(known_kinds)
+    seen: set[str] = set()
+    routes: list[AssemblerRoute] = []
+    for index, entry in enumerate(raw):
+        label = _entry_label(entry, index)
+        if not isinstance(entry, Mapping):
+            raise AssemblerConfigError(f"{label}: entry must be a JSON object")
+
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            raise AssemblerConfigError(f"{label}: 'name' must be a non-empty string")
+        if name in seen:
+            raise AssemblerConfigError(f"{label}: duplicate name")
+        seen.add(name)
+
+        kind = entry.get("kind")
+        if kind not in known:
+            raise AssemblerConfigError(
+                f"{label}: kind {kind!r} is not declared for assembly "
+                "(x-openddil needs owning_tier and episode)")
+
+        missing = [f for f in ("trigger_topic", "output_topic") if f not in entry]
+        if missing:
+            raise AssemblerConfigError(f"{label}: missing required field(s) {missing}")
+
+        routes.append(AssemblerRoute(
+            name=name, kind=kind, trigger_topic=entry["trigger_topic"],
+            output_topic=entry["output_topic"], parts_topic=entry.get("parts_topic"),
+        ))
+    return routes
+
+
+@dataclass
+class _RouteState:
+    route: AssemblerRoute
+    declarations: Declarations
+    schema: Mapping[str, Any]
+    parts: PartsBook = field(default_factory=PartsBook)
+    # (record key) -> sorted tuple of source event_ids this process last
+    # produced for it. In memory only — see the module docstring on why a
+    # restart re-emitting every open episode once is correct here, not a bug.
+    last_produced: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    counters: dict[str, int] = field(default_factory=lambda: {
+        "records": 0, "revisions": 0, "sources": 0,
+    })
+
+
+def _source_ids(episode: Episode) -> tuple[str, ...]:
+    return tuple(sorted(s.get("event_id", "") for s in episode.sources))
+
+
+async def _produce_episode(
+    state: _RouteState,
+    cm_state: Mapping[str, Any],
+    episode: Episode,
+    *,
+    read_asset: ReadAsset,
+    now: datetime,
+    produce: Callable[[str, bytes, bytes], None],
+    postgres_retry: Sequence[float] = (0.5, 1.0, 2.0, 4.0, 8.0),
+) -> None:
+    """Assemble one episode and produce it if, and only if, (key, sorted
+    source event_ids) differs from what this process last produced for that
+    key — a second source on an already-open episode is a revision with the
+    SAME key, not a new record."""
+    owning_tier = cm_state.get("edge_id") or cm_state.get("region_id") or ""
+    key = record_key(
+        state.route.kind, owning_tier, episode.asset, episode.component, episode.fault_code)
+    source_ids = _source_ids(episode)
+    if state.last_produced.get(key) == source_ids:
+        return
+
+    # Bounded retry with backoff on a postgres error. The offset this
+    # episode's message arrived on is not committed until this returns
+    # without raising — see the caller.
+    attempt = 0
+    while True:
+        try:
+            picture = await build_picture(
+                cm_state, episode, owning_tier,
+                read_asset=read_asset, parts=state.parts,
+            )
+            break
+        except Exception:  # noqa: BLE001 — retried, then re-raised
+            if attempt >= len(postgres_retry):
+                raise
+            delay = postgres_retry[attempt]
+            log.warning(
+                "postgres error building picture for %s (attempt %d); retrying in %.1fs",
+                key, attempt + 1, delay,
+            )
+            await asyncio.sleep(delay)
+            attempt += 1
+
+    record = assemble(
+        state.route.kind, state.declarations, state.schema, cm_state, episode, picture, now,
+    )
+    payload = json.dumps(record, separators=(",", ":")).encode("utf-8")
+    produce(state.route.output_topic, payload, key.encode("utf-8"))
+
+    is_revision = key in state.last_produced
+    state.last_produced[key] = source_ids
+    state.counters["revisions" if is_revision else "records"] += 1
+    state.counters["sources"] += len(source_ids)
+
+
+async def handle_cm_state_message(
+    state: _RouteState,
+    cm_state: Mapping[str, Any],
+    *,
+    read_asset: ReadAsset,
+    now: datetime,
+    produce: Callable[[str, bytes, bytes], None],
+) -> None:
+    """Every open episode in one cm-state message, assembled and produced
+    (or skipped as an unchanged duplicate) in turn."""
+    for episode in episodes(cm_state):
+        await _produce_episode(state, cm_state, episode, read_asset=read_asset, now=now, produce=produce)
+
+
+def log_counters(states: Iterable[_RouteState]) -> None:
+    """One line per route: `records` (distinct keys ever produced),
+    `revisions` (same key, new sources), `sources` (source entries carried
+    across every record produced). Logged at shutdown and every 60s by
+    `main`."""
+    for state in states:
+        log.info("assembler route=%s %s", state.route.name, json.dumps(state.counters, sort_keys=True))
+
+
+# --- process wiring ---------------------------------------------------------
+# Everything below is the real runner: a Kafka consumer, `kinds.py`'s
+# declarations and schemas, and `asyncpg`. None of it is exercised by the
+# unit tests, which inject `read_asset`/`produce`/a `PartsBook` directly
+# against `handle_cm_state_message` — the same injection seam
+# `routes.run_once` gives `main.py` for the PDP and the broker.
+
+CONFIG_PATH = os.getenv("OPENDDIL_ASSEMBLER_CONFIG")
+KINDS_DIR = Path(os.getenv(
+    "OPENDDIL_EGRESS_KINDS_DIR", str(Path(__file__).parent / "kind-schemas")))
+BROKERS = os.getenv("OPENDDIL_EGRESS_BROKERS", "redpanda-hq:19092")
+GROUP = os.getenv("OPENDDIL_ASSEMBLER_GROUP", "egress-assembler")
+POLL_TIMEOUT = float(os.getenv("OPENDDIL_EGRESS_POLL_TIMEOUT", "1.0"))
+COUNTER_LOG_INTERVAL_S = 60.0
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s [assembler] %(message)s",
+    stream=sys.stdout,
+)
+
+_running = True
+
+
+def _stop(signum, _frame):
+    global _running
+    log.info("signal %s — draining and stopping", signum)
+    _running = False
+
+
+def _load_raw_schemas(directory: Path) -> dict[str, Mapping[str, Any]]:
+    """Just the JSON, for `_properties_at` — this module never needs
+    `jsonschema` itself (that import stays `kinds.py`'s alone)."""
+    if not directory.is_dir():
+        return {}
+    out = {}
+    for path in sorted(directory.glob("*.schema.json")):
+        out[path.name[: -len(".schema.json")]] = json.loads(path.read_text())
+    return out
+
+
+def _decode(payload: bytes) -> dict:
+    return json.loads(payload.decode("utf-8"))
+
+
+async def _main_async() -> int:
+    from confluent_kafka import Consumer, Producer  # noqa: PLC0415
+
+    from kinds import load_declarations, load_kinds  # noqa: PLC0415
+
+    if not CONFIG_PATH:
+        log.error("FATAL: OPENDDIL_ASSEMBLER_CONFIG is not set")
+        return 2
+
+    known = load_kinds(KINDS_DIR) if KINDS_DIR.is_dir() else {}
+    declarations_map = load_declarations(KINDS_DIR) if KINDS_DIR.is_dir() else {}
+    assemblable = [k for k, d in declarations_map.items()
+                   if k in known and d.owning_tier and d.episode]
+    try:
+        routes = load_assembler_config(CONFIG_PATH, assemblable)
+    except Exception as exc:  # noqa: BLE001 — a bad config must not start the runner
+        log.error("FATAL: assembler config failed to load: %s", exc)
+        return 2
+
+    schemas = _load_raw_schemas(KINDS_DIR)
+
+    states = {
+        route.name: _RouteState(
+            route=route, declarations=declarations_map[route.kind],
+            schema=schemas.get(route.kind, {}),
+        )
+        for route in routes
+    }
+
+    topics: set[str] = set()
+    trigger_states: dict[str, list[_RouteState]] = {}
+    parts_states: dict[str, list[_RouteState]] = {}
+    for state in states.values():
+        topics.add(state.route.trigger_topic)
+        trigger_states.setdefault(state.route.trigger_topic, []).append(state)
+        if state.route.parts_topic:
+            topics.add(state.route.parts_topic)
+            parts_states.setdefault(state.route.parts_topic, []).append(state)
+
+    signal_module.signal(signal_module.SIGTERM, _stop)
+    signal_module.signal(signal_module.SIGINT, _stop)
+
+    consumer = Consumer({
+        "bootstrap.servers": BROKERS,
+        "group.id": GROUP,
+        "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
+    })
+    producer = Producer({"bootstrap.servers": BROKERS})
+    consumer.subscribe(sorted(topics))
+
+    def produce(topic: str, value: bytes, key: bytes) -> None:
+        producer.produce(topic, value=value, key=key)
+        producer.poll(0)
+
+    last_counter_log = asyncio.get_event_loop().time()
+    try:
+        while _running:
+            msg = consumer.poll(POLL_TIMEOUT)
+            if msg is not None and not msg.error():
+                topic = msg.topic()
+                try:
+                    record = _decode(msg.value())
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("undecodable message on %s: %s", topic, exc)
+                    record = None
+
+                if record is not None:
+                    for state in parts_states.get(topic, []):
+                        state.parts.ingest(record)
+                    for state in trigger_states.get(topic, []):
+                        # Not committed until produced — a postgres error
+                        # that exhausts the retry budget raises out of here
+                        # and this message's offset is never committed.
+                        await handle_cm_state_message(
+                            state, record, read_asset=read_asset,
+                            now=datetime.now(timezone.utc), produce=produce,
+                        )
+                # Commit after the message is handled, whichever branch.
+                consumer.commit(msg, asynchronous=False)
+            elif msg is not None:
+                log.warning("consumer error: %s", msg.error())
+
+            now_monotonic = asyncio.get_event_loop().time()
+            if now_monotonic - last_counter_log >= COUNTER_LOG_INTERVAL_S:
+                log_counters(states.values())
+                last_counter_log = now_monotonic
+    finally:
+        log_counters(states.values())
+        producer.flush(10)
+        consumer.close()
+    return 0
+
+
+def main() -> int:
+    return asyncio.run(_main_async())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

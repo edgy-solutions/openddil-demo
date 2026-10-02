@@ -39,6 +39,7 @@ from gate import (  # noqa: E402
     classify,
     compile_predicate,
     extract_label,
+    extract_label_at,
 )
 
 # The stand-in destination: one nation, because a single-nation destination
@@ -339,6 +340,71 @@ def test_kind_gate_falls_through_to_the_overlap_check_once_kind_and_schema_pass(
 
     admitted = gate.decide(rec("ATL", ["ATL"]))
     assert admitted.allowed and admitted.reason == ADMIT
+
+
+
+# --- label_pointer: a kind that declares where its own label lives ----------
+# Neutral fixture per the rule: `/marking`, distinct from the top-level keys
+# a kind-less record uses, so a test reading the wrong place fails loudly.
+
+def test_extract_label_at_reads_the_declared_pointer():
+    record = {"marking": {"originator_nation": "BDR", "releasable_to": ["ATL"]}}
+    assert extract_label_at(record, "/marking") == Label("BDR", ("ATL",))
+
+
+def test_extract_label_at_missing_mapping_is_unlabelled():
+    """The pointer does not resolve to an object — including when it does
+    not resolve at all, or when the label lives at the top level instead (the
+    kind declared a different place to look, and a record shaped for the old
+    convention is not secretly still readable)."""
+    assert extract_label_at({}, "/marking") == Label(None, ())
+    assert not extract_label_at({}, "/marking").is_labelled
+
+    top_level_only = {"originator_nation": "BDR", "releasable_to": ["ATL"]}
+    assert not extract_label_at(top_level_only, "/marking").is_labelled
+
+
+def test_gate_with_label_pointer_decides_on_the_declared_location_not_the_top_level():
+    """A KindA gate with `label_pointer=/marking`, record labelled BDR/[BDR]
+    at `/marking`: refused for lack of nation overlap against a destination
+    of [ATL] — the same releasability axis, just read from where the kind
+    says it lives."""
+    gate = EgressGate(
+        "system:dest-a", ["ATL"], accepts=["KindA"], kind="KindA",
+        kind_validator=lambda record: None, label_pointer="/marking",
+    )
+    refused = gate.decide({"marking": {"originator_nation": "BDR", "releasable_to": ["BDR"]}})
+    assert not refused.allowed and refused.reason == REASON_NO_OVERLAP
+
+    admitted = gate.decide({"marking": {"originator_nation": "ATL", "releasable_to": ["ATL"]}})
+    assert admitted.allowed and admitted.reason == ADMIT
+
+
+def test_gate_with_label_pointer_refuses_a_record_labelled_only_at_top_level():
+    """A kind declares its label lives at `/marking`. A record that instead
+    carries the label at the top level (the old, kind-less convention) is
+    UNLABELLED to this gate, not accidentally readable anyway — the
+    declaration is the only place this gate looks once it has one."""
+    gate = EgressGate(
+        "system:dest-a", ["ATL"], accepts=["KindA"], kind="KindA",
+        kind_validator=lambda record: None, label_pointer="/marking",
+    )
+    d = gate.decide({"originator_nation": "ATL", "releasable_to": ["ATL"]})
+    assert not d.allowed and d.reason == REASON_UNLABELLED
+
+
+def test_gate_without_label_pointer_is_unchanged():
+    """`label_pointer=None` — every destination that existed before kinds
+    declared one — reads exactly where it always has: the top level /
+    `provenance`, via `extract_label`. This is `test_admits_authored_by_the_
+    destinations_nation` and friends above, reaffirmed here under the new
+    parameter's default to make the "today's behaviour is unchanged" claim
+    explicit rather than merely implicit in the default value."""
+    gate = ATL_GATE()
+    assert gate.label_pointer is None
+    d = gate.decide(rec("ATL", []), key="dis:1:1:1001")
+    assert d.allowed and d.reason == ADMIT
+    assert d.record_class == CLASS_AUTHORED_NO_RELEASE
 
 
 def test_as_json_without_kind_or_route_matches_todays_key_set():

@@ -41,7 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from gate import AuthzUnavailable, EgressGate  # noqa: E402
-from kinds import load_kinds  # noqa: E402
+from kinds import load_declarations, load_kinds  # noqa: E402
 from routes import GROUP, Route, load_routes, run_once  # noqa: E402
 
 BROKERS = os.getenv("OPENDDIL_EGRESS_BROKERS", "redpanda-hq:19092")
@@ -100,21 +100,31 @@ def decode(payload: bytes) -> dict:
     return MessageToDict(msg, preserving_proto_field_name=True)
 
 
-def _load_known_kinds() -> dict:
+def _load_known_kinds() -> tuple[dict, dict]:
+    """Both views of the same schema directory: the validators (`kinds.py`'s
+    original job) and the declarations (where each kind's own fields,
+    including its label, actually live — ADR-0046's assembler pass). A
+    deployment with no kinds at all needs neither and the directory need not
+    exist."""
     if not KINDS_DIR.is_dir():
-        return {}
-    return load_kinds(KINDS_DIR)
+        return {}, {}
+    return load_kinds(KINDS_DIR), load_declarations(KINDS_DIR)
 
 
-def _build_gates(routes: list[Route], kinds_map: dict) -> dict[Route, EgressGate]:
+def _build_gates(
+    routes: list[Route], kinds_map: dict, declarations_map: dict,
+) -> dict[Route, EgressGate]:
     """One gate per route — `for_destination` once each. Any
     `AuthzUnavailable` exits the process rather than starting with a route
     that has no entitlement; see the module docstring."""
     gates: dict[Route, EgressGate] = {}
     for route in routes:
         validator = kinds_map.get(route.kind) if route.kind else None
+        declarations = declarations_map.get(route.kind) if route.kind else None
+        label_pointer = declarations.label if declarations is not None else None
         gate = EgressGate.for_destination(
-            route.destination, kind=route.kind, kind_validator=validator)
+            route.destination, kind=route.kind, kind_validator=validator,
+            label_pointer=label_pointer)
         gates[route] = gate
         log.info(
             "gate open: route=%s destination=%s nations=%s known=%s kind=%s "
@@ -132,7 +142,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    kinds_map = _load_known_kinds()
+    kinds_map, declarations_map = _load_known_kinds()
 
     try:
         routes = load_routes(ROUTES_PATH, kinds_map.keys())
@@ -141,7 +151,7 @@ def main() -> int:
         return 2
 
     try:
-        gates = _build_gates(routes, kinds_map)
+        gates = _build_gates(routes, kinds_map, declarations_map)
     except AuthzUnavailable as exc:
         # Exit rather than start. See the module docstring: a gate that runs
         # with no entitlement is indistinguishable from a gate refusing
