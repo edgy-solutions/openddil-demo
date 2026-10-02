@@ -736,11 +736,12 @@ class Pep(BaseHTTPRequestHandler):
         if not self._content_type_is_json():
             self._drain_body()
             self._deny("Content-Type must be application/json", subject="",
-                       resource=path, status=415)
+                       resource=path, status=415, marker="GATEWAY REFUSED (PRE-PDP)")
             return
         if self._origin_is_cross_site():
             self._drain_body()
-            self._deny("cross-site origin", subject="", resource=path, status=403)
+            self._deny("cross-site origin", subject="", resource=path, status=403,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
             return
 
         length = self._content_length()
@@ -749,7 +750,8 @@ class Pep(BaseHTTPRequestHandler):
             # connection closes rather than desyncing a kept-alive socket on
             # whatever bytes were never read.
             self._deny("body too large", subject="", resource=path, status=413,
-                       headers=[("Connection", "close")])
+                       headers=[("Connection", "close")],
+                       marker="GATEWAY REFUSED (PRE-PDP)")
             return
         raw = self.rfile.read(length) if length else b""
 
