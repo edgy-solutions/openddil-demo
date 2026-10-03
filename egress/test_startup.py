@@ -7,6 +7,7 @@ async `connect` returning a fake connection with `fetchval`/`close`.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Any
@@ -106,33 +107,30 @@ def _unreachable_connect():
     return connect
 
 
-@pytest.mark.asyncio
-async def test_require_tables_all_present_proceeds():
-    await require_tables(
+def test_require_tables_all_present_proceeds():
+    asyncio.run(require_tables(
         "postgres://stand-in", ["intake_records"],
         connect=_fake_connect({"intake_records"}),
-    )  # must not raise/exit
+    ))  # must not raise/exit
 
 
-@pytest.mark.asyncio
-async def test_require_tables_missing_table_exits_3_with_one_line(caplog):
+def test_require_tables_missing_table_exits_3_with_one_line(caplog):
     with pytest.raises(SystemExit) as exc_info:
-        await require_tables(
+        asyncio.run(require_tables(
             "postgres://stand-in", ["intake_records", "ghost_table"],
             connect=_fake_connect({"intake_records"}),
-        )
+        ))
     assert exc_info.value.code == 3
     lines = [r.message for r in caplog.records if "STARTUP_REFUSED" in r.message]
     assert lines == ["STARTUP_REFUSED missing_table ghost_table"]
 
 
-@pytest.mark.asyncio
-async def test_require_tables_unreachable_postgres_exits_3(caplog):
+def test_require_tables_unreachable_postgres_exits_3(caplog):
     with pytest.raises(SystemExit) as exc_info:
-        await require_tables(
+        asyncio.run(require_tables(
             "postgres://stand-in", ["intake_records"],
             connect=_unreachable_connect(),
-        )
+        ))
     assert exc_info.value.code == 3
     assert any(
         r.message.startswith("STARTUP_REFUSED unreachable postgres")
@@ -140,8 +138,7 @@ async def test_require_tables_unreachable_postgres_exits_3(caplog):
     )
 
 
-@pytest.mark.asyncio
-async def test_require_tables_closes_the_connection_even_when_missing():
+def test_require_tables_closes_the_connection_even_when_missing():
     conn_holder: list[_FakeConn] = []
 
     async def connect(dsn: str) -> _FakeConn:
@@ -150,12 +147,11 @@ async def test_require_tables_closes_the_connection_even_when_missing():
         return conn
 
     with pytest.raises(SystemExit):
-        await require_tables("postgres://stand-in", ["ghost_table"], connect=connect)
+        asyncio.run(require_tables("postgres://stand-in", ["ghost_table"], connect=connect))
     assert conn_holder[0].closed is True
 
 
-@pytest.mark.asyncio
-async def test_require_tables_empty_list_proceeds():
-    await require_tables(
+def test_require_tables_empty_list_proceeds():
+    asyncio.run(require_tables(
         "postgres://stand-in", [], connect=_unreachable_connect(),
-    )  # nothing wanted, nothing checked
+    ))  # nothing wanted, nothing checked
