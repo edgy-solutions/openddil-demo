@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 520">
+  <title>Array Module Assembly, array face and detail A (synthetic)</title>
+  <desc>Synthetic illustration for a fictional radar array module fixture. Not a real product drawing.</desc>
+  <style>
+    .hotspot rect, .hotspot circle, .hotspot ellipse { fill: #cfd8dc; stroke: #37474f; stroke-width: 1; }
+    .hotspot text { font-family: sans-serif; font-size: 14px; fill: #102027; text-anchor: middle; dominant-baseline: middle; }
+    .hotspot.active rect, .hotspot.active circle, .hotspot.active ellipse { fill: #ff8a65; stroke: #bf360c; stroke-width: 2; }
+    .frame { fill: none; stroke: #607d8b; stroke-width: 1; }
+    .leader { fill: none; stroke: #607d8b; stroke-width: 1; stroke-dasharray: 4 3; }
+    .label { font-family: sans-serif; font-size: 16px; fill: #102027; }
+    .callout { font-family: sans-serif; font-size: 13px; fill: #102027; font-weight: bold; }
+  </style>
+
+  <text class="label" x="40" y="30">Array Face</text>
+  <rect class="frame" x="40" y="60" width="360" height="180"/>
+  <g id="sec-01" class="hotspot" data-section="1" data-ipd-item="0001"><rect x="40" y="60" width="45" height="45"/><text x="62.5" y="88">1</text></g>
+      <g id="sec-02" class="hotspot" data-section="2" data-ipd-item="0001"><rect x="85" y="60" width="45" height="45"/><text x="107.5" y="88">2</text></g>
+      <g id="sec-03" class="hotspot" data-section="3" data-ipd-item="0001"><rect x="130" y="60" width="45" height="45"/><text x="152.5" y="88">3</text></g>
+      <g id="sec-04" class="hotspot" data-section="4" data-ipd-item="0001"><rect x="175" y="60" width="45" height="45"/><text x="197.5" y="88">4</text></g>
+      <g id="sec-05" class="hotspot" data-section="5" data-ipd-item="0001"><rect x="220" y="60" width="45" height="45"/><text x="242.5" y="88">5</text></g>
+      <g id="sec-06" class="hotspot" data-section="6" data-ipd-item="0001"><rect x="265" y="60" width="45" height="45"/><text x="287.5" y="88">6</text></g>
+      <g id="sec-07" class="hotspot" data-section="7" data-ipd-item="0001"><rect x="310" y="60" width="45" height="45"/><text x="332.5" y="88">7</text></g>
+      <g id="sec-08" class="hotspot" data-section="8" data-ipd-item="0001"><rect x="355" y="60" width="45" height="45"/><text x="377.5" y="88">8</text></g>
+      <g id="sec-09" class="hotspot" data-section="9" data-ipd-item="0001"><rect x="40" y="105" width="45" height="45"/><text x="62.5" y="133">9</text></g>
+      <g id="sec-10" class="hotspot" data-section="10" data-ipd-item="0001"><rect x="85" y="105" width="45" height="45"/><text x="107.5" y="133">10</text></g>
+      <g id="sec-11" class="hotspot" data-section="11" data-ipd-item="0001"><rect x="130" y="105" width="45" height="45"/><text x="152.5" y="133">11</text></g>
+      <g id="sec-12" class="hotspot" data-section="12" data-ipd-item="0001"><rect x="175" y="105" width="45" height="45"/><text x="197.5" y="133">12</text></g>
+      <g id="sec-13" class="hotspot" data-section="13" data-ipd-item="0001"><rect x="220" y="105" width="45" height="45"/><text x="242.5" y="133">13</text></g>
+      <g id="sec-14" class="hotspot" data-section="14" data-ipd-item="0001"><rect x="265" y="105" width="45" height="45"/><text x="287.5" y="133">14</text></g>
+      <g id="sec-15" class="hotspot" data-section="15" data-ipd-item="0001"><rect x="310" y="105" width="45" height="45"/><text x="332.5" y="133">15</text></g>
+      <g id="sec-16" class="hotspot" data-section="16" data-ipd-item="0001"><rect x="355" y="105" width="45" height="45"/><text x="377.5" y="133">16</text></g>
+      <g id="sec-17" class="hotspot" data-section="17" data-ipd-item="0001"><rect x="40" y="150" width="45" height="45"/><text x="62.5" y="178">17</text></g>
+      <g id="sec-18" class="hotspot" data-section="18" data-ipd-item="0001"><rect x="85" y="150" width="45" height="45"/><text x="107.5" y="178">18</text></g>
+      <g id="sec-19" class="hotspot" data-section="19" data-ipd-item="0001"><rect x="130" y="150" width="45" height="45"/><text x="152.5" y="178">19</text></g>
+      <g id="sec-20" class="hotspot" data-section="20" data-ipd-item="0001"><rect x="175" y="150" width="45" height="45"/><text x="197.5" y="178">20</text></g>
+      <g id="sec-21" class="hotspot" data-section="21" data-ipd-item="0001"><rect x="220" y="150" width="45" height="45"/><text x="242.5" y="178">21</text></g>
+      <g id="sec-22" class="hotspot" data-section="22" data-ipd-item="0001"><rect x="265" y="150" width="45" height="45"/><text x="287.5" y="178">22</text></g>
+      <g id="sec-23" class="hotspot" data-section="23" data-ipd-item="0001"><rect x="310" y="150" width="45" height="45"/><text x="332.5" y="178">23</text></g>
+      <g id="sec-24" class="hotspot" data-section="24" data-ipd-item="0001"><rect x="355" y="150" width="45" height="45"/><text x="377.5" y="178">24</text></g>
+      <g id="sec-25" class="hotspot" data-section="25" data-ipd-item="0001"><rect x="40" y="195" width="45" height="45"/><text x="62.5" y="223">25</text></g>
+      <g id="sec-26" class="hotspot" data-section="26" data-ipd-item="0001"><rect x="85" y="195" width="45" height="45"/><text x="107.5" y="223">26</text></g>
+      <g id="sec-27" class="hotspot" data-section="27" data-ipd-item="0001"><rect x="130" y="195" width="45" height="45"/><text x="152.5" y="223">27</text></g>
+      <g id="sec-28" class="hotspot" data-section="28" data-ipd-item="0001"><rect x="175" y="195" width="45" height="45"/><text x="197.5" y="223">28</text></g>
+      <g id="sec-29" class="hotspot" data-section="29" data-ipd-item="0001"><rect x="220" y="195" width="45" height="45"/><text x="242.5" y="223">29</text></g>
+      <g id="sec-30" class="hotspot" data-section="30" data-ipd-item="0001"><rect x="265" y="195" width="45" height="45"/><text x="287.5" y="223">30</text></g>
+      <g id="sec-31" class="hotspot" data-section="31" data-ipd-item="0001"><rect x="310" y="195" width="45" height="45"/><text x="332.5" y="223">31</text></g>
+      <g id="sec-32" class="hotspot" data-section="32" data-ipd-item="0001"><rect x="355" y="195" width="45" height="45"/><text x="377.5" y="223">32</text></g>
+
+  <text class="label" x="460" y="270">Detail A, Section 3</text>
+  <line class="leader" x1="152.5" y1="105" x2="460" y2="280"/>
+  <rect class="frame" x="460" y="280" width="300" height="200"/>
+
+  <g id="item-0002" class="hotspot" data-ipd-item="0002">
+    <rect x="500" y="355" width="30" height="50"/>
+  </g>
+  <text class="callout" x="482" y="385">2</text>
+
+  <g id="item-0001" class="hotspot" data-ipd-item="0001">
+    <rect x="540" y="340" width="140" height="80"/>
+  </g>
+  <text class="callout" x="695" y="385">1</text>
+
+  <g id="item-0003" class="hotspot" data-ipd-item="0003">
+    <circle cx="580" cy="330" r="6"/>
+    <circle cx="680" cy="330" r="6"/>
+  </g>
+  <text class="callout" x="625" y="312">3</text>
+</svg>

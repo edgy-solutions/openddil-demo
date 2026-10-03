@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -34,7 +35,12 @@ DM_FILES = [
     "DMC-ODMRAD-A-34-10-01-00A-320A-A_001-00_EN-US.xml",
 ]
 
+IPD_FILE = "DMC-ODMRAD-A-34-10-01-00A-941A-A_001-00_EN-US.xml"
+FAULT_FILE = "DMC-ODMRAD-A-34-10-01-00A-421A-A_001-00_EN-US.xml"
+
 SPARE_PN = "ODM-AM-0001"
+
+SVG_NS = "{http://www.w3.org/2000/svg}"
 
 EXPECTED_PICTURE_CONDITIONS = {
     1: "any",
@@ -194,6 +200,178 @@ def main() -> int:
         fail(f"dry_run.expected_option is {dry_run.get('expected_option')!r}, expected 4")
     else:
         ok("dry_run.expected_option is 4")
+
+    # ---------- (a) every graphic/@infoEntityIdent has a well-formed <ICN>.svg ----------
+    icns: set[str] = set()
+    for name in DM_FILES:
+        for g in trees[name].iter("graphic"):
+            icn = g.get("infoEntityIdent")
+            if icn:
+                icns.add(icn)
+
+    svg_trees: dict[str, etree._ElementTree] = {}
+    for icn in sorted(icns):
+        svg_path = HERE / f"{icn}.svg"
+        if not svg_path.exists():
+            fail(f"(a) no SVG for ICN {icn}: expected {svg_path.name}")
+            continue
+        try:
+            svg_trees[icn] = etree.parse(str(svg_path), etree.XMLParser(recover=False))
+            ok(f"(a) {svg_path.name} exists and is well-formed XML")
+        except etree.XMLSyntaxError as exc:
+            fail(f"(a) {svg_path.name} is not well-formed XML: {exc}")
+
+    # ---------- (b) the SVG is inert ----------
+    for icn, svg_tree in svg_trees.items():
+        bad = False
+        root = svg_tree.getroot()
+        for el in root.iter():
+            if not isinstance(el.tag, str):
+                continue
+            local = etree.QName(el).localname
+            if local in ("script", "foreignObject"):
+                fail(f"(b) {icn}.svg: contains <{local}>")
+                bad = True
+            for attr in el.attrib:
+                attr_local = etree.QName(attr).localname
+                if attr_local.lower().startswith("on"):
+                    fail(f"(b) {icn}.svg: <{local}> has event attribute {attr}")
+                    bad = True
+            for href_attr in ("href", "{http://www.w3.org/1999/xlink}href"):
+                val = el.get(href_attr)
+                if val is not None and not val.startswith("#"):
+                    fail(f"(b) {icn}.svg: <{local}> href {val!r} does not start with #")
+                    bad = True
+        if not bad:
+            ok(f"(b) {icn}.svg is inert (no script/foreignObject/on*, hrefs local-only)")
+
+    # ---------- (c) SVG hotspots and 941 hotspots, one for one, joined both ways ----------
+    ipd_graphic = trees[IPD_FILE].find(".//graphic")
+    icn_941 = ipd_graphic.get("infoEntityIdent") if ipd_graphic is not None else None
+    svg_941 = svg_trees.get(icn_941) if icn_941 else None
+
+    if svg_941 is None:
+        fail(f"(c) cannot check hotspots: no SVG loaded for 941's ICN {icn_941!r}")
+    else:
+        svg_root = svg_941.getroot()
+        svg_hotspots: dict[str, str | None] = {}
+        for g in svg_root.iter(f"{SVG_NS}g"):
+            classes = (g.get("class") or "").split()
+            if "hotspot" in classes and g.get("id"):
+                svg_hotspots[g.get("id")] = g.get("data-ipd-item")
+
+        ipd_hotspots = {
+            h.get("applicationStructureIdent"): h
+            for h in trees[IPD_FILE].iter("hotspot")
+            if h.get("applicationStructureIdent")
+        }
+
+        svg_ids = set(svg_hotspots)
+        ipd_ids = set(ipd_hotspots)
+        missing_from_svg = ipd_ids - svg_ids
+        missing_from_ipd = svg_ids - ipd_ids
+        if missing_from_svg:
+            fail(f"(c) hotspot ids missing from the SVG (present in 941 hotspots): {sorted(missing_from_svg)}")
+        if missing_from_ipd:
+            fail(f"(c) hotspot ids missing from 941 hotspots (present in the SVG): {sorted(missing_from_ipd)}")
+        if not missing_from_svg and not missing_from_ipd:
+            ok("(c) SVG hotspot ids and 941 hotspot/@applicationStructureIdent match 1:1")
+
+        catalog_items = {
+            csn.get("item")
+            for csn in trees[IPD_FILE].iter("catalogSeqNumber")
+            if csn.get("item")
+        }
+
+        hotspots_without_item = [
+            (gid, item) for gid, item in svg_hotspots.items() if item not in catalog_items
+        ]
+        if hotspots_without_item:
+            fail(f"(c) SVG hotspots with no matching 941 catalogSeqNumber item: {hotspots_without_item}")
+        else:
+            ok("(c) every SVG hotspot's data-ipd-item matches a 941 catalogSeqNumber item")
+
+        svg_data_items = {item for item in svg_hotspots.values() if item is not None}
+        items_without_hotspot = sorted(catalog_items - svg_data_items)
+        if items_without_hotspot:
+            fail(f"(c) 941 catalogSeqNumber items with no SVG hotspot: {items_without_hotspot}")
+        else:
+            ok("(c) every 941 catalogSeqNumber item has at least one SVG hotspot")
+
+        # ---------- (d) the fault-to-part chain against the ground truth ----------
+        catalog_partnum = {
+            csn.get("item"): (csn.findtext(".//partNumber") or "").strip()
+            for csn in trees[IPD_FILE].iter("catalogSeqNumber")
+        }
+
+        fault_texts = [
+            (e.text or "").strip() for e in trees[FAULT_FILE].iter("faultCodeText")
+        ]
+        section_match = None
+        for text in fault_texts:
+            m = re.search(r"section (\d+)", text)
+            if m:
+                section_match = m.group(1)
+                break
+
+        gt_ipd = gt["citations"]["ipd"]
+        gt_hotspot_ids = gt_ipd.get("hotspot_ids", {})
+        gt_faulted_section = gt_hotspot_ids.get("faulted_section")
+
+        if section_match is None:
+            fail(f"(d) no 'section N' found in 421 faultCodeText {fault_texts!r}")
+        else:
+            sec_from_fault = f"sec-{int(section_match):02d}"
+            if sec_from_fault != gt_faulted_section:
+                fail(f"(d) 421 fault section {sec_from_fault!r} != GT hotspot_ids.faulted_section {gt_faulted_section!r}")
+            else:
+                ok(f"(d) 421 fault section matches GT hotspot_ids.faulted_section {gt_faulted_section!r}")
+
+        gt_item = gt_ipd.get("item")
+        for key, hid in gt_hotspot_ids.items():
+            if hid not in svg_ids:
+                fail(f"(d) GT hotspot_ids.{key} {hid!r} not found in the SVG")
+            if hid not in ipd_ids:
+                fail(f"(d) GT hotspot_ids.{key} {hid!r} not found among 941 hotspots")
+            svg_item = svg_hotspots.get(hid)
+            if svg_item != gt_item:
+                got_pn = catalog_partnum.get(svg_item, "?")
+                want_pn = catalog_partnum.get(gt_item, "?")
+                fail(
+                    f"(d) SVG hotspot {hid!r} (GT {key}) has data-ipd-item {svg_item!r} ({got_pn}) "
+                    f"!= GT citations.ipd.item {gt_item!r} ({want_pn})"
+                )
+            else:
+                ok(f"(d) SVG hotspot {hid!r} (GT {key}) data-ipd-item matches GT item {gt_item!r}")
+
+        gt_part_number = gt_ipd.get("part_number")
+        item_partnum = catalog_partnum.get(gt_item)
+        if item_partnum != gt_part_number:
+            fail(f"(d) 941 item {gt_item!r} partNumber {item_partnum!r} != GT part_number {gt_part_number!r}")
+        else:
+            ok(f"(d) 941 item {gt_item!r} partNumber matches GT part_number {gt_part_number!r}")
+
+        gt_icn = gt_ipd.get("icn")
+        icn_mismatch = False
+        for g in trees[IPD_FILE].iter("graphic"):
+            icn_val = g.get("infoEntityIdent")
+            if icn_val != gt_icn:
+                fail(f"(d) 941 graphic infoEntityIdent {icn_val!r} != GT icn {gt_icn!r}")
+                icn_mismatch = True
+        if not icn_mismatch:
+            ok(f"(d) every 941 graphic infoEntityIdent matches GT icn {gt_icn!r}")
+
+    # ---------- (e) internalRef irtt01 resolves to a figure/@id in the same module ----------
+    for name in DM_FILES:
+        fig_ids = {f.get("id") for f in trees[name].iter("figure") if f.get("id")}
+        for iref in trees[name].iter("internalRef"):
+            if iref.get("internalRefTargetType") != "irtt01":
+                continue
+            target = iref.get("internalRefId")
+            if target not in fig_ids:
+                fail(f"(e) {name}: internalRef {target!r} does not resolve to a figure/@id in this module")
+            else:
+                ok(f"(e) {name}: internalRef {target!r} resolves to a figure in this module")
 
     return _finish()
 

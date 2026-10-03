@@ -70,6 +70,11 @@
       <mainProcedure>
         <proceduralStep>
           <para>Open the array access panel at the reported array module position.</para>
+          <figure id="fig-0001">
+            <title>Array face</title>
+            <graphic infoEntityIdent="ICN-ODMRAD-00001"/>
+          </figure>
+          <internalRef internalRefId="fig-0001" internalRefTargetType="irtt01"/>
         </proceduralStep>
         <proceduralStep>
           <para>Disconnect the array module connector.</para>

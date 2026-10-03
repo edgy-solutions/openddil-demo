@@ -87,6 +87,11 @@
         <proceduralStep>
           <para>Position the replacement array module, ODM-AM-0001, in the open array module
           position.</para>
+          <figure id="fig-0001">
+            <title>Array face</title>
+            <graphic infoEntityIdent="ICN-ODMRAD-00001"/>
+          </figure>
+          <internalRef internalRefId="fig-0001" internalRefTargetType="irtt01"/>
         </proceduralStep>
         <proceduralStep>
           <para>Install the two mounting screws using the array module extraction tool,

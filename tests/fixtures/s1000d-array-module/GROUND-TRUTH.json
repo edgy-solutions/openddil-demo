@@ -5,7 +5,7 @@
   "citations": {
     "fault_isolation": {"dmc": "DMC-ODMRAD-A-34-10-01-00A-421A-A"},
     "remove_install": {"dmc": ["DMC-ODMRAD-A-34-10-01-00A-520A-A", "DMC-ODMRAD-A-34-10-01-00A-720A-A"]},
-    "ipd": {"dmc": "DMC-ODMRAD-A-34-10-01-00A-941A-A", "part_number": "ODM-AM-0001", "quantity": 1},
+    "ipd": {"dmc": "DMC-ODMRAD-A-34-10-01-00A-941A-A", "part_number": "ODM-AM-0001", "quantity": 1, "item": "0001", "icn": "ICN-ODMRAD-00001", "hotspot_ids": {"faulted_section": "sec-03", "detail": "item-0001"}},
     "planning_interval": {"dmc": "DMC-ODMRAD-A-34-10-01-00A-320A-A", "interval": "180 days"}
   },
   "options": [

@@ -46,8 +46,44 @@
   <content>
     <illustratedPartsCatalog>
       <figure>
-        <title>Array Module Assembly</title>
-        <graphic infoEntityIdent="ICN-ODMRAD-00001"/>
+        <title>Array Module Assembly, array face and detail A</title>
+        <graphic infoEntityIdent="ICN-ODMRAD-00001">
+            <hotspot id="hot-sec-01" applicationStructureIdent="sec-01" applicationStructureName="Section 1" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-02" applicationStructureIdent="sec-02" applicationStructureName="Section 2" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-03" applicationStructureIdent="sec-03" applicationStructureName="Section 3" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-04" applicationStructureIdent="sec-04" applicationStructureName="Section 4" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-05" applicationStructureIdent="sec-05" applicationStructureName="Section 5" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-06" applicationStructureIdent="sec-06" applicationStructureName="Section 6" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-07" applicationStructureIdent="sec-07" applicationStructureName="Section 7" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-08" applicationStructureIdent="sec-08" applicationStructureName="Section 8" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-09" applicationStructureIdent="sec-09" applicationStructureName="Section 9" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-10" applicationStructureIdent="sec-10" applicationStructureName="Section 10" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-11" applicationStructureIdent="sec-11" applicationStructureName="Section 11" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-12" applicationStructureIdent="sec-12" applicationStructureName="Section 12" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-13" applicationStructureIdent="sec-13" applicationStructureName="Section 13" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-14" applicationStructureIdent="sec-14" applicationStructureName="Section 14" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-15" applicationStructureIdent="sec-15" applicationStructureName="Section 15" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-16" applicationStructureIdent="sec-16" applicationStructureName="Section 16" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-17" applicationStructureIdent="sec-17" applicationStructureName="Section 17" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-18" applicationStructureIdent="sec-18" applicationStructureName="Section 18" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-19" applicationStructureIdent="sec-19" applicationStructureName="Section 19" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-20" applicationStructureIdent="sec-20" applicationStructureName="Section 20" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-21" applicationStructureIdent="sec-21" applicationStructureName="Section 21" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-22" applicationStructureIdent="sec-22" applicationStructureName="Section 22" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-23" applicationStructureIdent="sec-23" applicationStructureName="Section 23" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-24" applicationStructureIdent="sec-24" applicationStructureName="Section 24" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-25" applicationStructureIdent="sec-25" applicationStructureName="Section 25" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-26" applicationStructureIdent="sec-26" applicationStructureName="Section 26" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-27" applicationStructureIdent="sec-27" applicationStructureName="Section 27" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-28" applicationStructureIdent="sec-28" applicationStructureName="Section 28" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-29" applicationStructureIdent="sec-29" applicationStructureName="Section 29" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-30" applicationStructureIdent="sec-30" applicationStructureName="Section 30" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-31" applicationStructureIdent="sec-31" applicationStructureName="Section 31" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-sec-32" applicationStructureIdent="sec-32" applicationStructureName="Section 32" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-item-0001" applicationStructureIdent="item-0001" applicationStructureName="Array Module" hotspotTitle="ODM-AM-0001"/>
+            <hotspot id="hot-item-0002" applicationStructureIdent="item-0002" applicationStructureName="Connector Gasket" hotspotTitle="ODM-GS-0002"/>
+            <hotspot id="hot-item-0003" applicationStructureIdent="item-0003" applicationStructureName="Screws" hotspotTitle="ODM-SC-0003"/>
+        </graphic>
         <catalogSeqNumberGroup>
           <catalogSeqNumber item="0001">
             <description>
