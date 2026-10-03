@@ -107,7 +107,35 @@ def test_assemble_writes_every_declared_pointer():
     assert record["what"]["part"] == "SLOT-1"
     assert record["what"]["code"] == "F001"
     assert record["what"]["seen_at"] == "2023-11-14T22:13:20Z"
-    assert record["reports"] == [{"event_id": "ev-1"}]
+    # `row_ref` is added (echoing `event_id`) because `event_id` is present;
+    # no `observed_at` because this fixture's source carries no
+    # `reported_at_ns`.
+    assert record["reports"] == [{"event_id": "ev-1", "row_ref": "ev-1"}]
+
+
+def test_source_entry_gains_observed_at_from_its_own_reported_at_ns():
+    state = cm_state(discrepancies=[discrepancy(
+        sources=[{"event_id": "ev-1", "reported_at_ns": 1_700_000_000_000_000_000}])])
+    episode = episodes(state)[0]
+
+    record = assemble("KindA", KIND_A_DECL, {}, state, episode, picture={}, now=NOW)
+
+    assert record["reports"] == [{
+        "event_id": "ev-1", "reported_at_ns": 1_700_000_000_000_000_000,
+        "observed_at": "2023-11-14T22:13:20Z", "row_ref": "ev-1",
+    }]
+
+
+def test_source_entry_omits_row_ref_when_event_id_absent():
+    state = cm_state(discrepancies=[discrepancy(
+        sources=[{"reported_by": "system:dis-event-report"}])])
+    episode = episodes(state)[0]
+
+    record = assemble("KindA", KIND_A_DECL, {}, state, episode, picture={}, now=NOW)
+
+    assert record["reports"] == [{"reported_by": "system:dis-event-report"}]
+    assert "row_ref" not in record["reports"][0]
+    assert "observed_at" not in record["reports"][0]
     # No label on this cm-state: nothing written at the label pointer at all.
     assert "marking" not in record
 
@@ -608,7 +636,7 @@ def test_partsbook_lookup_builds_a_spares_entry_per_site_sorted_by_site():
 
     assert spare["spares"] == [
         {"site": "site-a", "on_hand": 5, "lead_time_days": 0,
-         "source": "feed-a", "as_of": "2023-11-14T22:13:20Z"},
+         "lead_time_source": "feed-a", "as_of": "2023-11-14T22:13:20Z"},
         {"site": "site-b", "on_hand": 2},
     ]
 
@@ -630,6 +658,114 @@ def test_build_picture_emits_spares_as_its_own_section_next_to_unchanged_spare()
         {"site": "site-a", "on_hand": 5},
         {"site": "site-b", "on_hand": 2},
     ]
+    # Neither ingested record carries `nearest_site_with_stock` (an older
+    # publisher) -- no `nearest_spare` key at all, not a guessed null.
+    assert "nearest_spare" not in picture
+
+
+# --- picture.nearest_spare: a copy of the row the owning tier's own -----
+# parts record names, NOT a rule this module invents (ADR-0046 §4) --------
+
+def test_nearest_spare_copies_the_named_site_not_the_least_lead_time():
+    """The owning tier's own record names `region-b` as nearest-with-stock
+    even though `region-a` has a shorter lead time -- `nearest_spare` must
+    copy `region-b`'s row, proving this module applies no ranking of its
+    own."""
+    book = PartsBook()
+    book.ingest({"site": "edge-03", "part_ref": "part:p-1", "item": "widget",
+                 "on_hand": 0, "nearest_site_with_stock": "region-b"})
+    book.ingest({"site": "region-a", "part_ref": "part:p-1", "item": "widget",
+                 "on_hand": 4, "lead_time_days": 1})
+    book.ingest({"site": "region-b", "part_ref": "part:p-1", "item": "widget",
+                 "on_hand": 2, "lead_time_days": 9})
+    state = cm_state(discrepancies=[discrepancy(component="slot-a")],
+                      installed=[{"slot_id": "slot-a", "ci_id": "", "installed_at_ns": 0}])
+
+    picture = asyncio.run(build_picture(
+        state, episodes(state)[0], "edge-03", read_asset=_no_picture, parts=book,
+        part_refs={"slot-a": "part:p-1"}))
+
+    assert picture["nearest_spare"] == {"site": "region-b", "on_hand": 2, "lead_time_days": 9}
+
+
+def test_nearest_spare_null_when_the_record_names_null():
+    book = PartsBook()
+    book.ingest({"site": "edge-03", "part_ref": "part:p-1", "item": "widget",
+                 "on_hand": 0, "nearest_site_with_stock": None})
+    state = cm_state(discrepancies=[discrepancy(component="slot-a")],
+                      installed=[{"slot_id": "slot-a", "ci_id": "", "installed_at_ns": 0}])
+
+    picture = asyncio.run(build_picture(
+        state, episodes(state)[0], "edge-03", read_asset=_no_picture, parts=book,
+        part_refs={"slot-a": "part:p-1"}))
+
+    assert picture["nearest_spare"] is None
+    assert "nearest_spare" in picture
+
+
+def test_nearest_spare_omitted_when_owning_tier_record_missing():
+    book = PartsBook()
+    book.ingest({"site": "region-b", "part_ref": "part:p-1", "item": "widget",
+                 "on_hand": 2, "nearest_site_with_stock": None})
+    state = cm_state(discrepancies=[discrepancy(component="slot-a")],
+                      installed=[{"slot_id": "slot-a", "ci_id": "", "installed_at_ns": 0}])
+
+    picture = asyncio.run(build_picture(
+        state, episodes(state)[0], "edge-03", read_asset=_no_picture, parts=book,
+        part_refs={"slot-a": "part:p-1"}))
+
+    assert picture["spares"] == [{"site": "region-b", "on_hand": 2}]
+    assert "nearest_spare" not in picture
+
+
+def test_nearest_spare_omitted_when_owning_tier_record_lacks_the_field():
+    """An older publisher's record for the owning tier -- no
+    `nearest_site_with_stock` key at all -- is not the same as the field
+    being present and null."""
+    book = PartsBook()
+    book.ingest({"site": "edge-03", "part_ref": "part:p-1", "item": "widget", "on_hand": 0})
+    state = cm_state(discrepancies=[discrepancy(component="slot-a")],
+                      installed=[{"slot_id": "slot-a", "ci_id": "", "installed_at_ns": 0}])
+
+    picture = asyncio.run(build_picture(
+        state, episodes(state)[0], "edge-03", read_asset=_no_picture, parts=book,
+        part_refs={"slot-a": "part:p-1"}))
+
+    assert "nearest_spare" not in picture
+
+
+def test_nearest_spare_omitted_when_named_site_has_no_row():
+    """The owning tier's record names a site this process has never
+    ingested a parts-availability record for -- unknown is not "no
+    stock", so the key is omitted rather than guessed null."""
+    book = PartsBook()
+    book.ingest({"site": "edge-03", "part_ref": "part:p-1", "item": "widget",
+                 "on_hand": 0, "nearest_site_with_stock": "region-ghost"})
+    state = cm_state(discrepancies=[discrepancy(component="slot-a")],
+                      installed=[{"slot_id": "slot-a", "ci_id": "", "installed_at_ns": 0}])
+
+    picture = asyncio.run(build_picture(
+        state, episodes(state)[0], "edge-03", read_asset=_no_picture, parts=book,
+        part_refs={"slot-a": "part:p-1"}))
+
+    assert "nearest_spare" not in picture
+
+
+def test_part_with_no_parts_record_yet_gets_neither_spares_nor_nearest():
+    """The slot map names a part_ref, but no parts-availability record for
+    it has arrived (e.g. the first sweep after a start has not run). Nobody
+    reported "no stock", so `nearest_spare` is not null: both keys are
+    omitted, and a kind that requires them refuses the event."""
+    state = cm_state(discrepancies=[discrepancy(component="slot-a")],
+                      installed=[{"slot_id": "slot-a", "ci_id": "", "installed_at_ns": 0}])
+
+    picture = asyncio.run(build_picture(
+        state, episodes(state)[0], "edge-03", read_asset=_no_picture, parts=PartsBook(),
+        part_refs={"slot-a": "part:ghost"}))
+
+    assert "spares" not in picture
+    assert "nearest_spare" not in picture
+    assert "spare" not in picture
 
 
 # --- the battle_condition section ---------------------------------------

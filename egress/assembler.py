@@ -61,6 +61,7 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 import delivery
 import pointer
 from kinds import Declarations
+from startup import require_topics
 
 log = logging.getLogger("egress.assembler")
 
@@ -218,6 +219,26 @@ def _provenance_entries(
     return entries
 
 
+def _source_entries(episode: Episode) -> list[dict[str, Any]]:
+    """`episode.sources`, each entry additionally carrying `observed_at`
+    (RFC 3339 UTC of its own `reported_at_ns`) and `row_ref` (its own
+    `event_id`), alongside whatever fields cm-service already put there.
+    Purely additive, and per-entry: a source missing `reported_at_ns` gets
+    no `observed_at`; one missing `event_id` gets no `row_ref` — never
+    defaulted from another entry or from this process's own clock."""
+    entries: list[dict[str, Any]] = []
+    for source in episode.sources:
+        entry = dict(source)
+        reported_at_ns = source.get("reported_at_ns")
+        if reported_at_ns:
+            entry["observed_at"] = _rfc3339(reported_at_ns)
+        event_id = source.get("event_id")
+        if event_id:
+            entry["row_ref"] = event_id
+        entries.append(entry)
+    return entries
+
+
 def assemble(
     kind: str,
     decl: Declarations,
@@ -259,7 +280,7 @@ def assemble(
         pointer.set(out, decl.observed_at, _rfc3339(episode.detected_at_ns))
 
     if decl.sources:
-        pointer.set(out, decl.sources, list(episode.sources))
+        pointer.set(out, decl.sources, _source_entries(episode))
 
     if decl.provenance:
         pointer.set(out, decl.provenance, _provenance_entries(cm_state, episode, picture))
@@ -284,10 +305,12 @@ class PartsBook:
 
     THE NEAREST-SITE RING IS NOT HERE, DELIBERATELY. Which sites are "near"
     a given owning tier is logistics-sim's siting configuration, never a
-    field on any record on the wire. `lookup` reports stock at every site
-    this process has ever seen a record for and lets the caller (a kind's
-    schema, or whatever renders it) decide which of those are nearby — this
-    module does not invent a ring it was never given.
+    field this module computes itself. Nearness arrives ALREADY DECIDED, on
+    each parts-availability record's own `nearest_site_with_stock` (ADR-0046
+    §4, `config.spare_picture`) — `lookup` reports stock at every site this
+    process has ever seen a record for, and separately reads the owning
+    tier's own record for which of those (if any) its configured ring names
+    as nearest; this module still does not invent a ring of its own.
     """
 
     def __init__(self) -> None:
@@ -306,8 +329,11 @@ class PartsBook:
         # mentions `lead_time_days` must not make a site look like it has a
         # lead time of zero, and a record whose `lead_time_days` genuinely
         # IS zero must not be told apart from "never carried" by `or`/`get`
-        # defaulting, hence the explicit membership check.
-        for field_name in ("as_of", "lead_time_days", "source"):
+        # defaulting, hence the explicit membership check. Same discipline
+        # for `nearest_site_with_stock`: an older publisher's record that
+        # never carries it must not be told apart from one that carries it
+        # as JSON null (see `lookup`'s `nearest_spare` handling below).
+        for field_name in ("as_of", "lead_time_days", "source", "nearest_site_with_stock"):
             if field_name in record:
                 entry[field_name] = record[field_name]
         self._by_ref.setdefault(part_ref, {})[site] = entry
@@ -325,17 +351,42 @@ class PartsBook:
             if "lead_time_days" in entry:
                 spare_entry["lead_time_days"] = entry["lead_time_days"]
             if "source" in entry:
-                spare_entry["source"] = entry["source"]
+                # Renamed on the EVENT only — the parts record on the wire
+                # keeps `source`; this module's output field is
+                # `lead_time_source` (not to be confused with cm-state's
+                # unrelated `sources[]` provenance list).
+                spare_entry["lead_time_source"] = entry["source"]
             if "as_of" in entry:
                 spare_entry["as_of"] = _rfc3339(entry["as_of"])
             spares.append(spare_entry)
-        return {
+
+        result: dict[str, Any] = {
             "part_ref": part_ref,
             "item": item,
             "on_hand_here": on_hand.get(owning_tier),
             "on_hand": on_hand,
             "spares": spares,
         }
+
+        # `nearest_spare`: read ONLY off the owning tier's own record, never
+        # computed here (ADR-0046 §4) — see the class docstring. The owning
+        # tier's record missing, or present but lacking the field (an older
+        # publisher), each leave `nearest_spare` off `result` entirely:
+        # "unknown" is not the same claim as "no site has stock" (null).
+        owning_entry = sites.get(owning_tier)
+        if owning_entry is not None and "nearest_site_with_stock" in owning_entry:
+            nearest_site = owning_entry["nearest_site_with_stock"]
+            if nearest_site is None:
+                result["nearest_spare"] = None
+            else:
+                named_row = next((s for s in spares if s["site"] == nearest_site), None)
+                # The named site has no spares[] row of its own (this
+                # process has never seen a parts-availability record for
+                # it) — omit, the same "unknown is not no-stock" rule.
+                if named_row is not None:
+                    result["nearest_spare"] = dict(named_row)
+
+        return result
 
 
 def _installed_part_ref(cm_state: Mapping[str, Any], component: str) -> str | None:
@@ -462,11 +513,15 @@ async def build_picture(
     designations: Mapping[str, Designation] | None = None,
 ) -> dict[str, Any]:
     """The full candidate picture for one episode — `{readiness, lifecycle,
-    factors, rollup, spare, spares, battle_condition}` — before `assemble`
-    filters it down to the sections a kind's schema actually names. A
-    section this process could not fill (no postgres row, no installed part
-    for the slot, no designation) is simply absent from the returned dict;
-    `assemble` never sees a guessed value for it.
+    factors, rollup, spare, spares, nearest_spare, battle_condition}` —
+    before `assemble` filters it down to the sections a kind's schema
+    actually names. A section this process could not fill (no postgres row,
+    no installed part for the slot, no designation) is simply absent from
+    the returned dict; `assemble` never sees a guessed value for it.
+    `spares`/`nearest_spare` are the exception to "absent when unfilled":
+    once a part ref resolves at all, both are written even when the parts
+    book has no rows for it (`spares: []`, `nearest_spare: null`) — see
+    `PartsBook.lookup`.
 
     `readiness_observed_at`/`rollup_observed_at` also ride along at the top
     level when `read_asset` supplied them — not picture sections themselves
@@ -509,11 +564,21 @@ async def build_picture(
             continue
         spare = parts.lookup(part_ref, owning_tier)
         if spare is not None:
-            spares = spare.pop("spares", None)
+            spares = spare.pop("spares")
+            has_nearest_spare = "nearest_spare" in spare
+            nearest_spare = spare.pop("nearest_spare", None)
             sections["spare"] = spare
-            if spares:
-                sections["spares"] = spares
+            # Always set, even `[]` — a part the parts records know always
+            # gets a spares section, empty or not.
+            sections["spares"] = spares
+            if has_nearest_spare:
+                sections["nearest_spare"] = nearest_spare
             break
+    # No candidate the parts records know (nothing installed, no slot map
+    # entry, or no record for the part yet, e.g. before the first parts
+    # sweep after a start): neither `spares` nor `nearest_spare` is written.
+    # `nearest_spare: null` would say "no site has stock", a value nobody
+    # reported; a kind that requires the keys refuses the event instead.
 
     return sections
 
@@ -841,6 +906,13 @@ async def _main_async() -> int:
 
     signal_module.signal(signal_module.SIGTERM, _stop)
     signal_module.signal(signal_module.SIGINT, _stop)
+
+    # R6b: every trigger/parts topic consumed and every output topic
+    # produced to must exist before the first poll.
+    if routes:
+        from confluent_kafka.admin import AdminClient  # noqa: PLC0415
+        wanted_topics = sorted(topics | {r.output_topic for r in routes})
+        require_topics(AdminClient({"bootstrap.servers": BROKERS}), wanted_topics)
 
     consumer = Consumer({
         "bootstrap.servers": BROKERS,

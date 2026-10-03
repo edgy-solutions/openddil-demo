@@ -4,13 +4,47 @@
   "type": "object",
   "required": ["picture"],
   "properties": {
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "event_id": {"type": "string"},
+          "observed_at": {"type": "string"},
+          "row_ref": {"type": "string"}
+        }
+      }
+    },
     "picture": {
       "type": "object",
       "required": ["lifecycle", "readiness", "battle_condition"],
       "properties": {
         "lifecycle": {"type": ["string", "null"]},
         "readiness": {"type": "object"},
-        "battle_condition": {"type": "object"}
+        "battle_condition": {"type": "object"},
+        "spares": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "site": {"type": "string"},
+              "on_hand": {"type": "integer"},
+              "lead_time_days": {"type": "integer"},
+              "lead_time_source": {"type": "string", "enum": ["stand-in", "supply-system"]},
+              "as_of": {"type": "string"}
+            }
+          }
+        },
+        "nearest_spare": {
+          "type": ["object", "null"],
+          "properties": {
+            "site": {"type": "string"},
+            "on_hand": {"type": "integer"},
+            "lead_time_days": {"type": "integer"},
+            "lead_time_source": {"type": "string", "enum": ["stand-in", "supply-system"]},
+            "as_of": {"type": "string"}
+          }
+        }
       }
     }
   }
