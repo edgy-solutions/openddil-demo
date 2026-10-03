@@ -137,14 +137,16 @@ export function DecisionsView({ data }: { data: DecisionsResponse }) {
   );
 }
 
-export default function EgressAdmissionPane() {
+export default function EgressAdmissionPane({
+  defaultDestination = DEFAULT_DESTINATION,
+}: { defaultDestination?: string } = {}) {
   // An editable field rather than a fixed single-option dropdown: the
   // declared corpus has exactly one destination today, but the endpoint
   // already answers `destination_unknown` for any other name, and an
   // operator being able to try one is how that state gets seen at all.
-  const [destinationInput, setDestinationInput] = useState(DEFAULT_DESTINATION);
-  const [destination, setDestination] = useState(DEFAULT_DESTINATION);
-  const commit = () => setDestination(destinationInput.trim() || DEFAULT_DESTINATION);
+  const [destinationInput, setDestinationInput] = useState(defaultDestination);
+  const [destination, setDestination] = useState(defaultDestination);
+  const commit = () => setDestination(destinationInput.trim() || defaultDestination);
 
   const { data, isLoading, isError, isPolicyUnavailable, policyUnavailableDetail } =
     useEgressAdmission(destination);

@@ -165,6 +165,13 @@ export interface ReleasedRecordsColumnConfig {
  *  does not supply it, and HqApp renders nothing in that case rather than
  *  a fixed, hard-coded pane (see ReleasedRecordsPane.tsx's own header on
  *  why a destination is configuration, not code). */
+/** The hub's egress admission pane: present only where the hub serves the
+ *  pane (through its PEP). `destination` is the destination the pane opens
+ *  on; the operator can type another. */
+export interface EgressPaneConfig {
+  destination: string;
+}
+
 export interface ReleasedRecordsPaneConfig {
   title: string;
   destination: string;
@@ -182,6 +189,10 @@ export interface Deployment {
    *  non-string required field is dropped rather than rendered half-
    *  configured. Absent or malformed in the overlay => []. */
   releasedRecordsPanes: ReleasedRecordsPaneConfig[];
+  /** The egress admission pane. ABSENT means the pane is not rendered: a
+   *  hub with no egress answers /egress with a 404, and a pane that can only
+   *  say "could not load" is noise. Parsed by `parseEgressPane`. */
+  egressPane?: EgressPaneConfig;
   /** Optional FOB list — populated by a deployment overlay. The 3D maps
    *  use this to place edge markers and to home positionless assets.
    *  Empty in the OSS default; the maps render an empty theater. */
@@ -371,6 +382,15 @@ export function parseTier(raw: unknown): TierConfig | undefined {
  *
  *  Not an array at all, or absent => []. EXPORTED FOR TESTS, same reasoning
  *  as `parseTier`: a parser is a decision, and decisions get direct tests. */
+/** `{destination: <non-empty string>}` => that config; anything else =>
+ *  undefined, so a malformed entry hides the pane rather than opening it on
+ *  an empty destination. EXPORTED FOR TESTS. */
+export function parseEgressPane(raw: unknown): EgressPaneConfig | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const d = (raw as Record<string, unknown>).destination;
+  return typeof d === 'string' && d.trim().length > 0 ? { destination: d.trim() } : undefined;
+}
+
 export function parseReleasedRecordsPanes(raw: unknown): ReleasedRecordsPaneConfig[] {
   if (!Array.isArray(raw)) return [];
   const isColumn = (x: unknown): x is ReleasedRecordsColumnConfig => {
@@ -449,6 +469,7 @@ export async function loadDeployment(): Promise<void> {
         releasedRecordsPanes: parseReleasedRecordsPanes(
           (j as { releasedRecordsPanes?: unknown }).releasedRecordsPanes,
         ),
+        egressPane: parseEgressPane((j as { egressPane?: unknown }).egressPane),
       };
     }
   } catch {

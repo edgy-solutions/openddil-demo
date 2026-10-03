@@ -27,6 +27,7 @@ import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
 import HqWorkOrders from './components/hq/HqWorkOrders';
 import ReleasedRecordsPane from './components/releasability/ReleasedRecordsPane';
+import EgressAdmissionPane from './components/releasability/EgressAdmissionPane';
 import { deployment } from './deployment';
 import EdgeAttribution from './components/hq/EdgeAttribution';
 import RegionFleetSummary from './components/hq/RegionFleetSummary';
@@ -377,6 +378,12 @@ export default function HqApp() {
           <WearTrendsTheater wearTrends={regionWearTrends.data} />
           <HqDigitalTwin wanActive={!severed} />
           <HqWorkOrders wanActive={!severed} />
+          {/* What the egress gate admitted to a destination and why the rest
+              was refused, beside the records that destination received.
+              Only where the deployment says the hub serves the pane. */}
+          {deployment().egressPane && (
+            <EgressAdmissionPane defaultDestination={deployment().egressPane!.destination} />
+          )}
           {/* ADR-0046 s5: zero, one, or several configured record panes —
               a destination + kind + columns is configuration, not a
               hard-coded component. No config => nothing rendered here. */}
