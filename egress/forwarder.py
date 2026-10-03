@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from client_credentials import ClientCredentials, parse_auth
 from startup import require_topics
 
 log = logging.getLogger("egress.forwarder")
@@ -75,7 +76,10 @@ class Envelope:
 class ForwardRoute:
     """One row of `OPENDDIL_FORWARD_CONFIG`: a sink topic to consume, the
     destination URL to POST to, the kind the envelope declares, and
-    optionally where to read a bearer token from before each request."""
+    optionally where to read a bearer token from before each request --
+    either a static `token_file`, or an `auth` client_credentials grant.
+    The two are exclusive (`load_forward_config` enforces it): a route
+    carries one bearer-token source or the other, never both."""
 
     name: str
     sink_topic: str
@@ -83,6 +87,7 @@ class ForwardRoute:
     kind: str
     envelope: Envelope = field(default_factory=Envelope)
     token_file: str | None = None
+    auth: ClientCredentials | None = None
 
 
 def _entry_label(entry: object, index: int) -> str:
@@ -126,9 +131,17 @@ def load_forward_config(path: str | os.PathLike) -> list[ForwardRoute]:
             body_field=envelope_raw.get("body_field", "payload"),
         )
 
+        token_file = entry.get("token_file")
+        try:
+            auth = parse_auth(entry.get("auth"), label)
+        except ValueError as exc:
+            raise ForwardConfigError(str(exc)) from exc
+        if token_file is not None and auth is not None:
+            raise ForwardConfigError(f"{label}: token_file and auth are exclusive")
+
         routes.append(ForwardRoute(
             name=name, sink_topic=entry["sink_topic"], url=entry["url"],
-            kind=entry["kind"], envelope=envelope, token_file=entry.get("token_file"),
+            kind=entry["kind"], envelope=envelope, token_file=token_file, auth=auth,
         ))
     return routes
 
@@ -194,6 +207,17 @@ def _deliver(
         if route.token_file:
             token = read_token(route.token_file)
             if token is None:
+                _bump(counts, "no_credential")
+                log_outcome(route.name, key, route.kind, None, "no_credential")
+                sleep(delay)
+                delay = min(delay * 2, MAX_BACKOFF_S)
+                continue
+        elif route.auth is not None:
+            token = route.auth.token()
+            if token is None:
+                # Same no_credential path a missing token_file takes --
+                # an unavailable destination credential is the same
+                # operational event regardless of which source it came from.
                 _bump(counts, "no_credential")
                 log_outcome(route.name, key, route.kind, None, "no_credential")
                 sleep(delay)

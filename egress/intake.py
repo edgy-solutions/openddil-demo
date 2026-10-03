@@ -63,6 +63,7 @@ from typing import Any, Callable, Mapping
 
 import delivery
 import pointer
+from client_credentials import ClientCredentials, parse_auth
 from gate import (
     AuthzUnavailable, EgressGate, Label, extract_label_at, load_registry_versions,
     new_decision_id,
@@ -117,6 +118,7 @@ class PollSpec:
     url: str
     interval_s: float
     items_pointer: str  # "" = the response body itself is the list
+    auth: ClientCredentials | None = None
 
 
 @dataclass(frozen=True)
@@ -222,6 +224,10 @@ def load_intake_config(
         if not isinstance(items_pointer, str):
             raise IntakeConfigError(
                 f"{label}: 'poll.items_pointer' must be a string ('' for the whole body)")
+        try:
+            poll_auth = parse_auth(poll_raw.get("auth"), f"{label}: poll")
+        except ValueError as exc:
+            raise IntakeConfigError(str(exc)) from exc
 
         answers_raw = entry.get("answers")
         if not isinstance(answers_raw, Mapping):
@@ -262,7 +268,8 @@ def load_intake_config(
 
         entries.append(IntakeEntry(
             name=name, source_destination=source_destination, kind=kind,
-            poll=PollSpec(url=url, interval_s=float(interval_s), items_pointer=items_pointer),
+            poll=PollSpec(url=url, interval_s=float(interval_s), items_pointer=items_pointer,
+                          auth=poll_auth),
             answers=AnswersSpec(topic=answers_topic, kind=answers_kind,
                                  ref_pointer=ref_pointer, id_pointer=id_pointer),
             approvers=ApproversSpec(array_pointer=array_pointer, subject_field=subject_field),
@@ -532,7 +539,7 @@ async def run_poll(
     decl: Declarations,
     validator: Callable[[Mapping[str, Any]], str | None],
     *,
-    fetch: Callable[[str], Any],
+    fetch: Callable[[str, str | None], Any],
     store: "IntakeStore",
     answered: AnsweredMap,
     gate_for: Callable[[str], EgressGate],
@@ -546,10 +553,27 @@ async def run_poll(
     this is the layer the delivery-failure, authz-outage and HTTP-failure
     tests exercise directly, no real HTTP/Kafka/Postgres involved.
 
+    When `entry.poll.auth` is configured and its `token()` returns `None`,
+    this poll is skipped entirely -- not fetched, not decided -- and
+    counted as `no_credential`, logged once without the secret. This is
+    neither a refusal (no artifact was looked at) nor a decision; the next
+    poll tries again.
+
     `startup_versions` passes straight through to `decide_artifact` — see
     its docstring."""
+    token: str | None = None
+    if entry.poll.auth is not None:
+        token = entry.poll.auth.token()
+        if token is None:
+            counters["no_credential"] = counters.get("no_credential", 0) + 1
+            log.warning(
+                "intake poll skipped entry=%s url=%s: no_credential",
+                entry.name, entry.poll.url,
+            )
+            return
+
     try:
-        payload = fetch(entry.poll.url)
+        payload = fetch(entry.poll.url, token)
     except Exception as exc:  # noqa: BLE001 — a poll failure is a WARNING, never fatal
         log.warning("intake poll failed entry=%s url=%s: %s", entry.name, entry.poll.url, exc)
         return
@@ -660,11 +684,14 @@ def _decode(payload: bytes) -> dict:
     return json.loads(payload.decode("utf-8"))
 
 
-def http_fetch(url: str, *, timeout: float = 10.0) -> Any:
-    """GET `url` and parse the body as JSON. Any non-2xx or network error
+def http_fetch(url: str, token: str | None = None, *, timeout: float = 10.0) -> Any:
+    """GET `url` and parse the body as JSON, with an optional bearer token
+    added as `Authorization: Bearer <token>`. Any non-2xx or network error
     raises — `run_poll` is the one place that turns that into one WARNING
     and nothing else; a poll failure is never fatal here."""
     req = urllib.request.Request(url, method="GET")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 

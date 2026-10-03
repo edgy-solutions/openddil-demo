@@ -257,3 +257,95 @@ def test_missing_token_file_is_not_posted_counted_no_credential_not_committed(tm
     assert counts.get("no_credential") == 1
     assert counts.get("delivered") == 1
     assert consumer.committed == [message]
+
+
+# --- auth (client_credentials): config, exclusivity, delivery --------------
+
+def test_auth_and_token_file_together_is_a_config_error(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest",
+         "kind": "KindA", "token_file": "/etc/token",
+         "auth": {"token_url": "http://example.invalid/t", "client_id": "c1",
+                   "client_secret_file": "/etc/secret"}},
+    ])
+    with pytest.raises(ForwardConfigError, match="token_file and auth are exclusive"):
+        load_forward_config(path)
+
+
+def test_auth_bad_shape_raises_forward_config_error_naming_entry(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest",
+         "kind": "KindA", "auth": {"token_url": "http://example.invalid/t"}},
+    ])
+    with pytest.raises(ForwardConfigError) as exc:
+        load_forward_config(path)
+    assert "f1" in str(exc.value)
+
+
+def test_auth_parses_into_route(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest",
+         "kind": "KindA",
+         "auth": {"token_url": "http://example.invalid/t", "client_id": "c1",
+                   "client_secret_file": "/etc/secret"}},
+    ])
+    [route] = load_forward_config(path)
+    assert route.token_file is None
+    assert route.auth.token_url == "http://example.invalid/t"
+    assert route.auth.client_id == "c1"
+    assert route.auth.client_secret_file == "/etc/secret"
+
+
+class _FakeAuth:
+    def __init__(self, token):
+        self._token = token
+
+    def token(self):
+        return self._token
+
+
+def test_auth_token_sets_authorization_header():
+    route = _route(auth=_FakeAuth("auth-token-xyz"))
+    message = _FakeMessage("sink-a", b"k1", json.dumps({"a": 1}).encode())
+    consumer = _FakeConsumer([message])
+    posts = []
+
+    def fake_post(url, data, headers):
+        posts.append(headers)
+        return 200, b"ok"
+
+    counts: dict[str, int] = {}
+    run_once(
+        consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
+        post=fake_post, sleep=lambda d: pytest.fail("no retry expected"),
+        poll_timeout=1.0, counts=counts,
+    )
+
+    assert posts[0]["Authorization"] == "Bearer auth-token-xyz"
+
+
+def test_auth_none_token_takes_no_credential_path(tmp_path):
+    route = _route(auth=_FakeAuth(None))
+    message = _FakeMessage("sink-a", b"k1", json.dumps({"a": 1}).encode())
+    consumer = _FakeConsumer([message])
+    events = []
+
+    def fake_post(url, data, headers):
+        events.append("post")
+        return 200, b"ok"
+
+    def fake_sleep(d):
+        events.append("sleep")
+        route.auth._token = "now-available"  # the credential arrives
+
+    counts: dict[str, int] = {}
+    processed = run_once(
+        consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
+        post=fake_post, sleep=fake_sleep, poll_timeout=1.0, counts=counts,
+    )
+
+    assert processed is True
+    assert events == ["sleep", "post"]
+    assert counts.get("no_credential") == 1
+    assert counts.get("delivered") == 1
+    assert consumer.committed == [message]

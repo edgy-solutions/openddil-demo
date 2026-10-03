@@ -471,7 +471,7 @@ class _FakeStore:
 
 
 def _fetch_one(art: Mapping[str, Any]):
-    def fetch(url):
+    def fetch(url, token=None):
         return {"items": [art]}
     return fetch
 
@@ -534,7 +534,7 @@ def test_run_poll_http_failure_is_a_warning_not_fatal(caplog):
     store = _FakeStore()
     counters: dict[str, int] = {}
 
-    def failing_fetch(url):
+    def failing_fetch(url, token=None):
         raise RuntimeError("HTTP 500")
 
     with caplog.at_level("WARNING"):
@@ -593,3 +593,138 @@ def test_load_intake_config_valid_entry_loads(tmp_path):
     assert len(entries) == 1
     assert entries[0].name == "n1"
     assert entries[0].on_behalf_of_pointer is None
+    assert entries[0].poll.auth is None
+
+
+def _intake_config_with_poll_auth(tmp_path, auth_obj: str) -> Path:
+    config_path = tmp_path / "intake.json"
+    config_path.write_text(
+        '[{"name": "n1", "source_destination": "system:relay-a", "kind": "KindQ",'
+        ' "poll": {"url": "http://x", "interval_s": 5, "items_pointer": ""'
+        + (", \"auth\": " + auth_obj if auth_obj else "") +
+        '},'
+        ' "answers": {"topic": "t", "kind": "KindR", "ref_pointer": "/a", "id_pointer": "/b"},'
+        ' "approvers": {"array_pointer": "/e", "subject_field": "subject"},'
+        ' "onward_topic": "o"}]',
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_load_intake_config_poll_auth_parses(tmp_path):
+    config_path = _intake_config_with_poll_auth(
+        tmp_path,
+        '{"token_url": "http://example.invalid/t", "client_id": "c1", '
+        '"client_secret_file": "/etc/secret"}',
+    )
+    [entry] = load_intake_config(config_path, {"KindQ": QUOTE_DECL, "KindR": RECORD_DECL})
+    assert entry.poll.auth.token_url == "http://example.invalid/t"
+    assert entry.poll.auth.client_id == "c1"
+    assert entry.poll.auth.client_secret_file == "/etc/secret"
+
+
+def test_load_intake_config_poll_auth_missing_field_raises(tmp_path):
+    config_path = _intake_config_with_poll_auth(
+        tmp_path, '{"token_url": "http://example.invalid/t"}')
+    with pytest.raises(IntakeConfigError, match="n1"):
+        load_intake_config(config_path, {"KindQ": QUOTE_DECL, "KindR": RECORD_DECL})
+
+
+def test_load_intake_config_poll_auth_unknown_key_raises(tmp_path):
+    config_path = _intake_config_with_poll_auth(
+        tmp_path,
+        '{"token_url": "http://example.invalid/t", "client_id": "c1", '
+        '"client_secret_file": "/etc/secret", "extra": "nope"}',
+    )
+    with pytest.raises(IntakeConfigError, match="n1"):
+        load_intake_config(config_path, {"KindQ": QUOTE_DECL, "KindR": RECORD_DECL})
+
+
+# --- run_poll: poll.auth ------------------------------------------------
+
+class _FakeAuth:
+    def __init__(self, token):
+        self._token = token
+
+    def token(self):
+        return self._token
+
+
+def make_entry_with_auth(auth) -> IntakeEntry:
+    entry = make_entry()
+    return IntakeEntry(
+        name=entry.name, source_destination=entry.source_destination, kind=entry.kind,
+        poll=PollSpec(url=entry.poll.url, interval_s=entry.poll.interval_s,
+                      items_pointer=entry.poll.items_pointer, auth=auth),
+        answers=entry.answers, approvers=entry.approvers,
+        onward_topic=entry.onward_topic, on_behalf_of_pointer=entry.on_behalf_of_pointer,
+    )
+
+
+def test_run_poll_none_token_skips_poll_counted_no_credential(caplog):
+    entry = make_entry_with_auth(_FakeAuth(None))
+    answered = answered_map_with("rec-1")
+    store = _FakeStore()
+    counters: dict[str, int] = {}
+
+    def fetch_must_not_be_called(url, token=None):
+        pytest.fail("fetch must not be called when the token is None")
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(run_poll(
+            entry, QUOTE_DECL, VALIDATE_QUOTE,
+            fetch=fetch_must_not_be_called, store=store, answered=answered,
+            gate_for=lambda subject: resolved_gate(),
+            produce=lambda *a: None, counters=counters, now=NOW,
+        ))
+
+    assert store.upserts == []
+    assert counters.get("no_credential") == 1
+    assert "polled" not in counters
+    assert any("no_credential" in rec.message for rec in caplog.records)
+
+
+def test_run_poll_with_auth_passes_token_to_fetch():
+    entry = make_entry_with_auth(_FakeAuth("auth-token-xyz"))
+    answered = answered_map_with("rec-1")
+    store = _FakeStore()
+    counters: dict[str, int] = {}
+    seen = {}
+
+    def fetch(url, token=None):
+        seen["token"] = token
+        return {"items": [artifact()]}
+
+    asyncio.run(run_poll(
+        entry, QUOTE_DECL, VALIDATE_QUOTE,
+        fetch=fetch, store=store, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        produce=lambda *a: None, counters=counters, now=NOW,
+    ))
+
+    assert seen["token"] == "auth-token-xyz"
+    assert counters.get("admitted") == 1
+
+
+def test_http_fetch_sends_authorization_bearer_header(monkeypatch):
+    from intake import http_fetch
+
+    captured = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b'{"items": []}'
+
+    def fake_urlopen(req, timeout=None):
+        captured["headers"] = dict(req.header_items())
+        return _FakeResponse()
+
+    monkeypatch.setattr("intake.urllib.request.urlopen", fake_urlopen)
+    http_fetch("http://stand-in/artifacts", "auth-token-xyz")
+    assert captured["headers"].get("Authorization") == "Bearer auth-token-xyz"
