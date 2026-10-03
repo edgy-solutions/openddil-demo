@@ -63,7 +63,11 @@ from typing import Any, Callable, Mapping
 
 import delivery
 import pointer
-from gate import AuthzUnavailable, EgressGate, Label, extract_label_at, new_decision_id
+from gate import (
+    AuthzUnavailable, EgressGate, Label, extract_label_at, load_registry_versions,
+    new_decision_id,
+)
+from startup import require_tables, require_topics
 from kinds import Declarations
 
 log = logging.getLogger("egress.intake")
@@ -307,6 +311,13 @@ class IntakeDecision:
     on_behalf_of: str | None
     policy_version: str = "unknown"
     corpus_version: str = "unknown"
+    # "startup" for the four reasons decided before any gate is asked
+    # (`schema_invalid`, `answered_record_unknown`, `label_mismatch`,
+    # `approvers_missing`) — citing the versions `load_registry_versions`
+    # loaded at process start; "decision" once a gate has actually answered
+    # (every other reason, admit included). Never "unknown" — see
+    # `decide_artifact`.
+    versions_from: str = "decision"
     detail: str = ""
 
     def as_json(self) -> dict[str, Any]:
@@ -322,6 +333,7 @@ class IntakeDecision:
             "on_behalf_of": self.on_behalf_of,
             "policy_version": self.policy_version,
             "corpus_version": self.corpus_version,
+            "versions_from": self.versions_from,
             "detail": self.detail,
         }
 
@@ -350,6 +362,7 @@ def decide_artifact(
     existing_sha256: str | None,
     answered: AnsweredMap,
     gate_for: Callable[[str], EgressGate],
+    startup_versions: Mapping[str, str] | None = None,
 ) -> Outcome:
     """Decide one artifact, per the governing text's seven steps.
 
@@ -358,6 +371,13 @@ def decide_artifact(
     that is "no decision at all", and the caller (`run_poll`) is the one
     place that turns it into "store nothing, retry next poll" without
     confusing it for a refusal.
+
+    `startup_versions` is what `load_registry_versions` loaded at process
+    start (`{"policy_version": ..., "corpus_version": ...}`) — cited by a
+    decision made before any gate in this call is asked (`schema_invalid`,
+    `answered_record_unknown`, `label_mismatch`, `approvers_missing`).
+    Omitted (as every existing caller before this parameter existed still
+    does) falls back to the literal "unknown" default, unchanged.
     """
     raw_key = pointer.get(artifact, decl.key, default=None)
     key = raw_key if isinstance(raw_key, str) and raw_key else ""
@@ -372,11 +392,16 @@ def decide_artifact(
         raw_tier = pointer.get(artifact, decl.owning_tier, default=None)
         owning_tier = raw_tier if isinstance(raw_tier, str) and raw_tier else None
 
-    versions = {"policy_version": "unknown", "corpus_version": "unknown"}
+    versions = {
+        "policy_version": (startup_versions or {}).get("policy_version", "unknown"),
+        "corpus_version": (startup_versions or {}).get("corpus_version", "unknown"),
+        "versions_from": "startup",
+    }
 
     def _note_versions(g: EgressGate) -> None:
         versions["policy_version"] = g.policy_version
         versions["corpus_version"] = g.corpus_version
+        versions["versions_from"] = "decision"
 
     def _decided(
         allowed: bool, reason: str, *, detail: str = "",
@@ -388,6 +413,7 @@ def decide_artifact(
             key=key, kind=entry.kind, source_destination=entry.source_destination,
             answered_id=answered_id, approvers=approvers, on_behalf_of=on_behalf_of,
             policy_version=versions["policy_version"], corpus_version=versions["corpus_version"],
+            versions_from=versions["versions_from"],
             detail=detail,
         )
         return Outcome(
@@ -412,15 +438,9 @@ def decide_artifact(
             detail=f"no answered record for id {answered_id!r}",
         )
 
-    # Step 4 — label equality.
-    if (label.originator_nation != answered_label.originator_nation
-            or sorted(label.releasable_to) != sorted(answered_label.releasable_to)):
-        return _decided(
-            False, REASON_LABEL_MISMATCH, answered_id=answered_id,
-            detail="artifact label does not match the answered record's label",
-        )
-
-    # Step 5 — approvers.
+    # Approver subjects, extracted here (ahead of steps 4-5 that use them) so
+    # a `label_mismatch` refusal below can list them as found, same as every
+    # later reason does — it resolves none of them, it just names them.
     raw_approvers = pointer.get(artifact, entry.approvers.array_pointer, default=[])
     subjects: list[str] = []
     if isinstance(raw_approvers, list):
@@ -429,6 +449,17 @@ def decide_artifact(
                 subject = item.get(entry.approvers.subject_field)
                 if isinstance(subject, str) and subject:
                     subjects.append(subject)
+
+    # Step 4 — label equality.
+    if (label.originator_nation != answered_label.originator_nation
+            or sorted(label.releasable_to) != sorted(answered_label.releasable_to)):
+        return _decided(
+            False, REASON_LABEL_MISMATCH, answered_id=answered_id,
+            approvers=tuple(subjects),
+            detail="artifact label does not match the answered record's label",
+        )
+
+    # Step 5 — approvers.
     if not subjects:
         return _decided(
             False, REASON_APPROVERS_MISSING, answered_id=answered_id,
@@ -508,11 +539,15 @@ async def run_poll(
     produce: Callable[[str, bytes, bytes], None],
     counters: dict[str, int],
     now: datetime,
+    startup_versions: Mapping[str, str] | None = None,
 ) -> None:
     """One poll of `entry.poll.url`, decided and stored artifact by
     artifact. Entirely injected (`fetch`/`store`/`gate_for`/`produce`) —
     this is the layer the delivery-failure, authz-outage and HTTP-failure
-    tests exercise directly, no real HTTP/Kafka/Postgres involved."""
+    tests exercise directly, no real HTTP/Kafka/Postgres involved.
+
+    `startup_versions` passes straight through to `decide_artifact` — see
+    its docstring."""
     try:
         payload = fetch(entry.poll.url)
     except Exception as exc:  # noqa: BLE001 — a poll failure is a WARNING, never fatal
@@ -542,6 +577,7 @@ async def run_poll(
             outcome = decide_artifact(
                 entry, decl, validator, artifact,
                 existing_sha256=existing_sha256, answered=answered, gate_for=gate_for,
+                startup_versions=startup_versions,
             )
         except AuthzUnavailable as exc:
             log.warning("intake entry=%s: authz unavailable, not decided: %s", entry.name, exc)
@@ -745,6 +781,7 @@ async def _run_entry_forever(
     entry: IntakeEntry, decl: Declarations, answers_decl: Declarations,
     validator: Callable[[Mapping[str, Any]], str | None], *,
     store: IntakeStore, answers_consumer: _AnswersConsumer, answered: AnsweredMap,
+    startup_versions: Mapping[str, str] | None = None,
 ) -> None:
     from confluent_kafka import Producer  # noqa: PLC0415
     producer = Producer({"bootstrap.servers": BROKERS})
@@ -759,6 +796,7 @@ async def _run_entry_forever(
                 fetch=http_fetch, store=store, answered=answered,
                 gate_for=lambda subject: EgressGate.for_destination(subject),
                 produce=produce, counters=counters, now=datetime.now(timezone.utc),
+                startup_versions=startup_versions,
             )
             now_monotonic = asyncio.get_event_loop().time()
             if now_monotonic - last_counter_log >= COUNTER_LOG_INTERVAL_S:
@@ -802,6 +840,30 @@ async def _main_async() -> int:
     signal_module.signal(signal_module.SIGTERM, _stop)
     signal_module.signal(signal_module.SIGINT, _stop)
 
+    # R6b: the answers topic and onward topic each entry names, and the
+    # `intake_records` table every entry writes to, must exist before any
+    # entry starts polling.
+    if entries:
+        from confluent_kafka.admin import AdminClient  # noqa: PLC0415
+        admin = AdminClient({"bootstrap.servers": BROKERS})
+        wanted_topics = sorted(
+            {e.answers.topic for e in entries} | {e.onward_topic for e in entries})
+        require_topics(admin, wanted_topics)
+        await require_tables(POSTGRES_DSN, ["intake_records"])
+
+    # Registry versions, loaded unconditionally before any entry starts
+    # polling — see gate.py's `load_registry_versions`. Probed against the
+    # first entry's source destination, an existing `gate_for` call this
+    # process already makes once per on_behalf_of check; retried with
+    # backoff rather than failing on the first transient outage.
+    startup_versions: dict[str, str] | None = None
+    if entries:
+        try:
+            startup_versions = load_registry_versions(entries[0].source_destination)
+        except AuthzUnavailable as exc:
+            log.error("FATAL: registry versions unavailable: %s", exc)
+            return 2
+
     store = IntakeStore(POSTGRES_DSN)
 
     tasks = []
@@ -819,6 +881,7 @@ async def _main_async() -> int:
         tasks.append(asyncio.create_task(_run_entry_forever(
             entry, decl, answers_decl, validator,
             store=store, answers_consumer=answers_consumer, answered=answered,
+            startup_versions=startup_versions,
         )))
 
     if tasks:

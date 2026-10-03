@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from gate import Label, extract_label  # noqa: E402
 from main import decode  # noqa: E402 — reused, not copied; see module docstring
+from startup import require_topics  # noqa: E402
 
 BROKERS = os.getenv("OPENDDIL_COT_BROKERS", "redpanda-hq:19092")
 SOURCE_TOPIC = os.getenv("OPENDDIL_COT_SOURCE_TOPIC", "egress-c2-status")
@@ -225,6 +226,11 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+
+    # R6b: the sink topic this process reads must exist before it opens a
+    # TAK socket or subscribes.
+    from confluent_kafka.admin import AdminClient  # noqa: PLC0415
+    require_topics(AdminClient({"bootstrap.servers": BROKERS}), [SOURCE_TOPIC])
 
     tak = TakSocket(TAK_HOST, TAK_PORT)
 

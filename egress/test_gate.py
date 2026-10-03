@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import gate as gate_module  # noqa: E402
 from gate import (  # noqa: E402
     ADMIT,
     CLASS_AGGREGATE_EMPTY,
@@ -409,11 +410,66 @@ def test_gate_without_label_pointer_is_unchanged():
 
 def test_as_json_without_kind_or_route_matches_todays_key_set():
     """A gate built without a kind or route — every destination that existed
-    before this pass — logs byte-identical JSON to today, apart from the id
-    and ts: none of `kind`, `route` or `registry_version` appear."""
+    before this pass — logs byte-identical JSON to today, apart from the id,
+    ts and the new `versions_from` (added to every decision line regardless
+    of kind/route): none of `kind`, `route` or `registry_version` appear."""
     d = ATL_GATE().decide(rec("ATL", ["BDR"]), key="dis:1:1:1000")
     assert sorted(d.as_json().keys()) == sorted([
         "decision_id", "gate", "outcome", "reason", "class", "destination",
         "destination_nations", "key", "originator_nation", "releasable_to",
-        "policy_version", "corpus_version", "detail", "ts",
+        "policy_version", "corpus_version", "versions_from", "detail", "ts",
     ])
+
+
+def test_gate_decision_always_cites_versions_from_decision():
+    """Every gate decision today is PDP-answered (a gate only ever exists
+    via `for_destination`, which asks topaz first) — admit and refuse
+    alike cite `versions_from: decision`, never `startup` and never
+    `unknown`."""
+    admitted = ATL_GATE().decide(rec("ATL", []), key="dis:1:1:1002")
+    assert admitted.versions_from == "decision"
+    refused = ATL_GATE().decide(rec("ZZZ", []), key="dis:1:1:1003")
+    assert refused.versions_from == "decision"
+    for d in (admitted, refused):
+        assert d.policy_version != "unknown"
+        assert "unknown" not in d.as_json().values()
+
+
+# --- load_registry_versions: startup retry/backoff --------------------------
+
+def test_load_registry_versions_retries_then_succeeds(monkeypatch):
+    """A fake topaz that fails twice, then answers: the loader retries with
+    backoff rather than giving up on the first outage, and does not return
+    (so the caller does not start consuming) until it has a real answer."""
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def fake_ask_topaz(subject: str):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise gate_module.AuthzUnavailable(f"attempt {calls['n']} failed")
+        return {
+            "policy_version": "pv-7", "corpus_version": "cv-3",
+            "registry_version": "rv-1",
+        }
+
+    monkeypatch.setattr(gate_module, "ask_topaz", fake_ask_topaz)
+    versions = gate_module.load_registry_versions(
+        "system:probe", retry_delays=(0, 0, 0), sleep=sleeps.append,
+    )
+    assert versions == {
+        "policy_version": "pv-7", "corpus_version": "cv-3", "registry_version": "rv-1",
+    }
+    assert calls["n"] == 3
+    assert sleeps == [0, 0]
+
+
+def test_load_registry_versions_raises_when_retry_budget_exhausted(monkeypatch):
+    def always_fails(subject: str):
+        raise gate_module.AuthzUnavailable("still down")
+
+    monkeypatch.setattr(gate_module, "ask_topaz", always_fails)
+    with pytest.raises(gate_module.AuthzUnavailable):
+        gate_module.load_registry_versions(
+            "system:probe", retry_delays=(0, 0), sleep=lambda _: None,
+        )

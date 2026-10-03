@@ -101,6 +101,7 @@ from gate import (  # noqa: E402
     AuthzUnavailable,
     EgressGate,
 )
+from startup import require_tables  # noqa: E402
 
 LISTEN_PORT = int(os.getenv("OPENDDIL_EGRESS_PANE_PORT", "8090"))
 POSTGRES_DSN = os.getenv(
@@ -319,6 +320,11 @@ class PaneApi(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    # R6b: both tables this process reads must exist before it serves a
+    # single request — a missing one would otherwise surface as a 500 on
+    # the first `/decisions` call instead of a named startup refusal.
+    asyncio.run(require_tables(
+        POSTGRES_DSN, ["asset_logistics_status", "intake_records"]))
     log.info("egress pane-api listening on :%s (postgres=...@%s)",
               LISTEN_PORT, POSTGRES_DSN.rsplit("@", 1)[-1])
     ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), PaneApi).serve_forever()

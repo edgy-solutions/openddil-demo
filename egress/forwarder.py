@@ -38,6 +38,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from startup import require_topics
+
 log = logging.getLogger("egress.forwarder")
 
 CONFIG_PATH = os.getenv("OPENDDIL_FORWARD_CONFIG")
@@ -328,6 +330,12 @@ def main() -> int:
     routes_by_topic: dict[str, list[ForwardRoute]] = {}
     for route in routes:
         routes_by_topic.setdefault(route.sink_topic, []).append(route)
+
+    # R6b: every sink topic this process consumes must exist first.
+    if routes_by_topic:
+        from confluent_kafka.admin import AdminClient  # noqa: PLC0415
+        require_topics(
+            AdminClient({"bootstrap.servers": BROKERS}), sorted(routes_by_topic))
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)

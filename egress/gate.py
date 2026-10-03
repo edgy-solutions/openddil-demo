@@ -208,6 +208,13 @@ class Decision:
     kind: str | None = None
     route: str | None = None
     registry_version: str | None = None
+    # "decision" when policy_version/corpus_version came from this gate's own
+    # `for_destination` answer (every decision this gate makes today, since a
+    # gate is never constructed without one); "startup" would mean a refusal
+    # decided before any PDP answer of this gate's own existed, citing the
+    # process-wide versions `load_registry_versions` loaded at start instead.
+    # Never "unknown" — see that function's docstring.
+    versions_from: str = "decision"
 
     def as_json(self) -> dict[str, Any]:
         out = {
@@ -223,6 +230,7 @@ class Decision:
             "releasable_to": list(self.label.releasable_to) if self.label else None,
             "policy_version": self.policy_version,
             "corpus_version": self.corpus_version,
+            "versions_from": self.versions_from,
             "detail": self.detail,
             "ts": self.ts,
         }
@@ -460,6 +468,59 @@ def ask_topaz(subject: str) -> dict[str, Any]:
         }
     except Exception as exc:  # noqa: BLE001
         raise AuthzUnavailable(f"unparseable topaz answer: {exc}") from exc
+
+
+# Backoff schedule for `load_registry_versions`. Bounded, not infinite: the
+# existing "FAILURE IS CLOSED AND LOUD" rule (main.py's module docstring)
+# still applies once the budget is exhausted — patience at startup is not
+# the same promise as waiting forever for a PDP that may never come back.
+REGISTRY_VERSIONS_RETRY_DELAYS: tuple[float, ...] = (
+    1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0, 30.0, 30.0)
+
+
+def load_registry_versions(
+    subject: str,
+    *,
+    retry_delays: Iterable[float] = REGISTRY_VERSIONS_RETRY_DELAYS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, str]:
+    """The registry versions this process cites in every decision line it
+    logs before any PDP answer of its own exists — intake's four pre-PDP
+    refusal reasons (`schema_invalid`, `label_mismatch`,
+    `answered_record_unknown`, `approvers_missing`), and defensively any
+    gate refusal that could ever precede this gate's own `for_destination`
+    answer.
+
+    THE SAME CALL a decision obtains them from today: `ask_topaz`, asked
+    once here against `subject` — the process's own probe, an existing
+    destination/approver subject the caller already has from its config —
+    rather than once per destination/approver.
+
+    Retries with backoff on `AuthzUnavailable`, logging one
+    `STARTUP_WAITING registry_versions <reason>` line per failed attempt, and
+    `REGISTRY_VERSIONS {...}` once on success. Raises `AuthzUnavailable` if
+    `retry_delays` is exhausted with no answer — the caller treats that
+    exactly like any other startup PDP outage.
+    """
+    delays = list(retry_delays)
+    attempt = 0
+    while True:
+        try:
+            answer = ask_topaz(subject)
+            break
+        except AuthzUnavailable as exc:
+            if attempt >= len(delays):
+                raise
+            log.warning("STARTUP_WAITING registry_versions %s", exc)
+            sleep(delays[attempt])
+            attempt += 1
+    versions = {
+        "policy_version": answer["policy_version"],
+        "corpus_version": answer["corpus_version"],
+        "registry_version": answer["registry_version"],
+    }
+    log.info("REGISTRY_VERSIONS %s", json.dumps(versions, sort_keys=True))
+    return versions
 
 
 # --- the gate ---------------------------------------------------------------

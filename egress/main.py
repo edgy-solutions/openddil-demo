@@ -40,9 +40,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gate import AuthzUnavailable, EgressGate  # noqa: E402
+from gate import AuthzUnavailable, EgressGate, load_registry_versions  # noqa: E402
 from kinds import load_declarations, load_kinds  # noqa: E402
 from routes import GROUP, Route, load_routes, run_once  # noqa: E402
+from startup import require_topics  # noqa: E402
 
 BROKERS = os.getenv("OPENDDIL_EGRESS_BROKERS", "redpanda-hq:19092")
 # The route table's own home. When unset there is one route built from the
@@ -149,6 +150,28 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 — a bad route table must not start the gate
         log.error("FATAL: route table failed to load: %s", exc)
         return 2
+
+    # R6b: every topic this process will consume from or produce to must
+    # exist before the first poll, named by whichever is missing — not
+    # discovered later as a silent empty poll or a produce error.
+    if routes:
+        from confluent_kafka.admin import AdminClient  # noqa: PLC0415
+        admin = AdminClient({"bootstrap.servers": BROKERS})
+        wanted_topics = sorted({r.source_topic for r in routes} | {r.sink_topic for r in routes})
+        require_topics(admin, wanted_topics)
+
+    # Registry versions, loaded unconditionally before anything else: every
+    # decision line this process logs must cite real versions, never
+    # "unknown" — see gate.py's `load_registry_versions`. Probed against the
+    # first route's destination, a call this process already makes once per
+    # route in `_build_gates` below; retried with backoff rather than
+    # failing on the first transient outage.
+    if routes:
+        try:
+            load_registry_versions(routes[0].destination)
+        except AuthzUnavailable as exc:
+            log.error("FATAL: registry versions unavailable: %s", exc)
+            return 2
 
     try:
         gates = _build_gates(routes, kinds_map, declarations_map)

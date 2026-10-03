@@ -195,6 +195,23 @@ def test_decide_label_mismatch():
     assert outcome.decision.reason == REASON_LABEL_MISMATCH
 
 
+def test_decide_label_mismatch_lists_approver_subjects_as_found_unresolved():
+    """label_mismatch is decided before any approver is resolved or
+    entitlement-checked, but the artifact's declared approver subjects are
+    still named on the line — found, not resolved."""
+    entry = make_entry()
+    answered = answered_map_with("rec-1", releasable_to=("CRN",))
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE,
+        artifact(endorsed_by=[{"subject": "system:approver-a"},
+                               {"subject": "system:approver-b"}]),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+    )
+    assert outcome.decision.reason == REASON_LABEL_MISMATCH
+    assert outcome.decision.approvers == ("system:approver-a", "system:approver-b")
+
+
 # --- answered_record_unknown vs deferred -----------------------------------
 
 def test_decide_defers_when_not_caught_up():
@@ -259,6 +276,109 @@ def test_decide_approvers_missing():
     )
     assert outcome.decision.allowed is False
     assert outcome.decision.reason == REASON_APPROVERS_MISSING
+
+
+# --- registry versions: startup vs. decision ---------------------------------
+
+STARTUP_VERSIONS = {"policy_version": "startup-pv", "corpus_version": "startup-cv"}
+
+
+def test_schema_invalid_cites_startup_versions():
+    """A pre-PDP refusal (no gate is ever asked for schema_invalid) cites the
+    startup-loaded versions, never 'unknown', and says so with
+    versions_from=startup."""
+    entry = make_entry()
+    answered = answered_map_with("rec-1")
+    bad = artifact()
+    del bad["ident"]
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, bad,
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        startup_versions=STARTUP_VERSIONS,
+    )
+    assert outcome.decision.reason == REASON_SCHEMA_INVALID
+    assert outcome.decision.policy_version == "startup-pv"
+    assert outcome.decision.corpus_version == "startup-cv"
+    assert outcome.decision.versions_from == "startup"
+
+
+def test_answered_record_unknown_cites_startup_versions():
+    entry = make_entry()
+    answered = AnsweredMap()
+    answered.caught_up = True
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        startup_versions=STARTUP_VERSIONS,
+    )
+    assert outcome.decision.reason == REASON_ANSWERED_RECORD_UNKNOWN
+    assert outcome.decision.versions_from == "startup"
+    assert outcome.decision.policy_version == "startup-pv"
+
+
+def test_label_mismatch_cites_startup_versions():
+    entry = make_entry()
+    answered = answered_map_with("rec-1", releasable_to=("CRN",))
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        startup_versions=STARTUP_VERSIONS,
+    )
+    assert outcome.decision.reason == REASON_LABEL_MISMATCH
+    assert outcome.decision.versions_from == "startup"
+
+
+def test_approvers_missing_cites_startup_versions():
+    entry = make_entry()
+    answered = answered_map_with("rec-1")
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(endorsed_by=[]),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        startup_versions=STARTUP_VERSIONS,
+    )
+    assert outcome.decision.reason == REASON_APPROVERS_MISSING
+    assert outcome.decision.versions_from == "startup"
+
+
+def test_without_startup_versions_pre_pdp_refusal_still_says_unknown_by_default():
+    """Every existing caller that does not pass `startup_versions` keeps
+    today's literal default — this parameter is additive."""
+    entry = make_entry()
+    answered = answered_map_with("rec-1")
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(endorsed_by=[]),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+    )
+    assert outcome.decision.policy_version == "unknown"
+    assert outcome.decision.versions_from == "startup"
+
+
+def test_pdp_answered_decision_cites_its_own_versions_not_startup():
+    """Once a gate is actually asked (admit, or any reason reached only
+    after `gate_for` is called), the decision cites THAT gate's own
+    versions and says versions_from=decision — even when startup versions
+    were also loaded."""
+    entry = make_entry()
+    answered = answered_map_with("rec-1")
+    gate = EgressGate(
+        "system:approver-a", ("ATL", "BRV"), destination_known=True,
+        policy_version="gate-pv", corpus_version="gate-cv",
+    )
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: gate,
+        startup_versions=STARTUP_VERSIONS,
+    )
+    assert outcome.decision.allowed is True
+    assert outcome.decision.policy_version == "gate-pv"
+    assert outcome.decision.corpus_version == "gate-cv"
+    assert outcome.decision.versions_from == "decision"
 
 
 # --- on_behalf_of_untrusted --------------------------------------------------
