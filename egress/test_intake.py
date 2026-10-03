@@ -37,6 +37,7 @@ from intake import (  # noqa: E402
     REASON_SCHEMA_INVALID,
     ADMIT,
     AnsweredMap,
+    _AnswersConsumer,
     ApproversSpec,
     AnswersSpec,
     IntakeConfigError,
@@ -547,6 +548,91 @@ def test_run_poll_http_failure_is_a_warning_not_fatal(caplog):
     assert store.upserts == []
     assert "polled" not in counters
     assert any("intake poll failed" in rec.message for rec in caplog.records)
+
+
+# --- answers consumer: caught up after a reset -------------------------------
+
+_OFFSET_INVALID = -1001  # librdkafka's position before any message is consumed
+
+
+class _FakeAnswersKafka:
+    """The answers topic as a reset leaves it: every partition empty, either
+    recreated at 0 or trimmed to log start == high watermark. Nothing is ever
+    consumed, so `position()` stays invalid on every partition."""
+
+    def __init__(self, watermarks: dict[int, tuple[int, int]],
+                 positions: dict[int, int] | None = None):
+        self.watermarks = watermarks
+        self.positions = dict(positions or {})
+
+    def list_topics(self, topic, timeout):
+        class _Meta:
+            pass
+        meta = _Meta()
+        topic_meta = _Meta()
+        topic_meta.partitions = {p: None for p in self.watermarks}
+        meta.topics = {topic: topic_meta}
+        return meta
+
+    def get_watermark_offsets(self, tp, timeout, cached):
+        return self.watermarks[tp.partition]
+
+    def assign(self, assignments):
+        pass
+
+    def poll(self, timeout):
+        return None
+
+    def position(self, tps):
+        from confluent_kafka import TopicPartition
+        return [TopicPartition(tp.topic, tp.partition,
+                               self.positions.get(tp.partition, _OFFSET_INVALID))
+                for tp in tps]
+
+
+def _drained(kafka: _FakeAnswersKafka) -> AnsweredMap:
+    answered = AnsweredMap()
+    _AnswersConsumer(kafka, "answers").drain(
+        answered, QUOTE_DECL, "/id", lambda raw: raw)
+    return answered
+
+
+def test_answers_consumer_empty_partitions_count_as_caught_up():
+    # Recreated at 0 (0, 0) and trimmed (12, 12): nothing to read on either.
+    kafka = _FakeAnswersKafka({0: (0, 0), 1: (12, 12), 2: (0, 0)})
+    assert _drained(kafka).caught_up is True
+
+
+def test_answers_consumer_not_caught_up_until_position_reaches_high():
+    kafka = _FakeAnswersKafka({0: (0, 0), 1: (0, 3)})
+    assert _drained(kafka).caught_up is False
+    kafka.positions[1] = 2
+    assert _drained(kafka).caught_up is False
+    kafka.positions[1] = 3
+    assert _drained(kafka).caught_up is True
+
+
+def test_run_poll_orphan_answer_after_reset_is_refused_with_reason(caplog):
+    answered = _drained(_FakeAnswersKafka({0: (0, 0), 1: (12, 12)}))
+    store = _FakeStore()
+    counters: dict[str, int] = {}
+    with caplog.at_level("INFO"):
+        asyncio.run(run_poll(
+            make_entry(), QUOTE_DECL, VALIDATE_QUOTE,
+            fetch=_fetch_one(artifact(answers_id="rec-gone")), store=store,
+            answered=answered, gate_for=lambda subject: resolved_gate(),
+            produce=lambda *a: None, counters=counters, now=NOW,
+        ))
+    assert "deferred" not in counters
+    assert counters["refused:" + REASON_ANSWERED_RECORD_UNKNOWN] == 1
+    assert len(store.upserts) == 1
+    decision = store.upserts[0]["decision"]
+    assert decision["allowed"] is False
+    assert decision["reason"] == REASON_ANSWERED_RECORD_UNKNOWN
+    assert "rec-gone" in decision["detail"]
+    assert any("INTAKE_DECISION" in rec.message
+               and REASON_ANSWERED_RECORD_UNKNOWN in rec.message
+               for rec in caplog.records)
 
 
 # --- config errors are fatal -------------------------------------------------

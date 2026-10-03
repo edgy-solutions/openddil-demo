@@ -770,10 +770,13 @@ class _AnswersConsumer:
         partitions = sorted(metadata.topics[topic].partitions.keys())
         assignments = []
         self._highs: dict[int, int] = {}
+        self._empty_at_start: set[int] = set()
         for p in partitions:
-            _low, high = consumer.get_watermark_offsets(
+            low, high = consumer.get_watermark_offsets(
                 TopicPartition(topic, p), timeout=10, cached=False)
             self._highs[p] = high
+            if low >= high:
+                self._empty_at_start.add(p)
             assignments.append(TopicPartition(topic, p, 0))
         consumer.assign(assignments)
 
@@ -798,10 +801,18 @@ class _AnswersConsumer:
         if not self._highs:
             answered.caught_up = True
             return
+        # A partition empty at startup (recreated at 0, or trimmed to log
+        # start == high watermark, as a scenario reset leaves it) has
+        # nothing to catch up on, and its position stays invalid until a
+        # message arrives -- so it counts as caught up. Without this, an
+        # answer to a record the reset removed defers forever instead of
+        # being refused `answered_record_unknown`.
         positions = self._consumer.position(
             [TopicPartition(self._topic, p) for p in self._highs])
         answered.caught_up = all(
-            pos.offset >= self._highs[pos.partition] for pos in positions)
+            pos.partition in self._empty_at_start
+            or pos.offset >= self._highs[pos.partition]
+            for pos in positions)
 
 
 async def _run_entry_forever(
