@@ -763,7 +763,7 @@ class _AnswersConsumer:
     once caught up."""
 
     def __init__(self, consumer, topic: str) -> None:
-        from confluent_kafka import TopicPartition  # noqa: PLC0415
+        from confluent_kafka import OFFSET_BEGINNING, TopicPartition  # noqa: PLC0415
         self._consumer = consumer
         self._topic = topic
         metadata = consumer.list_topics(topic=topic, timeout=10)
@@ -777,7 +777,11 @@ class _AnswersConsumer:
             self._highs[p] = high
             if low >= high:
                 self._empty_at_start.add(p)
-            assignments.append(TopicPartition(topic, p, 0))
+            # The log start, not offset 0: after a reset trims a partition,
+            # 0 is out of range, and with no `auto.offset.reset` the
+            # consumer would jump to END and skip every answer that landed
+            # above the trim.
+            assignments.append(TopicPartition(topic, p, OFFSET_BEGINNING))
         consumer.assign(assignments)
 
     def drain(

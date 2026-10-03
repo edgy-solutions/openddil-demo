@@ -555,65 +555,135 @@ def test_run_poll_http_failure_is_a_warning_not_fatal(caplog):
 _OFFSET_INVALID = -1001  # librdkafka's position before any message is consumed
 
 
-class _FakeAnswersKafka:
-    """The answers topic as a reset leaves it: every partition empty, either
-    recreated at 0 or trimmed to log start == high watermark. Nothing is ever
-    consumed, so `position()` stays invalid on every partition."""
+class _FakeMsg:
+    def __init__(self, partition: int, offset: int, value: Any):
+        self._partition, self._offset, self._value = partition, offset, value
 
-    def __init__(self, watermarks: dict[int, tuple[int, int]],
-                 positions: dict[int, int] | None = None):
-        self.watermarks = watermarks
-        self.positions = dict(positions or {})
+    def error(self):
+        return None
+
+    def value(self):
+        return self._value
+
+    def partition(self):
+        return self._partition
+
+    def offset(self):
+        return self._offset
+
+
+class _FakeAnswersKafka:
+    """The answers topic as the broker serves it. Each partition holds
+    `records` at offsets low..high-1; a reset leaves a partition empty,
+    recreated at 0 or trimmed so low == high, and new records then land
+    above the trim. Offset semantics follow librdkafka with no
+    `auto.offset.reset`: an assignment below log start resets to END,
+    and `position()` stays invalid until a message is consumed."""
+
+    def __init__(self, partitions: dict[int, tuple[int, list]]):
+        # partition -> (low, records); high = low + len(records)
+        self.partitions = partitions
+        self.next: dict[int, int] = {}
+        self.consumed_to: dict[int, int] = {}
+
+    def append(self, partition: int, record) -> None:
+        self.partitions[partition][1].append(record)
+
+    def _high(self, p: int) -> int:
+        low, records = self.partitions[p]
+        return low + len(records)
 
     def list_topics(self, topic, timeout):
         class _Meta:
             pass
         meta = _Meta()
         topic_meta = _Meta()
-        topic_meta.partitions = {p: None for p in self.watermarks}
+        topic_meta.partitions = {p: None for p in self.partitions}
         meta.topics = {topic: topic_meta}
         return meta
 
     def get_watermark_offsets(self, tp, timeout, cached):
-        return self.watermarks[tp.partition]
+        return self.partitions[tp.partition][0], self._high(tp.partition)
 
     def assign(self, assignments):
-        pass
+        from confluent_kafka import OFFSET_BEGINNING, OFFSET_END
+        for tp in assignments:
+            low, high = self.partitions[tp.partition][0], self._high(tp.partition)
+            if tp.offset == OFFSET_BEGINNING:
+                self.next[tp.partition] = low
+            elif tp.offset == OFFSET_END or not low <= tp.offset <= high:
+                self.next[tp.partition] = high  # out of range: reset to END
+            else:
+                self.next[tp.partition] = tp.offset
 
     def poll(self, timeout):
+        for p, (low, records) in self.partitions.items():
+            offset = self.next[p]
+            if offset < low + len(records):
+                self.next[p] = offset + 1
+                self.consumed_to[p] = offset + 1
+                return _FakeMsg(p, offset, records[offset - low])
         return None
 
     def position(self, tps):
         from confluent_kafka import TopicPartition
         return [TopicPartition(tp.topic, tp.partition,
-                               self.positions.get(tp.partition, _OFFSET_INVALID))
+                               self.consumed_to.get(tp.partition, _OFFSET_INVALID))
                 for tp in tps]
 
 
-def _drained(kafka: _FakeAnswersKafka) -> AnsweredMap:
-    answered = AnsweredMap()
-    _AnswersConsumer(kafka, "answers").drain(
-        answered, QUOTE_DECL, "/id", lambda raw: raw)
+def _answer(id_value: str) -> dict:
+    return {"id": id_value,
+            "audience": {"originator_nation": "ATL", "releasable_to": ["ATL"]}}
+
+
+def _drain(consumer: _AnswersConsumer, answered: AnsweredMap | None = None) -> AnsweredMap:
+    answered = answered if answered is not None else AnsweredMap()
+    consumer.drain(answered, QUOTE_DECL, "/id", lambda raw: raw)
     return answered
 
 
+def _drained(kafka: _FakeAnswersKafka) -> AnsweredMap:
+    return _drain(_AnswersConsumer(kafka, "answers"))
+
+
 def test_answers_consumer_empty_partitions_count_as_caught_up():
-    # Recreated at 0 (0, 0) and trimmed (12, 12): nothing to read on either.
-    kafka = _FakeAnswersKafka({0: (0, 0), 1: (12, 12), 2: (0, 0)})
+    # Recreated at 0 (low 0, empty) and trimmed (low 12, empty): nothing to read.
+    kafka = _FakeAnswersKafka({0: (0, []), 1: (12, []), 2: (0, [])})
     assert _drained(kafka).caught_up is True
 
 
-def test_answers_consumer_not_caught_up_until_position_reaches_high():
-    kafka = _FakeAnswersKafka({0: (0, 0), 1: (0, 3)})
-    assert _drained(kafka).caught_up is False
-    kafka.positions[1] = 2
-    assert _drained(kafka).caught_up is False
-    kafka.positions[1] = 3
-    assert _drained(kafka).caught_up is True
+def test_answers_consumer_not_caught_up_until_it_has_read_to_startup_high():
+    kafka = _FakeAnswersKafka({0: (0, []), 1: (0, [_answer("rec-a"), _answer("rec-b")])})
+    consumer = _AnswersConsumer(kafka, "answers")
+    kafka.poll = lambda timeout: None  # the broker has not served anything yet
+    assert _drain(consumer).caught_up is False
+    del kafka.poll
+    answered = _drain(consumer)
+    assert answered.caught_up is True
+    assert answered.get("rec-b") is not None
+
+
+def test_answers_consumer_reads_a_record_landed_above_a_trim():
+    # A reset trimmed partition 1 to log start 10; one answer landed since.
+    kafka = _FakeAnswersKafka({0: (0, []), 1: (10, [_answer("rec-after-reset")])})
+    answered = _drained(kafka)
+    assert answered.get("rec-after-reset") is not None
+    assert answered.caught_up is True
+
+
+def test_answers_consumer_empty_at_start_then_filled_still_reads_it():
+    kafka = _FakeAnswersKafka({0: (0, []), 1: (10, [])})
+    consumer = _AnswersConsumer(kafka, "answers")
+    assert _drain(consumer).caught_up is True
+    kafka.append(1, _answer("rec-later"))
+    answered = AnsweredMap()
+    _drain(consumer, answered)
+    assert answered.get("rec-later") is not None
 
 
 def test_run_poll_orphan_answer_after_reset_is_refused_with_reason(caplog):
-    answered = _drained(_FakeAnswersKafka({0: (0, 0), 1: (12, 12)}))
+    answered = _drained(_FakeAnswersKafka({0: (0, []), 1: (12, [])}))
     store = _FakeStore()
     counters: dict[str, int] = {}
     with caplog.at_level("INFO"):
