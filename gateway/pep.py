@@ -164,26 +164,51 @@ logging.basicConfig(
 )
 log = logging.getLogger("pep")
 
-def _load_fault_codes(path: str) -> list:
+def _load_fault_catalog(path: str) -> dict | None:
+    """The per-platform-variant catalog built by
+    tools/fault_catalog/build_fault_catalog.py, or None when the route is
+    simply not configured at this tier (path unset) or the file could not
+    be read/parsed (fail closed, logged, same as an unset path -- a broken
+    config must not silently look like "zero variants").
+
+    `{"variants": {}}` is a valid, successfully-parsed catalog (zero
+    variants) and is NOT None: the write route stays served even then,
+    because reports without a fault code are always allowed."""
     if not path:
-        return []
+        return None
     try:
         with open(path, "r", encoding="utf-8") as f:
-            codes = json.load(f)
+            catalog = json.load(f)
     except Exception as exc:  # noqa: BLE001 -- a config read, not a request
-        log.error("could not read OPENDDIL_FAULT_CODES_PATH=%s: %s", path, exc)
-        return []
-    if not isinstance(codes, list):
-        log.error("OPENDDIL_FAULT_CODES_PATH=%s is not a JSON list", path)
-        return []
-    return codes
+        log.error("could not read OPENDDIL_FAULT_CATALOG_PATH=%s: %s", path, exc)
+        return None
+    if not isinstance(catalog, dict) or not isinstance(catalog.get("variants"), dict):
+        log.error("OPENDDIL_FAULT_CATALOG_PATH=%s is not a fault-catalog object", path)
+        return None
+    return catalog
 
+
+# OPENDDIL_FAULT_CODES_PATH served one global flat code list and let an
+# MRAD be offered (and the gateway accept) another variant's codes, such as
+# a transmission fault that does not exist on it. Retired in favour of
+# OPENDDIL_FAULT_CATALOG_PATH, below. If the old env is still set, say so
+# once at import and do not read it -- a silent ignore here would leave an
+# operator who set the old var believing it still worked.
+_legacy_fault_codes_path = os.getenv("OPENDDIL_FAULT_CODES_PATH", "")
+if _legacy_fault_codes_path:
+    log.error(
+        "OPENDDIL_FAULT_CODES_PATH=%s is set but no longer read; it served one "
+        "global fault-code list. Set OPENDDIL_FAULT_CATALOG_PATH instead, to a "
+        "catalog generated per platform variant by "
+        "openddil-demo/tools/fault_catalog/build_fault_catalog.py.",
+        _legacy_fault_codes_path,
+    )
 
 # Read once at import, like every other upstream config in this file. Tests
 # reach past this by setting the module attribute directly (see
 # test_pep_cm_write.py) rather than by re-importing, because this module's
 # fakes are started once per test module.
-FAULT_CODES = _load_fault_codes(os.getenv("OPENDDIL_FAULT_CODES_PATH", ""))
+FAULT_CATALOG = _load_fault_catalog(os.getenv("OPENDDIL_FAULT_CATALOG_PATH", ""))
 
 # The decision log — ADR-0029 Phase 5's mechanism.
 #
@@ -514,9 +539,9 @@ class ElectricUnavailable(Exception):
     a correctly scoped answer that this asset is not visible here."""
 
 
-def read_cm_visibility_row(asset_id: str, nations: list[str]) -> dict | None:
-    """One bounded, non-streaming read of asset_cm_state, filtered through
-    the SAME machinery the read path uses -- `compose`, `policy_predicate`,
+def read_visible_row(table: str, asset_id: str, nations: list[str]) -> dict | None:
+    """One bounded, non-streaming read of `table`, filtered through the SAME
+    machinery the read path uses -- `compose`, `policy_predicate`,
     `_sql_str` -- not a second decision about who may see what. Zero rows
     means "not visible here", and the caller must read it that way rather
     than as "does not exist": this write path never confirms or denies that
@@ -537,7 +562,7 @@ def read_cm_visibility_row(asset_id: str, nations: list[str]) -> dict | None:
     replicated rather than a point-in-time snapshot that may be hours stale.
     """
     where = compose(f"asset_id = {_sql_str(asset_id)}", policy_predicate(nations))
-    base_params = {"table": "asset_cm_state", "where": where}
+    base_params = {"table": table, "where": where}
     deadline = time.monotonic() + 10
     handle: str | None = None
     offset: str | None = None
@@ -631,6 +656,14 @@ def read_cm_visibility_row(asset_id: str, nations: list[str]) -> dict | None:
     raise ElectricUnavailable("electric shape did not reach up-to-date within 20 requests")
 
 
+def read_cm_visibility_row(asset_id: str, nations: list[str]) -> dict | None:
+    """Thin wrapper kept for existing tests/stubs: the asset_cm_state read,
+    exactly as before `read_visible_row` grew a `table` argument so the
+    fault-code route could read `platform_variant` from telemetry_latest_state through the same
+    machinery."""
+    return read_visible_row("asset_cm_state", asset_id, nations)
+
+
 def _component_installed(row: dict, component: str) -> bool:
     """True when `component` names a slot_id in the row's `installed` list.
     Electric may hand back a jsonb column already decoded or still as a JSON
@@ -667,13 +700,20 @@ def _parse_discrepancy_body(payload) -> dict:
         raise ValueError("body must be a JSON object")
     asset_id = payload.get("asset_id")
     component = payload.get("component")
-    fault_code = payload.get("fault_code")
+    # Optional: absent or "" means "not listed" -- the reporter could not
+    # find a matching code in the fault-isolation manual (or there is none
+    # for this variant). Only a non-empty value is validated against the
+    # shared identifier pattern; a present-but-wrong-shaped value is still
+    # a 400, not silently treated as "not listed".
+    fault_code = payload.get("fault_code", "")
     description = payload.get("description")
     if not isinstance(asset_id, str) or not _ASSET_ID_RE.match(asset_id):
         raise ValueError("invalid asset_id")
     if not isinstance(component, str) or not _COMPONENT_RE.match(component):
         raise ValueError("invalid component")
-    if not isinstance(fault_code, str) or not _COMPONENT_RE.match(fault_code):
+    if not isinstance(fault_code, str):
+        raise ValueError("invalid fault_code")
+    if fault_code and not _COMPONENT_RE.match(fault_code):
         raise ValueError("invalid fault_code")
     if not isinstance(description, str) or not (1 <= len(description) <= 500):
         raise ValueError("invalid description")
@@ -798,8 +838,11 @@ class Pep(BaseHTTPRequestHandler):
                    [("Content-Type", "application/json")])
 
     def _handle_cm_fault_codes(self, parsed) -> None:
-        if not FAULT_CODES:
-            self._deny("fault codes not configured at this tier", subject="",
+        # Not configured at this tier -> the route is absent. Checked before
+        # anything else, same as the write path: whether the route exists is
+        # a fact about the deployment, not the request.
+        if FAULT_CATALOG is None:
+            self._deny("fault catalog not configured at this tier", subject="",
                        resource=parsed.path, status=404,
                        marker="GATEWAY REFUSED (PRE-PDP)")
             return
@@ -809,7 +852,54 @@ class Pep(BaseHTTPRequestHandler):
             self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
                        [("Content-Type", "application/json")])
             return
-        self._send(200, json.dumps(FAULT_CODES).encode(),
+
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        asset_id = (params.get("asset_id") or [""])[0]
+        if not asset_id:
+            self._send(400, json.dumps({"error": "asset_id is required"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject,
+                       resource=parsed.path, status=503)
+            return
+        if not decision["allow"]:
+            cause = ("subject not in the entitlements corpus"
+                     if not decision["subject_known"]
+                     else "subject holds no nation entitlements")
+            self._deny(cause, subject=subject, resource=parsed.path, status=403)
+            return
+
+        try:
+            row = read_visible_row("telemetry_latest_state", asset_id,
+                                   decision["allowed_nations"])
+        except ElectricUnavailable as exc:
+            self._deny(f"electric unavailable: {exc}", subject=subject,
+                       resource=parsed.path, status=502)
+            return
+        if row is None:
+            self._deny("asset not visible at this tier", subject=subject,
+                       resource=parsed.path, status=404,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
+        platform_variant = row.get("platform_variant")
+        variant_entry = FAULT_CATALOG.get("variants", {}).get(platform_variant) if platform_variant else None
+        manual = variant_entry.get("manual") if variant_entry else None
+        codes = variant_entry.get("codes", []) if variant_entry else []
+
+        # No global list is ever returned -- an unmapped/unknown variant
+        # gets zero codes here, not the codes of some OTHER variant.
+        body = {
+            "asset_id": asset_id,
+            "platform_variant": platform_variant,
+            "manual": manual,
+            "codes": codes,
+        }
+        self._send(200, json.dumps(body).encode(),
                    [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
 
     def _handle_cm_discrepancy(self, parsed) -> None:
@@ -818,7 +908,7 @@ class Pep(BaseHTTPRequestHandler):
         # Not configured at this tier -> the route is absent, exactly as an
         # unset EGRESS_PANE gives 404. Checked before anything else: whether
         # the route exists is a fact about the deployment, not the request.
-        if not FAULT_CODES or not CM_INTAKE_URL:
+        if FAULT_CATALOG is None or not CM_INTAKE_URL:
             self._drain_body()
             self._deny("cm write route not configured at this tier", subject="",
                        resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
@@ -896,14 +986,7 @@ class Pep(BaseHTTPRequestHandler):
         fault_code = fields["fault_code"]
         description = fields["description"]
 
-        # Step 4: the fault code must be one this tier was configured with.
-        entry = next((c for c in FAULT_CODES if c.get("code") == fault_code), None)
-        if entry is None:
-            self._cm_deny(400, "unknown fault code", subject=subject,
-                          asset_id=asset_id, fault_code=fault_code)
-            return
-
-        # Step 5: visibility and slot check, through the read path's own
+        # Step 4: visibility and slot check, through the read path's own
         # predicate -- never a second decision about who may see the asset.
         try:
             row = read_cm_visibility_row(asset_id, decision["allowed_nations"])
@@ -920,6 +1003,42 @@ class Pep(BaseHTTPRequestHandler):
                           subject=subject, asset_id=asset_id, fault_code=fault_code)
             return
 
+        # Step 5: a fault code is optional -- "" or absent means "not
+        # listed" (the reporter could not find a matching code, or there is
+        # none for this variant). When one IS given, it must belong to this
+        # asset's own variant's manual, and to the submitted component.
+        # Severity then comes from that catalog entry; with no code, the
+        # existing default for a report (empty -- cm-service applies its
+        # own default when severity is not supplied).
+        severity = ""
+        if fault_code:
+            try:
+                variant_row = read_visible_row("telemetry_latest_state", asset_id,
+                                               decision["allowed_nations"])
+            except ElectricUnavailable as exc:
+                self._cm_deny(502, f"electric unavailable: {exc}", subject=subject,
+                              asset_id=asset_id, fault_code=fault_code)
+                return
+            platform_variant = variant_row.get("platform_variant") if variant_row else None
+            variant_entry = (FAULT_CATALOG.get("variants", {}).get(platform_variant)
+                             if platform_variant else None)
+            codes = variant_entry.get("codes", []) if variant_entry else []
+            entry = next((c for c in codes if c.get("code") == fault_code), None)
+            if entry is None:
+                self._cm_deny(
+                    400,
+                    f"fault code not in the fault-isolation manual for variant {platform_variant}",
+                    subject=subject, asset_id=asset_id, fault_code=fault_code,
+                )
+                return
+            if entry.get("component") != component:
+                self._cm_deny(
+                    400, f"fault code belongs to component {entry.get('component')}",
+                    subject=subject, asset_id=asset_id, fault_code=fault_code,
+                )
+                return
+            severity = entry.get("severity", "")
+
         # Step 6: build the CmEvent -- proto3 JSON field names, exactly as
         # json_format.Parse expects them on the other end.
         event_id = str(uuid.uuid4())
@@ -930,7 +1049,7 @@ class Pep(BaseHTTPRequestHandler):
             "recordedBy": subject,
             "manualDiscrepancy": {
                 "description": description,
-                "severity": entry.get("severity", ""),
+                "severity": severity,
                 "source": REPORT_SOURCE,
                 "component": component,
                 "faultCode": fault_code,

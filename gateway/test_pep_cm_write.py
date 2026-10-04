@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import urllib.error
@@ -37,16 +38,34 @@ try:
 except Exception:  # noqa: BLE001 -- the test environment may lack the gencode
     GENCODE_AVAILABLE = False
 
-FAULT_CODES = [
-    {"code": "FC-100", "text": "fluid leak", "severity": "MAJOR"},
-    {"code": "FC-200", "text": "sensor drift", "severity": "MINOR"},
-]
+# A per-variant catalog, the shape tools/fault_catalog/build_fault_catalog.py
+# produces. MRAD_Sensor has two codes on component ENG-1 (standing in for a
+# real slot id here, so the happy-path assertions below stay unchanged);
+# M1A2_Tank is declared with zero codes, standing in for a variant with no
+# fault-isolation module mapped yet.
+FAULT_CATALOG = {
+    "variants": {
+        "MRAD_Sensor": {
+            "manual": "ODMRAD",
+            "codes": [
+                {"code": "FC-100", "text": "fluid leak", "component": "ENG-1",
+                 "severity": "MAJOR"},
+                {"code": "FC-200", "text": "sensor drift", "component": "ENG-1",
+                 "severity": "MINOR"},
+            ],
+        },
+        "M1A2_Tank": {"manual": "ODM1A2", "codes": []},
+    },
+}
 
 # Who the fake PDP knows. "pdp-down" makes Topaz answer 500.
 ENTITLEMENTS = {"op.atl": ["ATL"], "stranger": []}
 
 state = {
-    "visibility_rows": [{"asset_id": "atl-1", "installed": [{"slot_id": "ENG-1"}]}],
+    "visibility_rows": [
+        {"asset_id": "atl-1", "platform_variant": "MRAD_Sensor",
+         "installed": [{"slot_id": "ENG-1"}, {"slot_id": "cooling_fan"}]},
+    ],
     "intake_status": 200,
     "intake_calls": [],
 }
@@ -74,19 +93,36 @@ class FakeTopaz(BaseHTTPRequestHandler):
         self.wfile.write(out)
 
 
+_ASSET_ID_IN_WHERE = re.compile(r"asset_id = '([^']*)'")
+
+
 class FakeElectric(BaseHTTPRequestHandler):
     """Answers the bounded shape read the visibility check makes. Reaches
     up-to-date on the very first response, as a freshly-created shape with
     nothing pending in its log would, so the check still makes exactly one
     request per call -- these tests are about the write route, not about
     the shape-log-following read itself (see test_pep_cm_visibility_read.py
-    for that)."""
+    for that).
+
+    Filters `state["visibility_rows"]` by the asset_id embedded in the
+    `where` clause the real predicate composes (the fault-code routes read two
+    different tables -- asset_cm_state and telemetry_latest_state -- for
+    the same asset, and tests need each asset_id to resolve to its own
+    row regardless of which table was asked for; `table` itself is not
+    otherwise distinguished here, since both rows a given asset_id maps to
+    carry both tables' fields in these fixtures)."""
 
     def log_message(self, *a):
         pass
 
     def do_GET(self):  # noqa: N802
-        rows = state["visibility_rows"]
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        where = (params.get("where") or [""])[0]
+        match = _ASSET_ID_IN_WHERE.search(where)
+        asset_id = match.group(1) if match else None
+        rows = [row for row in state["visibility_rows"]
+                if asset_id is None or row.get("asset_id") == asset_id]
         messages = [{"key": row.get("asset_id", "row"), "value": row,
                      "headers": {"operation": "insert"}} for row in rows]
         messages.append({"headers": {"control": "up-to-date"}})
@@ -123,13 +159,14 @@ def pep_factory():
     topaz = _serve(FakeTopaz)
     electric = _serve(FakeElectric)
     intake = _serve(FakeIntake)
-    fault_codes_path = Path(__file__).resolve().parent / "_cm_fault_codes_test.json"
-    fault_codes_path.write_text(json.dumps(FAULT_CODES))
+    fault_catalog_path = Path(__file__).resolve().parent / "_cm_fault_catalog_test.json"
+    fault_catalog_path.write_text(json.dumps(FAULT_CATALOG))
 
     os.environ["OPENDDIL_ELECTRIC_URL"] = f"http://127.0.0.1:{electric.server_port}"
     os.environ["OPENDDIL_TOPAZ_URL"] = f"http://127.0.0.1:{topaz.server_port}"
     os.environ["OPENDDIL_CM_INTAKE_URL"] = f"http://127.0.0.1:{intake.server_port}/cm-events"
-    os.environ["OPENDDIL_FAULT_CODES_PATH"] = str(fault_codes_path)
+    os.environ["OPENDDIL_FAULT_CATALOG_PATH"] = str(fault_catalog_path)
+    os.environ.pop("OPENDDIL_FAULT_CODES_PATH", None)
     os.environ.pop("OPENDDIL_REPORT_SOURCE", None)
     os.environ.pop("OPENDDIL_OIDC_ISSUER", None)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -148,10 +185,10 @@ def pep_factory():
     yield start
     for s in servers + [topaz, electric, intake]:
         s.shutdown()
-    fault_codes_path.unlink(missing_ok=True)
+    fault_catalog_path.unlink(missing_ok=True)
     # Leaving these set would point the NEXT module's fresh `import pep` at a
     # file this fixture just deleted and a port nothing listens on anymore.
-    for var in ("OPENDDIL_CM_INTAKE_URL", "OPENDDIL_FAULT_CODES_PATH"):
+    for var in ("OPENDDIL_CM_INTAKE_URL", "OPENDDIL_FAULT_CATALOG_PATH"):
         os.environ.pop(var, None)
 
 
@@ -189,7 +226,10 @@ def _get(url: str, subject: str | None):
 @pytest.fixture
 def pep_url(pep_factory):
     state.update(
-        visibility_rows=[{"asset_id": "atl-1", "installed": [{"slot_id": "ENG-1"}]}],
+        visibility_rows=[
+            {"asset_id": "atl-1", "platform_variant": "MRAD_Sensor",
+             "installed": [{"slot_id": "ENG-1"}, {"slot_id": "cooling_fan"}]},
+        ],
         intake_status=200,
         intake_calls=[],
     )
@@ -326,26 +366,120 @@ def test_origin_port_is_not_compared_with_a_portless_host(pep_url):
     assert len(state["intake_calls"]) == 1
 
 
-# --- GET /cm/fault-codes ------------------------------------------------------
+# --- GET /cm/fault-codes (per asset, per variant; no global list) -----------
 
 def test_fault_codes_requires_a_session(pep_url):
-    code, body = _get(pep_url + "/cm/fault-codes", None)
+    code, body = _get(pep_url + "/cm/fault-codes?asset_id=atl-1", None)
     assert code == 401
 
 
-def test_fault_codes_lists_the_configured_codes(pep_url):
+def test_fault_codes_requires_asset_id(pep_url):
     code, body = _get(pep_url + "/cm/fault-codes", "op.atl")
+    assert code == 400
+
+
+def test_fault_codes_filters_to_the_assets_own_variant(pep_url):
+    """MRAD gets exactly its own variant's codes -- never a global list, and
+    never another variant's codes."""
+    code, body = _get(pep_url + "/cm/fault-codes?asset_id=atl-1", "op.atl")
     assert code == 200
-    assert body == FAULT_CODES
+    assert body["asset_id"] == "atl-1"
+    assert body["platform_variant"] == "MRAD_Sensor"
+    assert body["manual"] == "ODMRAD"
+    assert [c["code"] for c in body["codes"]] == ["FC-100", "FC-200"]
+
+
+def test_fault_codes_m1a2_gets_zero(pep_url):
+    state["visibility_rows"] = [
+        {"asset_id": "m1a2-1", "platform_variant": "M1A2_Tank",
+         "installed": [{"slot_id": "TRACK-1"}]},
+    ]
+    code, body = _get(pep_url + "/cm/fault-codes?asset_id=m1a2-1", "op.atl")
+    assert code == 200
+    assert body["codes"] == []
+
+
+def test_fault_codes_unknown_asset_is_404(pep_url):
+    state["visibility_rows"] = []
+    code, body = _get(pep_url + "/cm/fault-codes?asset_id=ghost-1", "op.atl")
+    assert code == 404
 
 
 def test_fault_codes_404_when_not_configured(pep_factory, monkeypatch):
-    # pep reads OPENDDIL_FAULT_CODES_PATH once at import; exercise the
+    # pep reads OPENDDIL_FAULT_CATALOG_PATH once at import; exercise the
     # "not configured" branch directly through the module rather than
     # re-importing with the env var unset (which would also tear down the
     # module-scoped fakes every other test in this file depends on).
     import pep  # noqa: PLC0415
-    monkeypatch.setattr(pep, "FAULT_CODES", [])
+    monkeypatch.setattr(pep, "FAULT_CATALOG", None)
     url = pep_factory()
-    code, body = _get(url + "/cm/fault-codes", "op.atl")
+    code, body = _get(url + "/cm/fault-codes?asset_id=atl-1", "op.atl")
     assert code == 404
+
+
+# --- POST /cm/discrepancy: fault_code is optional; when given, it is checked against the
+# asset's OWN variant's catalog, not the flat list the lab used to serve. ---
+
+def test_wrong_variant_code_is_400(pep_url):
+    """Red-check: an MRAD asset must not be offered (or accept) another
+    variant's code -- e.g. GV-XMSN-0201, a transmission-overtemperature
+    code that belongs to a wholly different platform. `component` is
+    `cooling_fan`, which IS an installed slot on this fixture asset, so the
+    400 below can only come from the catalog check, not the slot check."""
+    body = dict(GOOD_BODY, fault_code="GV-XMSN-0201", component="cooling_fan")
+    code, resp = _post(pep_url + "/cm/discrepancy", "op.atl", body)
+    assert code == 400
+    assert state["intake_calls"] == []
+
+
+def test_wrong_component_for_code_is_400(pep_url):
+    body = dict(GOOD_BODY, fault_code="FC-100", component="cooling_fan")
+    code, resp = _post(pep_url + "/cm/discrepancy", "op.atl", body)
+    assert code == 400
+    assert state["intake_calls"] == []
+
+
+def test_empty_fault_code_is_202(pep_url):
+    body = dict(GOOD_BODY, fault_code="")
+    code, resp = _post(pep_url + "/cm/discrepancy", "op.atl", body)
+    assert code == 202
+    assert len(state["intake_calls"]) == 1
+    sent = json.loads(state["intake_calls"][0])
+    assert sent["manualDiscrepancy"]["faultCode"] == ""
+    assert sent["manualDiscrepancy"]["severity"] == ""
+    if GENCODE_AVAILABLE:
+        event = cm_events_pb2.CmEvent()
+        json_format.Parse(state["intake_calls"][0], event)
+        assert event.manual_discrepancy.fault_code == ""
+
+
+def test_matching_code_carries_catalog_severity(pep_url):
+    code, resp = _post(pep_url + "/cm/discrepancy", "op.atl", GOOD_BODY)
+    assert code == 202
+    sent = json.loads(state["intake_calls"][0])
+    assert sent["manualDiscrepancy"]["severity"] == "MAJOR"
+
+
+def test_old_fault_codes_env_set_is_not_loaded(pep_factory, tmp_path, monkeypatch, caplog):
+    """OPENDDIL_FAULT_CODES_PATH is retired: if still set, pep logs one
+    ERROR naming the replacement at import and does not load it -- the
+    legacy flat list must not reach FAULT_CATALOG."""
+    import pep as original_pep  # noqa: PLC0415 -- restored below
+
+    legacy_path = tmp_path / "legacy.json"
+    legacy_path.write_text(json.dumps([{"code": "OLD-1", "text": "old", "severity": "MINOR"}]))
+    monkeypatch.setenv("OPENDDIL_FAULT_CODES_PATH", str(legacy_path))
+
+    sys.modules.pop("pep", None)
+    try:
+        with caplog.at_level("ERROR"):
+            import pep as fresh_pep  # noqa: PLC0415
+        assert fresh_pep.FAULT_CATALOG is not None
+        assert "variants" in fresh_pep.FAULT_CATALOG
+        assert "OLD-1" not in json.dumps(fresh_pep.FAULT_CATALOG)
+        error_messages = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+        matching = [m for m in error_messages
+                    if "OPENDDIL_FAULT_CODES_PATH" in m and "OPENDDIL_FAULT_CATALOG_PATH" in m]
+        assert len(matching) == 1
+    finally:
+        sys.modules["pep"] = original_pep

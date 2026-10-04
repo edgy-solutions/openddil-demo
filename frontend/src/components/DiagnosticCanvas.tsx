@@ -29,8 +29,10 @@
 // ADR-0017: schematics carry DEMO_MOCK markers in their own modules
 // (pure-3D primitives can't host a DOM banner). HudFrame provides the
 // view-level banner.
+import { useEffect, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
+import { Wrench } from 'lucide-react';
 import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG, type LiveElementTelemetry } from './SensorArrayView';
 import HudFrame from './HudFrame';
 import { useTransitPhase, transitClass } from './EdgeTransit';
@@ -40,8 +42,15 @@ import {
     type SchematicProps,
 } from './platform-schematics';
 import FaultReportForm from './FaultReportForm';
+import BitDiscrepancyCard from './BitDiscrepancyCard';
 import { useCmState } from '../hooks';
-import { componentOptions } from '../lib/cmReport';
+import {
+    bitOnlyDiscrepancy,
+    componentOptions,
+    describeBitDiscrepancy,
+    loadFaultCatalog,
+    type FaultCatalog,
+} from '../lib/cmReport';
 
 const DEMO_MOCK = true;
 
@@ -171,19 +180,92 @@ export default function DiagnosticCanvas({
     // and uptimeHours are now props.
     const transitPhase = useTransitPhase(transitTriggerKey ?? null);
 
-    // "Report a fault" form, overlaid on this view like
-    // LocalFleetRadar overlays the sibling panel in MaintainerApp.
-    // Own useCmState subscription (not threaded from MaintainerApp)
-    // because DiagnosticCanvas is the one place this form renders, and
-    // CmState here is only needed for its installed[] slot_ids — the
-    // CmStateCard in the right rail already has its own subscription
-    // for display. componentOptions() derives the sorted/deduped
-    // component choices; the fault codes themselves come from the
-    // server (GET /cm/fault-codes), never hardcoded here.
+    // "Report a fault" button + BIT-discrepancy card, overlaid on this view
+    // like LocalFleetRadar overlays the sibling panel in MaintainerApp.
+    // Own useCmState subscription (not threaded from MaintainerApp) because
+    // DiagnosticCanvas is the one place this form renders, and CmState here
+    // is only needed for installed[] slot_ids + manual_discrepancies — the
+    // CmStateCard in the right rail already has its own subscription for
+    // display. componentOptions() derives the sorted/deduped component
+    // choices; the fault codes themselves come from the server (GET
+    // /cm/fault-codes?asset_id=<id>), never hardcoded here.
     const cm = useCmState(assetId ?? '');
+
+    // The form itself (lib/cmReport.ts's loadFaultCatalog) fetches its own
+    // asset-scoped catalog when open. This second, lightweight fetch is
+    // only so the BIT card can show the manual's fault text instead of the
+    // bare code when a card is showing and the form isn't open yet.
+    const [catalog, setCatalog] = useState<FaultCatalog | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        if (!assetId) {
+            setCatalog(null);
+            return;
+        }
+        loadFaultCatalog(assetId).then((loaded) => {
+            if (!cancelled) setCatalog(loaded);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [assetId]);
+
+    const [formOpen, setFormOpen] = useState(false);
+    const [prefill, setPrefill] = useState<{ component: string; code: string } | null>(null);
+    // The key (component|fault_code) of the last BIT discrepancy this
+    // viewer successfully filed a report for, so the card can show
+    // "Recorded, awaiting confirmation" even though the CM state it reads
+    // from (bitOnlyDiscrepancy) hasn't caught up with an operator_report
+    // source yet. Once it does, bitOnlyDiscrepancy stops returning this
+    // entry at all and the card disappears outright.
+    const [recordedKey, setRecordedKey] = useState<string | null>(null);
+
+    const bitEntry = bitOnlyDiscrepancy(cm.data[0]?.manual_discrepancies);
+    const bitEntryKey = bitEntry ? `${bitEntry.component}|${bitEntry.fault_code}` : null;
+
+    const openReportForm = () => {
+        setPrefill(null);
+        setFormOpen(true);
+    };
+    const openReportFormFor = (component: string, code: string) => {
+        setPrefill({ component, code });
+        setFormOpen(true);
+    };
+    const closeReportForm = () => {
+        setFormOpen(false);
+        setPrefill(null);
+    };
+    const handleReportSuccess = () => {
+        if (bitEntryKey) setRecordedKey(bitEntryKey);
+    };
+
     const faultReportOverlay = (
-        <div className="absolute bottom-4 right-4 w-[280px] z-20">
-            <FaultReportForm assetId={assetId} components={componentOptions(cm.data[0])} />
+        <div className="absolute bottom-4 right-4 w-[280px] z-20 space-y-2">
+            {bitEntry && bitEntryKey && (
+                <BitDiscrepancyCard
+                    text={describeBitDiscrepancy(bitEntry, catalog?.codes ?? [])}
+                    recorded={recordedKey === bitEntryKey}
+                    onRecord={() => openReportFormFor(bitEntry.component, bitEntry.fault_code)}
+                />
+            )}
+            {formOpen ? (
+                <FaultReportForm
+                    assetId={assetId}
+                    components={componentOptions(cm.data[0])}
+                    prefillComponent={prefill?.component}
+                    prefillCode={prefill?.code}
+                    onSuccess={handleReportSuccess}
+                    onClose={closeReportForm}
+                />
+            ) : (
+                <button
+                    type="button"
+                    onClick={openReportForm}
+                    className="w-full flex items-center justify-center gap-1.5 text-xs font-bold uppercase tracking-wider py-1.5 rounded-sm border border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-900/60 transition-colors"
+                >
+                    <Wrench className="w-3.5 h-3.5" /> Report a fault
+                </button>
+            )}
         </div>
     );
 

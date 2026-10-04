@@ -1,0 +1,16 @@
+# Maps S1000D fault-isolation codes to CM component slots and severities,
+# per platform variant. See build_fault_catalog.py.
+#
+# manual: the data modules' modelIdentCode for this variant.
+# assemblies: keyed "<systemCode>-<subSystemCode><subSubSystemCode>-<assyCode>",
+#   each naming the CM component slot id the code's assembly maps to and the
+#   severity (MINOR/MAJOR/CRITICAL) a matching report should carry.
+#
+# This example is sized to the public tests/fixtures/s1000d-array-module
+# fixture (one fault-isolation module, model ident code ODMRAD).
+MRAD_Sensor:
+  manual: ODMRAD
+  assemblies:
+    "34-10-01":
+      component: tr_module
+      severity: MAJOR

@@ -7,8 +7,18 @@
 // no DOM.
 //
 // Server contract (built in parallel by the gateway/PEP side):
-//   GET  /cm/fault-codes  -> 200 [{code, text, severity}] | 401 | 404 (off)
+//   GET  /cm/fault-codes?asset_id=<id>  ->
+//     200 {asset_id, platform_variant, manual, codes: [{code, text, component, severity}]}
+//     | 400 (no asset_id) | 401 | 404 (off, or asset not visible)
 //   POST /cm/discrepancy  -> 202 {event_id} | 400/401/403/404/413/415/502/503
+//
+// GET is asset-scoped, not a global list: the server resolves the asset's
+// platform_variant and returns only that variant's fault-isolation codes
+// (gateway/pep.py's FAULT_CATALOG, built from the manual by
+// tools/fault_catalog). There is no "all codes" response any more -- a code
+// that belongs to a different variant can never appear in what this module
+// loads for a given asset. `codes` is empty (not an error) when the variant
+// has no fault-isolation module; the caller then offers only "Not listed".
 //
 // THE CLIENT NEVER SENDS A REPORTER. The PEP stamps the reporter from the
 // session; buildReportBody emits exactly four keys (asset_id, component,
@@ -17,10 +27,18 @@
 // leak one onto the wire.
 import type { CmState } from '../hooks';
 
-export type FaultCode = {
+export type CatalogCode = {
   code: string;
   text: string;
+  component: string;
   severity: string;
+};
+
+export type FaultCatalog = {
+  asset_id: string;
+  platform_variant: string | null;
+  manual: string | null;
+  codes: CatalogCode[];
 };
 
 export interface ReportInput {
@@ -34,13 +52,22 @@ const DISCREPANCY_URL = '/cm/discrepancy';
 const FAULT_CODES_URL = '/cm/fault-codes';
 const MAX_DESCRIPTION_LENGTH = 500;
 
-/** Fault codes for the "Report a fault" form. null means the feature is off
- *  (not configured on this tier, or no session) — the caller hides the
- *  form rather than showing an error for either case. */
-export async function loadFaultCodes(fetchFn: typeof fetch = fetch): Promise<FaultCode[] | null> {
+/** The asset-scoped fault catalog for the "Report a fault" form. null means
+ *  the feature is off (not configured on this tier, no session, or the
+ *  asset isn't visible to this viewer) — the caller hides the form rather
+ *  than showing an error for any of those cases. A non-null result with an
+ *  empty `codes` array means the feature IS on but this asset's variant has
+ *  no fault-isolation module — that's a real, renderable state (see
+ *  noFaultIsolationMessage), not an error. */
+export async function loadFaultCatalog(
+  assetId: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<FaultCatalog | null> {
   let res: Response;
   try {
-    res = await fetchFn(FAULT_CODES_URL, { credentials: 'same-origin' });
+    res = await fetchFn(`${FAULT_CODES_URL}?asset_id=${encodeURIComponent(assetId)}`, {
+      credentials: 'same-origin',
+    });
   } catch {
     return null;
   }
@@ -53,7 +80,29 @@ export async function loadFaultCodes(fetchFn: typeof fetch = fetch): Promise<Fau
   } catch {
     return null;
   }
-  return Array.isArray(body) ? (body as FaultCode[]) : null;
+  if (!body || typeof body !== 'object' || !Array.isArray((body as FaultCatalog).codes)) {
+    return null;
+  }
+  return body as FaultCatalog;
+}
+
+/** Fault-code options for the chosen component. component === '' (no
+ *  component chosen yet, or the user is picking a code first — "choosing
+ *  code sets component") returns every code in the catalog; otherwise only
+ *  the codes whose own `component` matches. Never returns a code for a
+ *  component other than the one asked for, so a stale/unfiltered upstream
+ *  list could never surface here even if one existed. */
+export function codeOptionsFor(codes: CatalogCode[], component: string): CatalogCode[] {
+  if (!component) return codes;
+  return codes.filter((c) => c.component === component);
+}
+
+/** Copy for the fault-code field when the asset's variant has no
+ *  fault-isolation module (codes: []) — the only remaining option is "Not
+ *  listed", and the operator still describes the fault in free text. */
+export function noFaultIsolationMessage(platformVariant: string | null): string {
+  const variant = platformVariant ?? 'this asset';
+  return `No fault-isolation module for ${variant}; describe the fault`;
 }
 
 /** The exact JSON body POSTed to /cm/discrepancy — exactly four keys, no
@@ -132,4 +181,77 @@ export function componentOptions(cm: CmState | undefined): string[] {
     }
   }
   return Array.from(slots).sort();
+}
+
+// =============================================================================
+// BIT-reported discrepancies awaiting operator confirmation
+// =============================================================================
+// asset_cm_state.manual_discrepancies entries carry a `sources` list (ADR-
+// 0018-adjacent): one source per report of the SAME (component, fault_code)
+// episode. A `telemetry_bit` source means the sim's BIT path raised it; an
+// `operator_report` source means a human already filed/confirmed it via
+// this same form's POST /cm/discrepancy. cm-service de-dupes on
+// asset|component|fault_code, so once an operator report lands on the same
+// episode, its `sources` array grows an `operator_report` entry rather than
+// creating a second discrepancy.
+
+export interface ManualDiscrepancySource {
+  source: string;
+  reported_by?: string;
+  event_id?: string;
+  reported_at_ns?: number;
+  description?: string;
+}
+
+export interface ManualDiscrepancy {
+  component: string;
+  fault_code: string;
+  detected_at_ns: number;
+  sources: ManualDiscrepancySource[];
+  [key: string]: unknown;
+}
+
+/** The discrepancy to surface as a "BIT detected this — record it?" card:
+ *  the most recently detected entry that has a telemetry_bit source and NO
+ *  operator_report source yet. null once an operator report lands on it
+ *  (cm-service merges onto the same entry's sources — see the module
+ *  docstring above) or when there is no such entry at all. */
+export function bitOnlyDiscrepancy(
+  discrepancies: ManualDiscrepancy[] | undefined,
+): ManualDiscrepancy | null {
+  if (!Array.isArray(discrepancies)) return null;
+  let best: ManualDiscrepancy | null = null;
+  for (const d of discrepancies) {
+    const sources = Array.isArray(d?.sources) ? d.sources : [];
+    const hasBit = sources.some((s) => s?.source === 'telemetry_bit');
+    const hasOperatorReport = sources.some((s) => s?.source === 'operator_report');
+    if (hasBit && !hasOperatorReport) {
+      if (!best || (d.detected_at_ns ?? 0) > (best.detected_at_ns ?? 0)) {
+        best = d;
+      }
+    }
+  }
+  return best;
+}
+
+function formatUtcHHMM(ns: number): string {
+  const ms = Math.floor((ns ?? 0) / 1e6);
+  const d = new Date(ms);
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/** Card copy for a BIT-only discrepancy: catalog text when the code is in
+ *  this asset's fault-isolation catalog, the bare code otherwise — either
+ *  way followed by "(code)" so the code itself is always visible. Time is
+ *  detected_at_ns rendered as UTC HH:MM. */
+export function describeBitDiscrepancy(
+  entry: ManualDiscrepancy,
+  catalogCodes: CatalogCode[] = [],
+): string {
+  const match = catalogCodes.find((c) => c.code === entry.fault_code);
+  const label = match ? match.text : entry.fault_code;
+  const time = formatUtcHHMM(entry.detected_at_ns);
+  return `Fault detected on ${entry.component}: ${label} (${entry.fault_code}), ${time}Z. Record it?`;
 }

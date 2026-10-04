@@ -1,0 +1,16 @@
+{
+  "variants": {
+    "MRAD_Sensor": {
+      "codes": [
+        {
+          "code": "MRAD-ARR-0417",
+          "component": "tr_module",
+          "dmc": "DMC-ODMRAD-A-34-10-01-00A-421A-A",
+          "severity": "MAJOR",
+          "text": "Array module fault, section 3."
+        }
+      ],
+      "manual": "ODMRAD"
+    }
+  }
+}
