@@ -45,7 +45,6 @@ interface Asset {
 }
 
 interface LocalFleetRadarProps {
-  degraded: boolean;
   localAssets?: Asset[];
   /** Origin of the radar projection — typically the FOB hosting the
    *  selected edge. When null/undefined the radar falls back to the
@@ -78,7 +77,6 @@ const FALLBACK_RANGE_KM = 30;
 const KM_PER_DEG_LAT = 111;
 
 export default function LocalFleetRadar({
-  degraded,
   localAssets = [],
   centerLat,
   centerLon,
@@ -125,10 +123,12 @@ export default function LocalFleetRadar({
             {hasCenter ? `${maxDistKm.toFixed(0)} KM RING` : 'CENTERLESS'}
           </span>
         </div>
-        <div className="flex items-center gap-1">
-          <span className={`w-1.5 h-1.5 rounded-full ${degraded ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
-          <span className={`${degraded ? 'text-amber-400' : 'text-emerald-400'} text-[8px]`}>{degraded ? 'DEGRADED' : 'NOMINAL'}</span>
-        </div>
+        {/* The old NOMINAL/DEGRADED pill here read the uplink (`degraded`,
+            fed from MaintainerApp's link state) and had nothing to do
+            with the assets this radar is plotting -- a severed WAN link
+            turned this amber with no data behind it. Removed outright;
+            no fleet-liveness summary was already computed at this call
+            site to show instead. */}
       </div>
       <div className="flex-1 w-full relative overflow-hidden flex items-center justify-center">
         <svg width="100%" height="100%" viewBox="-100 -100 200 200">
@@ -159,9 +159,13 @@ export default function LocalFleetRadar({
                   y: Math.sin(angle) * 60,
                 };
               })
-          ).map(({ asset, x, y }, i) => {
-            // If degraded, mock one as COMM_LOST
-            const isCommLost = degraded && i === 0;
+          ).map(({ asset, x, y }) => {
+            // This used to mock the first asset as COMM_LOST whenever
+            // `degraded` (link-derived) was true -- a dot changing color
+            // because of the uplink, not because of that asset's own
+            // data. Removed; no asset is grey here until the fleet-tier
+            // data this radar receives says so.
+            const isCommLost = false;
             const isSelected = !!selectedAssetId && asset.id === selectedAssetId;
             // Place the label outward of the dot and anchor it on the
             // side away from center, so labels don't stack over each

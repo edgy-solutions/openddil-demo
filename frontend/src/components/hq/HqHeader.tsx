@@ -9,13 +9,18 @@ import { ThisNodeBadge } from '../../lib/thisNode';
 import { useEdgeBuffer } from '../../hooks';
 
 interface HqHeaderProps {
-  wanActive: boolean;
+  /** Null while useWanLink's GET is in flight or failed -- render the
+   *  control disabled rather than guessing true/false. */
+  wanActive: boolean | null;
   setWanActive: (v: boolean) => void;
 }
 
 export default function HqHeader({ wanActive, setWanActive }: HqHeaderProps) {
   const { status } = useEdgeBuffer();
-  const severed = status ? status.hq_link_severed : !wanActive;
+  // `false`, not `!wanActive` -- wanActive is boolean|null while
+  // useWanLink's GET is still in flight or failed, and treating "don't
+  // know" as "severed" would manufacture an answer nothing has confirmed.
+  const severed = status ? status.hq_link_severed : false;
   const lag = status?.bridge_group_lag ?? 0;
   const probeDown = status != null && !status.probe_healthy;
 
@@ -41,11 +46,13 @@ export default function HqHeader({ wanActive, setWanActive }: HqHeaderProps) {
             <input
               type="checkbox"
               id="toggle2"
-              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
-              checked={wanActive}
+              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
+              checked={wanActive ?? false}
+              disabled={wanActive === null}
+              title={wanActive === null ? 'Link state unknown — failed to read proxy status' : undefined}
               onChange={(e) => setWanActive(e.target.checked)}
             />
-            <label htmlFor="toggle2" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${wanActive ? 'bg-emerald-500' : 'bg-rose-500'}`}>
+            <label htmlFor="toggle2" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${wanActive === null ? 'bg-slate-600' : wanActive ? 'bg-emerald-500' : 'bg-rose-500'}`}>
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${wanActive ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>

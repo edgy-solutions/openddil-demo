@@ -44,6 +44,7 @@ import {
   useFleetTiers,
   useMunitionsStockpile,
   stockpileForLauncher,
+  useEdgeBuffer,
   type FleetAsset,
   type FleetTierMap,
   type LogisticsStatus,
@@ -736,14 +737,18 @@ export default function RegionalSustainmentPosture({
     return { hardwareFleet: hw, inflightCount: dedupFirings(inflightSeed).length };
   }, [fleet.data, allCapability.data]);
 
-  // 5-tier liveness map. link1=false means the operator has flipped
-  // the DDIL toggle (severed); we feed that into the classifier so
-  // silent assets on a severed link read as COMM_LOST rather than
-  // generic STALE. In production this becomes a per-edge map from
+  // 5-tier liveness map. This is a REMOTE view of the edge, so
+  // COMM_LOST (stale AND severed) is a legitimate reading here -- but
+  // only from the OBSERVED edge_buffer_status row, never from the
+  // commanded `link1` slider state (which is what this used to read,
+  // via `!link1`: the regional view would show COMM_LOST the instant
+  // someone flipped the toggle, before anything was actually observed
+  // to be severed). In production this becomes a per-edge map from
   // edge_buffer_status; today it's a single global boolean. Uses
   // the hardware-only fleet so in-flight munitions don't distort
   // the STALE/LOST tiering.
-  const tiers = useFleetTiers(hardwareFleet, !link1);
+  const { status: edgeBufferStatus } = useEdgeBuffer();
+  const tiers = useFleetTiers(hardwareFleet, edgeBufferStatus?.hq_link_severed === true);
 
   // Project around the active region's FOBs so the camera bbox is the
   // region's geographic extent, not the whole theater.

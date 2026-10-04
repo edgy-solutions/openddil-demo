@@ -22,6 +22,7 @@
 // Phase 4c.5: the WAN-cut demo is REAL (toxiproxy hq-link, edge-buffer
 // monitor, freeze overlay — unchanged in §C.1).
 import { useState, useMemo } from 'react';
+import { useWanLink } from './hooks/useWanLink';
 import HqHeader from './components/hq/HqHeader';
 import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
@@ -297,7 +298,9 @@ function WearTrendsTheater({
 }
 
 export default function HqApp() {
-  const [wanActive, setWanActive] = useState(true);
+  // Sourced from the proxy's own state (hooks/useWanLink), not a
+  // hardcoded `true` that never reflected what toxiproxy actually had.
+  const { enabled: wanActive, set: setWanActive } = useWanLink();
 
   // Pipeline data — ElectricSQL Shapes. cm + fleet used by
   // ConfigurationPosture (MWO compliance by family, baseline distribution)
@@ -317,24 +320,16 @@ export default function HqApp() {
   const regionTopFactors = useRegionTopFactors();
   const regionWearTrends = useRegionWearTrends();
 
-  const severed = edge.status ? edge.status.hq_link_severed : !wanActive;
-
-  const toggleWan = async (active: boolean) => {
-    setWanActive(active);
-    try {
-      await fetch('/proxies/hq-link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: active }),
-      });
-    } catch (err) {
-      console.error('Toxiproxy Error:', err);
-    }
-  };
+  // `false` when wanActive is still unknown (null, cold start or a
+  // failed GET) rather than `!wanActive` -- the old fallback treated
+  // "don't know" as "severed", which would show the SYSTEM FREEZE overlay
+  // below on every cold load until the first edge_buffer_status row or
+  // useWanLink's GET resolved.
+  const severed = edge.status ? edge.status.hq_link_severed : false;
 
   return (
     <div className={`font-mono h-full flex flex-col overflow-hidden transition-colors duration-500 ${severed ? 'freeze-active' : ''}`}>
-      <HqHeader wanActive={wanActive} setWanActive={toggleWan} />
+      <HqHeader wanActive={wanActive} setWanActive={setWanActive} />
 
       {severed && (
         <div className="absolute inset-0 z-40 pointer-events-none flex flex-col items-center justify-center pt-20">

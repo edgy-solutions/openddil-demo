@@ -36,6 +36,7 @@ import {
   useTacticalEvents,
   useAssetElementTelemetry,
 } from './hooks';
+import { useWanLink } from './hooks/useWanLink';
 import { classifyAsset } from './lib/assetClass';
 import { platformClass } from './config/platformChartConfig';
 import { deployment } from './deployment';
@@ -134,9 +135,12 @@ function formatSeen(iso: string | null): string {
 interface TierScopedProps { tierScopeValue?: string | null }
 
 function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
-  // link1 = the DDIL link toggle (severs/restores the real hq-link proxy).
-  const [link1, setLink1] = useState(true);
-  const [degraded, setDegraded] = useState(false);
+  // link1 = the DDIL link toggle, sourced from the proxy's own state
+  // (see hooks/useWanLink) rather than invented client-side. `degraded` no
+  // longer exists here: this view shows the EDGE's own asset status, and
+  // an edge asset's status never depends on the uplink -- a cut WAN link
+  // must not turn an asset amber with no data behind it.
+  const { enabled: link1, set: setLink1 } = useWanLink();
   const [clock, setClock] = useState('');
   const [selectedAssetId, setSelectedAssetId] = useState('');
   // Phase 6c.2: edge scope. Initial value comes from ?edge= URL param if
@@ -200,11 +204,16 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // 5-tier liveness per asset (see lib/assetTier). Drives the picker
   // suffix + the dim styling in Header so the operator can still
   // navigate to a STALE / COMM_LOST / LOST asset from this pulldown
-  // while seeing its current state at a glance. link1=false means
-  // the operator has flipped the DDIL toggle (severed link); we feed
-  // that into the classifier so silent assets read as COMM_LOST
-  // rather than generic STALE.
-  const tiers = useFleetTiers(fleet.data, !link1);
+  // while seeing its current state at a glance.
+  //
+  // No link-state argument here. This is the EDGE's own fleet --
+  // classified from its own data only. A severed WAN uplink does not
+  // change what the edge can see of itself; feeding `!link1` in here
+  // (as before) turned a silent/stale asset into a fabricated COMM_LOST
+  // the moment the operator flipped the toggle, with no data behind it.
+  // (RegionalSustainmentPosture's call, by contrast, legitimately feeds
+  // the OBSERVED hq_link_severed -- it is a remote view of THIS edge.)
+  const tiers = useFleetTiers(fleet.data);
 
   const telemetry = useTelemetryLatest(selectedAssetId);
   const cm = useCmState(selectedAssetId);
@@ -372,19 +381,10 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // cannot reach redpanda-hq, stops committing `bridge-group` offsets,
   // and the real edge buffer climbs. (A timeout toxic would only delay
   // the ack and still let the produce through — it would not buffer.)
-  useEffect(() => {
-    fetch('/proxies/hq-link', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: link1 }),
-    }).catch((e) => console.error('Toxiproxy error', e));
-  }, [link1]);
-
-  // link1 drives the degraded UI state.
-  useEffect(() => {
-    if (!link1 && !degraded) setDegraded(true);
-    else if (link1 && degraded) setDegraded(false);
-  }, [link1, degraded]);
+  // The POST now only happens from the user's own toggle, inside
+  // useWanLink's set() — see hooks/useWanLink.ts. There is no effect here
+  // any more; mounting this component no longer re-POSTs a commanded
+  // state at all, let alone one it invented.
 
   // Wall clock. The edge buffer is no longer simulated here — Header reads
   // the real bridge-group lag via useEdgeBuffer.
@@ -526,7 +526,10 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               platformVariant={variant}
               assetType={assetClass === 'RADAR' ? 'RADAR' : undefined}
               assetId={selectedAssetId}
-              degraded={degraded}
+              /* The canvas takes no link-derived signal: DiagnosticCanvas.tsx
+                 keeps its `degraded` prop, so this always passes `false`
+                 rather than a value derived from link1/hq_link_severed. */
+              degraded={false}
               coreTemp={coreTemp}
               uptimeHours={uptimeHours}
               liveTelemetry={mradLive}
@@ -535,7 +538,6 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               isPoweredOff={isPoweredOff}
             />
             <LocalFleetRadar
-              degraded={degraded}
               localAssets={radarAssets}
               centerLat={radarCenter.lat}
               centerLon={radarCenter.lon}
@@ -616,7 +618,11 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
           <TelemetryCharts
             telemetry={tel}
             platformVariant={variant}
-            degraded={degraded}
+            // Never link-derived -- see the DiagnosticCanvas prop
+            // above for why `false` rather than a data-derived value
+            // (no FAULT/FAILED signal is already computed nearby for the
+            // selected asset).
+            degraded={false}
             isLoading={telemetry.isLoading}
             liveTelemetry={selectedAssetId.endsWith('_Sensor') ? mradLive : undefined}
             assetId={selectedAssetId}

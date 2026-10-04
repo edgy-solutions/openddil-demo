@@ -8,19 +8,50 @@
 import { Laptop, Server, Building2, TrendingUp, Settings } from 'lucide-react';
 import { ThisNodeBadge } from '../../lib/thisNode';
 import { useEdgeBuffer } from '../../hooks';
+import { useLinkIndicator } from '../../hooks/useLinkIndicator';
+
+// Same labels/tones as Header.tsx -- see lib/linkIndicator.ts for why
+// UNKNOWN/STALE are neutral rather than borrowing the up/severed palette.
+const LINK_INDICATOR_LABEL: Record<string, string> = {
+  unknown: 'LINK: UNKNOWN',
+  stale: 'LINK: STALE',
+  probe_down: 'LINK: PROBE DOWN',
+  severed: 'DDIL: LINK SEVERED',
+  up: 'EDGE↔HQ: LINK UP',
+};
+const REGIONAL_HQ_INDICATOR_LABEL: Record<string, string> = {
+  unknown: 'REGIONAL↔HQ: UNKNOWN',
+  stale: 'REGIONAL↔HQ: STALE',
+  probe_down: 'REGIONAL↔HQ: PROBE DOWN',
+  severed: 'REGIONAL↔HQ: SEVERED',
+  up: 'REGIONAL↔HQ: LINK UP',
+};
+const LINK_INDICATOR_CLASS: Record<string, string> = {
+  unknown: 'text-slate-400',
+  stale: 'text-slate-400',
+  probe_down: 'text-amber-400',
+  severed: 'text-rose-500 glow-rose',
+  up: 'text-emerald-400',
+};
 
 interface RegionalHeaderProps {
-  link1: boolean;
+  /** Null while useWanLink's GET is in flight or failed. */
+  link1: boolean | null;
   setLink1: (v: boolean) => void;
   setIsRuleEditorOpen: (v: boolean) => void;
 }
 
 export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen }: RegionalHeaderProps) {
-  const { status } = useEdgeBuffer();
-  const severed = status ? status.hq_link_severed : !link1;
+  const { status, isError } = useEdgeBuffer();
+  // Observed-only, no link1 fallback -- see lib/linkIndicator.ts.
+  const linkIndicator = useLinkIndicator(status, isError);
   const lag = status?.bridge_group_lag ?? 0;
+  // Unrelated to the link label: still backs the MSGS-row dash display.
   const probeDown = status != null && !status.probe_healthy;
-  const linkLabel = probeDown ? 'LINK: PROBE DOWN' : severed ? 'DDIL: LINK SEVERED' : 'EDGE↔HQ: LINK UP';
+  // Both link-label blocks below render the SAME shared hq-link proxy
+  // state (per the existing comment on the second block), so both derive
+  // from the one observed indicator rather than from link1.
+  const severed = linkIndicator === 'severed';
 
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
@@ -37,16 +68,18 @@ export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen }:
             <input
               type="checkbox"
               id="rtoggle1"
-              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
-              checked={link1}
+              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
+              checked={link1 ?? false}
+              disabled={link1 === null}
+              title={link1 === null ? 'Link state unknown — failed to read proxy status' : undefined}
               onChange={(e) => setLink1(e.target.checked)}
             />
-            <label htmlFor="rtoggle1" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${link1 ? 'bg-emerald-500' : 'bg-rose-500'}`}>
+            <label htmlFor="rtoggle1" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${link1 === null ? 'bg-slate-600' : link1 ? 'bg-emerald-500' : 'bg-rose-500'}`}>
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link1 ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
-            {linkLabel}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
+            {LINK_INDICATOR_LABEL[linkIndicator]}
           </span>
         </div>
 
@@ -68,8 +101,8 @@ export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen }:
         <div className="flex-1 flex flex-col items-center relative">
           <div className={`absolute w-full h-[2px] top-3 -z-10 ${severed ? 'bg-rose-900' : 'bg-slate-700'}`}></div>
           <div className={`w-3 h-3 rounded-full mt-1.5 ${severed ? 'bg-rose-500' : 'bg-emerald-500 shadow-[0_0_10px_#10b981]'}`}></div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
-            {probeDown ? 'REGIONAL↔HQ: PROBE DOWN' : severed ? 'REGIONAL↔HQ: SEVERED' : 'REGIONAL↔HQ: LINK UP'}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
+            {REGIONAL_HQ_INDICATOR_LABEL[linkIndicator]}
           </span>
         </div>
 

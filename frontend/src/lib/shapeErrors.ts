@@ -24,7 +24,15 @@
 // This is deliberately NOT a React context: `useTableShape` is called from
 // deep inside hooks that no provider wraps, and a context would have to be
 // threaded to exactly the places most likely to be missed.
-export type ShapeErrorKind = 'unlabelable' | 'transport';
+//
+// A third kind, 'session'. A 401 from Electric means the viewer's
+// session has expired -- not "transport failed for an unknown reason" and
+// certainly not "no data". Collapsing it into `transport` produced
+// FEED UNAVAILABLE on every panel the moment a session lapsed, which sends
+// the operator looking for a network/pipeline problem that does not exist.
+import { FetchError } from '@electric-sql/client';
+
+export type ShapeErrorKind = 'unlabelable' | 'transport' | 'session';
 
 export interface ShapeError {
   table: string;
@@ -37,6 +45,29 @@ const listeners = new Set<() => void>();
 function emit() {
   // Copy first: a listener that re-renders may subscribe or unsubscribe.
   for (const l of Array.from(listeners)) l();
+}
+
+/**
+ * The pure decision behind `reportShapeError`'s `kind` argument. Takes
+ * the shape result's own `isError`/`error` plus whether the table is
+ * unlabelable, and returns the kind to report, or null when there is
+ * nothing to report. Framework-free so it is directly testable against
+ * the real `FetchError` class with no React/mount needed (same reasoning
+ * as lib/wanLink.ts and lib/linkIndicator.ts).
+ *
+ * `isUnlabelableTable` wins regardless of the underlying error: the
+ * gateway's refusal is the authoritative reason, not whatever status code
+ * happened to come back.
+ */
+export function classifyShapeError(
+  isError: boolean,
+  error: false | Error,
+  isUnlabelableTable: boolean,
+): ShapeErrorKind | null {
+  if (!isError) return null;
+  if (isUnlabelableTable) return 'unlabelable';
+  if (error instanceof FetchError && error.status === 401) return 'session';
+  return 'transport';
 }
 
 export function reportShapeError(table: string, kind: ShapeErrorKind): void {

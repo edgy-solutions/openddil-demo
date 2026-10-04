@@ -20,6 +20,26 @@ import {
 import EdgePulldown from './EdgePulldown';
 import NationLegend from './releasability/NationLegend';
 import { useSession } from '../hooks/useSession';
+import { useLinkIndicator } from '../hooks/useLinkIndicator';
+
+// Label text/tone per observed LinkIndicatorKind. UNKNOWN/STALE are
+// deliberately neutral (grey) -- they are "no confirmed answer", not good
+// or bad news, so they must not borrow the emerald/rose vocabulary used
+// for a confirmed up/severed link.
+const LINK_INDICATOR_LABEL: Record<string, string> = {
+  unknown: 'LINK: UNKNOWN',
+  stale: 'LINK: STALE',
+  probe_down: 'LINK: PROBE DOWN',
+  severed: 'DDIL: LINK SEVERED',
+  up: 'EDGE↔HQ: LINK UP',
+};
+const LINK_INDICATOR_CLASS: Record<string, string> = {
+  unknown: 'text-slate-400',
+  stale: 'text-slate-400',
+  probe_down: 'text-amber-400',
+  severed: 'text-rose-500 glow-rose',
+  up: 'text-emerald-400',
+};
 
 // Per-tier styling for the inline count chips above the ASSET label.
 // Live tiers (ACTIVE / DEGRADED) use the live-fleet palette; silent
@@ -71,7 +91,9 @@ function TierCountChips({ fleet, tiers }: {
 }
 
 interface HeaderProps {
-  link1: boolean;
+  /** Null while useWanLink's GET is in flight or failed -- the slider
+   *  renders disabled rather than guessing a commanded state. */
+  link1: boolean | null;
   setLink1: (v: boolean) => void;
   fleet: FleetAsset[];
   /** Per-asset tier map (Phase 4 liveness). Drives the picker option
@@ -108,19 +130,25 @@ export default function Header({
   fleet, fleetTiers, selectedAsset, setSelectedAsset,
   availableEdges, selectedEdge, onSelectEdge,
 }: HeaderProps) {
-  const { status } = useEdgeBuffer();
+  const { status, isError } = useEdgeBuffer();
   // PRESENTATION ONLY. `session.nations` decides which legend keys are worth
   // showing and whether an asset is marked "released to you"; it filters
   // nothing. The rows below have already been filtered by the gateway
   // (ADR-0029 §1), and a second filter here would be a second authorization
   // decision that nobody reviewed.
   const session = useSession();
-  // Real observed state from the projector's monitor; falls back to the
-  // commanded toggle state until the first shape sync arrives.
-  const severed = status ? status.hq_link_severed : !link1;
+  // The label is a pure function of the OBSERVED edge_buffer_status row
+  // (+ isError + wall clock) -- it never reads link1 (the commanded
+  // slider state) and never falls back to it. See lib/linkIndicator.ts.
+  const linkIndicator = useLinkIndicator(status, isError);
   const lag = status?.bridge_group_lag ?? 0;
+  // Unrelated to the link label above: this still backs the separate
+  // "EDGE→HQ BUFFER" MSGS-count row's dash-vs-number display.
   const probeDown = status != null && !status.probe_healthy;
-  const linkLabel = probeDown ? 'LINK: PROBE DOWN' : severed ? 'DDIL: LINK SEVERED' : 'EDGE↔HQ: LINK UP';
+  // `severed` still drives the rose/slate divider line + MSGS-row glow
+  // below; kept as an observed-only derivation (no link1 fallback) so it
+  // stays consistent with the indicator it sits next to.
+  const severed = linkIndicator === 'severed';
 
   return (
     <header className="panel flex flex-col p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
@@ -223,16 +251,18 @@ export default function Header({
             <input
               type="checkbox"
               id="toggle1"
-              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
-              checked={link1}
+              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
+              checked={link1 ?? false}
+              disabled={link1 === null}
+              title={link1 === null ? 'Link state unknown — failed to read proxy status' : undefined}
               onChange={(e) => setLink1(e.target.checked)}
             />
-            <label htmlFor="toggle1" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${link1 ? 'bg-emerald-500' : 'bg-rose-500'}`}>
+            <label htmlFor="toggle1" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${link1 === null ? 'bg-slate-600' : link1 ? 'bg-emerald-500' : 'bg-rose-500'}`}>
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link1 ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
-            {linkLabel}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
+            {LINK_INDICATOR_LABEL[linkIndicator]}
           </span>
         </div>
 

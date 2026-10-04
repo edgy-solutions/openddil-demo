@@ -12,7 +12,7 @@
 // use it so components get clean typed data.
 // =============================================================================
 import { useEffect } from 'react';
-import { reportShapeError, clearShapeError } from '../lib/shapeErrors';
+import { reportShapeError, clearShapeError, classifyShapeError } from '../lib/shapeErrors';
 import { isUnlabelable } from '../lib/labeledTables';
 import { useShape } from '@electric-sql/react';
 
@@ -78,7 +78,7 @@ export function useTableShape<T>(
   map: (row: Record<string, any>) => T,
   opts: TableShapeOptions = {},
 ): ShapeResult<T> {
-  const { data, isLoading, isError, lastSyncedAt } = useShape({
+  const { data, isLoading, isError, lastSyncedAt, error } = useShape({
     url: ELECTRIC_URL,
     params: {
       table,
@@ -92,18 +92,20 @@ export function useTableShape<T>(
   // it is the one thing every panel passes through, so it is the one place
   // a new panel cannot forget.
   //
-  // `unlabelable` vs `transport` is decided from the session's
-  // `labeled_tables` — the same list the gateway enforces — so the screen's
-  // explanation comes from the authority that made the refusal instead of
-  // being inferred from a status code.
+  // `unlabelable` vs `transport` vs `session` is decided by
+  // classifyShapeError: unlabelable wins on the session's `labeled_tables`
+  // (the same list the gateway enforces, so the explanation comes from the
+  // authority that made the refusal); otherwise a 401 FetchError means the
+  // viewer's session expired, not that transport failed for no reason.
   useEffect(() => {
-    if (isError) {
-      reportShapeError(table, isUnlabelable(table) ? 'unlabelable' : 'transport');
+    const kind = classifyShapeError(isError, error, isUnlabelable(table));
+    if (kind) {
+      reportShapeError(table, kind);
     } else {
       clearShapeError(table);
     }
     return () => clearShapeError(table);
-  }, [table, isError]);
+  }, [table, isError, error]);
 
   const rows = (data ?? []) as Record<string, any>[];
   return {
