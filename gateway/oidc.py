@@ -16,7 +16,7 @@ WHY BACKEND-FOR-FRONTEND, AND NOT THE SPA PATTERN THE SIBLING PROJECT USES
 The co-located reasoning plane runs a PUBLIC Keycloak client: the browser
 performs the OIDC flow and holds the tokens, and every backend validates
 bearer tokens independently. Read from its realm ConfigMap and gateway
-(`src/iagent/auth.py`) on 2026-09-05 rather than assumed. What that reading
+(its auth module) on 2026-09-05 rather than assumed. What that reading
 found, stated precisely because "how hardened is it" deserves specifics
 rather than an impression:
 
@@ -93,6 +93,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 
 log = logging.getLogger("pep.oidc")
 
@@ -216,7 +217,13 @@ def _http_json(url: str, data: bytes | None = None,
             return json.load(resp)
     except urllib.error.HTTPError as exc:
         body = exc.read()[:400].decode("utf-8", "replace")
-        raise AuthError(f"{url} returned HTTP {exc.code}: {body}") from exc
+        err = AuthError(f"{url} returned HTTP {exc.code}: {body}")
+        # Carried for callers that must tell a provider REJECTION apart from
+        # an unreachable provider — session renewal is the one that cares;
+        # see get_session. Not set for a non-HTTP failure (timeout, DNS,
+        # connection refused), which is exactly the "unreachable" case.
+        err.http_status = exc.code
+        raise err from exc
     except Exception as exc:  # noqa: BLE001 — every failure is an AuthError
         raise AuthError(f"{url} unreachable: {exc}") from exc
 
@@ -275,7 +282,7 @@ def _signing_key(kid: str) -> dict:
 # --- RS256 verification, stdlib only -----------------------------------------
 # The sibling project uses PyJWT. This process has no wheels available by
 # design (see the bundle Dockerfile), so the verification is written out. It
-# is a small amount of code and every line of it is a check that iagent's
+# is a small amount of code and every line of it is a check that the sibling's
 # `jwt.decode` call either performs or was told to skip.
 def _rsa_verify(message: bytes, signature: bytes, n_b64: str, e_b64: str) -> bool:
     """RSASSA-PKCS1-v1_5 over SHA-256, verified by re-encoding.
@@ -391,9 +398,27 @@ def begin_login() -> str:
     return f"{metadata()['authorization_endpoint']}?{q}"
 
 
-def complete_login(code: str, state: str) -> tuple[dict, str]:
-    """Exchange the code for tokens. Return the verified claims and the raw
-    ID token, which sign-out hands back to the provider as `id_token_hint`.
+@dataclass(frozen=True)
+class LoginResult:
+    """What a successful code exchange yields.
+
+    `refresh_token`/`refresh_expires_in` were added alongside the ID token
+    because Keycloak's ID token is deliberately short-lived (minutes, not
+    the session's chart-configured TTL) and discarding the refresh token
+    meant every session died with it. A dataclass rather than a growing
+    tuple, so the new fields are named at the call site instead of
+    positional."""
+    claims: dict
+    id_token: str
+    refresh_token: str
+    refresh_expires_in: int
+
+
+def complete_login(code: str, state: str) -> LoginResult:
+    """Exchange the code for tokens. Return the verified claims, the raw ID
+    token (which sign-out hands back to the provider as `id_token_hint`),
+    and the refresh token/lifetime so the session can outlive the ID token
+    — see `LoginResult`.
 
     The state entry is consumed WHETHER OR NOT the exchange succeeds, so a
     replayed callback cannot retry against the same verifier."""
@@ -420,7 +445,13 @@ def complete_login(code: str, state: str) -> tuple[dict, str]:
     id_token = tokens.get("id_token")
     if not id_token:
         raise AuthError("token endpoint returned no id_token")
-    return verify_id_token(id_token, nonce=entry["nonce"]), id_token
+    claims = verify_id_token(id_token, nonce=entry["nonce"])
+    return LoginResult(
+        claims=claims,
+        id_token=id_token,
+        refresh_token=tokens.get("refresh_token") or "",
+        refresh_expires_in=int(tokens.get("refresh_expires_in") or 0),
+    )
 
 
 def is_stale_login_form(error: str | None) -> bool:
@@ -480,8 +511,15 @@ def logout_url(id_token: str | None) -> str | None:
 _sessions: dict[str, dict] = {}
 _sessions_lock = threading.Lock()
 
+# How long a DEFERRED renewal (provider unreachable, or an HTTP error other
+# than a rejection) waits before the next get_session call tries again. A
+# module constant rather than a magic number so an unreachable provider is
+# retried at a steady, named rate instead of hammered on every request.
+RENEW_RETRY_S = 30
 
-def create_session(claims: dict, id_token: str = "") -> tuple[str, dict]:
+
+def create_session(claims: dict, id_token: str = "", refresh_token: str = "",
+                   refresh_expires_in: int = 0) -> tuple[str, dict]:
     """Mint a session from verified claims.
 
     THE SUBJECT IS `sub`, NEVER `email` OR `preferred_username`. Both of the
@@ -489,9 +527,17 @@ def create_session(claims: dict, id_token: str = "") -> tuple[str, dict]:
     freed and later handed to a different person would silently inherit that
     person's entitlements, and nothing in the corpus would look wrong. `sub`
     is opaque and stable, which is exactly why the entitlements corpus keys
-    on it and carries the username only as a comment for human reviewers."""
+    on it and carries the username only as a comment for human reviewers.
+
+    `expires` is the RENEWAL-DUE time (today: min(SESSION_TTL, ID token
+    exp)) — reaching it makes get_session try to extend the session rather
+    than ending it. `hard_expires` is the absolute ceiling, set once here
+    and never pushed forward by a renewal: however often the session
+    renews, it still ends at created + SESSION_TTL, which is what bounds a
+    stolen refresh token's useful life."""
     _sweep(_sessions, _sessions_lock)
     sid = secrets.token_urlsafe(32)
+    now = time.time()
     session = {
         "subject": claims["sub"],
         # DISPLAY AND AUDIT ONLY. Never a join key, never a policy input.
@@ -501,25 +547,145 @@ def create_session(claims: dict, id_token: str = "") -> tuple[str, dict]:
         # Kept for sign-out's `id_token_hint` and nothing else. Never sent to
         # the browser: /auth/me builds its body field by field.
         "id_token": id_token,
-        "expires": min(time.time() + SESSION_TTL, float(claims.get("exp", 0))
-                       or time.time() + SESSION_TTL),
+        # SERVER-SIDE ONLY, exactly like `id_token` above — never a cookie, a
+        # response body, or a log line. The one value that lets a session
+        # outlive the short-lived ID token; see get_session.
+        "refresh_token": refresh_token,
+        # Absolute time. 0 (also covers a missing/zero refresh_expires_in)
+        # means "no refresh is possible" — get_session reads that as "cannot
+        # renew", not "never expires".
+        "refresh_expires": (now + refresh_expires_in) if refresh_expires_in
+                           else 0,
+        "expires": min(now + SESSION_TTL, float(claims.get("exp", 0))
+                       or now + SESSION_TTL),
+        "hard_expires": now + SESSION_TTL,
     }
     with _sessions_lock:
         _sessions[sid] = session
     return sid, session
 
 
+class _RefreshRejected(AuthError):
+    """The provider refused the refresh grant (HTTP 400/401 — e.g.
+    invalid_grant: the user logged out or was disabled, or revoked the
+    session at the provider). This ends the session; see get_session."""
+
+
+def _refresh_tokens(refresh_token: str) -> dict:
+    """Call the token endpoint with grant_type=refresh_token.
+
+    Same confidential-client Basic auth and internalized endpoint as
+    complete_login. Raises `_RefreshRejected` for a provider-issued refusal
+    and plain `AuthError` (via `_http_json`) for everything else — a
+    network failure, a timeout, or a non-401/400 HTTP status — which
+    get_session treats as the provider being unreachable rather than as a
+    revocation, because those two outcomes mean opposite things for a
+    session still inside the lifetime the provider already granted."""
+    basic = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
+    body = urllib.parse.urlencode({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }).encode()
+    try:
+        return _http_json(
+            _internalize(metadata()["token_endpoint"]), data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Authorization": f"Basic {basic}"})
+    except AuthError as exc:
+        if getattr(exc, "http_status", None) in (400, 401):
+            raise _RefreshRejected(str(exc)) from exc
+        raise
+
+
 def get_session(sid: str | None) -> dict | None:
+    """Look up a session, renewing it against the provider when its ID
+    token has reached `expires` but the session has not reached
+    `hard_expires` — see create_session for what each bound means.
+
+    FAIL CLOSED, as before, when there is nothing left to renew with: no
+    refresh token, a refresh token past `refresh_expires`, or
+    `hard_expires` already reached. When the provider REJECTS the refresh
+    (expired/revoked grant) or answers with a different `sub`, the session
+    is dropped the same way. When the provider is merely UNREACHABLE (or
+    answers with a non-rejection HTTP error), the session is kept until
+    `refresh_expires` — the lifetime it already granted — and `expires` is
+    pushed forward by RENEW_RETRY_S so this is not retried on every single
+    request while the provider is down."""
     if not sid:
         return None
     with _sessions_lock:
         s = _sessions.get(sid)
         if s is None:
             return None
-        if s["expires"] < time.time():
+        snapshot = dict(s)
+
+    now = time.time()
+    if snapshot["expires"] >= now:
+        return snapshot
+
+    if (not snapshot.get("refresh_token")
+            or snapshot.get("refresh_expires", 0) < now
+            or snapshot.get("hard_expires", 0) < now):
+        with _sessions_lock:
             _sessions.pop(sid, None)
+        return None
+
+    # RENEWAL. RACE NOTE: the HTTP call below runs with _sessions_lock
+    # released, so two requests that both find renewal due can both call
+    # the provider concurrently ("accept-the-race", chosen over a
+    # per-session in-flight flag because the race is harmless: both calls
+    # renew the SAME session, both succeed or fail together in practice,
+    # and whichever write lands last under the lock below simply wins —
+    # there is no cross-session effect to guard against).
+    try:
+        tokens = _refresh_tokens(snapshot["refresh_token"])
+    except _RefreshRejected:
+        with _sessions_lock:
+            _sessions.pop(sid, None)
+        return None
+    except AuthError as exc:
+        with _sessions_lock:
+            cur = _sessions.get(sid)
+            if cur is None:
+                return None
+            cur["expires"] = time.time() + RENEW_RETRY_S
+            result = dict(cur)
+        log.info("SESSION_RENEW_DEFERRED reason=%s", type(exc).__name__)
+        return result
+
+    new_id_token = tokens.get("id_token") or ""
+    try:
+        if not new_id_token:
+            raise AuthError("refresh response carried no id_token")
+        claims = verify_id_token(new_id_token)
+        if claims.get("sub") != snapshot["subject"]:
+            raise AuthError("refreshed token's subject differs from the "
+                            "session's")
+    except AuthError:
+        with _sessions_lock:
+            _sessions.pop(sid, None)
+        return None
+
+    new_refresh_token = tokens.get("refresh_token") or snapshot["refresh_token"]
+    refresh_expires_in = int(tokens.get("refresh_expires_in") or 0)
+    new_refresh_expires = (now + refresh_expires_in) if refresh_expires_in \
+        else snapshot.get("refresh_expires", 0)
+
+    with _sessions_lock:
+        cur = _sessions.get(sid)
+        if cur is None:
             return None
-        return dict(s)
+        cur["id_token"] = new_id_token
+        cur["refresh_token"] = new_refresh_token
+        cur["refresh_expires"] = new_refresh_expires
+        # Never past hard_expires — that bound is never extended, including
+        # here.
+        cur["expires"] = min(now + SESSION_TTL,
+                             float(claims.get("exp", 0)) or now + SESSION_TTL,
+                             cur["hard_expires"])
+        result = dict(cur)
+    log.info("SESSION_RENEWED")
+    return result
 
 
 def destroy_session(sid: str | None) -> None:

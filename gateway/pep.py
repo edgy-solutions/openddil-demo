@@ -1043,12 +1043,14 @@ class Pep(BaseHTTPRequestHandler):
                                       ("Cache-Control", "no-store")])
                 return True
             try:
-                claims, id_token = oidc.complete_login(code, state)
+                login = oidc.complete_login(code, state)
             except oidc.AuthError as exc:
                 self._deny("login failed: " + str(exc), subject="",
                            resource="callback")
                 return True
-            sid, session = oidc.create_session(claims, id_token)
+            sid, session = oidc.create_session(
+                login.claims, login.id_token, login.refresh_token,
+                login.refresh_expires_in)
             record_decision(decision_id=new_decision_id(), outcome="login",
                             subject=session["subject"],
                             username=session["username"] or None,

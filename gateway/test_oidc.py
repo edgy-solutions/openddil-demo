@@ -298,6 +298,157 @@ def test_half_configured_oidc_refuses_to_start(monkeypatch):
 
 
 # ===========================================================================
+# Refresh-token renewal: sessions outlive the 5-minute ID token
+# ===========================================================================
+# The defect: create_session capped `expires` at the ID token's `exp` (five
+# minutes on this provider) and complete_login discarded the refresh token
+# that could have extended it, so every session died five minutes after
+# login and every shape request after that got a 401.
+TOKEN_ENDPOINT = "https://idp.example/realms/openddil/protocol/openid-connect/token"
+
+
+def _mint_refresh_response(key, *, refresh_token="rotated-refresh",
+                           refresh_expires_in=3600, **claim_overrides):
+    """What the token endpoint returns for a refresh grant."""
+    claims = {"sub": "user-sub-123", "exp": int(time.time()) + 300}
+    claims.update(claim_overrides)
+    return {
+        "id_token": mint(key, **claims),
+        "refresh_token": refresh_token,
+        "refresh_expires_in": refresh_expires_in,
+    }
+
+
+def _session_due_for_renewal(oidc, key, *, refresh_expires_in=3600):
+    """A session whose renewal is already due, with a refresh token still
+    good for `refresh_expires_in` seconds. `expires` is forced into the
+    past directly rather than slept to, for a deterministic test."""
+    claims = oidc.verify_id_token(mint(key, exp=int(time.time()) + 2))
+    sid, _ = oidc.create_session(claims, "orig-id-token", "orig-refresh",
+                                 refresh_expires_in)
+    with oidc._sessions_lock:
+        oidc._sessions[sid]["expires"] = time.time() - 1
+    return sid
+
+
+def _mock_token_endpoint(oidc, monkeypatch, responder):
+    monkeypatch.setattr(oidc, "metadata",
+                        lambda: {"token_endpoint": TOKEN_ENDPOINT})
+    monkeypatch.setattr(oidc, "_http_json", responder)
+
+
+def test_session_survives_past_the_id_token_exp_via_refresh(oidc, key, monkeypatch):
+    """RED-CHECK: run against the pre-change oidc.py (no renewal in
+    get_session) this assertion fails -- a session minted from an ID token
+    with exp=now+2 is gone when checked after it expires, even with a
+    refresh token present and an endpoint willing to issue a fresh one."""
+    sid = _session_due_for_renewal(oidc, key)
+    _mock_token_endpoint(oidc, monkeypatch,
+                        lambda *a, **k: _mint_refresh_response(key))
+    session = oidc.get_session(sid)
+    assert session is not None
+    assert session["subject"] == "user-sub-123"
+    assert session["id_token"] != "orig-id-token"
+    assert session["refresh_token"] == "rotated-refresh"
+    assert session["expires"] > time.time()
+
+
+def test_refresh_rejected_by_the_provider_drops_the_session(oidc, key, monkeypatch):
+    """invalid_grant (400) -- the user logged out or was disabled at the
+    provider since the ID token was minted."""
+    sid = _session_due_for_renewal(oidc, key)
+    def rejected(*a, **k):
+        err = oidc.AuthError("invalid_grant")
+        err.http_status = 400
+        raise err
+    _mock_token_endpoint(oidc, monkeypatch, rejected)
+    assert oidc.get_session(sid) is None
+
+
+def test_refresh_with_a_different_subject_drops_the_session(oidc, key, monkeypatch):
+    sid = _session_due_for_renewal(oidc, key)
+    _mock_token_endpoint(
+        oidc, monkeypatch,
+        lambda *a, **k: _mint_refresh_response(key, sub="someone-else"))
+    assert oidc.get_session(sid) is None
+
+
+def test_provider_unreachable_keeps_the_session_until_refresh_expires(
+        oidc, key, monkeypatch):
+    sid = _session_due_for_renewal(oidc, key, refresh_expires_in=3600)
+    def unreachable(*a, **k):
+        raise oidc.AuthError(f"{TOKEN_ENDPOINT} unreachable: timed out")
+    _mock_token_endpoint(oidc, monkeypatch, unreachable)
+    session = oidc.get_session(sid)
+    assert session is not None
+    assert session["expires"] == pytest.approx(
+        time.time() + oidc.RENEW_RETRY_S, abs=2)
+
+
+def test_provider_unreachable_past_refresh_expires_drops_the_session(
+        oidc, key, monkeypatch):
+    sid = _session_due_for_renewal(oidc, key, refresh_expires_in=3600)
+    with oidc._sessions_lock:
+        oidc._sessions[sid]["refresh_expires"] = time.time() - 1
+    def unreachable(*a, **k):
+        raise oidc.AuthError("unreachable")
+    _mock_token_endpoint(oidc, monkeypatch, unreachable)
+    assert oidc.get_session(sid) is None
+
+
+def test_no_refresh_token_expires_as_today(oidc, key):
+    """Legacy shape: no refresh token at all -- the pre-existing behaviour
+    this change must not disturb."""
+    claims = oidc.verify_id_token(mint(key, exp=int(time.time()) + 5))
+    sid, _ = oidc.create_session(claims)
+    with oidc._sessions_lock:
+        oidc._sessions[sid]["expires"] = time.time() - 1
+    assert oidc.get_session(sid) is None
+
+
+def test_hard_expires_wins_even_when_refresh_would_succeed(oidc, key, monkeypatch):
+    sid = _session_due_for_renewal(oidc, key)
+    with oidc._sessions_lock:
+        oidc._sessions[sid]["hard_expires"] = time.time() - 1
+    _mock_token_endpoint(oidc, monkeypatch,
+                        lambda *a, **k: _mint_refresh_response(key))
+    assert oidc.get_session(sid) is None
+
+
+def test_refresh_token_never_appears_in_auth_me(oidc, key, monkeypatch):
+    """The token that crosses the seam to Keycloak must never reach the
+    browser -- /auth/me builds its body field by field, and this exercises
+    that handler directly rather than re-deriving its allowlist of fields
+    in the test."""
+    import urllib.parse
+
+    import pep as _pep
+
+    monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
+    monkeypatch.setattr(_pep, "ask_topaz", lambda subject: {
+        "allowed_nations": ["ATL"], "policy_version": "v1",
+        "corpus_version": "v1", "role": "operator"})
+    token = mint(key)
+    sid, _ = oidc.create_session(oidc.verify_id_token(token), token)
+    with oidc._sessions_lock:
+        oidc._sessions[sid]["refresh_token"] = "super-secret-refresh-value"
+
+    handler = object.__new__(_pep.Pep)
+    handler.headers = {"Cookie": f"{oidc.COOKIE_NAME}={sid}"}
+    captured = {}
+
+    def fake_send(status, body, headers=None):
+        captured["status"] = status
+        captured["body"] = body
+    handler._send = fake_send
+
+    handler._handle_auth(urllib.parse.urlparse("/auth/me"))
+    assert captured["status"] == 200
+    assert b"refresh_token" not in captured["body"]
+    assert b"super-secret-refresh-value" not in captured["body"]
+
+
+# ===========================================================================
 # Table granularity: a rollup that cannot be partitioned must not be served
 # ===========================================================================
 # These defend the rule found by a 502. The region_* rollup tables carry no
