@@ -32,6 +32,17 @@ export type CatalogCode = {
   text: string;
   component: string;
   severity: string;
+  /** The S1000D data module this code's fault-isolation procedure lives
+   *  in (tools/fault_catalog/build_fault_catalog.py already stamps this
+   *  onto every code server-side). Used by lib/manualQa.ts's
+   *  manualQaScope to build the manual-question panel's DMC scope --
+   *  never parsed or sliced, only matched/compared as an opaque string.
+   *  Optional here (rather than required) so existing CatalogCode
+   *  literals that predate this field, and any catalog entry an older
+   *  server build didn't stamp one onto, still type-check / parse as a
+   *  valid code -- manualQaScope already treats a missing dmc as "not in
+   *  scope" rather than throwing. */
+  dmc?: string;
 };
 
 export type FaultCatalog = {

@@ -43,6 +43,7 @@ import {
 } from './platform-schematics';
 import FaultReportForm from './FaultReportForm';
 import BitDiscrepancyCard from './BitDiscrepancyCard';
+import ManualQuestionPanel from './ManualQuestionPanel';
 import { useCmState } from '../hooks';
 import {
     bitOnlyDiscrepancy,
@@ -51,6 +52,7 @@ import {
     loadFaultCatalog,
     type FaultCatalog,
 } from '../lib/cmReport';
+import { manualQaScope } from '../lib/manualQa';
 
 const DEMO_MOCK = true;
 
@@ -223,6 +225,32 @@ export default function DiagnosticCanvas({
     const bitEntry = bitOnlyDiscrepancy(cm.data[0]?.manual_discrepancies);
     const bitEntryKey = bitEntry ? `${bitEntry.component}|${bitEntry.fault_code}` : null;
 
+    // The manual-question panel's scope: the distinct dmc values this
+    // asset's fault catalog carries, plus the dmc of the open BIT card
+    // above (if any) -- see lib/manualQa.ts's manualQaScope. catalogCodes
+    // also doubles as the source for scopeLabels, so a chip can show the
+    // fault text a dmc is already known for instead of just the bare id.
+    const catalogCodes = catalog?.codes ?? [];
+    const bitEntryDmc = bitEntry
+        ? catalogCodes.find((c) => c.code === bitEntry.fault_code)?.dmc ?? null
+        : null;
+    const manualQuestionScope = manualQaScope(catalogCodes, bitEntryDmc);
+    const manualQaScopeLabels: Record<string, string> = {};
+    for (const c of catalogCodes) {
+        if (c.dmc && !manualQaScopeLabels[c.dmc]) manualQaScopeLabels[c.dmc] = c.text;
+    }
+
+    const manualQuestionOverlay = (
+        <div className="absolute bottom-4 left-4 w-[280px] z-20">
+            <ManualQuestionPanel
+                assetId={assetId}
+                platformVariant={platformVariant}
+                scope={manualQuestionScope}
+                scopeLabels={manualQaScopeLabels}
+            />
+        </div>
+    );
+
     const openReportForm = () => {
         setPrefill(null);
         setFormOpen(true);
@@ -283,6 +311,7 @@ export default function DiagnosticCanvas({
             <>
                 <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} />
                 {faultReportOverlay}
+                {manualQuestionOverlay}
             </>
         );
     }
@@ -297,6 +326,7 @@ export default function DiagnosticCanvas({
             <>
                 <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} isPoweredOff={isPoweredOff} />
                 {faultReportOverlay}
+                {manualQuestionOverlay}
             </>
         );
     }
@@ -349,6 +379,7 @@ export default function DiagnosticCanvas({
                     : <UnknownPlatformBadge degraded={degraded} variant={platformVariant ?? 'UNKNOWN'} />}
             </Canvas>
             {faultReportOverlay}
+            {manualQuestionOverlay}
         </HudFrame>
     );
 }

@@ -141,6 +141,41 @@ else
     echo "40-resolver.sh: egress pane -> none (404) — no OPENDDIL_EGRESS_PANE_UPSTREAM set"
 fi
 
+# __MANUAL_ASK_UPSTREAM__ / __MANUAL_ASK_PORT__ / __MANUAL_ASK_OFF__
+#
+# The manual question panel — compose-only; no chart wiring exists for this
+# feature at all. OPENDDIL_MANUAL_ASK_UPSTREAM is unset by the chart build
+# always, so the "unset" branch below is the only outcome a chart
+# deployment ever sees: __MANUAL_ASK_OFF__ becomes a literal 404, same
+# reasoning as the egress pane's mode (d) above — a variable upstream with
+# nothing to resolve fails as a 502, which would look like an outage
+# rather than "not shipped here".
+#
+# Deliberately its OWN upstream variable, separate from $pep_upstream
+# above: this feature's compose wiring is new, and sharing $pep_upstream
+# would make standing it up also change /auth/'s and /cm/'s behaviour,
+# which this change does not touch.
+# The dev subject is set by docker-compose.yml only. Unset, the header is
+# cleared, as /cm/ clears it.
+manual_ask_dev_subject="${OPENDDIL_MANUAL_ASK_DEV_SUBJECT:-}"
+case "$manual_ask_dev_subject" in
+    *[!A-Za-z0-9._-]*) echo "40-resolver.sh: OPENDDIL_MANUAL_ASK_DEV_SUBJECT has characters outside [A-Za-z0-9._-]" >&2; exit 1;;
+esac
+sed -i "s/__MANUAL_ASK_DEV_SUBJECT__/${manual_ask_dev_subject}/g" "$conf"
+manual_ask_upstream="${OPENDDIL_MANUAL_ASK_UPSTREAM:-}"
+manual_ask_port="${OPENDDIL_MANUAL_ASK_PORT:-8080}"
+if [ -n "$manual_ask_upstream" ]; then
+    sed -i "s/__MANUAL_ASK_UPSTREAM__/${manual_ask_upstream}/g" "$conf"
+    sed -i "s/__MANUAL_ASK_PORT__/${manual_ask_port}/g" "$conf"
+    sed -i "s|__MANUAL_ASK_OFF__||g" "$conf"
+    echo "40-resolver.sh: manual question service -> ${manual_ask_upstream}:${manual_ask_port}"
+else
+    sed -i "s/__MANUAL_ASK_UPSTREAM__/unset-no-manual-qa-at-this-tier/g" "$conf"
+    sed -i "s/__MANUAL_ASK_PORT__/8080/g" "$conf"
+    sed -i "s|__MANUAL_ASK_OFF__|default_type application/json; return 404 '{\"error\":\"no manual question service at this tier\"}';|g" "$conf"
+    echo "40-resolver.sh: manual question service -> none (404) — no OPENDDIL_MANUAL_ASK_UPSTREAM set"
+fi
+
 # A placeholder that survives substitution becomes a hostname nginx cannot
 # resolve, and the failure surfaces as a 502 on the first request rather
 # than at start-up. Fail here instead, where the message can say which one.

@@ -1584,6 +1584,58 @@ services:
     # into a working-looking state.
     restart: on-failure
 
+  # THE READ-PATH PEP (gateway/pep.py), compose-only and header-mode only --
+  # no OIDC env vars are set below, so AUTH_MODE resolves to "header" at
+  # import, exactly as pep.py's own oidc.enabled() check intends. Stands up
+  # to serve /manual/ask; nginx's /auth/ and /cm/ locations keep pointing at
+  # __PEP_UPSTREAM__'s own unset default, not at this service, so adding it
+  # does not change /auth/ or /cm/'s existing (dormant) compose behaviour.
+  #
+  # COMPOSE-ONLY SCAFFOLDING, same discipline as egress-gate-c2 and
+  # egress-pane-api below: a bare pinned python image plus a read-only bind
+  # mount, because pep.py and its sibling modules (egress_view.py, oidc.py,
+  # manual_qa.py) are stdlib-only and need nothing baked in. Not how this
+  # ships -- see those two services' own comments. Ledger row LR-0043-C.
+  gateway:
+    image: python:3.11.9-slim
+    container_name: openddil-demo-gateway
+    entrypoint: ["python", "-u", "/app/gateway/pep.py"]
+    environment:
+      OPENDDIL_ELECTRIC_URL:  http://electric-sync:5133
+      OPENDDIL_TOPAZ_URL:     http://topaz:8383
+      OPENDDIL_MANUAL_QA_URL: http://manual-qa-stub:8099/ask
+      LOG_LEVEL:              INFO
+    volumes:
+      - ./gateway:/app/gateway:ro
+    depends_on:
+      electric-sync:
+        condition: service_started
+      topaz:
+        condition: service_started
+      manual-qa-stub:
+        condition: service_started
+    restart: unless-stopped
+
+  # THE MANUAL QUESTION SERVICE STAND-IN (gateway/manual_qa_stub.py). The
+  # real manual question-answering endpoint is unconfirmed; this answers
+  # POST /ask from the public fixture under
+  # tests/fixtures/s1000d-array-module/ instead, so the panel above has
+  # something real to render an answer (or a refusal) against.
+  # COMPOSE-ONLY SCAFFOLDING, same trade as `gateway` above -- stdlib only,
+  # bind mount, no image of its own. Ledger row LR-0043-C.
+  manual-qa-stub:
+    image: python:3.11.9-slim
+    container_name: openddil-demo-manual-qa-stub
+    entrypoint: ["python", "-u", "/app/gateway/manual_qa_stub.py"]
+    environment:
+      MANUAL_QA_STUB_PORT:   "8099"
+      MANUAL_QA_FIXTURE_DIR: /fixtures/s1000d-array-module
+      LOG_LEVEL:             INFO
+    volumes:
+      - ./gateway:/app/gateway:ro
+      - ./tests/fixtures/s1000d-array-module:/fixtures/s1000d-array-module:ro
+    restart: unless-stopped
+
   frontend:
     image: ghcr.io/edgy-solutions/openddil/frontend:latest
     pull_policy: always
@@ -1596,6 +1648,13 @@ services:
     environment:
       OPENDDIL_EGRESS_PANE_UPSTREAM: egress-pane-api
       OPENDDIL_EGRESS_PANE_PORT:     "8090"
+      # /manual/ -> gateway (the compose-only PEP above). A chart build
+      # never sets this, so a chart deployment's 40-resolver.sh always
+      # takes the "unset" branch and this location answers 404 there.
+      OPENDDIL_MANUAL_ASK_UPSTREAM:  gateway
+      # Header-mode subject for the compose-only PEP (operator.atlantia in
+      # policy/users.yaml). Compose has no session to name one.
+      OPENDDIL_MANUAL_ASK_DEV_SUBJECT: 11111111-1111-4111-8111-111111111111
     ports:
       - "3017:80"
 

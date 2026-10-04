@@ -172,6 +172,17 @@ export interface EgressPaneConfig {
   destination: string;
 }
 
+/** The manual-question panel's own config. `stub` says whether the
+ *  upstream manual question service answering this deployment is a
+ *  stand-in rather than the real thing -- defaults to true (unconfigured
+ *  == assume a stub) so a deployment that says nothing about it still
+ *  gets the DemoMockBanner rather than silently looking production-real.
+ *  Only a deployment that explicitly sets `stub: false` turns the banner
+ *  off. */
+export interface ManualQaConfig {
+  stub?: boolean;
+}
+
 export interface ReleasedRecordsPaneConfig {
   title: string;
   destination: string;
@@ -193,6 +204,13 @@ export interface Deployment {
    *  hub with no egress answers /egress with a 404, and a pane that can only
    *  say "could not load" is noise. Parsed by `parseEgressPane`. */
   egressPane?: EgressPaneConfig;
+  /** The manual-question panel's config. ABSENT is a normal, supported
+   *  state (treated the same as `{}`/`{stub: true}` by every reader of
+   *  this field) -- it is not the "is this feature on at this tier"
+   *  switch (that's the gateway route itself, OPENDDIL_MANUAL_QA_URL /
+   *  the panel's own 404 handling); it only ever affects whether the
+   *  DemoMockBanner shows. */
+  manualQa?: ManualQaConfig;
   /** Optional FOB list — populated by a deployment overlay. The 3D maps
    *  use this to place edge markers and to home positionless assets.
    *  Empty in the OSS default; the maps render an empty theater. */
@@ -391,6 +409,19 @@ export function parseEgressPane(raw: unknown): EgressPaneConfig | undefined {
   return typeof d === 'string' && d.trim().length > 0 ? { destination: d.trim() } : undefined;
 }
 
+/** `{stub?: boolean}` -> that config, dropping any non-boolean `stub`
+ *  rather than coercing it (so a malformed overlay value falls back to
+ *  the default-true reading, same as an absent field, instead of
+ *  silently becoming `undefined && false`-ish truthy/falsy guesswork).
+ *  Anything that isn't an object at all -> undefined, which every reader
+ *  of `manualQa` treats identically to `{}`. EXPORTED FOR TESTS, same
+ *  reasoning as `parseEgressPane`. */
+export function parseManualQa(raw: unknown): ManualQaConfig | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const stub = (raw as Record<string, unknown>).stub;
+  return typeof stub === 'boolean' ? { stub } : {};
+}
+
 export function parseReleasedRecordsPanes(raw: unknown): ReleasedRecordsPaneConfig[] {
   if (!Array.isArray(raw)) return [];
   const isColumn = (x: unknown): x is ReleasedRecordsColumnConfig => {
@@ -470,6 +501,7 @@ export async function loadDeployment(): Promise<void> {
           (j as { releasedRecordsPanes?: unknown }).releasedRecordsPanes,
         ),
         egressPane: parseEgressPane((j as { egressPane?: unknown }).egressPane),
+        manualQa: parseManualQa((j as { manualQa?: unknown }).manualQa),
       };
     }
   } catch {

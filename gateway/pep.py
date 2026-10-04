@@ -51,6 +51,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import egress_view
+import manual_qa
 import oidc
 
 # --- configuration ----------------------------------------------------------
@@ -76,6 +77,34 @@ EGRESS_PANE = os.getenv("OPENDDIL_EGRESS_PANE_URL", "").rstrip("/")
 CM_INTAKE_URL = os.getenv("OPENDDIL_CM_INTAKE_URL", "").rstrip("/")
 REPORT_SOURCE = os.getenv("OPENDDIL_REPORT_SOURCE", "operator_report")
 MAX_CM_BODY_BYTES = int(os.getenv("OPENDDIL_MAX_CM_BODY_BYTES", str(8 * 1024)))
+
+# --- the manual question service ---------------------------------------------
+# A maintainer's question about the asset in view, delegated through this
+# gateway to the manual question service and scoped to the data modules
+# (DMCs) the maintainer is actually looking at. Empty means "not wired at
+# this tier", the same meaning CM_INTAKE_URL/EGRESS_PANE being unset already
+# carry: a deployment with no answering service gets a clean 404, not a
+# half-working route.
+MANUAL_QA_URL = os.getenv("OPENDDIL_MANUAL_QA_URL", "").rstrip("/")
+MANUAL_QA_TOKEN_FILE = os.getenv("OPENDDIL_MANUAL_QA_TOKEN_FILE", "")
+MANUAL_QA_TIMEOUT = float(os.getenv("OPENDDIL_MANUAL_QA_TIMEOUT", "10.0"))
+MAX_MANUAL_ASK_BODY_BYTES = int(os.getenv("OPENDDIL_MAX_MANUAL_ASK_BODY_BYTES", str(16 * 1024)))
+
+
+def _manual_qa_token() -> str | None:
+    """RFC 8693 token exchange (ADR-0046, noted for later) replaces this
+    bearer-token forward once the manual question service's own OIDC client
+    is issued. Until then: a configured token file's contents, verbatim, or
+    no Authorization header at all -- the stub's own posture."""
+    if not MANUAL_QA_TOKEN_FILE:
+        return None
+    try:
+        with open(MANUAL_QA_TOKEN_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip() or None
+    except Exception as exc:  # noqa: BLE001 -- a config read, not a request
+        log.error("could not read OPENDDIL_MANUAL_QA_TOKEN_FILE=%s: %s",
+                  MANUAL_QA_TOKEN_FILE, exc)
+        return None
 
 # --- how much of a shape this process is willing to hold at once -------------
 #
@@ -721,6 +750,31 @@ def _parse_discrepancy_body(payload) -> dict:
             "fault_code": fault_code, "description": description}
 
 
+def _parse_manual_ask_body(payload) -> dict:
+    """asset_id, question, dmcs -- or raise ValueError(reason).
+
+    asset_id is validated against THIS FILE's own _ASSET_ID_RE, the one
+    asset-id pattern it has (asset_id is opaque and never parsed beyond
+    matching that one pattern). The question's length and the DMCs' shape
+    are manual_qa's own concern. Citation enforcement is a separate step
+    entirely, applied to the upstream's reply, not to this request -- see
+    manual_qa.enforce_citations.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("body must be a JSON object")
+    asset_id = payload.get("asset_id")
+    question = payload.get("question")
+    dmcs = payload.get("dmcs")
+    if not isinstance(asset_id, str) or not _ASSET_ID_RE.match(asset_id):
+        raise ValueError("invalid asset_id")
+    try:
+        manual_qa.validate_question(question)
+        manual_qa.validate_dmcs(dmcs)
+    except manual_qa.ManualQaError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"asset_id": asset_id, "question": question, "dmcs": dmcs}
+
+
 def _cm_record(*, allowed: bool, subject: str, asset_id: str | None,
                fault_code: str | None, event_id: str | None, reason: str) -> str:
     """The one decision line for every /cm/discrepancy outcome from the PDP
@@ -1080,10 +1134,143 @@ class Pep(BaseHTTPRequestHandler):
         self._cm_allow(subject=subject, asset_id=asset_id, fault_code=fault_code,
                        event_id=event_id)
 
+    def _handle_manual_ask(self, parsed) -> None:
+        """Serve POST /manual/ask: a maintainer's question, scoped to the
+        DMCs in view, delegated to the manual question service and answered
+        only when the reply's citations stay inside that scope (see
+        manual_qa.enforce_citations).
+
+        Topaz is asked the SAME single question every other route asks --
+        which nations this subject may see -- through ask_topaz, with no
+        second rule for this resource. `resource="manual-ask"` below is a
+        label for the decision log, exactly as `resource=table` and
+        `resource=f"egress:{dest}"` already are for the read path and the
+        egress route; it is never an input Topaz is asked about, because
+        this policy makes one decision and does not vary it by resource
+        (see policy/releasability.rego's own header on why role does not
+        gate rows -- a resource-specific rule here would be the same kind
+        of second, unreviewed authorization decision that file rules out).
+        """
+        path = parsed.path
+
+        # Not configured at this tier -> the route is absent, exactly as an
+        # unset CM_INTAKE_URL/EGRESS_PANE gives 404. Checked before anything
+        # else: whether the upstream exists is a fact about the deployment,
+        # not the request.
+        if not MANUAL_QA_URL:
+            self._drain_body()
+            self._deny("manual question service not configured at this tier",
+                       subject="", resource="manual-ask", status=404,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
+        length = self._content_length()
+        if length > MAX_MANUAL_ASK_BODY_BYTES:
+            self._deny("body too large", subject="", resource="manual-ask",
+                       status=413, headers=[("Connection", "close")],
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        raw = self.rfile.read(length) if length else b""
+
+        try:
+            payload = json.loads(raw or b"{}")
+        except ValueError:
+            self._send(400, json.dumps({"error": "malformed JSON body"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        # Step 1: the principal. No session -> 401, nothing sent upstream,
+        # and no decision recorded -- there is no subject yet for a
+        # decision to be about, same as the CM write path.
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        # Step 2: Topaz, applied verbatim -- this file contains no
+        # authorization logic.
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject,
+                       resource="manual-ask", status=503)
+            return
+        if not decision["allow"]:
+            cause = ("subject not in the entitlements corpus"
+                     if not decision["subject_known"]
+                     else "subject holds no nation entitlements")
+            self._deny(cause, subject=subject, resource="manual-ask", status=403)
+            return
+
+        # Step 3: validate the body shape -- asset_id against this file's
+        # own _ASSET_ID_RE, question length and DMC shape against
+        # manual_qa's.
+        try:
+            fields = _parse_manual_ask_body(payload)
+        except ValueError as exc:
+            self._deny(str(exc), subject=subject, resource="manual-ask", status=400)
+            return
+        asset_id = fields["asset_id"]
+        question = fields["question"]
+        dmcs = fields["dmcs"]
+
+        # Step 4: the asset must be visible to this subject -- the CM write
+        # path's own visibility read, never a second decision about who may
+        # see it.
+        try:
+            row = read_cm_visibility_row(asset_id, decision["allowed_nations"])
+        except ElectricUnavailable as exc:
+            self._deny(f"electric unavailable: {exc}", subject=subject,
+                       resource="manual-ask", status=502)
+            return
+        if row is None:
+            self._deny("asset not visible at this tier", subject=subject,
+                       resource="manual-ask", status=404)
+            return
+
+        # Step 5: delegate. on_behalf_of is ALWAYS the session subject --
+        # this gateway reads no field named on_behalf_of (or anything like
+        # it) from the request body, so there is nothing for a
+        # client-supplied value to override.
+        try:
+            reply = manual_qa.ask_upstream(
+                MANUAL_QA_URL, question=question, dmcs=dmcs, on_behalf_of=subject,
+                token=_manual_qa_token(), timeout=MANUAL_QA_TIMEOUT,
+            )
+        except manual_qa.UpstreamError as exc:
+            log.error("manual question service upstream error user=%s asset_id=%s: %s",
+                      subject, asset_id, exc)
+            # AN UPSTREAM FAULT, NOT A POLICY DENY -- mirrors how the egress
+            # route and the read path record an upstream failure:
+            # outcome="allow", never a deny, because authorization was
+            # never in question past this point. The question text is
+            # still never logged.
+            record_decision(decision_id=new_decision_id(), outcome="allow",
+                            subject=subject, resource="manual-ask",
+                            asset_id=asset_id, dmcs=dmcs, upstream_error=str(exc))
+            self._send(502, json.dumps({"status": "unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        # Step 6: citation enforcement, always applied, server side -- the
+        # one check this route exists for.
+        result = manual_qa.enforce_citations(reply, dmcs)
+        record_decision(decision_id=new_decision_id(), outcome="allow",
+                        subject=subject, resource="manual-ask", asset_id=asset_id,
+                        dmcs=dmcs, reply_status=result["status"],
+                        reason=result.get("reason"))
+        self._send(200, json.dumps(result).encode(),
+                   [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
+
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/cm/discrepancy":
             self._handle_cm_discrepancy(parsed)
+            return
+        if parsed.path == "/manual/ask":
+            self._handle_manual_ask(parsed)
             return
         # Every other POST path is refused. The body is drained first so a
         # kept-alive HTTP/1.1 socket is not left desynced by an unread

@@ -10,3 +10,4 @@ frontend/src/lib/munitionAsset.ts	assetId.indexOf('-')	pending: phase 2, munitio
 frontend/src/lib/munitionAsset.ts	assetId.substring(0, dashIdx)	pending: phase 2, munition carries a declared launcher field
 gateway/pep.py	_ASSET_ID_RE.match(asset_id)	validation: charset/length check at the gateway boundary
 gateway/test_pep_cm_write.py	_ASSET_ID_IN_WHERE.search(where)	mapper: the test's stand-in Electric server reads the whole quoted id back out of the where clause; no part of the id is read
+gateway/test_pep_manual_ask.py	_ASSET_ID_IN_WHERE.search(where)	mapper: the test's stand-in Electric server reads the whole quoted id back out of the where clause; no part of the id is read
