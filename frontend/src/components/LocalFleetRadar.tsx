@@ -29,6 +29,8 @@
 // view is still a simplified projection — flagged as such via the
 // header subtitle.
 
+import { assetCallsign } from '../lib/assetLabel';
+
 interface Asset {
   id: string;
   type: string;
@@ -37,6 +39,9 @@ interface Asset {
    *  for strike-only assets that don't carry telemetry coordinates. */
   lat?: number | null;
   lon?: number | null;
+  /** Declared callsign (FleetAsset.callsign). Used for the radar label
+   *  in place of asset_id — see radarLabel below. */
+  callsign?: string | null;
 }
 
 interface LocalFleetRadarProps {
@@ -56,12 +61,15 @@ interface LocalFleetRadarProps {
   selectedAssetId?: string | null;
 }
 
-// Short radar label — the last id segment, capped. Full asset_ids
-// (e.g. "USA-ARMY-1HBCT-M1A2-4773") overlap unreadably on a 200-unit
-// SVG; the last segment is short and reasonably distinguishing.
-function radarLabel(id: string): string {
-  const seg = id.split(/[-:]/).filter(Boolean).pop() ?? id;
-  return seg.length > 10 ? seg.slice(0, 10) : seg;
+// Short radar label — the declared callsign (ADR-0047: asset_id is
+// opaque and is never split/sliced to derive a label). The callsign may
+// be capped for space: full asset_ids overlap unreadably on a 200-unit
+// SVG. Falls back to the full, uncapped asset_id when no distinct
+// callsign is declared (assetCallsign de-dupes callsign === asset_id).
+function radarLabel(asset: Asset): string {
+  const cs = assetCallsign({ asset_id: asset.id, callsign: asset.callsign });
+  if (!cs) return asset.id;
+  return cs.length > 10 ? cs.slice(0, 10) : cs;
 }
 
 // Default radar range when only one asset / no spread to scale to.
@@ -192,7 +200,7 @@ export default function LocalFleetRadar({
                   fontWeight={isSelected ? 'bold' : 'normal'}
                   fontFamily="monospace"
                 >
-                  {radarLabel(asset.id)}
+                  {radarLabel(asset)}
                 </text>
               </g>
             );

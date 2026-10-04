@@ -441,6 +441,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
       node_id: '',
       lat: a.position?.lat ?? null,
       lon: a.position?.lon ?? null,
+      callsign: a.callsign,
     })),
     [fleet.data],
   );

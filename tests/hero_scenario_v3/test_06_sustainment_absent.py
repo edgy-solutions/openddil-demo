@@ -58,7 +58,9 @@ def main() -> None:
             skip_(NAME, f"protobuf module missing: {exc}")
         except Exception:
             continue
-        if "7777" in evt.asset.asset_id:
+        # asset_id is opaque (ADR-0047) -- match on the declared DIS entity
+        # field (we set entity=7777), not a substring of asset_id.
+        if evt.asset.dis_entity_id.entity == 7777:
             found = evt
             break
 

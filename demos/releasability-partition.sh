@@ -190,7 +190,58 @@ shape() {
   fi
 }
 
-assets()   { grep -oE 'dis:[0-9]+:[0-9]+:[0-9]+' | sort -u; }
+# assets() extracts each row's declared `asset_id` field from the Electric
+# shape response body (a JSON array of {"key","value","headers"} items —
+# see nginx.conf's /electric/ block). ADR-0047: asset_id is opaque, so this
+# parses the JSON structure and reads the field by name; it never regexes
+# the id's own shape (the earlier version matched `dis:N:N:N`, which breaks
+# the moment an id isn't DIS-shaped).
+assets() {
+  python -c '
+import json, sys
+body = sys.stdin.read()
+# shape() appends a trailing "HTTP:<code>" line via curl -w; strip it so
+# the remainder parses as JSON.
+nl = body.rfind("\nHTTP:")
+if nl != -1:
+    body = body[:nl]
+try:
+    items = json.loads(body)
+except json.JSONDecodeError:
+    sys.exit(0)
+ids = set()
+for it in items:
+    if isinstance(it, dict):
+        val = it.get("value")
+        if isinstance(val, dict) and "asset_id" in val:
+            ids.add(val["asset_id"])
+for i in sorted(ids):
+    print(i)
+'
+}
+# bdr_assets() is the same extraction, filtered on the row's declared
+# `originator_nation` field instead of a substring of asset_id.
+bdr_assets() {
+  python -c '
+import json, sys
+body = sys.stdin.read()
+nl = body.rfind("\nHTTP:")
+if nl != -1:
+    body = body[:nl]
+try:
+    items = json.loads(body)
+except json.JSONDecodeError:
+    sys.exit(0)
+ids = set()
+for it in items:
+    if isinstance(it, dict):
+        val = it.get("value")
+        if isinstance(val, dict) and val.get("originator_nation") == "BDR" and "asset_id" in val:
+            ids.add(val["asset_id"])
+for i in sorted(ids):
+    print(i)
+'
+}
 httpcode() { grep -oE 'HTTP:[0-9]+' | tail -1 | cut -d: -f2; }
 count()    { grep -c . ; }
 
@@ -261,7 +312,10 @@ echo "  assets: $NA of $TOTAL"
 # The other nation's assets are ABSENT, not greyed and not counted. A
 # "6 hidden" indicator would itself be a leak: a count of what you cannot see
 # is information about it.
-grep -q 'dis:2:' <<<"$A" && bad "user-a saw a BDR asset" \
+# "BDR asset" is decided by the row's declared originator_nation field
+# (ADR-0047: asset_id is opaque), not a `dis:2:` substring of asset_id.
+BDR_IN_A="$(comm -12 <(echo "$A") <(bdr_assets <<<"$OUT"))"
+[ -n "$BDR_IN_A" ] && bad "user-a saw a BDR asset" \
   || ok "no BDR asset in user-a's view — absent, not hidden"
 
 # ---------------------------------------------------------------------------

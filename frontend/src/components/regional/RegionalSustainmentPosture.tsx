@@ -70,6 +70,10 @@ const SCENE_SCALE_UNITS_PER_DEG = 80;
 
 interface RenderableAsset {
   asset_id: string;
+  /** Declared callsign (FleetAsset.callsign). Drives the callout's
+   *  short-name label in place of asset_id slicing — see
+   *  assetShortName below. */
+  callsign: string | null;
   /** [x, y, z] in scene units. */
   position: [number, number, number];
   severity: string;
@@ -114,6 +118,7 @@ import {
   isFacilityVariant,
 } from '../../lib/coLocationLayout';
 import { resolveRingRadius } from '../../lib/assetGeometry';
+import { assetCallsign } from '../../lib/assetLabel';
 
 function buildRenderables(
   fleet: FleetAsset[],
@@ -204,6 +209,7 @@ function buildRenderables(
       const s = bucket[0];
       out.push({
         asset_id: s.asset.asset_id,
+        callsign: s.asset.callsign,
         position: [s.x, 0, s.z],
         severity: s.sev,
         platform_variant: s.asset.platform_variant,
@@ -244,6 +250,7 @@ function buildRenderables(
     for (const s of facilities) {
       out.push({
         asset_id: s.asset.asset_id,
+        callsign: s.asset.callsign,
         position: [cx, 0, cz],
         severity: s.sev,
         platform_variant: s.asset.platform_variant,
@@ -289,6 +296,7 @@ function buildRenderables(
       const nz = dz / dlen;
       out.push({
         asset_id: s.asset.asset_id,
+        callsign: s.asset.callsign,
         position: [px, 0, pz],
         severity: s.sev,
         platform_variant: s.asset.platform_variant,
@@ -400,19 +408,16 @@ const LABEL_GEOMETRY = {
   outward:  0.4,
 };
 
-/** Return the "short name" of an asset_id: strip a scheme prefix
- *  (`prop:` / `sim:`) then take the trailing underscore-delimited
- *  segment. Empty string when the input can't be shortened.
- *  Examples (structure-only, no customer strings):
- *    prop:<...>_MRAD1_Launcher1              -> "Launcher1"
- *    prop:<...>_MRAD1_radar_MRAD_Sensor      -> "Sensor" */
-function assetShortName(assetId: string): string {
-  if (!assetId) return '';
-  let bare = assetId;
-  const colon = bare.indexOf(':');
-  if (colon >= 0 && colon <= 6) bare = bare.substring(colon + 1);
-  const underscore = bare.lastIndexOf('_');
-  return underscore >= 0 ? bare.substring(underscore + 1) : bare;
+/** Return the callout's "short name" for an asset: the declared callsign
+ *  (ADR-0047: asset_id is opaque and is never split/sliced to derive a
+ *  label) when one is set and distinct from asset_id, else the full
+ *  asset_id. The boundary mapper is responsible for setting callsign to
+ *  the short native-id segment this used to derive by splitting
+ *  asset_id (see dynamic-mappings/proprietary-mapping.yaml in the
+ *  customer bundle). */
+function assetShortName(assetId: string, callsign: string | null): string {
+  const cs = assetCallsign({ asset_id: assetId, callsign });
+  return cs ?? assetId;
 }
 
 /** Family label derived from a platform_variant: strip the trailing
@@ -875,7 +880,7 @@ export default function RegionalSustainmentPosture({
               to the asset schematic. */}
           <ZoomGate>
             {renderables.map((a) => {
-              const shortName = assetShortName(a.asset_id);
+              const shortName = assetShortName(a.asset_id, a.callsign);
               const family = familyLabel(a.platform_variant);
               // Launcher ammo: sum current + initial across all stores
               // owned by this launcher (from useMunitionsStockpile).

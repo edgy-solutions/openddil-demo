@@ -65,9 +65,11 @@ def main() -> None:
             skip_(NAME, f"protobuf module missing: {exc}")
         except Exception:
             continue
-        # Match by URN (we set entity=9999) AND verify the variant resolved
-        # to the _default fallback.
-        if "9999" in evt.asset.asset_id:
+        # Match by the declared DIS entity field (we set entity=9999) AND
+        # verify the variant resolved to the _default fallback. asset_id is
+        # opaque (ADR-0047) -- match on dis_entity_id.entity, not a substring
+        # of asset_id.
+        if evt.asset.dis_entity_id.entity == 9999:
             found = evt
             break
 
