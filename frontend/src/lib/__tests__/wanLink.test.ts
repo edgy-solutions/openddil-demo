@@ -25,7 +25,7 @@ describe('createWanLinkController', () => {
     await c.set(true);
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/proxies/hq-link');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ enabled: true });
@@ -40,7 +40,7 @@ describe('createWanLinkController', () => {
 
     expect(c.getState()).toEqual({ enabled: null, error: true });
     for (const call of fetchImpl.mock.calls) {
-      expect((call[1] as RequestInit | undefined)?.method).not.toBe('POST');
+      expect(((call as unknown[])[1] as RequestInit | undefined)?.method).not.toBe('POST');
     }
   });
 });

@@ -21,7 +21,7 @@
 //
 // Phase 4c.5: the WAN-cut demo is REAL (toxiproxy hq-link, edge-buffer
 // monitor, freeze overlay — unchanged in §C.1).
-import { useState, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useWanLink } from './hooks/useWanLink';
 import HqHeader from './components/hq/HqHeader';
 import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
