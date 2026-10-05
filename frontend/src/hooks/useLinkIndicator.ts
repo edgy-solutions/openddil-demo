@@ -20,6 +20,8 @@
 import { useEffect, useState } from 'react';
 import {
   classifyLinkIndicator,
+  linkIndicatorInputs,
+  sameLinkIndicatorInputs,
   type LinkIndicatorKind,
   type LinkIndicatorStatus,
 } from '../lib/linkIndicator';
@@ -38,11 +40,15 @@ export function useLinkIndicator(
   const [kind, setKind] = useState<LinkIndicatorKind>(() =>
     classifyLinkIndicator(status, isError, now),
   );
-  const [lastSeen, setLastSeen] = useState({ status, isError, now });
+  // Compared by value: the status row is a new object on every render, and
+  // an identity compare re-adjusted state on every render until React
+  // aborted (#301) and the screen went blank.
+  const inputs = linkIndicatorInputs(status, isError, now);
+  const [lastSeen, setLastSeen] = useState(inputs);
 
-  if (lastSeen.status !== status || lastSeen.isError !== isError || lastSeen.now !== now) {
+  if (!sameLinkIndicatorInputs(lastSeen, inputs)) {
     setKind(classifyLinkIndicator(status, isError, now, kind));
-    setLastSeen({ status, isError, now });
+    setLastSeen(inputs);
   }
 
   return kind;

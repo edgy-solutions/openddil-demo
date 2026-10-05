@@ -3,7 +3,13 @@
 // link1/wanActive argument at all, which is what makes "the label never
 // follows the slider" true by construction.
 import { describe, expect, it } from 'vitest';
-import { classifyLinkIndicator, STALE_ENTER_S, STALE_EXIT_S } from '../linkIndicator';
+import {
+  classifyLinkIndicator,
+  linkIndicatorInputs,
+  sameLinkIndicatorInputs,
+  STALE_ENTER_S,
+  STALE_EXIT_S,
+} from '../linkIndicator';
 
 const BASE_MS = 1_000_000;
 
@@ -77,5 +83,45 @@ describe('classifyLinkIndicator', () => {
   it('fresh + probe unhealthy -> probe_down (preserves today\'s behaviour)', () => {
     const status = freshStatus({ probe_healthy: false });
     expect(classifyLinkIndicator(status, false, BASE_MS)).toBe('probe_down');
+  });
+});
+
+// useLinkIndicator re-classifies during render only when these inputs
+// change. The status row arrives as a new object on every render, so the
+// comparison must be by value: by identity it never settles and React
+// aborts the render (error #301), blanking the screen.
+describe('sameLinkIndicatorInputs', () => {
+  it('a value-equal copy of the row is the same input', () => {
+    const status = freshStatus();
+    expect(
+      sameLinkIndicatorInputs(
+        linkIndicatorInputs(status, false, BASE_MS),
+        linkIndicatorInputs({ ...status }, false, BASE_MS),
+      ),
+    ).toBe(true);
+  });
+
+  it('null status compares equal to null status', () => {
+    expect(
+      sameLinkIndicatorInputs(
+        linkIndicatorInputs(null, false, BASE_MS),
+        linkIndicatorInputs(null, false, BASE_MS),
+      ),
+    ).toBe(true);
+  });
+
+  it('any change in a field the classification reads is a new input', () => {
+    const status = freshStatus();
+    const base = linkIndicatorInputs(status, false, BASE_MS);
+    for (const next of [
+      linkIndicatorInputs({ ...status, hq_link_severed: !status.hq_link_severed }, false, BASE_MS),
+      linkIndicatorInputs({ ...status, probe_healthy: !status.probe_healthy }, false, BASE_MS),
+      linkIndicatorInputs({ ...status, updated_at: null }, false, BASE_MS),
+      linkIndicatorInputs(null, false, BASE_MS),
+      linkIndicatorInputs(status, true, BASE_MS),
+      linkIndicatorInputs(status, false, BASE_MS + 1000),
+    ]) {
+      expect(sameLinkIndicatorInputs(base, next)).toBe(false);
+    }
   });
 });

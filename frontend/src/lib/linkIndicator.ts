@@ -82,3 +82,42 @@ export function classifyLinkIndicator(
   if (!status.probe_healthy) return 'probe_down';
   return status.hq_link_severed ? 'severed' : 'up';
 }
+
+// What classifyLinkIndicator reads, flattened to primitives so two renders
+// can be compared by value. The status row is a new object on every render
+// (useEdgeBuffer maps the shape's rows each time), so comparing it by
+// identity never settles.
+export interface LinkIndicatorInputs {
+  present: boolean;
+  severed: boolean | null;
+  healthy: boolean | null;
+  updatedAt: string | null;
+  isError: boolean;
+  nowMs: number;
+}
+
+export function linkIndicatorInputs(
+  status: LinkIndicatorStatus | null,
+  isError: boolean,
+  nowMs: number,
+): LinkIndicatorInputs {
+  return {
+    present: status !== null,
+    severed: status?.hq_link_severed ?? null,
+    healthy: status?.probe_healthy ?? null,
+    updatedAt: status?.updated_at ?? null,
+    isError,
+    nowMs,
+  };
+}
+
+export function sameLinkIndicatorInputs(a: LinkIndicatorInputs, b: LinkIndicatorInputs): boolean {
+  return (
+    a.present === b.present &&
+    a.severed === b.severed &&
+    a.healthy === b.healthy &&
+    a.updatedAt === b.updatedAt &&
+    a.isError === b.isError &&
+    a.nowMs === b.nowMs
+  );
+}
