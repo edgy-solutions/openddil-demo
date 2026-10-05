@@ -85,7 +85,7 @@
 #
 # Found by swapping corpora during a demo rehearsal and watching the
 # recorded policy_version correctly NOT change.
-version: users-2026-10-03
+version: users-2026-10-05
 
 users:
   # ---------------------------------------------------------------------------
@@ -129,12 +129,15 @@ users:
   #
   # One store, filtered reads, and the liaison is a subject with two
   # entitlements rather than an architectural special case.
+  # The supervisor role holds the WAN simulator control (sever/restore the
+  # uplink) in addition to whatever this subject's nations already read.
+  # Role selects AFFORDANCES, not rows -- nations are unchanged above.
   "33333333-3333-4333-8333-333333333333":
     username: liaison.coalition
     display_name: Coalition Liaison (ATL/BDR)
     nations: [ATL, BDR]
     clearance: ""
-    role: regional-operator
+    role: supervisor
     asserted_by: cnogradi
     asserted_on: 2026-09-05
 
