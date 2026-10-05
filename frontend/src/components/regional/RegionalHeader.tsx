@@ -17,7 +17,9 @@ const LINK_INDICATOR_LABEL: Record<string, string> = {
   stale: 'LINK: STALE',
   probe_down: 'LINK: PROBE DOWN',
   severed: 'DDIL: LINK SEVERED',
-  up: 'EDGE↔HQ: LINK UP',
+  // The row measures this tier's own uplink to its parent -- for an edge
+  // that parent is its region, not HQ -- so "UPLINK" rather than naming HQ.
+  up: 'UPLINK: LINK UP',
 };
 const REGIONAL_HQ_INDICATOR_LABEL: Record<string, string> = {
   unknown: 'REGIONAL↔HQ: UNKNOWN',

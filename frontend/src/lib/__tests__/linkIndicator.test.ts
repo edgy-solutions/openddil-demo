@@ -3,7 +3,7 @@
 // link1/wanActive argument at all, which is what makes "the label never
 // follows the slider" true by construction.
 import { describe, expect, it } from 'vitest';
-import { classifyLinkIndicator, STALE_S } from '../linkIndicator';
+import { classifyLinkIndicator, STALE_ENTER_S, STALE_EXIT_S } from '../linkIndicator';
 
 const BASE_MS = 1_000_000;
 
@@ -16,9 +16,22 @@ function freshStatus(overrides: Partial<{ hq_link_severed: boolean; probe_health
   };
 }
 
+function statusAgedBy(ageS: number, overrides: Partial<{ hq_link_severed: boolean; probe_healthy: boolean }> = {}) {
+  return {
+    hq_link_severed: false,
+    probe_healthy: true,
+    updated_at: new Date(BASE_MS - ageS * 1000).toISOString(),
+    ...overrides,
+  };
+}
+
 describe('classifyLinkIndicator', () => {
-  it('STALE_S is the documented 10s (projector writes every 2s)', () => {
-    expect(STALE_S).toBe(10);
+  it('STALE_ENTER_S is the measured sawtooth peak-safe threshold (30s)', () => {
+    expect(STALE_ENTER_S).toBe(30);
+  });
+
+  it('STALE_EXIT_S is the hysteresis exit threshold (10s)', () => {
+    expect(STALE_EXIT_S).toBe(10);
   });
 
   it('null status -> unknown', () => {
@@ -30,14 +43,30 @@ describe('classifyLinkIndicator', () => {
     expect(classifyLinkIndicator(status, false, BASE_MS)).toBe('severed');
   });
 
-  it('updated_at 11s old -> stale, even though severed=false', () => {
-    const status = { hq_link_severed: false, probe_healthy: true, updated_at: new Date(0).toISOString() };
-    expect(classifyLinkIndicator(status, false, 11_000)).toBe('stale');
+  it('age 22s, no prev -> not stale (the measured sawtooth peak on a healthy HTTP/1.1 edge page)', () => {
+    const status = statusAgedBy(22);
+    expect(classifyLinkIndicator(status, false, BASE_MS)).not.toBe('stale');
   });
 
-  it('isError -> stale regardless of freshness or severed value', () => {
+  it('age 31s, no prev -> stale', () => {
+    const status = statusAgedBy(31);
+    expect(classifyLinkIndicator(status, false, BASE_MS)).toBe('stale');
+  });
+
+  it('prev stale + age 15s -> stays stale (15 > STALE_EXIT_S)', () => {
+    const status = statusAgedBy(15);
+    expect(classifyLinkIndicator(status, false, BASE_MS, 'stale')).toBe('stale');
+  });
+
+  it('prev stale + age 9s -> falls through to probe_down/severed/up (9 <= STALE_EXIT_S)', () => {
+    const status = statusAgedBy(9);
+    expect(classifyLinkIndicator(status, false, BASE_MS, 'stale')).toBe('up');
+  });
+
+  it('isError -> stale regardless of age or prev', () => {
     const status = freshStatus();
     expect(classifyLinkIndicator(status, true, BASE_MS)).toBe('stale');
+    expect(classifyLinkIndicator(status, true, BASE_MS, 'up')).toBe('stale');
   });
 
   it('fresh + not severed -> up, independent of any slider state (the function takes no link1 argument)', () => {

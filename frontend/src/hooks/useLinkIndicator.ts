@@ -5,6 +5,18 @@
 // received — a row that stops updating must be caught even though nothing
 // re-renders this component on its own. Same 1Hz-tick shape as
 // hooks/useFleetTiers.ts's silent-asset re-evaluation.
+//
+// classifyLinkIndicator's stale/exit hysteresis needs the previously
+// rendered kind fed back in. A ref would be the obvious place to keep
+// that, but reading/writing a ref during render is exactly what
+// react-hooks/refs forbids (rightly: a ref isn't a rendering input), and
+// computing it from an unconditional setState-in-effect trips
+// react-hooks's "avoid derived state via effect" rule instead. So this
+// uses the React-docs-sanctioned "adjust state during render" pattern:
+// compare this render's inputs to the last-seen ones kept in state, and
+// if they differ, synchronously recompute and store both -- same
+// data-flow as the ref would have given, without reading/writing outside
+// what render itself owns.
 import { useEffect, useState } from 'react';
 import {
   classifyLinkIndicator,
@@ -23,5 +35,15 @@ export function useLinkIndicator(
     return () => clearInterval(id);
   }, []);
 
-  return classifyLinkIndicator(status, isError, now);
+  const [kind, setKind] = useState<LinkIndicatorKind>(() =>
+    classifyLinkIndicator(status, isError, now),
+  );
+  const [lastSeen, setLastSeen] = useState({ status, isError, now });
+
+  if (lastSeen.status !== status || lastSeen.isError !== isError || lastSeen.now !== now) {
+    setKind(classifyLinkIndicator(status, isError, now, kind));
+    setLastSeen({ status, isError, now });
+  }
+
+  return kind;
 }
