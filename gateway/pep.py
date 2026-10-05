@@ -137,6 +137,20 @@ def _manual_qa_token() -> str | None:
 MAX_INFLIGHT_SHAPES = int(os.getenv("OPENDDIL_MAX_INFLIGHT_SHAPES", "8"))
 STREAM_CHUNK = int(os.getenv("OPENDDIL_STREAM_CHUNK", "65536"))
 
+# A live=true request does not hold a body -- it holds at most one
+# STREAM_CHUNK, the same as any other delta -- it holds a THREAD, idle,
+# waiting up to ~20s for Electric's next change. Sharing _inflight between
+# the two meant eight quiet long-polls on tables nothing was writing to
+# occupied every slot the body bound exists for, and a ninth shape -- even a
+# live poll on a table changing every 2s -- queued behind them. Measured: a
+# row written every 2s arrived at the browser in batches of 7, 18-30s after
+# it was written, while polling Electric directly delivered each write in
+# 0.1s. The fix is a second, separately-sized bound for the idle wait, not a
+# bigger MAX_INFLIGHT_SHAPES -- that number is still what one snapshot body
+# measured, and raising it to cover idle long-polls would be sizing the body
+# bound by a cost that has nothing to do with bodies.
+MAX_INFLIGHT_LIVE = int(os.getenv("OPENDDIL_MAX_INFLIGHT_LIVE", "64"))
+
 # A SHAPE THIS LARGE IS A FINDING, NOT A REQUEST. Logged per response so the
 # read path has the dimension it lacked: nothing measured shape bytes, so a
 # table that had quietly grown to 10 MiB looked exactly like one that had not
@@ -150,6 +164,11 @@ SHAPE_WARN_BYTES = int(os.getenv("OPENDDIL_SHAPE_WARN_BYTES", str(2 * 1024 * 102
 # broken one at the panel, which is the confusion this whole corpus exists to
 # remove.
 _inflight = threading.BoundedSemaphore(MAX_INFLIGHT_SHAPES)
+
+# The live long-poll's own bound. Separate from _inflight on purpose -- see
+# the comment above MAX_INFLIGHT_LIVE. Both bounds exist; this does not raise
+# the body bound, it stops idle waits from borrowing its slots.
+_inflight_live = threading.BoundedSemaphore(MAX_INFLIGHT_LIVE)
 
 # --- how the subject is established ------------------------------------------
 # TWO MODES, CHOSEN AT BOOT, MUTUALLY EXCLUSIVE. This is deliberately NOT a
@@ -844,6 +863,16 @@ def _parse_wan_control_body(payload) -> bool:
 
 # --- the proxy --------------------------------------------------------------
 PASSTHROUGH_PARAMS = {"table", "offset", "handle", "live", "cursor", "columns", "replica"}
+
+
+def _shape_slot(params: dict[str, list[str]]) -> threading.BoundedSemaphore:
+    """Which bound a transfer counts against -- see MAX_INFLIGHT_LIVE. A
+    request is a live long-poll only when it says so explicitly; anything
+    else (absent, blank, misspelled) is a snapshot as far as this is
+    concerned, which is the side to be wrong on since that bound is sized
+    for a resident body."""
+    live = (params.get("live") or [""])[0]
+    return _inflight_live if live.strip().lower() == "true" else _inflight
 
 
 class Pep(BaseHTTPRequestHandler):
@@ -1835,12 +1864,17 @@ class Pep(BaseHTTPRequestHandler):
         # write below and bytes leave as they arrive. The semaphore is held
         # for the whole transfer, because what must be bounded is the number
         # of transfers in flight, not the number that have started.
+        #
+        # WHICH semaphore depends on `live` -- bound once, to a local, so the
+        # acquire and every release below (there is more than one) agree on
+        # the same object for this request. See MAX_INFLIGHT_LIVE.
+        slot = _shape_slot(params)
         try:
-            _inflight.acquire()
+            slot.acquire()
             try:
                 resp = urllib.request.urlopen(url, timeout=30)
             except Exception:
-                _inflight.release()
+                slot.release()
                 raise
             new_handle = resp.headers.get("electric-handle") or \
                 resp.headers.get("electric-shape-id") or ""
@@ -1925,7 +1959,7 @@ class Pep(BaseHTTPRequestHandler):
             try:
                 resp.close()
             finally:
-                _inflight.release()
+                slot.release()
 
         # PER-SHAPE BYTES, every time. This is the read-path dimension that did
         # not exist: on 2026-09-18 `tactical_events` had grown to 10 MiB of
@@ -1949,8 +1983,8 @@ def main() -> None:
     # "is this thing actually authenticating?" should not have to infer the
     # answer from a request that happened to fail.
     log.info("  auth mode: %s", AUTH_MODE)
-    log.info("  shapes:    max %d in flight, %d B chunks, warn over %d B",
-             MAX_INFLIGHT_SHAPES, STREAM_CHUNK, SHAPE_WARN_BYTES)
+    log.info("  shapes:    max %d in flight, max %d live, %d B chunks, warn over %d B",
+             MAX_INFLIGHT_SHAPES, MAX_INFLIGHT_LIVE, STREAM_CHUNK, SHAPE_WARN_BYTES)
     if LABELED_TABLES or ROLE_SERVED_TABLES or SUBJECT_SCOPED_TABLES:
         log.info("  nation-filtered: %s", ", ".join(sorted(LABELED_TABLES)) or "(none)")
         log.info("  role-served:     %s — NO nation filter, authenticated subjects",
