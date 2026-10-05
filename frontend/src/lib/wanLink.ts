@@ -26,7 +26,11 @@
 // wrapper (hooks/useWanLink.ts) mirrors this codebase's existing
 // lib/assetTier.ts (pure) + hooks/useFleetTiers.ts (hook) split.
 
-const WAN_LINK_URL = '/proxies/hq-link';
+// `/proxies/uplink` resolves at the PEP to that tier's own link
+// (OPENDDIL_WAN_UPLINK: `hq-link` at the root, `uplink-<tier id>` at a
+// tier) -- this file never learns a tier id; the origin it's served from
+// decides which link it commands.
+const WAN_LINK_URL = '/proxies/uplink';
 
 export interface WanLinkState {
   enabled: boolean | null;

@@ -15,12 +15,12 @@ function readSrc(relPath: string): string {
 describe('WAN link proxy call shape', () => {
   it('MaintainerApp does not POST on every link1 change via a mount-firing effect', () => {
     const src = readSrc('MaintainerApp.tsx');
-    expect(src).not.toMatch(/useEffect\(\(\) => \{\s*fetch\('\/proxies\/hq-link'/);
+    expect(src).not.toMatch(/useEffect\(\(\) => \{\s*fetch\('\/proxies\/uplink'/);
   });
 
   it('RegionalApp does not POST on every link1 change via a mount-firing effect', () => {
     const src = readSrc('RegionalApp.tsx');
-    expect(src).not.toMatch(/useEffect\(\(\) => \{\s*fetch\('\/proxies\/hq-link'/);
+    expect(src).not.toMatch(/useEffect\(\(\) => \{\s*fetch\('\/proxies\/uplink'/);
   });
 
   it('MaintainerApp, RegionalApp and HqApp all use the shared useWanLink() hook', () => {

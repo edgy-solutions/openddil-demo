@@ -26,7 +26,7 @@ describe('createWanLinkController', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/proxies/hq-link');
+    expect(url).toBe('/proxies/uplink');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ enabled: true });
     expect(c.getState().enabled).toBe(true);
