@@ -19,6 +19,10 @@ export interface UseWanLinkResult {
   set(value: boolean): void;
   /** True when the most recent GET or POST failed. */
   error: boolean;
+  /** True when the proxy answered 401/403 to the most recent GET or POST:
+   *  this subject is not allowed to touch the WAN link. Render disabled
+   *  and explained, not as an error — see lib/wanLink.ts. */
+  forbidden: boolean;
 }
 
 export function useWanLink(): UseWanLinkResult {
@@ -36,6 +40,7 @@ export function useWanLink(): UseWanLinkResult {
   return {
     enabled: state.enabled,
     error: state.error,
+    forbidden: state.forbidden,
     set: (value: boolean) => { void controllerRef.current.set(value); },
   };
 }

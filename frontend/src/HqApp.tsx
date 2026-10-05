@@ -300,7 +300,7 @@ function WearTrendsTheater({
 export default function HqApp() {
   // Sourced from the proxy's own state (hooks/useWanLink), not a
   // hardcoded `true` that never reflected what toxiproxy actually had.
-  const { enabled: wanActive, set: setWanActive } = useWanLink();
+  const { enabled: wanActive, set: setWanActive, forbidden: wanForbidden } = useWanLink();
 
   // Pipeline data — ElectricSQL Shapes. cm + fleet used by
   // ConfigurationPosture (MWO compliance by family, baseline distribution)
@@ -329,7 +329,7 @@ export default function HqApp() {
 
   return (
     <div className={`font-mono h-full flex flex-col overflow-hidden transition-colors duration-500 ${severed ? 'freeze-active' : ''}`}>
-      <HqHeader wanActive={wanActive} setWanActive={setWanActive} />
+      <HqHeader wanActive={wanActive} setWanActive={setWanActive} forbidden={wanForbidden} />
 
       {severed && (
         <div className="absolute inset-0 z-40 pointer-events-none flex flex-col items-center justify-center pt-20">

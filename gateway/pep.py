@@ -33,6 +33,14 @@ STDLIB ONLY, ON PURPOSE. No new image, no wheels to resolve at start-up, no
 network at boot. The source is delivered from the runtime bundle into a
 stock python image. A component that will refuse requests should not have a
 dependency that can fail to install.
+
+THE WAN CONTROL ROUTE (GET/POST /proxies/hq-link) is not a read-path
+decision -- it is an operator action with a blast radius (severing or
+restoring the uplink for everyone), gated on ROLE rather than on nations.
+No session is a 401; an authenticated subject whose role is not a
+WAN-control role (default `supervisor`) is a 403; a WAN-control role is
+forwarded to the DDIL sever mechanism. Both GET and POST are gated -- a
+read of the link's current state is no less a capability than flipping it.
 """
 from __future__ import annotations
 
@@ -484,6 +492,32 @@ OVERSIGHT_ROLES = {
     if r.strip()
 }
 
+# --- the WAN control route ---------------------------------------------------
+# The frontend's WAN-link toggle used to reach the DDIL sever mechanism's
+# HTTP API directly (frontend/nginx.conf's old /proxies/ location) with no
+# session and no role check -- anyone who could reach the frontend could cut
+# or restore the uplink. This route puts that control behind the same
+# subject-then-Topaz sequence every other write in this file goes through.
+# Empty URL means "not wired at this tier", the same meaning
+# CM_INTAKE_URL/EGRESS_PANE/MANUAL_QA_URL being unset already carry.
+WAN_CONTROL_URL = os.getenv("OPENDDIL_WAN_CONTROL_URL", "").strip().rstrip("/")
+
+
+def _parse_roles_csv(value: str) -> frozenset[str]:
+    """Comma-separated roles -> a frozenset, stripped, empties dropped.
+
+    A standalone function (rather than an inline comprehension like
+    OVERSIGHT_ROLES above) so the parsing rule can be exercised directly,
+    without re-importing this module under a different environment."""
+    return frozenset(r.strip() for r in value.split(",") if r.strip())
+
+
+# A role, not a nation entitlement -- severing the uplink is an affordance
+# within a tier, not a question of which rows a subject may see, so this is
+# checked against `role` directly rather than folded into ask_topaz's
+# allow/deny.
+WAN_CONTROL_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_WAN_CONTROL_ROLES", "supervisor"))
+
 
 def table_class(table: str) -> str:
     """'nation' | 'role' | 'subject' | 'refused'.
@@ -785,6 +819,27 @@ def _cm_record(*, allowed: bool, subject: str, asset_id: str | None,
                     fault_code=fault_code, event_id=event_id, reason=reason,
                     resource="cm:discrepancy")
     return decision_id
+
+
+# 1024 bytes, fixed rather than configurable -- the body is one key and one
+# bool, and a route that only ever sends {"enabled": true|false} does not
+# need a sizing knob.
+MAX_WAN_CONTROL_BODY_BYTES = 1024
+
+
+def _parse_wan_control_body(payload) -> bool:
+    """The validated `enabled` flag, or raise ValueError(reason).
+
+    EXACTLY one key, `enabled`, a bool -- not "truthy", not coercible from a
+    string. A stray extra key or a string "false" is refused rather than
+    guessed at, the same discipline _parse_discrepancy_body applies to the
+    CM write path."""
+    if not isinstance(payload, dict) or set(payload) != {"enabled"}:
+        raise ValueError("body must be a JSON object with exactly one key: enabled")
+    enabled = payload["enabled"]
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be a bool")
+    return enabled
 
 
 # --- the proxy --------------------------------------------------------------
@@ -1264,6 +1319,127 @@ class Pep(BaseHTTPRequestHandler):
         self._send(200, json.dumps(result).encode(),
                    [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
 
+    # --- the WAN control route ------------------------------------------------
+    def _handle_wan_control(self, parsed, method: str) -> None:
+        """Serve GET/POST /proxies/hq-link: the WAN slider's commanded and
+        observed state, reached through this gateway instead of the DDIL
+        sever mechanism directly. Both methods run the same gate -- reading
+        the link's current state is a capability too, not just flipping it.
+
+        Order mirrors _handle_cm_discrepancy: route existence, then (POST
+        only) the request-shape checks, THEN the subject, THEN Topaz, THEN
+        the role check. Nothing is forwarded until a WAN-control role is
+        confirmed.
+        """
+        path = parsed.path
+        if path != "/proxies/hq-link":
+            if method == "POST":
+                self._drain_body()
+            self._deny("unknown path", subject="", resource=path, status=404,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
+        if not WAN_CONTROL_URL:
+            if method == "POST":
+                self._drain_body()
+            self._deny("wan control not configured at this tier", subject="",
+                       resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
+        enabled: bool | None = None
+        if method == "POST":
+            # --- request-shape checks, pre-PDP, same discipline as the CM
+            # write path's own CSRF defence in depth.
+            if not self._content_type_is_json():
+                self._drain_body()
+                self._deny("Content-Type must be application/json", subject="",
+                           resource=path, status=415, marker="GATEWAY REFUSED (PRE-PDP)")
+                return
+            if self._origin_is_cross_site():
+                self._drain_body()
+                self._deny("cross-site origin", subject="", resource=path, status=403,
+                           marker="GATEWAY REFUSED (PRE-PDP)")
+                return
+
+            length = self._content_length()
+            if length > MAX_WAN_CONTROL_BODY_BYTES:
+                # NOT drained -- a body this size is refused, not absorbed.
+                self._deny("body too large", subject="", resource=path, status=413,
+                           headers=[("Connection", "close")],
+                           marker="GATEWAY REFUSED (PRE-PDP)")
+                return
+            raw = self.rfile.read(length) if length else b""
+
+            try:
+                payload = json.loads(raw or b"{}")
+            except ValueError:
+                self._send(400, json.dumps({"error": "malformed JSON body"}).encode(),
+                           [("Content-Type", "application/json")])
+                return
+            try:
+                enabled = _parse_wan_control_body(payload)
+            except ValueError as exc:
+                self._send(400, json.dumps({"error": str(exc)}).encode(),
+                           [("Content-Type", "application/json")])
+                return
+
+        # Step: the principal. No session -> 401, nothing forwarded.
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        # Step: Topaz, applied verbatim -- this file contains no
+        # authorization logic. Role, not allowed_nations, is what this
+        # route's decision turns on.
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject, resource=path,
+                       status=503)
+            return
+
+        if not decision.get("subject_known") or decision.get("role") not in WAN_CONTROL_ROLES:
+            reason = "wan control requires role: " + ",".join(sorted(WAN_CONTROL_ROLES))
+            self._deny(reason, subject=subject, resource=path, status=403)
+            return
+
+        # Step: forward. `User-Agent: openddil-pep` because the sever
+        # mechanism refuses browser user agents -- nginx used to set
+        # "Toxiproxy-UI" for exactly that reason; this gateway carries the
+        # same defence under its own name.
+        data = None
+        req_headers = {"User-Agent": "openddil-pep"}
+        if method == "POST":
+            data = json.dumps({"enabled": enabled}).encode()
+            req_headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(
+            WAN_CONTROL_URL + "/proxies/hq-link", data=data,
+            headers=req_headers, method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                upstream_status = resp.status
+                upstream_body = resp.read()
+        except urllib.error.HTTPError as exc:
+            # A real answer from the sever mechanism, just not a 2xx --
+            # relayed verbatim, same as a 2xx. Only a connection-level
+            # failure below is an upstream-unavailable 502.
+            upstream_status = exc.code
+            upstream_body = exc.read()
+        except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+            log.error("wan control upstream error subject=%s: %s", subject, exc)
+            self._send(502, json.dumps({"error": "wan control upstream unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        if method == "POST":
+            log.info("WAN CONTROL subject=%s role=%s enabled=%s upstream_status=%s",
+                     subject, decision.get("role"), enabled, upstream_status)
+        self._send(upstream_status, upstream_body, [("Content-Type", "application/json")])
+
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/cm/discrepancy":
@@ -1271,6 +1447,9 @@ class Pep(BaseHTTPRequestHandler):
             return
         if parsed.path == "/manual/ask":
             self._handle_manual_ask(parsed)
+            return
+        if parsed.path.startswith("/proxies/"):
+            self._handle_wan_control(parsed, "POST")
             return
         # Every other POST path is refused. The body is drained first so a
         # kept-alive HTTP/1.1 socket is not left desynced by an unread
@@ -1561,6 +1740,9 @@ class Pep(BaseHTTPRequestHandler):
             return
         if parsed.path == "/cm/fault-codes":
             self._handle_cm_fault_codes(parsed)
+            return
+        if parsed.path.startswith("/proxies/"):
+            self._handle_wan_control(parsed, "GET")
             return
         if not parsed.path.startswith("/v1/shape"):
             self._deny("unknown path", subject="", resource=parsed.path, status=404)

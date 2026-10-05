@@ -140,7 +140,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // longer exists here: this view shows the EDGE's own asset status, and
   // an edge asset's status never depends on the uplink -- a cut WAN link
   // must not turn an asset amber with no data behind it.
-  const { enabled: link1, set: setLink1 } = useWanLink();
+  const { enabled: link1, set: setLink1, forbidden: link1Forbidden } = useWanLink();
   const [clock, setClock] = useState('');
   const [selectedAssetId, setSelectedAssetId] = useState('');
   // Phase 6c.2: edge scope. Initial value comes from ?edge= URL param if
@@ -469,7 +469,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   return (
     <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <Header
-        link1={link1} setLink1={setLink1}
+        link1={link1} setLink1={setLink1} forbidden={link1Forbidden}
         fleet={fleetForPicker}
         fleetTiers={tiers}
         selectedAsset={selectedAssetId}

@@ -31,6 +31,11 @@ const WAN_LINK_URL = '/proxies/hq-link';
 export interface WanLinkState {
   enabled: boolean | null;
   error: boolean;
+  /** The proxy answered 401 or 403: an expected, named refusal, not a
+   *  fault. `error` stays false for this case — it is not "the proxy is
+   *  broken", it is "this subject may not touch the WAN link" — see
+   *  init()/set() below. */
+  forbidden: boolean;
 }
 
 export interface WanLinkController {
@@ -47,7 +52,7 @@ export interface WanLinkController {
 export function createWanLinkController(
   fetchImpl: typeof fetch = fetch,
 ): WanLinkController {
-  let state: WanLinkState = { enabled: null, error: false };
+  let state: WanLinkState = { enabled: null, error: false, forbidden: false };
   const listeners = new Set<() => void>();
 
   function setState(next: WanLinkState): void {
@@ -62,14 +67,20 @@ export function createWanLinkController(
 
     async init() {
       try {
-        const res = await fetchImpl(WAN_LINK_URL);
+        const res = await fetchImpl(WAN_LINK_URL, { credentials: 'same-origin' });
+        if (res.status === 401 || res.status === 403) {
+          // An expected answer, not a fault — no console.error. See
+          // WanLinkState.forbidden above.
+          setState({ enabled: null, error: false, forbidden: true });
+          return;
+        }
         if (!res.ok) throw new Error(`GET ${WAN_LINK_URL} -> ${res.status}`);
         const body = await res.json();
-        setState({ enabled: Boolean(body?.enabled), error: false });
+        setState({ enabled: Boolean(body?.enabled), error: false, forbidden: false });
       } catch (err) {
         console.error('Toxiproxy error (GET hq-link)', err);
         // Unknown, not a guess — see the file header.
-        setState({ enabled: null, error: true });
+        setState({ enabled: null, error: true, forbidden: false });
       }
     },
 
@@ -77,14 +88,23 @@ export function createWanLinkController(
       // Optimistic: the operator's click flips the toggle immediately
       // rather than waiting on the round trip (matches the responsiveness
       // of the code this replaces). The POST is fire-and-log on failure,
-      // same as the original Phase 4c.5 behaviour.
-      setState({ enabled: value, error: false });
+      // same as the original Phase 4c.5 behaviour — EXCEPT a 401/403,
+      // which means the proxy never took this value: the toggle must not
+      // keep showing a state the subject was refused, so that one case
+      // reverts to what was there before the click.
+      const previous = state;
+      setState({ enabled: value, error: false, forbidden: false });
       try {
         const res = await fetchImpl(WAN_LINK_URL, {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled: value }),
         });
+        if (res.status === 401 || res.status === 403) {
+          setState({ ...previous, forbidden: true });
+          return;
+        }
         if (!res.ok) throw new Error(`POST ${WAN_LINK_URL} -> ${res.status}`);
       } catch (err) {
         console.error('Toxiproxy error (POST hq-link)', err);

@@ -39,9 +39,15 @@ interface RegionalHeaderProps {
   link1: boolean | null;
   setLink1: (v: boolean) => void;
   setIsRuleEditorOpen: (v: boolean) => void;
+  /** True when the PEP answered 401/403 to the GET or POST: this subject
+   *  does not hold the WAN-control role. Optional (defaults to false) --
+   *  RegionalApp does not yet thread useWanLink's `forbidden` through to
+   *  this header; wiring it is tracked separately, not part of this
+   *  change. */
+  forbidden?: boolean;
 }
 
-export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen }: RegionalHeaderProps) {
+export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen, forbidden = false }: RegionalHeaderProps) {
   const { status, isError } = useEdgeBuffer();
   // Observed-only, no link1 fallback -- see lib/linkIndicator.ts.
   const linkIndicator = useLinkIndicator(status, isError);
@@ -70,16 +76,16 @@ export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen }:
               id="rtoggle1"
               className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
               checked={link1 ?? false}
-              disabled={link1 === null}
-              title={link1 === null ? 'Link state unknown — failed to read proxy status' : undefined}
+              disabled={link1 === null || forbidden}
+              title={forbidden ? 'WAN control: supervisor only' : link1 === null ? 'Link state unknown — failed to read proxy status' : undefined}
               onChange={(e) => setLink1(e.target.checked)}
             />
             <label htmlFor="rtoggle1" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${link1 === null ? 'bg-slate-600' : link1 ? 'bg-emerald-500' : 'bg-rose-500'}`}>
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link1 ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
-            {LINK_INDICATOR_LABEL[linkIndicator]}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${forbidden ? 'text-slate-400' : LINK_INDICATOR_CLASS[linkIndicator]}`} title={forbidden ? 'WAN control: supervisor only' : undefined}>
+            {forbidden ? 'WAN control: supervisor only' : LINK_INDICATOR_LABEL[linkIndicator]}
           </span>
         </div>
 

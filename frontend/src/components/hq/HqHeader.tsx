@@ -13,9 +13,14 @@ interface HqHeaderProps {
    *  control disabled rather than guessing true/false. */
   wanActive: boolean | null;
   setWanActive: (v: boolean) => void;
+  /** True when the PEP answered 401/403 to the GET or POST: this subject
+   *  does not hold the WAN-control role. Disabled and explained, same as
+   *  wanActive === null, but never styled as an error -- being refused a
+   *  capability is not the page being broken. */
+  forbidden: boolean;
 }
 
-export default function HqHeader({ wanActive, setWanActive }: HqHeaderProps) {
+export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeaderProps) {
   const { status } = useEdgeBuffer();
   // `false`, not `!wanActive` -- wanActive is boolean|null while
   // useWanLink's GET is still in flight or failed, and treating "don't
@@ -48,16 +53,16 @@ export default function HqHeader({ wanActive, setWanActive }: HqHeaderProps) {
               id="toggle2"
               className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
               checked={wanActive ?? false}
-              disabled={wanActive === null}
-              title={wanActive === null ? 'Link state unknown — failed to read proxy status' : undefined}
+              disabled={wanActive === null || forbidden}
+              title={forbidden ? 'WAN control: supervisor only' : wanActive === null ? 'Link state unknown — failed to read proxy status' : undefined}
               onChange={(e) => setWanActive(e.target.checked)}
             />
             <label htmlFor="toggle2" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${wanActive === null ? 'bg-slate-600' : wanActive ? 'bg-emerald-500' : 'bg-rose-500'}`}>
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${wanActive ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
-            {probeDown ? 'HQ WAN: PROBE DOWN' : severed ? 'HQ WAN: SEVERED' : 'HQ WAN: ACTIVE'}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${forbidden ? 'text-slate-400' : probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`} title={forbidden ? 'WAN control: supervisor only' : undefined}>
+            {forbidden ? 'WAN control: supervisor only' : probeDown ? 'HQ WAN: PROBE DOWN' : severed ? 'HQ WAN: SEVERED' : 'HQ WAN: ACTIVE'}
           </span>
         </div>
         <div className="flex flex-col items-center text-emerald-400 mr-8">

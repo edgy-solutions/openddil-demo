@@ -15,7 +15,7 @@ describe('createWanLinkController', () => {
     await c.init();
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(c.getState()).toEqual({ enabled: false, error: false });
+    expect(c.getState()).toEqual({ enabled: false, error: false, forbidden: false });
   });
 
   it('set() issues exactly one POST carrying the new value', async () => {
@@ -38,9 +38,68 @@ describe('createWanLinkController', () => {
 
     await c.init();
 
-    expect(c.getState()).toEqual({ enabled: null, error: true });
+    expect(c.getState()).toEqual({ enabled: null, error: true, forbidden: false });
     for (const call of fetchImpl.mock.calls) {
       expect(((call as unknown[])[1] as RequestInit | undefined)?.method).not.toBe('POST');
+    }
+  });
+
+  it('init() 403 sets forbidden true, enabled null, and does not log an error', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 403 }));
+    const c = createWanLinkController(fetchImpl as unknown as typeof fetch);
+
+    await c.init();
+
+    expect(c.getState()).toEqual({ enabled: null, error: false, forbidden: true });
+  });
+
+  it('set() 403 reverts to the prior enabled value with forbidden true', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 403 }));
+    const c = createWanLinkController(fetchImpl as unknown as typeof fetch);
+
+    await c.init();
+    await c.set(true);
+
+    expect(c.getState()).toEqual({ enabled: false, error: false, forbidden: true });
+  });
+
+  it('set() 401 reverts to the prior enabled value with forbidden true', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: true }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }));
+    const c = createWanLinkController(fetchImpl as unknown as typeof fetch);
+
+    await c.init();
+    await c.set(false);
+
+    expect(c.getState()).toEqual({ enabled: true, error: false, forbidden: true });
+  });
+
+  it('a successful GET then a successful POST stay unforbidden', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ enabled: false }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const c = createWanLinkController(fetchImpl as unknown as typeof fetch);
+
+    await c.init();
+    await c.set(true);
+
+    expect(c.getState()).toEqual({ enabled: true, error: false, forbidden: false });
+  });
+
+  it('both the GET and the POST carry credentials: same-origin', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ enabled: false }), { status: 200 }));
+    const c = createWanLinkController(fetchImpl as unknown as typeof fetch);
+
+    await c.init();
+    await c.set(true);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    for (const call of fetchImpl.mock.calls) {
+      const init = (call as unknown[])[1] as RequestInit | undefined;
+      expect(init?.credentials).toBe('same-origin');
     }
   });
 });

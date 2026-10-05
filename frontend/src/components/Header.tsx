@@ -95,6 +95,10 @@ interface HeaderProps {
    *  renders disabled rather than guessing a commanded state. */
   link1: boolean | null;
   setLink1: (v: boolean) => void;
+  /** True when the PEP answered 401/403 to the GET or POST: this subject
+   *  does not hold the WAN-control role. Disabled and explained, same as
+   *  link1 === null, but never styled as an error. */
+  forbidden: boolean;
   fleet: FleetAsset[];
   /** Per-asset tier map (Phase 4 liveness). Drives the picker option
    *  suffix + dim styling. Optional so existing callers (tests, future
@@ -126,7 +130,7 @@ function pickerLabel(a: FleetAsset, tier: AssetTier | undefined): string {
 }
 
 export default function Header({
-  link1, setLink1,
+  link1, setLink1, forbidden,
   fleet, fleetTiers, selectedAsset, setSelectedAsset,
   availableEdges, selectedEdge, onSelectEdge,
 }: HeaderProps) {
@@ -253,16 +257,16 @@ export default function Header({
               id="toggle1"
               className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
               checked={link1 ?? false}
-              disabled={link1 === null}
-              title={link1 === null ? 'Link state unknown — failed to read proxy status' : undefined}
+              disabled={link1 === null || forbidden}
+              title={forbidden ? 'WAN control: supervisor only' : link1 === null ? 'Link state unknown — failed to read proxy status' : undefined}
               onChange={(e) => setLink1(e.target.checked)}
             />
             <label htmlFor="toggle1" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${link1 === null ? 'bg-slate-600' : link1 ? 'bg-emerald-500' : 'bg-rose-500'}`}>
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link1 ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
-            {LINK_INDICATOR_LABEL[linkIndicator]}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${forbidden ? 'text-slate-400' : LINK_INDICATOR_CLASS[linkIndicator]}`} title={forbidden ? 'WAN control: supervisor only' : undefined}>
+            {forbidden ? 'WAN control: supervisor only' : LINK_INDICATOR_LABEL[linkIndicator]}
           </span>
         </div>
 
