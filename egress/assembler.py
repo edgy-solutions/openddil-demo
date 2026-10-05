@@ -83,6 +83,15 @@ class Episode:
     sources: tuple[Mapping[str, Any], ...]
 
 
+# The assembler's only trigger is a CM discrepancy episode: `episodes()`
+# below reads `manual_discrepancies`, never any other wire. ADR-0046 §1's
+# other value, "lifecycle_transition", names a different kind of episode
+# (a lifecycle state change) this process does not build — a kind that
+# declares `trigger` always gets this constant from here, never a guess
+# based on what a given deployment's config happens to be running.
+TRIGGER_CM_DISCREPANCY = "cm_discrepancy"
+
+
 def episodes(cm_state: Mapping[str, Any]) -> list[Episode]:
     """The open discrepancies with a non-empty `fault_code`.
 
@@ -135,6 +144,20 @@ def _rfc3339_from_dt(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_rfc3339(value: str) -> datetime:
+    """An RFC 3339 datetime string carrying an explicit offset (or a
+    trailing `Z`, swapped for `+00:00` — `fromisoformat` wants the latter)
+    -> an aware `datetime`. Raises `ValueError` on anything
+    `fromisoformat` cannot parse, or on a value that parses but carries no
+    offset at all (a naive datetime back out) — a config's `basis.
+    observed_at` must say "when", including relative to what."""
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        raise ValueError(f"{value!r} carries no UTC offset (a naive datetime)")
+    return dt
 
 
 def _label_from_cm_state(cm_state: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -275,6 +298,9 @@ def assemble(
     pointer.set(out, decl.episode.asset, episode.asset)
     pointer.set(out, decl.episode.component, episode.component)
     pointer.set(out, decl.episode.fault_code, episode.fault_code)
+
+    if decl.trigger:
+        pointer.set(out, decl.trigger, TRIGGER_CM_DISCREPANCY)
 
     if decl.observed_at:
         pointer.set(out, decl.observed_at, _rfc3339(episode.detected_at_ns))
@@ -478,12 +504,14 @@ async def read_asset(asset_id: str) -> dict[str, Any] | None:
 @dataclass(frozen=True)
 class Designation:
     """One asset's battle-condition designation, from an assembler route's
-    config: whether it is mission-essential, and why. Never defaulted —
-    an asset with no `Designation` gets no `mission_essential`/`basis` at
-    all, not a guessed `False`."""
+    config: whether it is mission-essential, and why — "why" being which
+    rule set it and when (ADR-0046 §1: `basis` is `{rule, observed_at}`,
+    never bare prose). Never defaulted — an asset with no `Designation`
+    gets no `mission_essential`/`basis` at all, not a guessed `False`."""
 
     mission_essential: bool
-    basis: str
+    basis_rule: str
+    basis_observed_at: str
 
 
 def _lifecycle_name(cm_state: Mapping[str, Any]) -> str | None:
@@ -561,7 +589,8 @@ async def build_picture(
     designation = (designations or {}).get(asset_id) if asset_id else None
     if designation is not None:
         battle_condition["mission_essential"] = designation.mission_essential
-        battle_condition["basis"] = designation.basis
+        battle_condition["basis"] = {
+            "rule": designation.basis_rule, "observed_at": designation.basis_observed_at}
     if battle_condition:
         sections["battle_condition"] = battle_condition
 
@@ -697,11 +726,39 @@ def load_assembler_config(
                     f"{label}: battle_condition[{asset_id!r}].mission_essential must be a "
                     "bool, not coerced from another type")
             basis = designated.get("basis")
-            if not isinstance(basis, str) or not basis:
+            if isinstance(basis, str):
                 raise AssemblerConfigError(
-                    f"{label}: battle_condition[{asset_id!r}].basis must be a non-empty string")
-            battle_condition.append(
-                (asset_id, Designation(mission_essential=mission_essential, basis=basis)))
+                    f"{label}: battle_condition[{asset_id!r}].basis must now be a JSON "
+                    "object {rule, observed_at}, not a bare string")
+            if not isinstance(basis, Mapping):
+                raise AssemblerConfigError(
+                    f"{label}: battle_condition[{asset_id!r}].basis must be a JSON object "
+                    "{rule, observed_at}")
+            extra = sorted(set(basis) - {"rule", "observed_at"})
+            if extra:
+                raise AssemblerConfigError(
+                    f"{label}: battle_condition[{asset_id!r}].basis has unknown key(s) {extra}")
+            basis_rule = basis.get("rule")
+            if not isinstance(basis_rule, str) or not basis_rule:
+                raise AssemblerConfigError(
+                    f"{label}: battle_condition[{asset_id!r}].basis.rule must be a "
+                    "non-empty string")
+            basis_observed_at_raw = basis.get("observed_at")
+            if not isinstance(basis_observed_at_raw, str) or not basis_observed_at_raw:
+                raise AssemblerConfigError(
+                    f"{label}: battle_condition[{asset_id!r}].basis.observed_at must be a "
+                    "non-empty RFC 3339 datetime string")
+            try:
+                basis_dt = _parse_rfc3339(basis_observed_at_raw)
+            except ValueError as exc:
+                raise AssemblerConfigError(
+                    f"{label}: battle_condition[{asset_id!r}].basis.observed_at is not a "
+                    f"valid RFC 3339 datetime with a UTC offset: {basis_observed_at_raw!r} "
+                    f"({exc})") from exc
+            battle_condition.append((asset_id, Designation(
+                mission_essential=mission_essential,
+                basis_rule=basis_rule,
+                basis_observed_at=_rfc3339_from_dt(basis_dt))))
 
         routes.append(AssemblerRoute(
             name=name, kind=kind, trigger_topic=entry["trigger_topic"],

@@ -137,7 +137,37 @@ def test_source_entry_omits_row_ref_when_event_id_absent():
     assert "row_ref" not in record["reports"][0]
     assert "observed_at" not in record["reports"][0]
     # No label on this cm-state: nothing written at the label pointer at all.
+
     assert "marking" not in record
+
+
+# --- trigger (ADR-0046 §1: what opened the episode) -------------------------
+
+KIND_A_TRIGGER_DECL = Declarations(
+    key="/ref", label="/marking", owning_tier="/tier",
+    episode=EpisodeDecl(asset="/subject", component="/what/part", fault_code="/what/code"),
+    trigger="/kind",
+)
+
+
+def test_assemble_writes_the_trigger_at_the_declared_pointer():
+    """The assembler's own trigger is a CM discrepancy episode: no other
+    value is ever written here, regardless of anything on `cm_state`."""
+    state = cm_state(discrepancies=[discrepancy()])
+    episode = episodes(state)[0]
+
+    record = assemble("KindA", KIND_A_TRIGGER_DECL, {}, state, episode, picture={}, now=NOW)
+
+    assert record["kind"] == "cm_discrepancy"
+
+
+def test_assemble_no_trigger_key_when_not_declared():
+    state = cm_state(discrepancies=[discrepancy()])
+    episode = episodes(state)[0]
+
+    record = assemble("KindA", KIND_A_DECL, {}, state, episode, picture={}, now=NOW)
+
+    assert "kind" not in record
 
 
 def test_assemble_writes_the_label_from_cm_state_when_present():
@@ -351,6 +381,7 @@ FAULT_EVENT_DECL = Declarations(
     observed_at="/observed_at",
     sources="/sources",
     picture="/picture",
+    trigger="/kind",
 )
 
 
@@ -819,20 +850,24 @@ async def _rollup_only(asset_id):  # noqa: ARG001 — the injected read_asset
 def test_build_picture_battle_condition_merges_rollup_and_designation():
     state = cm_state(asset_id="asset-1", discrepancies=[discrepancy()])
     episode = episodes(state)[0]
-    designations = {"asset-1": Designation(mission_essential=True, basis="primary strike asset")}
+    designations = {"asset-1": Designation(
+        mission_essential=True, basis_rule="primary strike asset",
+        basis_observed_at="2026-01-01T00:00:00Z")}
 
     picture = asyncio.run(build_picture(
         state, episode, "edge-03", read_asset=_rollup_only, parts=PartsBook(),
         designations=designations))
 
     assert picture["battle_condition"] == {
-        "overall_severity": "RED", "mission_essential": True, "basis": "primary strike asset"}
+        "overall_severity": "RED", "mission_essential": True,
+        "basis": {"rule": "primary strike asset", "observed_at": "2026-01-01T00:00:00Z"}}
 
 
 def test_build_picture_battle_condition_undesignated_has_no_mission_essential_key():
     state = cm_state(asset_id="asset-2", discrepancies=[discrepancy()])
     episode = episodes(state)[0]
-    designations = {"asset-1": Designation(mission_essential=True, basis="x")}
+    designations = {"asset-1": Designation(
+        mission_essential=True, basis_rule="x", basis_observed_at="2026-01-01T00:00:00Z")}
 
     picture = asyncio.run(build_picture(
         state, episode, "edge-03", read_asset=_rollup_only, parts=PartsBook(),
@@ -858,12 +893,15 @@ def test_load_assembler_config_battle_condition_loads_cleanly(tmp_path):
     cfg.write_text(json.dumps([{"name": "a", "kind": "KindA", "trigger_topic": "t",
                                 "output_topic": "o",
                                 "battle_condition": {"asset-1": {
-                                    "mission_essential": True, "basis": "primary strike asset"}}}]))
+                                    "mission_essential": True,
+                                    "basis": {"rule": "primary strike asset",
+                                              "observed_at": "2026-01-01T00:00:00Z"}}}}]))
 
     routes = load_assembler_config(cfg, ["KindA"])
 
     assert dict(routes[0].battle_condition) == {
-        "asset-1": Designation(mission_essential=True, basis="primary strike asset")}
+        "asset-1": Designation(mission_essential=True, basis_rule="primary strike asset",
+                                basis_observed_at="2026-01-01T00:00:00Z")}
 
 
 def test_load_assembler_config_battle_condition_non_bool_mission_essential_raises(tmp_path):
@@ -871,23 +909,96 @@ def test_load_assembler_config_battle_condition_non_bool_mission_essential_raise
     cfg.write_text(json.dumps([{"name": "a", "kind": "KindA", "trigger_topic": "t",
                                 "output_topic": "o",
                                 "battle_condition": {"asset-1": {
-                                    "mission_essential": "yes", "basis": "x"}}}]))
+                                    "mission_essential": "yes",
+                                    "basis": {"rule": "x", "observed_at": "2026-01-01T00:00:00Z"}
+                                    }}}]))
 
     with pytest.raises(AssemblerConfigError) as exc:
         load_assembler_config(cfg, ["KindA"])
     assert "asset-1" in str(exc.value)
 
 
-def test_load_assembler_config_battle_condition_empty_basis_raises(tmp_path):
+def _cfg_with_basis(tmp_path, basis):
     cfg = tmp_path / "assembler.json"
     cfg.write_text(json.dumps([{"name": "a", "kind": "KindA", "trigger_topic": "t",
                                 "output_topic": "o",
                                 "battle_condition": {"asset-1": {
-                                    "mission_essential": True, "basis": ""}}}]))
+                                    "mission_essential": True, "basis": basis}}}]))
+    return cfg
+
+
+def test_load_assembler_config_battle_condition_string_basis_raises_naming_the_new_shape(tmp_path):
+    """A bare string `basis` cannot satisfy ADR-0046 §1's agreed contract
+    (`{rule, observed_at}`) — refused outright, no legacy acceptance, with a
+    message that says what shape is now required."""
+    cfg = _cfg_with_basis(tmp_path, "primary strike asset")
+
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "rule" in str(exc.value) and "observed_at" in str(exc.value)
+
+
+def test_load_assembler_config_battle_condition_missing_rule_raises(tmp_path):
+    cfg = _cfg_with_basis(tmp_path, {"observed_at": "2026-01-01T00:00:00Z"})
 
     with pytest.raises(AssemblerConfigError) as exc:
         load_assembler_config(cfg, ["KindA"])
     assert "asset-1" in str(exc.value)
+
+
+def test_load_assembler_config_battle_condition_empty_rule_raises(tmp_path):
+    cfg = _cfg_with_basis(tmp_path, {"rule": "", "observed_at": "2026-01-01T00:00:00Z"})
+
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "asset-1" in str(exc.value)
+
+
+def test_load_assembler_config_battle_condition_missing_observed_at_raises(tmp_path):
+    cfg = _cfg_with_basis(tmp_path, {"rule": "x"})
+
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "asset-1" in str(exc.value)
+
+
+def test_load_assembler_config_battle_condition_naive_observed_at_raises(tmp_path):
+    cfg = _cfg_with_basis(tmp_path, {"rule": "x", "observed_at": "2026-01-01T00:00:00"})
+
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "asset-1" in str(exc.value)
+
+
+def test_load_assembler_config_battle_condition_unparseable_observed_at_raises(tmp_path):
+    cfg = _cfg_with_basis(tmp_path, {"rule": "x", "observed_at": "not-a-date"})
+
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "asset-1" in str(exc.value)
+
+
+def test_load_assembler_config_battle_condition_extra_key_in_basis_raises(tmp_path):
+    cfg = _cfg_with_basis(
+        tmp_path, {"rule": "x", "observed_at": "2026-01-01T00:00:00Z", "extra": "y"})
+
+    with pytest.raises(AssemblerConfigError) as exc:
+        load_assembler_config(cfg, ["KindA"])
+    assert "extra" in str(exc.value) and "asset-1" in str(exc.value)
+
+
+def test_load_assembler_config_battle_condition_basis_emitted_matches_configured_object(tmp_path):
+    """`Z` round-trips through the parse/reformat stably — the emitted
+    `Designation.basis_observed_at` is not just "a valid timestamp", it is
+    exactly the configured instant, same string shape."""
+    cfg = _cfg_with_basis(tmp_path, {"rule": "primary strike asset",
+                                      "observed_at": "2026-01-01T00:00:00Z"})
+
+    routes = load_assembler_config(cfg, ["KindA"])
+
+    designation = dict(routes[0].battle_condition)["asset-1"]
+    assert designation.basis_rule == "primary strike asset"
+    assert designation.basis_observed_at == "2026-01-01T00:00:00Z"
 
 
 def test_battle_condition_requiring_mission_essential_fails_validator_for_undesignated_asset(tmp_path):

@@ -157,3 +157,33 @@ def test_a_non_string_provenance_is_refused(tmp_path):
     with pytest.raises(Exception) as exc:
         load_declarations(tmp_path)
     assert "KindA.schema.json" in str(exc.value)
+
+
+# --- trigger (ADR-0046 §1: what opened the episode) -------------------------
+
+def test_a_block_with_trigger_loads(tmp_path):
+    declared = dict(KIND_A_DECLARED)
+    declared["x-openddil"] = dict(KIND_A_DECLARED["x-openddil"], trigger="/kind")
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(declared))
+
+    decl = load_declarations(tmp_path)["KindA"]
+
+    assert decl.trigger == "/kind"
+
+
+def test_a_schema_without_trigger_is_unchanged(tmp_path):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(KIND_A_DECLARED))
+
+    decl = load_declarations(tmp_path)["KindA"]
+
+    assert decl.trigger is None
+
+
+def test_a_non_string_trigger_is_refused(tmp_path):
+    declared = dict(KIND_A_DECLARED)
+    declared["x-openddil"] = dict(KIND_A_DECLARED["x-openddil"], trigger=123)
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(declared))
+
+    with pytest.raises(Exception) as exc:
+        load_declarations(tmp_path)
+    assert "KindA.schema.json" in str(exc.value)

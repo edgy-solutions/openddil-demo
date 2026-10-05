@@ -94,6 +94,10 @@ class Declarations:
     sources: str | None = None
     picture: str | None = None
     provenance: str | None = None
+    # Where the record says what opened the episode (ADR-0046 §1) — one of
+    # the trigger `kind` values the assembler module declares, never a
+    # free string the schema would have to vocabulary-check on its own.
+    trigger: str | None = None
 
 
 def _require_pointer(block: Mapping, name: str) -> str:
@@ -156,6 +160,7 @@ def load_declarations(directory: str | Path) -> dict[str, "Declarations"]:
                 sources=block.get("sources"),
                 picture=block.get("picture"),
                 provenance=_optional_pointer(block, "provenance"),
+                trigger=_optional_pointer(block, "trigger"),
             )
         except Exception as exc:  # noqa: BLE001 — re-raised naming the file
             raise ValueError(

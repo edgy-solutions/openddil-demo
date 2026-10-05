@@ -2,8 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FaultEvent",
   "type": "object",
-  "required": ["picture"],
+  "x-openddil": {
+    "trigger": "/kind"
+  },
+  "required": ["kind", "picture"],
   "properties": {
+    "kind": {"type": "string", "enum": ["cm_discrepancy", "lifecycle_transition"]},
     "sources": {
       "type": "array",
       "items": {
