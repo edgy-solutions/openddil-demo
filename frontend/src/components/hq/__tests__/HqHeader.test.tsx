@@ -66,16 +66,16 @@ describe('HqHeader', () => {
     const html = renderToStaticMarkup(
       <HqHeader wanActive={null} setWanActive={() => {}} forbidden={true} />,
     );
-    expect(html).toContain('HQ WAN: ACTIVE');
+    expect(html).toContain('HQ UPLINK: ACTIVE');
     expect(html).toContain('WAN control: supervisor only');
   });
 
-  it('forbidden + severed status: "HQ WAN: SEVERED" AND the caption both render', () => {
+  it('forbidden + severed status: "HQ UPLINK: SEVERED" AND the caption both render', () => {
     setStatus(SEVERED_STATUS);
     const html = renderToStaticMarkup(
       <HqHeader wanActive={null} setWanActive={() => {}} forbidden={true} />,
     );
-    expect(html).toContain('HQ WAN: SEVERED');
+    expect(html).toContain('HQ UPLINK: SEVERED');
     expect(html).toContain('WAN control: supervisor only');
   });
 });

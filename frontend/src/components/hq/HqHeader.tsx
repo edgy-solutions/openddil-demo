@@ -3,7 +3,10 @@
 // =============================================================================
 // Phase 4c.5: the global buffer backlog and WAN link status are now REAL
 // — read from useEdgeBuffer() (the edge_buffer_status shape). The WAN
-// toggle severs/restores the real toxiproxy hq-link proxy.
+// toggle severs/restores HQ's OWN uplink (the real toxiproxy hq-link
+// proxy, HQ's own broker listener address) — not a region->HQ or
+// edge->HQ bridge, which each ride their own uplink-<id> and are severed
+// from their own tier's screen, not from here.
 import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
 import { ThisNodeBadge } from '../../lib/thisNode';
 import { useEdgeBuffer } from '../../hooks';
@@ -44,7 +47,10 @@ export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeade
           <Server className="w-6 h-6 mb-1 text-slate-300" />
           <span className="text-[10px] font-bold tracking-wider">REGIONAL HUBS</span>
         </div>
-        {/* WAN link — the toggle severs/restores the real toxiproxy hq-link */}
+        {/* HQ's own uplink — the toggle severs/restores the real toxiproxy
+            hq-link proxy, HQ's own broker listener address. Tier bridges
+            (region->HQ, edge->HQ) ride their own uplink-<id> and are
+            severed from their own tier's screen, not this one. */}
         <div className="flex-1 flex flex-col items-center relative">
           <div className={`absolute w-full h-[2px] top-3 -z-10 ${severed ? 'bg-rose-900' : 'bg-slate-700'}`}></div>
           <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in mt-1">
@@ -54,7 +60,7 @@ export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeade
               className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
               checked={wanActive ?? false}
               disabled={wanActive === null || forbidden}
-              title={forbidden ? 'WAN control: supervisor only' : wanActive === null ? 'Link state unknown — failed to read proxy status' : undefined}
+              title={forbidden ? 'WAN control: supervisor only' : wanActive === null ? 'Link state unknown — failed to read proxy status' : "Severs HQ's own uplink (hq-link). Each edge and region severs its own uplink from its own screen."}
               onChange={(e) => setWanActive(e.target.checked)}
             />
             <label htmlFor="toggle2" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${wanActive === null ? 'bg-slate-600' : wanActive ? 'bg-emerald-500' : 'bg-rose-500'}`}>
@@ -62,7 +68,7 @@ export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeade
             </label>
           </div>
           <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
-            {probeDown ? 'HQ WAN: PROBE DOWN' : severed ? 'HQ WAN: SEVERED' : 'HQ WAN: ACTIVE'}
+            {probeDown ? 'HQ UPLINK: PROBE DOWN' : severed ? 'HQ UPLINK: SEVERED' : 'HQ UPLINK: ACTIVE'}
           </span>
           {forbidden && (
             <span className="text-[9px] mt-0.5 text-slate-500 tracking-widest">WAN control: supervisor only</span>
