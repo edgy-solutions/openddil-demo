@@ -333,9 +333,19 @@ class PartsBook:
         # for `nearest_site_with_stock`: an older publisher's record that
         # never carries it must not be told apart from one that carries it
         # as JSON null (see `lookup`'s `nearest_spare` handling below).
-        for field_name in ("as_of", "lead_time_days", "source", "nearest_site_with_stock"):
+        for field_name in ("lead_time_days", "source", "nearest_site_with_stock"):
             if field_name in record:
                 entry[field_name] = record[field_name]
+        # The record's time: Contract B's `observed_at_ns` when present,
+        # else the legacy `as_of` -- a compacted topic keeps pre-change
+        # records around until the next publisher sweep, so both shapes
+        # must be accepted. Stored under this entry's own `as_of` key
+        # either way, so the output event field (`as_of`, via
+        # `_rfc3339`) is unchanged regardless of which shape fed it.
+        if "observed_at_ns" in record:
+            entry["as_of"] = record["observed_at_ns"]
+        elif "as_of" in record:
+            entry["as_of"] = record["as_of"]
         self._by_ref.setdefault(part_ref, {})[site] = entry
 
     def lookup(self, part_ref: str, owning_tier: str) -> dict[str, Any] | None:

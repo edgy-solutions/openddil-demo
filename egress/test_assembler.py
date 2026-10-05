@@ -641,6 +641,48 @@ def test_partsbook_lookup_builds_a_spares_entry_per_site_sorted_by_site():
     ]
 
 
+def test_partsbook_ingest_accepts_new_shape_observed_at_ns():
+    """A Contract-B-shaped parts-availability record (observed_at_ns,
+    provenance, extraction, no nearest_on_hand since nearest is null)
+    is accepted: its timestamp comes from observed_at_ns (not as_of,
+    which it doesn't carry), and nearest_spare is null because the
+    record names nearest_site_with_stock: null."""
+    book = PartsBook()
+    book.ingest({
+        "site": "edge-03", "part_ref": "part:p-1", "item": "widget",
+        "on_hand": 0,
+        "observed_at_ns": 1_700_000_000_000_000_000,
+        "provenance": {"originator_nation": None, "releasable_to": []},
+        "extraction": {"cursor": "sweep-1700000000000000000",
+                       "extracted_at_ns": 1_700_000_000_000_000_000},
+        "nearest_site_with_stock": None,
+    })
+
+    spare = book.lookup("part:p-1", "edge-03")
+
+    assert spare["spares"] == [
+        {"site": "edge-03", "on_hand": 0, "as_of": "2023-11-14T22:13:20Z"},
+    ]
+    assert spare["nearest_spare"] is None
+
+
+def test_partsbook_ingest_still_accepts_legacy_as_of_shape():
+    """A record from a publisher that hasn't swept since the Contract B
+    change (compacted topic, pre-change record) still carries `as_of`
+    with no `observed_at_ns` at all -- ingest must still work."""
+    book = PartsBook()
+    book.ingest({
+        "site": "edge-03", "part_ref": "part:p-1", "item": "widget",
+        "on_hand": 5, "as_of": 1_700_000_000_000_000_000,
+    })
+
+    spare = book.lookup("part:p-1", "edge-03")
+
+    assert spare["spares"] == [
+        {"site": "edge-03", "on_hand": 5, "as_of": "2023-11-14T22:13:20Z"},
+    ]
+
+
 def test_build_picture_emits_spares_as_its_own_section_next_to_unchanged_spare():
     book = PartsBook()
     book.ingest({"site": "site-a", "part_ref": "part:p-1", "item": "widget", "on_hand": 5})
