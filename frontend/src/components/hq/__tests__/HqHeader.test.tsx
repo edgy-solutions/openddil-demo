@@ -12,18 +12,39 @@
 // this subject does not hold the WAN-control role. The toggle must render
 // disabled and explained ("WAN control: supervisor only"), and must NOT
 // borrow the severed/error styling — being refused a capability is not
-// the link being down.
+// the link being down. The status label itself is a separate claim (it
+// comes from edge_buffer_status via useEdgeBuffer, not from the proxy),
+// so forbidden must never replace it -- only add a caption alongside it.
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import type { EdgeBufferStatus } from '../../../hooks';
 
+const mockUseEdgeBuffer = vi.fn();
 vi.mock('../../../hooks', () => ({
-  useEdgeBuffer: () => ({ status: null, isError: false }),
+  useEdgeBuffer: () => mockUseEdgeBuffer(),
 }));
 
 import HqHeader from '../HqHeader';
 
+function setStatus(status: EdgeBufferStatus | null): void {
+  mockUseEdgeBuffer.mockReturnValue({ status, isError: false });
+}
+
+const ACTIVE_STATUS: EdgeBufferStatus = {
+  bridge_group_lag: 0,
+  hq_link_severed: false,
+  probe_healthy: true,
+  updated_at: new Date().toISOString(),
+};
+
+const SEVERED_STATUS: EdgeBufferStatus = {
+  ...ACTIVE_STATUS,
+  hq_link_severed: true,
+};
+
 describe('HqHeader', () => {
   it('forbidden renders the WAN toggle disabled with "WAN control: supervisor only"', () => {
+    setStatus(null);
     const html = renderToStaticMarkup(
       <HqHeader wanActive={null} setWanActive={() => {}} forbidden={true} />,
     );
@@ -32,10 +53,29 @@ describe('HqHeader', () => {
   });
 
   it('not forbidden, link active -> no forbidden text, toggle not disabled', () => {
+    setStatus(ACTIVE_STATUS);
     const html = renderToStaticMarkup(
       <HqHeader wanActive={true} setWanActive={() => {}} forbidden={false} />,
     );
     expect(html).not.toContain('WAN control: supervisor only');
     expect(html).not.toMatch(/<input[^>]*disabled=""[^>]*>/);
+  });
+
+  it('forbidden + not-severed status: the status label AND the caption both render', () => {
+    setStatus(ACTIVE_STATUS);
+    const html = renderToStaticMarkup(
+      <HqHeader wanActive={null} setWanActive={() => {}} forbidden={true} />,
+    );
+    expect(html).toContain('HQ WAN: ACTIVE');
+    expect(html).toContain('WAN control: supervisor only');
+  });
+
+  it('forbidden + severed status: "HQ WAN: SEVERED" AND the caption both render', () => {
+    setStatus(SEVERED_STATUS);
+    const html = renderToStaticMarkup(
+      <HqHeader wanActive={null} setWanActive={() => {}} forbidden={true} />,
+    );
+    expect(html).toContain('HQ WAN: SEVERED');
+    expect(html).toContain('WAN control: supervisor only');
   });
 });

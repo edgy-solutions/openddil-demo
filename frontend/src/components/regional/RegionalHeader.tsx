@@ -40,14 +40,13 @@ interface RegionalHeaderProps {
   setLink1: (v: boolean) => void;
   setIsRuleEditorOpen: (v: boolean) => void;
   /** True when the PEP answered 401/403 to the GET or POST: this subject
-   *  does not hold the WAN-control role. Optional (defaults to false) --
-   *  RegionalApp does not yet thread useWanLink's `forbidden` through to
-   *  this header; wiring it is tracked separately, not part of this
-   *  change. */
-  forbidden?: boolean;
+   *  does not hold the WAN-control role. Disabled and explained, same as
+   *  link1 === null, but never styled as an error -- being refused a
+   *  capability is not the link being down. */
+  forbidden: boolean;
 }
 
-export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen, forbidden = false }: RegionalHeaderProps) {
+export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen, forbidden }: RegionalHeaderProps) {
   const { status, isError } = useEdgeBuffer();
   // Observed-only, no link1 fallback -- see lib/linkIndicator.ts.
   const linkIndicator = useLinkIndicator(status, isError);
@@ -84,9 +83,12 @@ export default function RegionalHeader({ link1, setLink1, setIsRuleEditorOpen, f
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link1 ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${forbidden ? 'text-slate-400' : LINK_INDICATOR_CLASS[linkIndicator]}`} title={forbidden ? 'WAN control: supervisor only' : undefined}>
-            {forbidden ? 'WAN control: supervisor only' : LINK_INDICATOR_LABEL[linkIndicator]}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
+            {LINK_INDICATOR_LABEL[linkIndicator]}
           </span>
+          {forbidden && (
+            <span className="text-[9px] mt-0.5 text-slate-500 tracking-widest">WAN control: supervisor only</span>
+          )}
         </div>
 
         <div className="flex flex-col items-center text-emerald-400">

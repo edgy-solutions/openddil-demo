@@ -281,7 +281,7 @@ interface TierScopedProps { tierScopeValue?: string | null }
 export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) {
   // Sourced from the proxy's own state (hooks/useWanLink), not
   // invented client-side -- see MaintainerApp for the same change.
-  const { enabled: link1, set: setLink1 } = useWanLink();
+  const { enabled: link1, set: setLink1, forbidden: link1Forbidden } = useWanLink();
   const [isRuleEditorOpen, setIsRuleEditorOpen] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState<string>('ALL');
@@ -426,6 +426,7 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
       <RegionalHeader
         link1={link1} setLink1={setLink1}
         setIsRuleEditorOpen={setIsRuleEditorOpen}
+        forbidden={link1Forbidden}
       />
 
       {/* Pulldown — dev/demo mechanism. Visually unobtrusive per the

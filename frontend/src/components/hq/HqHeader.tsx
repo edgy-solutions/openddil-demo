@@ -61,9 +61,12 @@ export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeade
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${wanActive ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${forbidden ? 'text-slate-400' : probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`} title={forbidden ? 'WAN control: supervisor only' : undefined}>
-            {forbidden ? 'WAN control: supervisor only' : probeDown ? 'HQ WAN: PROBE DOWN' : severed ? 'HQ WAN: SEVERED' : 'HQ WAN: ACTIVE'}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
+            {probeDown ? 'HQ WAN: PROBE DOWN' : severed ? 'HQ WAN: SEVERED' : 'HQ WAN: ACTIVE'}
           </span>
+          {forbidden && (
+            <span className="text-[9px] mt-0.5 text-slate-500 tracking-widest">WAN control: supervisor only</span>
+          )}
         </div>
         <div className="flex flex-col items-center text-emerald-400 mr-8">
           <Building2 className="w-6 h-6 mb-1 glow-emerald" />

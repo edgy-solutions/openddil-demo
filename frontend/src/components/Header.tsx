@@ -265,9 +265,12 @@ export default function Header({
               <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link1 ? 'translate-x-full' : ''}`}></span>
             </label>
           </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${forbidden ? 'text-slate-400' : LINK_INDICATOR_CLASS[linkIndicator]}`} title={forbidden ? 'WAN control: supervisor only' : undefined}>
-            {forbidden ? 'WAN control: supervisor only' : LINK_INDICATOR_LABEL[linkIndicator]}
+          <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
+            {LINK_INDICATOR_LABEL[linkIndicator]}
           </span>
+          {forbidden && (
+            <span className="text-[9px] mt-0.5 text-slate-500 tracking-widest">WAN control: supervisor only</span>
+          )}
         </div>
 
         {/* CENTRAL HQ is NOT this node on the Maintainer tab -- dim it
