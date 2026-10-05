@@ -304,38 +304,68 @@ def record_decision(**fields) -> None:
 # --- shape-handle binding ---------------------------------------------------
 # THE BYPASS THAT LOOKS LIKE A CACHING DETAIL, AND IS AN AUTHORIZATION HOLE.
 #
-# Electric clients resume a shape by handle + offset. A handle minted for
-# user-A's FILTERED shape, presented by user-B, would be served by Electric
-# as-is: Electric has no idea a policy was ever involved, and the handle
-# already encodes A's predicate. So the gateway binds each handle to the
-# subject it was minted for and refuses a mismatch.
+# A handle is Electric's id for a shape DEFINITION — table + where + columns
+# — not a grant issued to one session. Electric mints the SAME handle for
+# two requests that happen to carry the same table/where/columns, because
+# from Electric's side those ARE the same shape; it has no idea a policy was
+# ever involved. So a handle cannot be owned by a single session, and two
+# sessions legitimately sharing one view (the same
+# person open in two tabs, or two people with identical entitlements) are
+# both entitled to resume it. Each session instead holds its OWN binding per
+# view it was itself served.
+#
+# A binding is only ever created from that session's own ALLOWED request,
+# stored under this session's principal paired with the view — (table,
+# where, columns) — that request's forwarded predicate actually was: the
+# composed client+policy predicate, not just the client's half of it. So
+# presenting a handle back is accepted only where this exact session was
+# itself served it for this exact view. A different session never matches.
+# Neither does this same session asking about a different view: a different
+# table, or the same table once its entitlements (and so its composed
+# `where`) have changed.
 #
 # In-memory and per-process, which is honest about its limits: a gateway
 # restart forgets every binding, and clients then re-request from offset -1.
 # That fails CLOSED (an unknown handle is refused, not trusted), which is the
 # correct direction for the failure. A multi-replica deployment needs shared
 # storage here; Slice 1 runs one replica and says so rather than pretending.
-_handles: dict[str, str] = {}
-_handles_lock = threading.Lock()
+_FeedKey = tuple[str, tuple[str, str, str]]
+_feeds: dict[_FeedKey, list[str]] = {}
+_feeds_lock = threading.Lock()
+
+# Newest last; oldest dropped past this. Electric rotates the handle on a
+# must-refetch, so a session that has been resuming the same view for a
+# while accumulates more than one live handle for it, and all of them must
+# keep working until the client itself moves off them.
+MAX_HANDLES_PER_FEED = 8
 
 
-# The binding key is the SESSION in oidc mode, not the subject. Stricter, and
+# The binding key is PRINCIPAL (the session id in oidc mode, the subject in
+# header mode), paired with the view, not the subject alone. Stricter, and
 # for a reason worth stating: two concurrent sessions for one person are two
-# separate grants, and a handle minted under one should not be resumable
-# under the other. A session that has been logged out or has expired then
-# cannot resume a shape it opened, which is the behaviour a revoked session
-# ought to have.
-def bind_handle(handle: str, principal: str) -> None:
+# separate grants, and a handle bound under one is not resumable under the
+# other just because the person is the same. A session that has been logged
+# out or has expired holds no bindings at all and so cannot resume a shape
+# it opened, which is the behaviour a revoked session ought to have. An
+# entitlement change does not need its own check here — it changes the
+# composed `where`, which changes the view, which means the old bindings
+# are simply for a view that no longer exists for this principal.
+def bind_handle(principal: str, view: tuple[str, str, str], handle: str) -> None:
     if not handle:
         return
-    with _handles_lock:
-        _handles[handle] = principal
+    key = (principal, view)
+    with _feeds_lock:
+        handles = _feeds.setdefault(key, [])
+        if handle in handles:
+            handles.remove(handle)
+        handles.append(handle)
+        del handles[:-MAX_HANDLES_PER_FEED]
 
 
-def handle_belongs_to(handle: str, principal: str) -> bool:
-    with _handles_lock:
-        owner = _handles.get(handle)
-    return owner is not None and owner == principal
+def handle_belongs_to(principal: str, view: tuple[str, str, str], handle: str) -> bool:
+    with _feeds_lock:
+        handles = _feeds.get((principal, view), [])
+    return handle in handles
 
 
 # --- the PDP call -----------------------------------------------------------
@@ -1856,13 +1886,6 @@ class Pep(BaseHTTPRequestHandler):
             self._deny(cause, subject=subject, resource=table)
             return
 
-        # Handle binding, checked BEFORE the request is forwarded.
-        handle = (params.get("handle") or [""])[0]
-        if handle and not handle_belongs_to(handle, principal):
-            self._deny("shape handle was not minted for this session",
-                       subject=subject, resource=table)
-            return
-
         # THE FILTER THIS TABLE'S CLASS CALLS FOR. One place, so a class
         # cannot acquire a second meaning somewhere else in the handler.
         cls = table_class(table)
@@ -1885,6 +1908,16 @@ class Pep(BaseHTTPRequestHandler):
 
         client_where = (params.get("where") or [None])[0]
         where = compose(client_where, policy_clause) if policy_clause else client_where
+
+        # Handle binding, checked BEFORE the request is forwarded, and only
+        # now that `where` -- and so the view -- is known.
+        columns = (params.get("columns") or [""])[0]
+        view = (table, where or "", columns)
+        handle = (params.get("handle") or [""])[0]
+        if handle and not handle_belongs_to(principal, view, handle):
+            self._deny("shape handle was not minted for this session and view",
+                       subject=subject, resource=table)
+            return
 
         upstream_params = [(k, v) for k, vs in params.items()
                            if k in PASSTHROUGH_PARAMS for v in vs]
@@ -1937,7 +1970,7 @@ class Pep(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        bind_handle(new_handle, principal)
+        bind_handle(principal, view, new_handle)
         record_decision(decision_id=new_decision_id(), outcome="allow",
                         subject=subject, resource=table,
                         policy_version=decision["policy_version"],
