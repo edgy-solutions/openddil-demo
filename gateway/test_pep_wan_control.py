@@ -287,6 +287,53 @@ def test_parse_roles_csv_helper(pep_url):
         {"supervisor", "auditor"})
 
 
+# --- 14: /proxies/uplink resolves through OPENDDIL_WAN_UPLINK --------------
+
+def test_uplink_resolves_to_configured_wan_uplink(pep_factory, monkeypatch):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "WAN_UPLINK", "uplink-edge-01")
+    url = pep_factory()
+    state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": true}')
+    code, body = _get(url + "/proxies/uplink", "supervisor.1")
+    assert code == 200
+    assert json.loads(body) == {"enabled": True}
+    assert len(state["wan_calls"]) == 1
+    assert state["wan_calls"][0]["path"] == "/proxies/uplink-edge-01"
+
+
+# --- 15: an exact name in OPENDDIL_WAN_LINKS forwards -----------------------
+
+def test_name_in_wan_links_forwards(pep_factory, monkeypatch):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "WAN_LINKS", frozenset({"hq-link", "uplink-edge-01"}))
+    url = pep_factory()
+    state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": true}')
+    code, _ = _get(url + "/proxies/uplink-edge-01", "supervisor.1")
+    assert code == 200
+    assert len(state["wan_calls"]) == 1
+    assert state["wan_calls"][0]["path"] == "/proxies/uplink-edge-01"
+
+
+# --- 16: a name NOT in OPENDDIL_WAN_LINKS is 404 ----------------------------
+
+def test_name_not_in_wan_links_is_404(pep_factory, monkeypatch):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "WAN_LINKS", frozenset({"hq-link"}))
+    url = pep_factory()
+    state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": true}')
+    code, _ = _get(url + "/proxies/uplink-edge-01", "supervisor.1")
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
+# --- 17: /proxies/uplink/toxics is a sub-path, 404 pre-PDP ------------------
+
+def test_uplink_sub_path_is_404(pep_url):
+    code, _ = _get(pep_url + "/proxies/uplink/toxics", "supervisor.1")
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
 # --- 13: a transport failure, not a policy deny -----------------------------
 
 def test_upstream_connection_failure_is_502(pep_factory, monkeypatch):

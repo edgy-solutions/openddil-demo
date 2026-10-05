@@ -537,6 +537,41 @@ def _parse_roles_csv(value: str) -> frozenset[str]:
 # allow/deny.
 WAN_CONTROL_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_WAN_CONTROL_ROLES", "supervisor"))
 
+# OPENDDIL_WAN_UPLINK: this PEP's own uplink, in toxiproxy proxy-name terms.
+# `/proxies/uplink` resolves to it, so the frontend never needs to learn
+# which tier it's served from -- the origin decides. Root PEP: "hq-link".
+# Tier PEP: "uplink-<tier id>" for a tier that has one. Unset means
+# "hq-link", which is today's (pre-P5) single link.
+WAN_UPLINK = os.getenv("OPENDDIL_WAN_UPLINK", "hq-link").strip() or "hq-link"
+
+# OPENDDIL_WAN_LINKS: proxy names this PEP may address by their EXACT name
+# (comma-separated), in addition to "uplink" itself. Root: every uplink plus
+# "hq-link". Tier: its own uplink only. Unset means {"hq-link"} alone, so a
+# frontend that still calls /proxies/hq-link directly keeps working.
+WAN_LINKS = _parse_roles_csv(os.getenv("OPENDDIL_WAN_LINKS", "hq-link"))
+
+
+def _resolve_wan_proxy_name(path: str) -> str | None:
+    """`/proxies/<name>` -> the toxiproxy proxy name to forward to, or None
+    if this exact path isn't a permitted WAN-control route.
+
+    `/proxies/uplink` resolves through WAN_UPLINK -- this tier's own link.
+    Any other name is forwarded only when it's an EXACT match (no
+    sub-paths: `/proxies/uplink/toxics` is not this route, same as
+    `/proxies/hq-link/toxics` never was) for a name in WAN_LINKS.
+    """
+    prefix = "/proxies/"
+    if not path.startswith(prefix):
+        return None
+    remainder = path[len(prefix):]
+    if not remainder or "/" in remainder:
+        return None
+    if remainder == "uplink":
+        return WAN_UPLINK
+    if remainder in WAN_LINKS:
+        return remainder
+    return None
+
 
 def table_class(table: str) -> str:
     """'nation' | 'role' | 'subject' | 'refused'.
@@ -1350,10 +1385,12 @@ class Pep(BaseHTTPRequestHandler):
 
     # --- the WAN control route ------------------------------------------------
     def _handle_wan_control(self, parsed, method: str) -> None:
-        """Serve GET/POST /proxies/hq-link: the WAN slider's commanded and
-        observed state, reached through this gateway instead of the DDIL
-        sever mechanism directly. Both methods run the same gate -- reading
-        the link's current state is a capability too, not just flipping it.
+        """Serve GET/POST /proxies/uplink (this tier's own link) or
+        /proxies/<name> (any name in WAN_LINKS): the WAN slider's commanded
+        and observed state, reached through this gateway instead of the
+        DDIL sever mechanism directly. Both methods run the same gate --
+        reading the link's current state is a capability too, not just
+        flipping it.
 
         Order mirrors _handle_cm_discrepancy: route existence, then (POST
         only) the request-shape checks, THEN the subject, THEN Topaz, THEN
@@ -1361,7 +1398,8 @@ class Pep(BaseHTTPRequestHandler):
         confirmed.
         """
         path = parsed.path
-        if path != "/proxies/hq-link":
+        proxy_name = _resolve_wan_proxy_name(path)
+        if proxy_name is None:
             if method == "POST":
                 self._drain_body()
             self._deny("unknown path", subject="", resource=path, status=404,
@@ -1445,7 +1483,7 @@ class Pep(BaseHTTPRequestHandler):
             data = json.dumps({"enabled": enabled}).encode()
             req_headers["Content-Type"] = "application/json"
         req = urllib.request.Request(
-            WAN_CONTROL_URL + "/proxies/hq-link", data=data,
+            WAN_CONTROL_URL + "/proxies/" + proxy_name, data=data,
             headers=req_headers, method=method,
         )
         try:
