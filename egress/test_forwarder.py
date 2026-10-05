@@ -72,6 +72,72 @@ def test_duplicate_name_fails_naming_the_entry(tmp_path):
     assert "f1" in str(exc.value)
 
 
+# --- envelope.static ---------------------------------------------------------
+
+def test_static_fields_appear_in_posted_body(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest", "kind": "KindA",
+         "envelope": {"static": {"source": "demo-edge", "schema_version": 2, "retry": False}}},
+    ])
+    [route] = load_forward_config(path)
+    assert dict(route.envelope.static) == {"source": "demo-edge", "schema_version": 2, "retry": False}
+
+    env = build_envelope(route, "k1", {"a": 1})
+    assert env == {
+        "source": "demo-edge", "schema_version": 2, "retry": False,
+        "kind": "KindA", "id": "k1", "payload": {"a": 1},
+    }
+
+
+def test_default_envelope_has_no_static_fields(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest", "kind": "KindA"},
+    ])
+    [route] = load_forward_config(path)
+    assert dict(route.envelope.static) == {}
+
+    env = build_envelope(route, "k1", {"a": 1})
+    assert json.dumps(env, separators=(",", ":")) == '{"kind":"KindA","id":"k1","payload":{"a":1}}'
+
+
+def test_static_colliding_with_body_field_raises_naming_the_key(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest", "kind": "KindA",
+         "envelope": {"static": {"payload": "oops"}}},
+    ])
+    with pytest.raises(ForwardConfigError) as exc:
+        load_forward_config(path)
+    assert "payload" in str(exc.value)
+
+
+def test_static_colliding_with_kind_field_raises_naming_the_key(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest", "kind": "KindA",
+         "envelope": {"kind_field": "type", "static": {"type": "oops"}}},
+    ])
+    with pytest.raises(ForwardConfigError) as exc:
+        load_forward_config(path)
+    assert "type" in str(exc.value)
+
+
+def test_static_non_object_raises_forward_config_error(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest", "kind": "KindA",
+         "envelope": {"static": ["not", "an", "object"]}},
+    ])
+    with pytest.raises(ForwardConfigError):
+        load_forward_config(path)
+
+
+def test_static_nested_value_raises_forward_config_error(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest", "kind": "KindA",
+         "envelope": {"static": {"nested": {"a": 1}}}},
+    ])
+    with pytest.raises(ForwardConfigError):
+        load_forward_config(path)
+
+
 # --- run_once: the fake consumer/HTTP seam ---------------------------------
 
 class _FakeMessage:
