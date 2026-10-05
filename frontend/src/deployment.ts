@@ -190,6 +190,23 @@ export interface ReleasedRecordsPaneConfig {
   columns: ReleasedRecordsColumnConfig[];
 }
 
+/** How an edge's rows reach HQ's postgres — declared by the deployment,
+ *  never inferred by the frontend (see openddil-helm's
+ *  openddil.validateEdgeAttachment, which checks the declaration against
+ *  the chart's own tierNode topology at render time).
+ *
+ *  `tier`: the edge projects into its own tier store; survives an uplink
+ *  cut; goes stale at HQ during one.
+ *  `hq`: the edge writes straight to HQ; has no edge store; stays fresh at
+ *  HQ during an uplink cut because HQ is where it lives. */
+export type EdgeAttachment = 'tier' | 'hq';
+
+/** One entry of `deployment.json`'s `edges` list — see `parseEdgeAttachments`. */
+export interface EdgeAttachmentEntry {
+  id: string;
+  attachment: EdgeAttachment;
+}
+
 export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
@@ -233,6 +250,13 @@ export interface Deployment {
    *  "the UI believes it is a tier it is not" is precisely the class of
    *  defect (UD-9) this field exists to close. */
   tier?: TierConfig;
+  /** Declared edge attachments (ADR edge-attachment labeling) — which edges
+   *  are HQ-attached and which project into their own tier. ABSENT means
+   *  no edge declared one; `edgeAttachment(id)` returns undefined for
+   *  every edge in that case, same as for an edge that is present but did
+   *  not declare one. Parsed by `parseEdgeAttachments`. DECLARED ONLY —
+   *  never inferred here; the chart is the only source of this list. */
+  edges?: EdgeAttachmentEntry[];
 }
 
 /** THE TIER A DEPLOYMENT GETS WHEN IT DECLARES NONE.
@@ -416,6 +440,52 @@ export function parseEgressPane(raw: unknown): EgressPaneConfig | undefined {
  *  Anything that isn't an object at all -> undefined, which every reader
  *  of `manualQa` treats identically to `{}`. EXPORTED FOR TESTS, same
  *  reasoning as `parseEgressPane`. */
+/** Parses `deployment.json`'s `edges` list, defensively, like
+ *  `parseEgressPane`. Not an array at all (key absent or wrong type) =>
+ *  undefined, same reading `edgeAttachment` gives for "nothing declared".
+ *
+ *  Within an array, each entry is checked independently: a malformed one
+ *  (missing/non-string `id`, or an `attachment` that isn't exactly `tier`
+ *  or `hq`) is DROPPED, with a console.warn naming why -- never coerced to
+ *  a guessed value, same reasoning as `parseTier`'s "no safe default for a
+ *  declaration" (an unknown attachment value is closer to a typo than to
+ *  an omission, and silently guessing which of `tier`/`hq` it meant would
+ *  risk mislabeling the HQ screens instead of leaving the edge unlabeled).
+ *  EXPORTED FOR TESTS, same reasoning as `parseEgressPane`. */
+export function parseEdgeAttachments(raw: unknown): EdgeAttachmentEntry[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: EdgeAttachmentEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') {
+      console.warn('[deployment] edges entry dropped (not an object):', entry);
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.id !== 'string' || !e.id.trim()) {
+      console.warn('[deployment] edges entry dropped (missing/invalid id):', entry);
+      continue;
+    }
+    if (e.attachment !== 'tier' && e.attachment !== 'hq') {
+      console.warn(
+        `[deployment] edges entry for "${e.id}" dropped (attachment must be ` +
+        `"tier" or "hq"):`,
+        entry,
+      );
+      continue;
+    }
+    out.push({ id: e.id.trim(), attachment: e.attachment });
+  }
+  return out;
+}
+
+/** Looks up a single edge's declared attachment. Undefined when nothing
+ *  was declared for this deployment at all, or nothing was declared for
+ *  this particular edge -- the two are indistinguishable on purpose,
+ *  because both mean "render this edge exactly as a tier edge." */
+export function edgeAttachment(edgeId: string): EdgeAttachment | undefined {
+  return active.edges?.find((e) => e.id === edgeId)?.attachment;
+}
+
 export function parseManualQa(raw: unknown): ManualQaConfig | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const stub = (raw as Record<string, unknown>).stub;
@@ -502,6 +572,7 @@ export async function loadDeployment(): Promise<void> {
         ),
         egressPane: parseEgressPane((j as { egressPane?: unknown }).egressPane),
         manualQa: parseManualQa((j as { manualQa?: unknown }).manualQa),
+        edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
       };
     }
   } catch {

@@ -29,7 +29,7 @@ import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
-import { deployment, type Fob } from '../../deployment';
+import { deployment, edgeAttachment, type Fob, type EdgeAttachment } from '../../deployment';
 import {
   useClassifiedFleet,
   useAllLogisticsStatus,
@@ -84,6 +84,10 @@ interface FobMetrics {
     inflight: number;   // fired munitions currently in flight
     other: number;
   };
+  /** This FOB's edge's declared attachment (deployment.json's `edges`,
+   *  never inferred here). Drives FobLabel's HQ-ATTACHED tag — see
+   *  deployment.ts's `edgeAttachment`. */
+  attachment?: EdgeAttachment;
 }
 
 function buildFobMetrics(
@@ -113,6 +117,7 @@ function buildFobMetrics(
       total: assets.length,
       byOverallSeverity: bySev,
       composition,
+      attachment: edgeAttachment(fob.edge_id),
     };
   });
 }
@@ -256,8 +261,15 @@ function AbstractContinents() {
   );
 }
 
-function FobLabel({
-  position, label, total, composition,
+/** EXPORTED FOR TESTS. The label it renders is the only per-FOB UI this
+ *  component produces, and it is mounted through drei's <Html> inside an
+ *  R3F <Canvas> — reachable only once the Canvas's scene graph is mounted
+ *  (a layout effect gated on a real DOM measurement), not through a plain
+ *  render. Exporting this inner piece lets it be render-tested directly,
+ *  same reasoning as deployment.ts's parseTier/parseEgressPane: a render
+ *  decision gets a direct test rather than one that can't observe it. */
+export function FobLabel({
+  position, label, total, composition, attachment,
 }: {
   position: [number, number, number];
   label: string;
@@ -266,6 +278,9 @@ function FobLabel({
     sensors: number; launchers: number; facilities: number;
     inflight: number; other: number;
   };
+  /** This FOB's edge's declared attachment. 'hq' renders the HQ-ATTACHED
+   *  tag; 'tier' and undeclared (undefined) render the label unchanged. */
+  attachment?: EdgeAttachment;
 }) {
   // Composition pill: sensors + LAUNCHER hardware + facilities. In-flight
   // munitions surface as a smaller separate ticker (IN FLIGHT: N) so
@@ -287,7 +302,17 @@ function FobLabel({
       }}
     >
       <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
-        <div className="text-slate-200 font-bold">{label}</div>
+        <div className="text-slate-200 font-bold">
+          {label}
+          {attachment === 'hq' && (
+            <span
+              className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-cyan-700/50 bg-cyan-900/30 text-cyan-300 uppercase rounded-sm cursor-help"
+              title="Writes straight to HQ. No edge store: this is not edge data that survives a WAN cut."
+            >
+              HQ-ATTACHED
+            </span>
+          )}
+        </div>
         {hasOrbatComposition ? (
           <div className="flex gap-2 text-[9px] mt-0.5">
             {composition.sensors > 0 && (
@@ -547,6 +572,7 @@ export default function TheaterReadinessPosture({
               label={m.fob.label || m.fob.edge_id}
               total={m.total}
               composition={m.composition}
+              attachment={m.attachment}
             />
           ))}
 

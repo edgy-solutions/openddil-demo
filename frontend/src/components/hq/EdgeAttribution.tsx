@@ -30,6 +30,7 @@ import {
   type ClassifiedFleetAsset,
 } from '../../hooks';
 import { dedupFirings } from '../../lib/munitionAsset';
+import { edgeAttachment } from '../../deployment';
 
 interface EdgeRow {
   edge_id: string;
@@ -137,7 +138,17 @@ export default function EdgeAttribution() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.edge_id} className="text-slate-300 border-t border-slate-800">
-                <td className="py-1 text-emerald-400">{r.edge_id}</td>
+                <td className="py-1 text-emerald-400">
+                  {r.edge_id}
+                  {edgeAttachment(r.edge_id) === 'hq' && (
+                    <span
+                      className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-cyan-700/50 bg-cyan-900/30 text-cyan-300 uppercase rounded-sm cursor-help"
+                      title="Writes straight to HQ. No edge store: this is not edge data that survives a WAN cut."
+                    >
+                      HQ-ATTACHED
+                    </span>
+                  )}
+                </td>
                 <td className="py-1 text-slate-400">{r.region_id}</td>
                 <td className="py-1 text-right tabular-nums">{r.hardware_count}</td>
                 <td className={`py-1 text-right tabular-nums ${
