@@ -8,10 +8,20 @@ exact order:
   2. unchanged-by-hash skip: the same (kind, key) with the same
      `body_sha256` already in `intake_records` is not re-decided and
      nothing is re-logged or re-published — only a CHANGED body is a
-     revision.
+     revision. The skip does NOT apply to a provisional refusal (step 3):
+     that one is re-decided every poll regardless of hash, until it
+     resolves.
   3. the record it answers must be known (`answered_record_unknown`), or
      not yet decidable if this process has not caught up with the answers
-     topic yet (deferred, not refused, retried next poll);
+     topic yet (deferred, not refused, retried next poll). Once caught
+     up, an unknown answered record is refused, but that refusal is
+     *provisional*: stored and logged like any refusal, yet re-decided
+     every poll — through this same step and on through steps 4-7 — until
+     the record arrives or `answers.provisional_timeout_s` passes, at
+     which point it becomes final. A stored row with no `provisional` key
+     counts as provisional, so a refusal already on disk before this rule
+     existed still resolves by this same path (ADR-0046 v2 §5, amendment
+     2026-10-05);
   4. its label must equal that answered record's label (`label_mismatch`);
   5. every approver subject must resolve and be entitled to the label, by
      the SAME predicate the read path applies (`approver_unresolved`,
@@ -57,7 +67,7 @@ import signal as signal_module
 import sys
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -127,6 +137,12 @@ class AnswersSpec:
     kind: str
     ref_pointer: str  # in the artifact: which answered record it answers
     id_pointer: str   # in the answered record: its own id
+    # How long a refusal for an unknown answered record stays provisional
+    # before becoming final — see `decide_artifact`'s step 3. Defaulted here
+    # (not just at config-parse time) so a caller that builds an
+    # `AnswersSpec` directly, as every existing test does, keeps today's
+    # 900s without having to name the field.
+    provisional_timeout_s: int = 900
 
 
 @dataclass(frozen=True)
@@ -245,6 +261,12 @@ def load_intake_config(
         id_pointer = answers_raw.get("id_pointer")
         if not isinstance(id_pointer, str) or not id_pointer:
             raise IntakeConfigError(f"{label}: 'answers.id_pointer' must be a non-empty string")
+        provisional_timeout_s = answers_raw.get("provisional_timeout_s", 900)
+        if (not isinstance(provisional_timeout_s, int)
+                or isinstance(provisional_timeout_s, bool)
+                or provisional_timeout_s <= 0):
+            raise IntakeConfigError(
+                f"{label}: 'answers.provisional_timeout_s' must be an int > 0")
 
         approvers_raw = entry.get("approvers")
         if not isinstance(approvers_raw, Mapping):
@@ -271,7 +293,8 @@ def load_intake_config(
             poll=PollSpec(url=url, interval_s=float(interval_s), items_pointer=items_pointer,
                           auth=poll_auth),
             answers=AnswersSpec(topic=answers_topic, kind=answers_kind,
-                                 ref_pointer=ref_pointer, id_pointer=id_pointer),
+                                 ref_pointer=ref_pointer, id_pointer=id_pointer,
+                                 provisional_timeout_s=provisional_timeout_s),
             approvers=ApproversSpec(array_pointer=array_pointer, subject_field=subject_field),
             onward_topic=onward_topic, on_behalf_of_pointer=on_behalf_of_pointer,
         ))
@@ -326,6 +349,12 @@ class IntakeDecision:
     # `decide_artifact`.
     versions_from: str = "decision"
     detail: str = ""
+    # A refusal for an unknown answered record that may still resolve once
+    # the record arrives (see `decide_artifact`'s step 3 and `is_provisional`
+    # below). False for every other reason, and for a final refusal of this
+    # same reason once its timeout has passed.
+    provisional: bool = False
+    provisional_since: str | None = None  # ISO-8601 UTC
 
     def as_json(self) -> dict[str, Any]:
         return {
@@ -342,7 +371,19 @@ class IntakeDecision:
             "corpus_version": self.corpus_version,
             "versions_from": self.versions_from,
             "detail": self.detail,
+            "provisional": self.provisional,
+            "provisional_since": self.provisional_since,
         }
+
+
+def is_provisional(decision: Mapping) -> bool:
+    """True iff `decision` is a still-open provisional refusal for an
+    unknown answered record. A stored row from before this rule existed has
+    no `provisional` key at all — it counts as provisional too, so a
+    refusal already sitting in `intake_records` resolves by the same path
+    (`run_poll`'s re-decide branch) instead of being stuck final forever."""
+    return (decision.get("reason") == REASON_ANSWERED_RECORD_UNKNOWN
+            and decision.get("provisional") is not False)
 
 
 @dataclass(frozen=True)
@@ -370,6 +411,8 @@ def decide_artifact(
     answered: AnsweredMap,
     gate_for: Callable[[str], EgressGate],
     startup_versions: Mapping[str, str] | None = None,
+    now: datetime | None = None,
+    provisional_since: datetime | None = None,
 ) -> Outcome:
     """Decide one artifact, per the governing text's seven steps.
 
@@ -385,6 +428,14 @@ def decide_artifact(
     `answered_record_unknown`, `label_mismatch`, `approvers_missing`).
     Omitted (as every existing caller before this parameter existed still
     does) falls back to the literal "unknown" default, unchanged.
+
+    `now`/`provisional_since` govern step 3's provisional-refusal rule (see
+    the module docstring). `now=None` keeps the pre-existing behaviour
+    exactly: a plain, non-provisional refusal when the answered record is
+    unknown. With `now` given, `provisional_since or now` is the moment the
+    refusal has been standing since; still within
+    `entry.answers.provisional_timeout_s` of it, the refusal is
+    provisional, otherwise it is final.
     """
     raw_key = pointer.get(artifact, decl.key, default=None)
     key = raw_key if isinstance(raw_key, str) and raw_key else ""
@@ -414,6 +465,7 @@ def decide_artifact(
         allowed: bool, reason: str, *, detail: str = "",
         answered_id: str | None = None, approvers: tuple[str, ...] = (),
         on_behalf_of: str | None = None,
+        provisional: bool = False, provisional_since_iso: str | None = None,
     ) -> Outcome:
         decision = IntakeDecision(
             decision_id=new_decision_id(), allowed=allowed, reason=reason,
@@ -421,7 +473,7 @@ def decide_artifact(
             answered_id=answered_id, approvers=approvers, on_behalf_of=on_behalf_of,
             policy_version=versions["policy_version"], corpus_version=versions["corpus_version"],
             versions_from=versions["versions_from"],
-            detail=detail,
+            detail=detail, provisional=provisional, provisional_since=provisional_since_iso,
         )
         return Outcome(
             status=DECIDED, key=key, body_sha256=body_sha256, label=label,
@@ -440,9 +492,31 @@ def decide_artifact(
     if answered_label is None:
         if not answered.caught_up:
             return Outcome(status=DEFERRED, key=key, body_sha256=body_sha256)
+        if now is None:
+            # Back-compat: no `now` means no provisional tracking at all —
+            # today's plain refusal, unchanged.
+            return _decided(
+                False, REASON_ANSWERED_RECORD_UNKNOWN, answered_id=answered_id,
+                detail=f"no answered record for id {answered_id!r}",
+            )
+        since = provisional_since or now
+        timeout = timedelta(seconds=entry.answers.provisional_timeout_s)
+        if now - since < timeout:
+            return _decided(
+                False, REASON_ANSWERED_RECORD_UNKNOWN, answered_id=answered_id,
+                detail=(
+                    f"no answered record for id {answered_id!r}; "
+                    f"provisional until {(since + timeout).isoformat()}"
+                ),
+                provisional=True, provisional_since_iso=since.isoformat(),
+            )
         return _decided(
             False, REASON_ANSWERED_RECORD_UNKNOWN, answered_id=answered_id,
-            detail=f"no answered record for id {answered_id!r}",
+            detail=(
+                f"no answered record for id {answered_id!r} after "
+                f"{entry.answers.provisional_timeout_s}s; final"
+            ),
+            provisional=False, provisional_since_iso=since.isoformat(),
         )
 
     # Approver subjects, extracted here (ahead of steps 4-5 that use them) so
@@ -593,15 +667,41 @@ async def run_poll(
             continue
 
         raw_key = pointer.get(artifact, decl.key, default=None)
-        existing_sha256 = None
+        existing: ExistingRecord | None = None
         if isinstance(raw_key, str) and raw_key:
-            existing_sha256 = await store.get_existing_sha256(entry.kind, raw_key)
+            existing = await store.get_existing(entry.kind, raw_key)
+
+        body_sha256 = canonical_sha256(artifact)
+        same_sha = existing is not None and existing.body_sha256 == body_sha256
+
+        # A held provisional refusal is re-decided every poll regardless of
+        # hash (module docstring, step 2) — everything else (no row, a
+        # changed body, or a same-sha row that is NOT a provisional
+        # refusal) goes through `decide_artifact` exactly as before.
+        resolving_provisional = same_sha and existing is not None and is_provisional(existing.decision)
+
+        if same_sha and not resolving_provisional:
+            counters["skipped_unchanged"] = counters.get("skipped_unchanged", 0) + 1
+            continue
+
+        decide_provisional_since: datetime | None = None
+        if resolving_provisional:
+            assert existing is not None
+            raw_since = existing.decision.get("provisional_since")
+            if isinstance(raw_since, str) and raw_since:
+                try:
+                    decide_provisional_since = datetime.fromisoformat(raw_since)
+                except ValueError:
+                    decide_provisional_since = existing.decided_at
+            else:
+                decide_provisional_since = existing.decided_at
 
         try:
             outcome = decide_artifact(
                 entry, decl, validator, artifact,
-                existing_sha256=existing_sha256, answered=answered, gate_for=gate_for,
+                existing_sha256=None, answered=answered, gate_for=gate_for,
                 startup_versions=startup_versions,
+                now=now, provisional_since=decide_provisional_since,
             )
         except AuthzUnavailable as exc:
             log.warning("intake entry=%s: authz unavailable, not decided: %s", entry.name, exc)
@@ -617,6 +717,13 @@ async def run_poll(
 
         decision = outcome.decision
         assert decision is not None  # DECIDED always carries one
+
+        if resolving_provisional and is_provisional(decision.as_json()):
+            # Still unknown, still within its timeout: held, not re-logged,
+            # not re-stored — the stored row already says `provisional`.
+            counters["held_provisional"] = counters.get("held_provisional", 0) + 1
+            continue
+
         log.info("INTAKE_DECISION %s", json.dumps(decision.as_json(), sort_keys=True))
         counters["decided"] = counters.get("decided", 0) + 1
 
@@ -631,8 +738,12 @@ async def run_poll(
                 continue
             counters["admitted"] = counters.get("admitted", 0) + 1
         else:
-            counter_key = f"refused:{decision.reason}"
+            prefix = "provisional" if decision.provisional else "refused"
+            counter_key = f"{prefix}:{decision.reason}"
             counters[counter_key] = counters.get(counter_key, 0) + 1
+
+        if resolving_provisional:
+            counters["resolved_provisional"] = counters.get("resolved_provisional", 0) + 1
 
         await store.upsert(
             kind=entry.kind, key=outcome.key,
@@ -646,6 +757,7 @@ async def run_poll(
 
 def log_counters(name: str, counters: Mapping[str, int]) -> None:
     """One line per entry: polled, decided, admitted, refused by reason,
+    provisional by reason, held_provisional, resolved_provisional,
     skipped_unchanged, deferred, authz_unavailable, delivery_failed —
     logged every 60s and at shutdown, the same convention
     `assembler.log_counters` uses."""
@@ -702,6 +814,17 @@ def _make_produce(producer) -> Callable[[str, bytes, bytes], None]:
     return produce
 
 
+@dataclass(frozen=True)
+class ExistingRecord:
+    """The one existing `intake_records` row for a (kind, key), as `run_poll`
+    needs it to decide whether to skip, re-decide (a held provisional
+    refusal), or treat the artifact as a revision."""
+
+    body_sha256: str
+    decision: dict
+    decided_at: datetime
+
+
 class IntakeStore:
     """Postgres via asyncpg, a fresh connection per call — the same
     convention `pane_api.py` uses, for the same reason: this process is
@@ -711,17 +834,24 @@ class IntakeStore:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
 
-    async def get_existing_sha256(self, kind: str, key: str) -> str | None:
+    async def get_existing(self, kind: str, key: str) -> ExistingRecord | None:
         import asyncpg  # noqa: PLC0415
         conn = await asyncpg.connect(self._dsn)
         try:
             row = await conn.fetchrow(
-                "SELECT body_sha256 FROM intake_records WHERE kind = $1 AND key = $2",
+                "SELECT body_sha256, decision, decided_at FROM intake_records"
+                " WHERE kind = $1 AND key = $2",
                 kind, key,
             )
         finally:
             await conn.close()
-        return row["body_sha256"] if row is not None else None
+        if row is None:
+            return None
+        decision = row["decision"]
+        if isinstance(decision, str):
+            decision = json.loads(decision)
+        return ExistingRecord(
+            body_sha256=row["body_sha256"], decision=decision, decided_at=row["decided_at"])
 
     async def upsert(
         self, *, kind: str, key: str, originator_nation: str | None,

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -40,10 +40,13 @@ from intake import (  # noqa: E402
     _AnswersConsumer,
     ApproversSpec,
     AnswersSpec,
+    ExistingRecord,
     IntakeConfigError,
     IntakeEntry,
     PollSpec,
+    canonical_sha256,
     decide_artifact,
+    is_provisional,
     load_intake_config,
     run_poll,
 )
@@ -463,12 +466,15 @@ class _FakeStore:
         self.existing = dict(existing or {})
         self.upserts: list[dict] = []
 
-    async def get_existing_sha256(self, kind, key):
+    async def get_existing(self, kind, key):
         return self.existing.get((kind, key))
 
     async def upsert(self, **kwargs):
         self.upserts.append(kwargs)
-        self.existing[(kwargs["kind"], kwargs["key"])] = kwargs["body_sha256"]
+        self.existing[(kwargs["kind"], kwargs["key"])] = ExistingRecord(
+            body_sha256=kwargs["body_sha256"], decision=kwargs["decision"],
+            decided_at=kwargs["decided_at"],
+        )
 
 
 def _fetch_one(art: Mapping[str, Any]):
@@ -683,6 +689,9 @@ def test_answers_consumer_empty_at_start_then_filled_still_reads_it():
 
 
 def test_run_poll_orphan_answer_after_reset_is_refused_with_reason(caplog):
+    # A fresh refusal right after a reset is provisional (see the
+    # provisional-refusal tests below) rather than final on the spot — this
+    # test only pins down the shared shape (reason, logging, storing).
     answered = _drained(_FakeAnswersKafka({0: (0, []), 1: (12, [])}))
     store = _FakeStore()
     counters: dict[str, int] = {}
@@ -694,11 +703,12 @@ def test_run_poll_orphan_answer_after_reset_is_refused_with_reason(caplog):
             produce=lambda *a: None, counters=counters, now=NOW,
         ))
     assert "deferred" not in counters
-    assert counters["refused:" + REASON_ANSWERED_RECORD_UNKNOWN] == 1
+    assert counters["provisional:" + REASON_ANSWERED_RECORD_UNKNOWN] == 1
     assert len(store.upserts) == 1
     decision = store.upserts[0]["decision"]
     assert decision["allowed"] is False
     assert decision["reason"] == REASON_ANSWERED_RECORD_UNKNOWN
+    assert decision["provisional"] is True
     assert "rec-gone" in decision["detail"]
     assert any("INTAKE_DECISION" in rec.message
                and REASON_ANSWERED_RECORD_UNKNOWN in rec.message
@@ -884,3 +894,342 @@ def test_http_fetch_sends_authorization_bearer_header(monkeypatch):
     monkeypatch.setattr("intake.urllib.request.urlopen", fake_urlopen)
     http_fetch("http://stand-in/artifacts", "auth-token-xyz")
     assert captured["headers"].get("Authorization") == "Bearer auth-token-xyz"
+
+
+# --- config: answers.provisional_timeout_s ----------------------------------
+
+def _intake_config_with_provisional_timeout(tmp_path, raw_json: str | None) -> Path:
+    config_path = tmp_path / "intake.json"
+    extra = (', "provisional_timeout_s": ' + raw_json) if raw_json is not None else ""
+    config_path.write_text(
+        '[{"name": "n1", "source_destination": "system:relay-a", "kind": "KindQ",'
+        ' "poll": {"url": "http://x", "interval_s": 5, "items_pointer": ""},'
+        ' "answers": {"topic": "t", "kind": "KindR", "ref_pointer": "/a", "id_pointer": "/b"'
+        + extra + '},'
+        ' "approvers": {"array_pointer": "/e", "subject_field": "subject"},'
+        ' "onward_topic": "o"}]',
+        encoding="utf-8",
+    )
+    return config_path
+
+
+def test_load_intake_config_provisional_timeout_s_defaults_to_900(tmp_path):
+    config_path = _intake_config_with_provisional_timeout(tmp_path, None)
+    [entry] = load_intake_config(config_path, {"KindQ": QUOTE_DECL, "KindR": RECORD_DECL})
+    assert entry.answers.provisional_timeout_s == 900
+
+
+def test_load_intake_config_provisional_timeout_s_explicit_parses(tmp_path):
+    config_path = _intake_config_with_provisional_timeout(tmp_path, "120")
+    [entry] = load_intake_config(config_path, {"KindQ": QUOTE_DECL, "KindR": RECORD_DECL})
+    assert entry.answers.provisional_timeout_s == 120
+
+
+@pytest.mark.parametrize("bad_json", ["0", "-1", "true", "1.5", '"60"'])
+def test_load_intake_config_provisional_timeout_s_invalid_raises(tmp_path, bad_json):
+    config_path = _intake_config_with_provisional_timeout(tmp_path, bad_json)
+    with pytest.raises(IntakeConfigError, match="provisional_timeout_s"):
+        load_intake_config(config_path, {"KindQ": QUOTE_DECL, "KindR": RECORD_DECL})
+
+
+# --- decide_artifact: a provisional refusal for an unknown answered record --
+
+def test_decide_provisional_refusal_when_now_given_no_provisional_since():
+    entry = make_entry()
+    answered = AnsweredMap()
+    answered.caught_up = True
+    now = datetime(2026, 10, 2, 12, 0, 0, tzinfo=timezone.utc)
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        now=now,
+    )
+    assert outcome.decision.allowed is False
+    assert outcome.decision.reason == REASON_ANSWERED_RECORD_UNKNOWN
+    assert outcome.decision.provisional is True
+    assert outcome.decision.provisional_since == now.isoformat()
+
+
+def test_decide_provisional_still_within_timeout_keeps_original_since():
+    entry = make_entry()
+    answered = AnsweredMap()
+    answered.caught_up = True
+    now = datetime(2026, 10, 2, 12, 0, 0, tzinfo=timezone.utc)
+    since = now - timedelta(seconds=100)
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        now=now, provisional_since=since,
+    )
+    assert outcome.decision.allowed is False
+    assert outcome.decision.provisional is True
+    assert outcome.decision.provisional_since == since.isoformat()
+
+
+def test_decide_provisional_past_timeout_becomes_final():
+    entry = make_entry()
+    answered = AnsweredMap()
+    answered.caught_up = True
+    now = datetime(2026, 10, 2, 12, 0, 0, tzinfo=timezone.utc)
+    since = now - timedelta(seconds=901)
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        now=now, provisional_since=since,
+    )
+    assert outcome.decision.allowed is False
+    assert outcome.decision.reason == REASON_ANSWERED_RECORD_UNKNOWN
+    assert outcome.decision.provisional is False
+    assert "900s; final" in outcome.decision.detail
+
+
+def test_decide_admits_when_record_known_even_with_provisional_since_given():
+    entry = make_entry()
+    answered = answered_map_with("rec-1")
+    now = datetime(2026, 10, 2, 12, 0, 0, tzinfo=timezone.utc)
+    since = now - timedelta(seconds=100)
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        now=now, provisional_since=since,
+    )
+    assert outcome.decision.allowed is True
+    assert outcome.decision.reason == ADMIT
+
+
+def test_decide_without_now_is_plain_refusal_not_provisional():
+    """Back-compat: existing callers that pass no `now` keep today's plain
+    refusal — `provisional` stays False and is never set True by surprise."""
+    entry = make_entry()
+    answered = AnsweredMap()
+    answered.caught_up = True
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+    )
+    assert outcome.decision.allowed is False
+    assert outcome.decision.reason == REASON_ANSWERED_RECORD_UNKNOWN
+    assert outcome.decision.provisional is False
+    assert outcome.decision.provisional_since is None
+
+
+def test_as_json_always_has_provisional_keys():
+    entry = make_entry()
+    answered = answered_map_with("rec-1")
+    outcome = decide_artifact(
+        entry, QUOTE_DECL, VALIDATE_QUOTE, artifact(),
+        existing_sha256=None, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+    )
+    payload = outcome.decision.as_json()
+    assert payload["provisional"] is False
+    assert "provisional_since" in payload
+
+
+# --- is_provisional -----------------------------------------------------
+
+def test_is_provisional_true_for_fresh_provisional_refusal():
+    assert is_provisional({
+        "reason": REASON_ANSWERED_RECORD_UNKNOWN, "provisional": True,
+    }) is True
+
+
+def test_is_provisional_false_for_final_refusal():
+    assert is_provisional({
+        "reason": REASON_ANSWERED_RECORD_UNKNOWN, "provisional": False,
+    }) is False
+
+
+def test_is_provisional_false_for_other_reasons():
+    assert is_provisional({"reason": ADMIT, "provisional": False}) is False
+
+
+def test_is_provisional_true_for_legacy_row_missing_the_key():
+    assert is_provisional({"reason": REASON_ANSWERED_RECORD_UNKNOWN}) is True
+
+
+# --- run_poll: a provisional refusal is re-decided, not hash-skipped --------
+
+def _provisional_existing(sha: str, *, provisional_since) -> ExistingRecord:
+    return ExistingRecord(
+        body_sha256=sha,
+        decision={
+            "reason": REASON_ANSWERED_RECORD_UNKNOWN, "allowed": False,
+            "provisional": True, "provisional_since": provisional_since.isoformat(),
+        },
+        decided_at=provisional_since,
+    )
+
+
+def test_run_poll_resolves_provisional_refusal_to_admit_when_record_arrives():
+    entry = make_entry()
+    art = artifact()
+    sha = canonical_sha256(art)
+    store = _FakeStore()
+    store.existing[("KindQ", "art-1")] = _provisional_existing(
+        sha, provisional_since=NOW - timedelta(seconds=100))
+    answered = answered_map_with("rec-1")
+    produced: list[tuple] = []
+    counters: dict[str, int] = {}
+    asyncio.run(run_poll(
+        entry, QUOTE_DECL, VALIDATE_QUOTE,
+        fetch=_fetch_one(art), store=store, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        produce=lambda *a: produced.append(a), counters=counters, now=NOW,
+    ))
+    assert len(produced) == 1
+    assert len(store.upserts) == 1
+    decision = store.upserts[0]["decision"]
+    assert decision["allowed"] is True
+    assert decision["provisional"] is False
+    assert counters.get("resolved_provisional") == 1
+    assert counters.get("admitted") == 1
+
+
+def test_run_poll_holds_provisional_refusal_when_still_unknown_within_timeout(caplog):
+    entry = make_entry()
+    art = artifact()
+    sha = canonical_sha256(art)
+    store = _FakeStore()
+    store.existing[("KindQ", "art-1")] = _provisional_existing(
+        sha, provisional_since=NOW - timedelta(seconds=100))
+    answered = AnsweredMap()
+    answered.caught_up = True  # record still unknown
+    produced: list[tuple] = []
+    counters: dict[str, int] = {}
+    with caplog.at_level("INFO"):
+        asyncio.run(run_poll(
+            entry, QUOTE_DECL, VALIDATE_QUOTE,
+            fetch=_fetch_one(art), store=store, answered=answered,
+            gate_for=lambda subject: resolved_gate(),
+            produce=lambda *a: produced.append(a), counters=counters, now=NOW,
+        ))
+    assert produced == []
+    assert store.upserts == []
+    assert counters.get("held_provisional") == 1
+    assert not any("INTAKE_DECISION" in rec.message for rec in caplog.records)
+
+
+def test_run_poll_legacy_row_without_provisional_key_resolves_to_final_after_timeout():
+    entry = make_entry()
+    art = artifact()
+    sha = canonical_sha256(art)
+    store = _FakeStore()
+    store.existing[("KindQ", "art-1")] = ExistingRecord(
+        body_sha256=sha,
+        decision={"reason": REASON_ANSWERED_RECORD_UNKNOWN, "allowed": False},
+        decided_at=NOW - timedelta(seconds=2000),
+    )
+    answered = AnsweredMap()
+    answered.caught_up = True  # record still unknown
+    counters: dict[str, int] = {}
+    asyncio.run(run_poll(
+        entry, QUOTE_DECL, VALIDATE_QUOTE,
+        fetch=_fetch_one(art), store=store, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        produce=lambda *a: None, counters=counters, now=NOW,
+    ))
+    assert len(store.upserts) == 1
+    decision = store.upserts[0]["decision"]
+    assert decision["allowed"] is False
+    assert decision["provisional"] is False
+    assert counters.get("resolved_provisional") == 1
+    assert counters.get("refused:" + REASON_ANSWERED_RECORD_UNKNOWN) == 1
+
+
+def test_run_poll_legacy_row_resolves_to_admit_when_record_now_known():
+    entry = make_entry()
+    art = artifact()
+    sha = canonical_sha256(art)
+    store = _FakeStore()
+    store.existing[("KindQ", "art-1")] = ExistingRecord(
+        body_sha256=sha,
+        decision={"reason": REASON_ANSWERED_RECORD_UNKNOWN, "allowed": False},
+        decided_at=NOW - timedelta(seconds=2000),
+    )
+    answered = answered_map_with("rec-1")
+    counters: dict[str, int] = {}
+    asyncio.run(run_poll(
+        entry, QUOTE_DECL, VALIDATE_QUOTE,
+        fetch=_fetch_one(art), store=store, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        produce=lambda *a: None, counters=counters, now=NOW,
+    ))
+    assert len(store.upserts) == 1
+    assert store.upserts[0]["decision"]["allowed"] is True
+    assert counters.get("resolved_provisional") == 1
+    assert counters.get("admitted") == 1
+
+
+def test_run_poll_final_refusal_row_same_sha_is_skipped_even_if_record_now_known():
+    entry = make_entry()
+    art = artifact()
+    sha = canonical_sha256(art)
+    store = _FakeStore()
+    store.existing[("KindQ", "art-1")] = ExistingRecord(
+        body_sha256=sha,
+        decision={
+            "reason": REASON_ANSWERED_RECORD_UNKNOWN, "allowed": False,
+            "provisional": False,
+            "provisional_since": (NOW - timedelta(seconds=2000)).isoformat(),
+        },
+        decided_at=NOW - timedelta(seconds=2000),
+    )
+    answered = answered_map_with("rec-1")
+    counters: dict[str, int] = {}
+    asyncio.run(run_poll(
+        entry, QUOTE_DECL, VALIDATE_QUOTE,
+        fetch=_fetch_one(art), store=store, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        produce=lambda *a: None, counters=counters, now=NOW,
+    ))
+    assert store.upserts == []
+    assert counters.get("skipped_unchanged") == 1
+    assert "resolved_provisional" not in counters
+
+
+def test_run_poll_admitted_row_same_sha_is_skipped():
+    entry = make_entry()
+    art = artifact()
+    sha = canonical_sha256(art)
+    store = _FakeStore()
+    store.existing[("KindQ", "art-1")] = ExistingRecord(
+        body_sha256=sha,
+        decision={"reason": ADMIT, "allowed": True, "provisional": False,
+                  "provisional_since": None},
+        decided_at=NOW - timedelta(seconds=10),
+    )
+    answered = answered_map_with("rec-1")
+    counters: dict[str, int] = {}
+    asyncio.run(run_poll(
+        entry, QUOTE_DECL, VALIDATE_QUOTE,
+        fetch=_fetch_one(art), store=store, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        produce=lambda *a: None, counters=counters, now=NOW,
+    ))
+    assert store.upserts == []
+    assert counters.get("skipped_unchanged") == 1
+
+
+def test_run_poll_first_time_unknown_stores_provisional():
+    entry = make_entry()
+    art = artifact()
+    store = _FakeStore()
+    answered = AnsweredMap()
+    answered.caught_up = True
+    counters: dict[str, int] = {}
+    asyncio.run(run_poll(
+        entry, QUOTE_DECL, VALIDATE_QUOTE,
+        fetch=_fetch_one(art), store=store, answered=answered,
+        gate_for=lambda subject: resolved_gate(),
+        produce=lambda *a: None, counters=counters, now=NOW,
+    ))
+    assert len(store.upserts) == 1
+    decision = store.upserts[0]["decision"]
+    assert decision["provisional"] is True
+    assert counters.get("provisional:" + REASON_ANSWERED_RECORD_UNKNOWN) == 1
