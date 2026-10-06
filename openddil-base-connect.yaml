@@ -76,6 +76,14 @@ pipeline:
       # gating there would be refusing something already built.
       # See dynamic-mappings/dis-kind-gate.yaml for why kind=2 needs this.
       - resource: "dis_kind_gate"
+      # FORCE GATE RIGHT AFTER KIND. Kind first, then force, so a refused
+      # munition is counted once, by kind, not twice (also as a refused
+      # force). Both gates run ahead of sim_dis_mapping, while `force_id` is
+      # still a top-level field — sim-dis-mapping.yaml reads it from
+      # `$src.force_id` (see dynamic-mappings/sim-dis-mapping.yaml:~92), the
+      # same field name this gate checks.
+      # See dynamic-mappings/dis-force-gate.yaml for why.
+      - resource: "dis_force_gate"
       - resource: "sim_dis_mapping"
       - mapping: |
           meta asset_id = this.asset.asset_id

@@ -1,0 +1,84 @@
+# =============================================================================
+# DIS FORCE ADMISSION GATE (ingress)
+# =============================================================================
+# Answers ONE question: may an entity reporting this DIS force id become an
+# OpenDDIL asset? It runs after dis_kind_gate and before sim_dis_mapping, on
+# the same raw DIS-shape object, so `force_id` is still at the top level.
+#
+# DIS FORCE IDS: 0 Other, 1 Friendly, 2 Opposing, 3 Neutral.
+#
+# THE DEFAULT ADMITS FRIENDLY ONLY. An edge is a sensor for its own side; an
+# Opposing or Neutral entity State PDU reported by the co-located simulator
+# is track data about someone else's platform, not a fleet member of this
+# edge. A missing force_id reads as 0 and is refused under the default, same
+# as the kind gate's missing-field convention.
+#
+# THE ENV IS READ ON THE EDGE CONNECT, NOT A CHART VALUE. DIS_ADMITTED_FORCE_IDS
+# is a comma-separated list of DIS force ids, default `1` (Friendly). Env
+# interpolation carries the default, so the gate is ON with no chart change.
+#
+# THE DROP IS A NUMBER, NOT SILENCE. Every gated message increments
+# `dis_ingress_force_dropped{force="<n>"}` on the Connect metrics endpoint
+# (:4196/metrics, Prometheus by default — no `metrics:` block required). Read
+# it directly, same as dis_ingress_kind_dropped.
+#
+# REMOVALS PASS BY PDU TYPE. A Remove Entity record has no force_id, so the
+# force check read it as 0 and would drop every one: no fleet member could
+# ever be removed. This gate is stateless, so it cannot tell a fleet
+# member's removal from a refused force's, and it does not try. A removal
+# therefore never creates the asset this gate refused.
+# =============================================================================
+processor_resources:
+  - label: dis_force_gate
+    switch:
+      # Removal arm: pass. Must come before the force arm, which would drop
+      # every removal as force 0. `noop`, not an empty list: `processors: []`
+      # passes lint and then fails to build at runtime, which takes the whole
+      # gate down with it.
+      - check: 'this.pdu_type.or("") == "remove_entity"'
+        processors:
+          - noop: {}
+
+      # Not-admitted arm. `.int64()` before `.string()` for the same reason
+      # sim-dis-mapping.yaml coerces before formatting: parse_json() yields
+      # json.Number, and stringifying that directly does not give "2".
+      - check: '!("${DIS_ADMITTED_FORCE_IDS:1}".split(",").map_each(f -> f.trim()).contains(this.force_id.or(0).int64().string()))'
+        processors:
+          # Label cardinality is bounded by construction: DIS force id is a
+          # single octet, so this series can never exceed 256 members.
+          - metric:
+              type: counter
+              name: dis_ingress_force_dropped
+              labels:
+                force: '${! this.force_id.or(0).int64().string() }'
+
+          # DEBUG, not INFO, and deliberately. An entity in flight emits
+          # Entity State PDUs for the whole flight, so one log line per gated
+          # message is a flood at exactly the moment the operator needs the
+          # log readable. The counter is the signal; this line is for when
+          # somebody is already investigating and wants the ids.
+          - log:
+              level: DEBUG
+              message: 'dis_force_gate dropped entity=${! this.entity_id_urn.or("<no urn>") } force=${! this.force_id.or(0).int64() } admitted=${DIS_ADMITTED_FORCE_IDS:1}'
+
+          # `root = deleted()`, NOT an error. A refused force is a policy
+          # decision, not malformed data: routing it to ingress-dlq would fill
+          # the dead-letter topic with correctly-formed messages we chose not
+          # to keep, and would make the DLQ depth meaningless as a health
+          # signal. Deleting inside the `try` block does not trigger `catch`.
+          - mapping: 'root = deleted()'
+
+      # No arm 3. An unmatched case (an admitted force) passes through
+      # unchanged.
+
+# NOTE ON SCRAPING, stated because the counter is only half a signal without
+# it: nothing currently scrapes port 4196. There is no ServiceMonitor and no
+# prometheus.io/scrape annotation in the chart — values.yaml carries
+# `httpPort: 4196` and nothing collects from it. Until that exists the counter
+# is read directly:
+#
+#   kubectl exec -n openddil <connect-pod> -- \
+#     wget -qO- http://localhost:4196/metrics | grep dis_ingress_force_dropped
+#
+# A series that is absent means nothing was gated, which is the same thing a
+# missing scrape looks like — so read it before concluding the feed is clean.
