@@ -44,6 +44,7 @@ export {
   type TelemetryWindows,
 } from './useTelemetryWindows';
 export { useTacticalEvents, type TacticalEvent } from './useTacticalEvents';
+export { useEffectorLaunches, type EffectorLaunch } from './useEffectorLaunches';
 export {
   useEdgeBuffer,
   type EdgeBufferStatus,

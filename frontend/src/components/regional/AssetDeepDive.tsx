@@ -9,11 +9,13 @@
 import { X } from 'lucide-react';
 import CmStateCard from '../CmStateCard';
 import LogisticsStatusCard from '../LogisticsStatusCard';
+import EffectorTracksCard from '../EffectorTracksCard';
 import TelemetryCharts from '../TelemetryCharts';
 import {
   useCmState,
   useLogisticsStatus,
   useTelemetryLatest,
+  useEffectorLaunches,
 } from '../../hooks';
 
 interface AssetDeepDiveProps {
@@ -25,6 +27,7 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
   const cm = useCmState(assetId);
   const logistics = useLogisticsStatus(assetId);
   const telemetry = useTelemetryLatest(assetId);
+  const effectorLaunches = useEffectorLaunches(assetId);
 
   const tel = telemetry.data[0] ?? null;
   const variant = tel?.platform_variant ?? null;
@@ -52,6 +55,7 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
           start rather than flashing the genuinely-empty copy. */}
       <CmStateCard cm={cm.data[0] ?? null} isLoading={cm.isLoading} />
       <LogisticsStatusCard logistics={logistics.data[0] ?? null} isLoading={logistics.isLoading} />
+      <EffectorTracksCard launches={effectorLaunches.data} />
       <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={false} isLoading={telemetry.isLoading} />
     </div>
   );
