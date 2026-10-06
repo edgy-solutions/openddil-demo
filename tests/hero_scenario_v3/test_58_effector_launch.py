@@ -65,8 +65,8 @@ for E5 (result=1) proves a real result still wins over the sweep's
 inference (late_terminal=true), and that `expended` never moves for any of
 this -- it is SUM(quantity) over the table, independent of terminal_state.
 
-Two fail-on-purpose cycles are meant to be run by hand around this script,
-not automated into its PASS path:
+Three fail-on-purpose cycles are meant to be run by hand around this
+script, not automated into its PASS path:
 
   1. Declared-load: bump M1A1's entry in config/effector-declared-load.yaml
      from 8 to 9, `docker compose restart openddil-projector-01` (not
@@ -83,6 +83,13 @@ not automated into its PASS path:
      otherwise holds throughout, and the test FAILs on that assertion
      with the values reported. Unset the env var and rerun for a clean
      PASS.
+  3. Cross-test contamination: run test_59_effector_supply.py (it leaves
+     several of its own effector_launch rows pending a terminal_state --
+     see SKIP_DRAIN's comment), then set EFFECTOR_TEST_SKIP_DRAIN=1 and
+     run this script immediately -- the sweep lands on test_59's foreign
+     rows during this run and effector_unresolved_total reads +8 instead
+     of +3. Unset the env var and rerun (the drain precondition now waits
+     them out first) for a clean PASS.
 
 Cleanup deletes only this run's effector_launch rows (scoped by this run's
 own launcher urns, unique per n) -- declared load is config, not run data,
@@ -154,6 +161,23 @@ METRIC_REPLAYED = "effector_replayed_total"
 # assertion near the end of main() fail with the reported +2.
 INJECT_CONFLICT = os.environ.get("EFFECTOR_TEST_INJECT_CONFLICT") == "1"
 
+# Drain precondition (fail-on-purpose #3, see module docstring): other
+# effector tests (e.g. test_59) can leave their own in-flight effector_launch
+# rows (terminal_state IS NULL) behind when they exit. The timeout sweep
+# resolves those to 'unresolved' asynchronously, up to EFFECTOR_TERMINAL_
+# TIMEOUT_S + one sweep interval later -- if that sweep lands while THIS
+# test is mid-run, its foreign rows get counted into the SAME summed
+# effector_unresolved_total this test baselines and asserts +3 against,
+# inflating the delta. Set to "1" to skip the drain and reproduce that
+# contamination on purpose.
+SKIP_DRAIN = os.environ.get("EFFECTOR_TEST_SKIP_DRAIN") == "1"
+# compose sets EFFECTOR_TERMINAL_TIMEOUT_S=60, sweep interval 15s -- give any
+# pre-existing pending rows a full timeout window plus margin to resolve.
+DRAIN_TIMEOUT_S = 105.0
+# One more sweep interval (15s) plus margin (5s), so a sweep already in
+# flight when the drain check passes has landed before the baseline is read.
+POST_DRAIN_WAIT_S = 20.0
+
 
 def _event_urn(event_number: int) -> str:
     return f"dis-event:{SITE}:{EVENT_APP}:{event_number}"
@@ -207,6 +231,36 @@ def _launch_row_count(event_urns: list[str]) -> int:
     rows = query_postgres(
         f"select count(*) from effector_launch where event_urn in ({in_list})")
     return int(rows[0][0])
+
+
+def _pending_count() -> int:
+    """Rows across ALL runs/tests still awaiting a terminal_state -- the
+    population the timeout sweep can still resolve into effector_unresolved_total
+    at any moment."""
+    rows = query_postgres(
+        "select count(*) from effector_launch where terminal_state is null")
+    return int(rows[0][0])
+
+
+def _wait_drained() -> None:
+    """Block until no effector_launch row anywhere is pending a terminal
+    sweep, then wait one more sweep interval so a sweep already in flight
+    lands before the counter baseline is read. See SKIP_DRAIN's comment for
+    why: a foreign pending row swept mid-run inflates this test's own +3
+    assertion on effector_unresolved_total."""
+    if SKIP_DRAIN:
+        return
+    deadline = time.monotonic() + DRAIN_TIMEOUT_S
+    count = _pending_count()
+    while count != 0 and time.monotonic() < deadline:
+        time.sleep(3.0)
+        count = _pending_count()
+    if count != 0:
+        skip_(NAME, f"{count} effector_launch row(s) still pending a "
+                    f"terminal_state after {DRAIN_TIMEOUT_S:.0f}s -- cannot "
+                    f"take a clean effector_unresolved_total baseline while "
+                    f"a sweep could still land mid-run")
+    time.sleep(POST_DRAIN_WAIT_S)
 
 
 def _counts(launcher_urn: str) -> dict[str, int | None] | None:
@@ -282,6 +336,11 @@ def _cleanup() -> None:
 
 
 def main() -> None:
+    # Drain precondition: see SKIP_DRAIN's comment -- a foreign pending row
+    # from another test, swept mid-run, would inflate the +3 assertion on
+    # effector_unresolved_total below.
+    _wait_drained()
+
     texts_before = _scrape_all()
     unknown_before = _sum_metric(
         texts_before, METRIC_REFUSED, {"reason": "unknown_launcher"})

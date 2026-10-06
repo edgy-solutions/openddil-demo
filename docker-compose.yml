@@ -1113,9 +1113,14 @@ services:
       ONTOLOGY_DIR:            /ontology
       LOG_LEVEL:               INFO
       PYTHONPATH:              /proto:/app/src
+      # Same file every projector instance mounts (config/effector-
+      # declared-load.yaml) — declared load is a property of the launcher
+      # asset/variant, not of which service admits its Fire.
+      EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
       - ontology:/ontology:ro
+      - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro
     ports:
       - "9081:9081"
     depends_on:
