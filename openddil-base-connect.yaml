@@ -53,44 +53,44 @@ pipeline:
           } else {
             this
           }
-      # DIS EVENT REPORT DIVERSION, AHEAD OF dis_kind_gate. An Event Report
-      # PDU (pdu_type "event_report") reports a condition ABOUT an entity --
-      # for example a built-in test's fault report -- not the entity's own
-      # state, so it is not the kind-admission gate's or sim_dis_mapping's
-      # concern at all. dis_event_report decides on its own (configuration,
-      # unset by default) whether to forward it to cm-intake as a CmEvent;
-      # either way the record is deleted here and never reaches raw-sensor-
-      # stream. Entity State and Remove Entity records are untouched: this
-      # switch has no case for them, and an unmatched switch case passes a
-      # message through unchanged. See dynamic-mappings/dis-event-report.yaml.
+      # TOP-OF-PIPELINE DIVERSION SWITCH. Three cases, checked in order, on
+      # the parsed DIS-shape object:
+      #
+      #   1. event_report — a condition ABOUT an entity, not the entity's own
+      #      state. See dynamic-mappings/dis-event-report.yaml. Its only sink
+      #      is HTTP, so it deletes the record itself; nothing here reaches
+      #      raw-sensor-stream.
+      #   2. fire / detonation — a launch or impact event, not a platform's
+      #      kinematics or health. See dynamic-mappings/dis-effector.yaml.
+      #      Its only sink is Kafka, so the record survives unchanged (only
+      #      a meta flag is set) and falls through to output.switch below.
+      #   3. default (Entity State, Remove Entity) — the kind/force gates and
+      #      sim_dis_mapping, moved into this arm so cases 1 and 2 never
+      #      reach them: once sim_dis_mapping runs, `dis_entity_type.kind`
+      #      has moved under `asset.` and gating there would be refusing
+      #      something already built. See dynamic-mappings/dis-kind-gate.yaml
+      #      and dynamic-mappings/dis-force-gate.yaml for why kind runs
+      #      before force.
       - switch:
           - check: 'this.pdu_type.or("") == "event_report"'
             processors:
               - resource: "dis_event_report"
 
-      # ADMISSION BEFORE RESHAPING. The gate runs on the parsed DIS-shape
-      # object and drops entity kinds that are not admitted (default: kind=1,
-      # PLATFORM), counting each drop per kind. It must stay AHEAD of
-      # sim_dis_mapping: once that resource has run, `dis_entity_type.kind`
-      # has moved under `asset.` and the message is an asset-shaped event —
-      # gating there would be refusing something already built.
-      # See dynamic-mappings/dis-kind-gate.yaml for why kind=2 needs this.
-      - resource: "dis_kind_gate"
-      # FORCE GATE RIGHT AFTER KIND. Kind first, then force, so a refused
-      # munition is counted once, by kind, not twice (also as a refused
-      # force). Both gates run ahead of sim_dis_mapping, while `force_id` is
-      # still a top-level field — sim-dis-mapping.yaml reads it from
-      # `$src.force_id` (see dynamic-mappings/sim-dis-mapping.yaml:~92), the
-      # same field name this gate checks.
-      # See dynamic-mappings/dis-force-gate.yaml for why.
-      - resource: "dis_force_gate"
-      - resource: "sim_dis_mapping"
-      - mapping: |
-          meta asset_id = this.asset.asset_id
-      - protobuf:
-          operator: from_json
-          message: openddil.telemetry.v1.EntityTelemetryEvent
-          import_paths: [ "/proto" ]
+          - check: 'this.pdu_type.or("") == "fire" || this.pdu_type.or("") == "detonation"'
+            processors:
+              - resource: "dis_effector"
+
+          - check: ""
+            processors:
+              - resource: "dis_kind_gate"
+              - resource: "dis_force_gate"
+              - resource: "sim_dis_mapping"
+              - mapping: |
+                  meta asset_id = this.asset.asset_id
+              - protobuf:
+                  operator: from_json
+                  message: openddil.telemetry.v1.EntityTelemetryEvent
+                  import_paths: [ "/proto" ]
 
     # Catch block handles malformed data or schema errors
     - catch:
@@ -110,6 +110,18 @@ output:
           kafka_franz:
             topic: "ingress-dlq"
             seed_brokers: [ "${REDPANDA_BROKER:redpanda-edge-01:9092}" ]
+      # Fire/Detonation records, diverted and flagged by dis_effector (see
+      # dynamic-mappings/dis-effector.yaml). Same style as the raw-sensor-
+      # stream case below, keyed by launcher_urn instead of asset_id since
+      # the record is still JSON (never protobuf-encoded) and still carries
+      # that field directly.
+      - check: meta("is_effector") == "true"
+        output:
+          kafka_franz:
+            seed_brokers: [ "${REDPANDA_BROKER:redpanda-edge-01:9092}" ]
+            topic: "effector-events"
+            key: '${! json("launcher_urn") }'
+            max_in_flight: 64
       - output:
           kafka_franz:
             seed_brokers: [ "${REDPANDA_BROKER:redpanda-edge-01:9092}" ]

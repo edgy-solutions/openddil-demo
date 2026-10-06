@@ -41,6 +41,7 @@ HTTP_DIAG_URL   = "http://127.0.0.1:9999/"
 TOPIC_BRONZE    = "ingress-dis-raw"
 TOPIC_SILVER    = "raw-sensor-stream"
 TOPIC_DLQ       = "ingress-dlq"
+TOPIC_EFFECTOR  = "effector-events"
 
 # Redpanda Connect's own Prometheus endpoint. It is NOT published to the host
 # in docker-compose (only the diagnostic 9999 is), so it is scraped by shelling
@@ -313,6 +314,128 @@ def build_entity_state_pdu(
     return bytes(buf)
 
 
+def _pack_entity_id_or_zero(site: int, application: int,
+                            entity: int | None) -> bytes:
+    """Pack an EntityID triple, or the DIS wildcard-unassigned (0,0,0) when
+    `entity` is None -- the sentinel dis_ingestor._entity_urn_or_none()
+    reads as "field not present" (see its own docstring)."""
+    if entity is None:
+        return struct.pack(">HHH", 0, 0, 0)
+    return struct.pack(">HHH", site, application, entity)
+
+
+def build_fire_pdu(
+    site: int = 1,
+    application: int = 1,
+    event_number: int = 1,
+    firing_entity: int = 57001,
+    target_entity: int | None = 57010,
+    munition_entity: int = 0,
+    munition_type: tuple[int, int, int, int, int, int, int] = (2, 0, 0, 0, 0, 0, 0),
+    warhead: int = 0,
+    fuse: int = 0,
+    quantity: int = 1,
+    rate: int = 0,
+    range_: float = 0.0,
+    location_ecef: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    velocity: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> bytes:
+    """
+    Hand-roll a Fire PDU (type 2, Warfare family, Section 7.3.2) compatible
+    with what opendis.PduFactory.createPdu() expects, mirroring
+    build_entity_state_pdu's approach (no opendis dependency at
+    construction time).
+
+    Layout (96 bytes total):
+      Header (12):            as build_entity_state_pdu, pduType=2,
+                               protocolFamily=2 (Warfare).
+      firingEntityID (6):     site, application, firing_entity.
+      targetEntityID (6):     site, application, target_entity, or the
+                               (0,0,0) wildcard when target_entity is None
+                               (a Fire with no declared target).
+      munitionExpendableID (6): site, application, munition_entity.
+      eventID (6):            site, application, event_number -- the same
+                               triple a paired Detonation PDU must repeat
+                               to be recognised as the same engagement.
+      fireMissionIndex (4):   uint32, always 0 here.
+      location (24):          3 doubles, ECEF metres.
+      descriptor (16):        MunitionDescriptor -- munitionType (8: kind,
+                               domain, country u16, category, subcategory,
+                               specific, extra) + warhead/fuse/quantity/rate
+                               (4 x u16).
+      velocity (12):          3 floats.
+      range (4):              float32.
+    """
+    buf = bytearray()
+    buf += struct.pack(">BBBBIHBB", 7, 1, 2, 2, 0, 96, 0, 0)
+    buf += struct.pack(">HHH", site, application, firing_entity)
+    buf += _pack_entity_id_or_zero(site, application, target_entity)
+    buf += struct.pack(">HHH", site, application, munition_entity)
+    buf += struct.pack(">HHH", site, application, event_number)
+    buf += struct.pack(">I", 0)
+    buf += struct.pack(">ddd", *location_ecef)
+    kind, domain, country, category, subcategory, specific, extra = munition_type
+    buf += struct.pack(">BBHBBBB", kind, domain, country, category,
+                       subcategory, specific, extra)
+    buf += struct.pack(">HHHH", warhead, fuse, quantity, rate)
+    buf += struct.pack(">fff", *velocity)
+    buf += struct.pack(">f", range_)
+    return bytes(buf)
+
+
+def build_detonation_pdu(
+    site: int = 1,
+    application: int = 1,
+    event_number: int = 1,
+    firing_entity: int = 57001,
+    target_entity: int | None = 57010,
+    munition_entity: int = 0,
+    munition_type: tuple[int, int, int, int, int, int, int] = (2, 0, 0, 0, 0, 0, 0),
+    warhead: int = 0,
+    fuse: int = 0,
+    quantity: int = 1,
+    rate: int = 0,
+    detonation_result: int = 1,
+    location_ecef: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    velocity: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> bytes:
+    """
+    Hand-roll a Detonation PDU (type 3, Warfare family, Section 7.3.3),
+    same approach as build_fire_pdu. Pass the same event_number,
+    firing_entity and target_entity as the Fire PDU it terminates, so both
+    carry the same event_urn/launcher_urn/target_urn on ingest.
+
+    Layout (104 bytes total):
+      Header (12):            pduType=3, protocolFamily=2 (Warfare).
+      firingEntityID (6), targetEntityID (6): as build_fire_pdu.
+      explodingEntityID (6):  site, application, munition_entity.
+      eventID (6):            site, application, event_number.
+      velocity (12):          3 floats.
+      location (24):          3 doubles.
+      descriptor (16):        MunitionDescriptor, as build_fire_pdu.
+      locationInEntityCoordinates (12): 3 floats, always 0 here.
+      detonationResult (1):   uint8 DIS enum (UID 62) -- carried opaque.
+      numberOfVariableParameters (1): uint8, always 0 here.
+      pad (2):                uint16, always 0.
+    """
+    buf = bytearray()
+    buf += struct.pack(">BBBBIHBB", 7, 1, 3, 2, 0, 104, 0, 0)
+    buf += struct.pack(">HHH", site, application, firing_entity)
+    buf += _pack_entity_id_or_zero(site, application, target_entity)
+    buf += struct.pack(">HHH", site, application, munition_entity)
+    buf += struct.pack(">HHH", site, application, event_number)
+    buf += struct.pack(">fff", *velocity)
+    buf += struct.pack(">ddd", *location_ecef)
+    kind, domain, country, category, subcategory, specific, extra = munition_type
+    buf += struct.pack(">BBHBBBB", kind, domain, country, category,
+                       subcategory, specific, extra)
+    buf += struct.pack(">HHHH", warhead, fuse, quantity, rate)
+    buf += struct.pack(">fff", 0.0, 0.0, 0.0)
+    buf += struct.pack(">BB", detonation_result, 0)
+    buf += struct.pack(">H", 0)
+    return bytes(buf)
+
+
 # ---------------------------------------------------------------------------
 # Kafka consume via `docker compose exec`
 # ---------------------------------------------------------------------------
@@ -398,6 +521,67 @@ def consume_topic_records(topic: str, n: int, timeout_s: int = 15,
 
         # rpk default JSON output streams one record-object per JSON document.
         # When pretty-printed across multiple lines, accumulate braces.
+        buf: list[str] = []
+        depth = 0
+        for ch in proc.stdout:
+            buf.append(ch)
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    blob = "".join(buf).strip()
+                    buf = []
+                    if not blob:
+                        continue
+                    try:
+                        records.append(json.loads(blob))
+                    except json.JSONDecodeError:
+                        pass
+    return records
+
+
+def consume_topic_records_range(topic: str, start_offsets: dict[int, int],
+                                  end_offsets: dict[int, int],
+                                  timeout_s: int = 15) -> list[dict]:
+    """
+    Like `consume_topic_records`, but reads the EXACT caller-supplied
+    [start, end) offset range per partition instead of "the last N per
+    partition" -- for callers that already know the precise range a single
+    run wrote (e.g. from `partition_high_watermarks` taken before and after
+    sending a fixture) and must not pick up any other run's records, even
+    ones with byte-identical content. Does not touch `consume_topic_records`
+    or its "last N" behaviour; that function is unchanged and still used by
+    every caller that only wants a recent-window read.
+    """
+    records: list[dict] = []
+    deadline = time.monotonic() + timeout_s
+
+    partitions = sorted(set(start_offsets) | set(end_offsets))
+    for partition in partitions:
+        start_offset = start_offsets.get(partition)
+        end_offset = end_offsets.get(partition)
+        if start_offset is None or end_offset is None:
+            continue
+        if end_offset <= start_offset:
+            continue
+        if time.monotonic() >= deadline:
+            break
+        remaining = max(1, int(deadline - time.monotonic()))
+        cmd = _docker_compose_cmd() + [
+            "exec", "-T", REDPANDA_SVC,
+            "rpk", "topic", "consume", topic,
+            "-p", str(partition),
+            "-o", f"{start_offset}:{end_offset}",
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, cwd=str(COMPOSE_DIR), capture_output=True,
+                timeout=remaining, text=True,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+
         buf: list[str] = []
         depth = 0
         for ch in proc.stdout:
@@ -530,6 +714,19 @@ def _partition_offsets(topic: str) -> dict[int, tuple[int, int]]:
             continue
         result[int(m.group(1))] = (log_start, hw)
     return result
+
+
+def partition_high_watermarks(topic: str) -> dict[int, int]:
+    """
+    Map partition_id -> high_watermark only, for callers that need an exact
+    "everything written up to right now" snapshot rather than the
+    (log_start, hw) pair `_partition_offsets` returns. Taken immediately
+    before and after sending a fixture, the two snapshots bound exactly the
+    records THIS run produced -- not "the last N per partition", which
+    cannot distinguish this run's records from an earlier run's identical
+    ones on a topic nothing ever resets.
+    """
+    return {p: hw for p, (_log_start, hw) in _partition_offsets(topic).items()}
 
 
 def topic_high_watermark(topic: str) -> int | None:

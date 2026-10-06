@@ -258,6 +258,13 @@ services:
               -p 4 -r 1 \
               -c retention.ms=2592000000 \
               || true
+          # Effector events (Fire/Detonation PDUs): an edge topic, bridged
+          # upward like tactical-events, same shape -- an event log, not
+          # compacted.
+          rpk -X brokers=$$B topic create effector-events \
+              -p 4 -r 1 \
+              -c retention.ms=2592000000 \
+              || true
           rpk -X brokers=$$B topic create asset-cm-state \
               -p 8 -r 1 \
               -c cleanup.policy=compact \
