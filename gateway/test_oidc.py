@@ -449,6 +449,250 @@ def test_refresh_token_never_appears_in_auth_me(oidc, key, monkeypatch):
 
 
 # ===========================================================================
+# Lead-window renewal: refresh before expiry, not only after it
+# ===========================================================================
+# THE DEFECT. Renewal was due only once `expires < now`. On a severed or
+# merely slow uplink, the renewal call itself can take longer than the
+# window that is left, and the ONE request that happens to land exactly at
+# expiry pays for a round trip to the provider before it gets an answer.
+# Renewing a lead window early turns that into background work a live tab
+# never notices.
+def _session_with_expires(oidc, key, *, expires_in, refresh_expires_in=3600,
+                          refresh_token="orig-refresh"):
+    """A session whose `expires` is `expires_in` seconds from now (may be
+    negative), with a refresh token good for `refresh_expires_in` more."""
+    claims = oidc.verify_id_token(mint(key, exp=int(time.time()) + 3600))
+    sid, _ = oidc.create_session(claims, "orig-id-token", refresh_token,
+                                 refresh_expires_in)
+    with oidc._sessions_lock:
+        oidc._sessions[sid]["expires"] = time.time() + expires_in
+    return sid
+
+
+def test_renewal_not_due_before_the_lead_window(oidc, key, monkeypatch):
+    """At expires - 60 - 1 (60 is the documented default lead, written here
+    as a literal rather than read off the live module — see the +1 case
+    below for why that distinction matters when the default regresses), no renewal
+    call happens."""
+    sid = _session_with_expires(oidc, key, expires_in=60 + 1)
+    called = []
+    monkeypatch.setattr(oidc, "_refresh_tokens",
+                        lambda *a, **k: called.append(1))
+    session = oidc.get_session(sid)
+    assert session is not None
+    assert called == []
+
+
+def test_renewal_due_inside_the_lead_window(oidc, key, monkeypatch):
+    """The regression target: at expires - REFRESH_LEAD_S + 1, a renewal call
+    happens — against pre-change oidc.py (due only once `expires < now`)
+    this is still a minute early and no call is made, which is the defect.
+    hard_expires must be unchanged by the renewal.
+
+    60 is written here as a literal — the documented default — rather
+    than read off the live oidc.REFRESH_LEAD_S constant, specifically so
+    a regression (oidc.py's REFRESH_LEAD_S default edited to 0) changes
+    what the PRODUCTION CODE does without also changing what this test
+    asserts. A test that rederived its scenario from the same constant it
+    is meant to guard could never see that constant regress."""
+    sid = _session_with_expires(oidc, key, expires_in=60 - 1)
+    with oidc._sessions_lock:
+        hard_expires_before = oidc._sessions[sid]["hard_expires"]
+    calls = []
+    def fake_refresh(refresh_token):
+        calls.append(refresh_token)
+        return _mint_refresh_response(key)
+    monkeypatch.setattr(oidc, "_refresh_tokens", fake_refresh)
+    session = oidc.get_session(sid)
+    assert calls == ["orig-refresh"]
+    assert session is not None
+    assert session["hard_expires"] == hard_expires_before
+
+
+def test_inside_lead_window_with_no_refresh_token_stays_valid(oidc, key,
+                                                              monkeypatch):
+    """The careful case: due for renewal (inside
+    the lead window) but nothing to renew with must NOT drop the session
+    early — it stays valid until `expires`, same as before the lead
+    window existed."""
+    sid = _session_with_expires(oidc, key, expires_in=60 - 1,
+                                refresh_token="")
+    session = oidc.get_session(sid)
+    assert session is not None
+    assert session["subject"] == "user-sub-123"
+
+
+def test_hard_expires_plus_one_drops_the_session_without_a_refresh_attempt(
+        oidc, key, monkeypatch):
+    sid = _session_with_expires(oidc, key, expires_in=-1)
+    with oidc._sessions_lock:
+        oidc._sessions[sid]["hard_expires"] = time.time() - 1
+    called = []
+    monkeypatch.setattr(oidc, "_refresh_tokens",
+                        lambda *a, **k: called.append(1))
+    assert oidc.get_session(sid) is None
+    assert called == []
+
+
+# ===========================================================================
+# safe_next: only a same-origin relative path survives the round trip
+# ===========================================================================
+# THE DEFECT A LAX CHECK HERE WOULD BE. The callback follows `next` without
+# asking the browser again, so an unsafe value redirects a freshly
+# signed-in browser (cookie now set) wherever the value points.
+SAFE_NEXT_TABLE = [
+    ("/", "/"),
+    ("/?role=hq&asset=x", "/?role=hq&asset=x"),
+    ("//evil.example", None),
+    ("https://evil.example", None),
+    ("/\\evil", None),
+    ("javascript:alert(1)", None),
+    ("/a b", None),
+    ("/a\nb", None),
+    ("", None),
+    (None, None),
+    ("/" + "a" * 3000, None),
+]
+
+
+def test_safe_next_table(oidc):
+    """RED-CHECK target: a safe_next that returns its input unchanged
+    (`return raw`) fails every `None`-expected row below."""
+    for raw, expect_unchanged in SAFE_NEXT_TABLE:
+        want = raw if expect_unchanged is not None else oidc.POST_LOGIN_PATH
+        got = oidc.safe_next(raw)
+        assert got == want, f"safe_next({raw!r}) == {got!r}, want {want!r}"
+
+
+# ===========================================================================
+# Return-to-the-same-view: /auth/login?next= round trips through the
+# callback, and only through a validated value
+# ===========================================================================
+def test_login_route_validates_next_before_begin_login(monkeypatch):
+    """The route-level wiring: /auth/login reads `?next=`, validates it with
+    safe_next, and ONLY THEN hands it to begin_login — an unsafe value
+    must never reach begin_login at all."""
+    import urllib.parse
+
+    import oidc
+    import pep as _pep
+    monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
+    captured = {}
+    def fake_begin_login(next_path):
+        captured["next_path"] = next_path
+        return "https://idp.example/authorize?state=xxx"
+    monkeypatch.setattr(oidc, "begin_login", fake_begin_login)
+    handler = object.__new__(_pep.Pep)
+    handler.headers = {}
+    handler._send = lambda *a, **k: None
+    handler._handle_auth(
+        urllib.parse.urlparse("/auth/login?next=https://evil.example"))
+    assert captured["next_path"] == oidc.POST_LOGIN_PATH
+
+
+def test_login_route_passes_a_valid_next_through_unchanged(monkeypatch):
+    import urllib.parse
+
+    import oidc
+    import pep as _pep
+    monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
+    captured = {}
+    def fake_begin_login(next_path):
+        captured["next_path"] = next_path
+        return "https://idp.example/authorize?state=xxx"
+    monkeypatch.setattr(oidc, "begin_login", fake_begin_login)
+    handler = object.__new__(_pep.Pep)
+    handler.headers = {}
+    handler._send = lambda *a, **k: None
+    handler._handle_auth(
+        urllib.parse.urlparse(
+            "/auth/login?" + urllib.parse.urlencode({"next": "/regional?role=hq"})))
+    assert captured["next_path"] == "/regional?role=hq"
+
+
+def test_callback_redirects_to_the_next_path_from_begin_login(monkeypatch):
+    """Location is the `next` given to begin_login — carried through
+    complete_login's LoginResult, exactly as oidc.py returns it."""
+    import urllib.parse
+
+    import oidc
+    import pep as _pep
+    monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
+    fake_login = oidc.LoginResult(
+        claims={"sub": "user-sub-123"}, id_token="idt", refresh_token="rt",
+        refresh_expires_in=3600, next_path="/regional?role=hq")
+    monkeypatch.setattr(oidc, "complete_login", lambda code, state: fake_login)
+    handler = object.__new__(_pep.Pep)
+    handler.headers = {}
+    captured = {}
+    def fake_send(status, body, headers=None):
+        captured["status"] = status
+        captured["headers"] = dict(headers or [])
+    handler._send = fake_send
+    handler._handle_auth(
+        urllib.parse.urlparse("/auth/callback?code=abc&state=xyz"))
+    assert captured["headers"]["Location"] == "/regional?role=hq"
+
+
+def test_callback_with_an_invalid_next_redirects_to_post_login_path(monkeypatch):
+    """What begin_login was actually given was already validated by
+    safe_next at the /auth/login route (see above) — so this is the shape
+    that round trip produces: complete_login hands back POST_LOGIN_PATH,
+    and the callback redirects there."""
+    import urllib.parse
+
+    import oidc
+    import pep as _pep
+    monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
+    fake_login = oidc.LoginResult(
+        claims={"sub": "user-sub-123"}, id_token="idt", refresh_token="rt",
+        refresh_expires_in=3600, next_path=oidc.POST_LOGIN_PATH)
+    monkeypatch.setattr(oidc, "complete_login", lambda code, state: fake_login)
+    handler = object.__new__(_pep.Pep)
+    handler.headers = {}
+    captured = {}
+    def fake_send(status, body, headers=None):
+        captured["status"] = status
+        captured["headers"] = dict(headers or [])
+    handler._send = fake_send
+    handler._handle_auth(
+        urllib.parse.urlparse("/auth/callback?code=abc&state=xyz"))
+    assert captured["headers"]["Location"] == oidc.POST_LOGIN_PATH
+
+
+# ===========================================================================
+# /auth/me carries the session's end, so the browser can arm its own timer
+# ===========================================================================
+def test_auth_me_carries_expires_at_and_server_time(oidc, key, monkeypatch):
+    """Tested at the oidc/pep level directly (no separate PEP-test-style
+    helper for /auth/me exists yet in this suite besides
+    test_refresh_token_never_appears_in_auth_me, whose pattern this
+    follows)."""
+    import urllib.parse
+
+    import pep as _pep
+    monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
+    monkeypatch.setattr(_pep, "ask_topaz", lambda subject: {
+        "allowed_nations": ["ATL"], "policy_version": "v1",
+        "corpus_version": "v1", "role": "operator"})
+    token = mint(key)
+    sid, session = oidc.create_session(oidc.verify_id_token(token), token)
+    handler = object.__new__(_pep.Pep)
+    handler.headers = {"Cookie": f"{oidc.COOKIE_NAME}={sid}"}
+    captured = {}
+    def fake_send(status, body, headers=None):
+        captured["status"] = status
+        captured["body"] = json.loads(body)
+    handler._send = fake_send
+    before = time.time()
+    handler._handle_auth(urllib.parse.urlparse("/auth/me"))
+    after = time.time()
+    assert captured["status"] == 200
+    assert captured["body"]["expires_at"] == session["hard_expires"]
+    assert before <= captured["body"]["server_time"] <= after
+
+
+# ===========================================================================
 # Table granularity: a rollup that cannot be partitioned must not be served
 # ===========================================================================
 # These defend the rule found by a 502. The region_* rollup tables carry no

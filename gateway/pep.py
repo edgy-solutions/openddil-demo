@@ -1586,8 +1586,15 @@ class Pep(BaseHTTPRequestHandler):
             return True
 
         if path == "/auth/login":
+            # `?next=` is the page the browser was gated off of. Validated
+            # here (oidc.safe_next) before it ever reaches begin_login,
+            # which stores whatever it is handed without re-checking it —
+            # see oidc.safe_next for what "safe" means and why.
+            next_raw = (urllib.parse.parse_qs(parsed.query).get("next")
+                       or [""])[0]
+            next_path = oidc.safe_next(next_raw)
             try:
-                url = oidc.begin_login()
+                url = oidc.begin_login(next_path)
             except oidc.AuthError as exc:
                 # The IdP is unreachable. That is a failure to AUTHENTICATE,
                 # not a denial of anything — but it still ends in a refusal,
@@ -1637,7 +1644,7 @@ class Pep(BaseHTTPRequestHandler):
                             subject=session["subject"],
                             username=session["username"] or None,
                             resource="session")
-            self._send(302, b"", [("Location", oidc.POST_LOGIN_PATH),
+            self._send(302, b"", [("Location", login.next_path),
                                   ("Set-Cookie", oidc.cookie_header(sid)),
                                   ("Cache-Control", "no-store")])
             return True
@@ -1683,6 +1690,15 @@ class Pep(BaseHTTPRequestHandler):
                 "subject": subject,
                 "username": (session or {}).get("username", ""),
                 "name": (session or {}).get("name", ""),
+                # WHEN THIS SESSION ENDS, as a pair the browser diffs rather
+                # than a bare deadline it would otherwise compare against
+                # its own clock. A phone five minutes fast must not see its
+                # session as already over, and a server five minutes fast
+                # must not grant five extra minutes to everyone else's —
+                # sending both lets the client measure the gap instead of
+                # trusting either clock alone.
+                "expires_at": (session or {}).get("hard_expires"),
+                "server_time": time.time(),
                 "nations": decision["allowed_nations"],
                 "policy_version": decision["policy_version"],
                 "corpus_version": decision["corpus_version"],

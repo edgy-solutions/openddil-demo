@@ -123,7 +123,14 @@ POST_LOGIN_PATH = os.getenv("OPENDDIL_OIDC_POST_LOGIN_PATH", "/")
 # registration to keep in step on every realm this gateway is pointed at.
 POST_LOGOUT_REDIRECT_URI = os.getenv("OPENDDIL_OIDC_POST_LOGOUT_REDIRECT_URI",
                                      "") or REDIRECT_URI
-SESSION_TTL = int(os.getenv("OPENDDIL_SESSION_TTL_SECONDS", "43200"))  # 12h
+SESSION_TTL = int(os.getenv("OPENDDIL_SESSION_TTL_SECONDS", "900"))  # 15min
+# How long before `expires` renewal is attempted — see get_session. Renewing
+# early, rather than exactly at expiry, is what lets a session survive on a
+# tab that is making requests right up to the deadline: a renewal due only
+# once already expired would still be correct for a live tab (the next
+# request renews it), but EXPIRY ITSELF is a now-short TTL, and "renew on
+# the request that is already too late" is a race the lead window removes.
+REFRESH_LEAD_S = int(os.getenv("OPENDDIL_SESSION_REFRESH_LEAD_SECONDS", "60"))
 COOKIE_NAME = os.getenv("OPENDDIL_SESSION_COOKIE", "openddil_session")
 COOKIE_SECURE = os.getenv("OPENDDIL_COOKIE_SECURE", "false").lower() == "true"
 # SameSite: Lax by DEFAULT, and this is a considered choice rather than a
@@ -365,14 +372,54 @@ def _sweep(store: dict, lock: threading.Lock, key: str = "expires") -> None:
             store.pop(k, None)
 
 
-def begin_login() -> str:
+def safe_next(raw: str | None) -> str:
+    """Validate a `?next=` value, returning it unchanged when it is safe to
+    redirect to and POST_LOGIN_PATH otherwise.
+
+    THE CALLBACK FOLLOWS THIS WITHOUT ASKING THE BROWSER AGAIN, so a value
+    that slips through sends the signed-in browser's own cookie wherever
+    the value points. Safe means: a same-origin, relative path, and
+    nothing that a browser or an intermediary could read as something
+    else — a scheme, a host, a backslash (which some upstream proxies and
+    older IE builds treat as a path separator, turning a leading backslash
+    after the first "/" into a second "/"), or a control character that
+    would not survive sitting in a
+    query string and a `Location` header unchanged.
+
+    Anything that fails any check, including missing or empty, returns
+    POST_LOGIN_PATH rather than raising — an unsafe `next` is not this
+    login's problem to report, only to not act on."""
+    if not raw or len(raw) > 2048:
+        return POST_LOGIN_PATH
+    if not raw.startswith("/") or raw.startswith("//"):
+        return POST_LOGIN_PATH
+    if "\\" in raw:
+        return POST_LOGIN_PATH
+    if any(ord(c) < 0x20 or c.isspace() for c in raw):
+        return POST_LOGIN_PATH
+    # Belt-and-braces: a leading single "/" already rules out a scheme (one
+    # reads as "word:" before the first "/"), but urlsplit is a second,
+    # independent reader of the same string rather than trusting the hand
+    # -rolled checks above to have covered every way to spell one.
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        return POST_LOGIN_PATH
+    return raw
+
+
+def begin_login(next_path: str = POST_LOGIN_PATH) -> str:
     """Return the URL to send the browser to, and remember the state.
 
     PKCE IS USED EVEN THOUGH THIS IS A CONFIDENTIAL CLIENT. It is not
     required for one, and it costs a hash — but it closes the
     code-interception window completely rather than relying on the secret
     alone, and it means the same flow is correct if this client were ever
-    made public."""
+    made public.
+
+    `next_path` is the already-validated (see safe_next) return path, kept
+    with the rest of this login attempt's state so the callback can send
+    the browser back where it asked to go instead of always to
+    POST_LOGIN_PATH."""
     _sweep(_pending, _pending_lock)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(16)
@@ -381,6 +428,7 @@ def begin_login() -> str:
         hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     with _pending_lock:
         _pending[state] = {"verifier": verifier, "nonce": nonce,
+                           "next": next_path,
                            "expires": time.time() + _PENDING_TTL}
     q = urllib.parse.urlencode({
         "response_type": "code",
@@ -407,11 +455,17 @@ class LoginResult:
     the session's chart-configured TTL) and discarding the refresh token
     meant every session died with it. A dataclass rather than a growing
     tuple, so the new fields are named at the call site instead of
-    positional."""
+    positional.
+
+    `next_path` is the return-to path recorded by begin_login — carried
+    through complete_login rather than re-derived, since the only record
+    of what the browser asked for is the pending-state entry the code
+    exchange just consumed."""
     claims: dict
     id_token: str
     refresh_token: str
     refresh_expires_in: int
+    next_path: str = POST_LOGIN_PATH
 
 
 def complete_login(code: str, state: str) -> LoginResult:
@@ -451,6 +505,7 @@ def complete_login(code: str, state: str) -> LoginResult:
         id_token=id_token,
         refresh_token=tokens.get("refresh_token") or "",
         refresh_expires_in=int(tokens.get("refresh_expires_in") or 0),
+        next_path=entry.get("next") or POST_LOGIN_PATH,
     )
 
 
@@ -598,19 +653,29 @@ def _refresh_tokens(refresh_token: str) -> dict:
 
 
 def get_session(sid: str | None) -> dict | None:
-    """Look up a session, renewing it against the provider when its ID
-    token has reached `expires` but the session has not reached
-    `hard_expires` — see create_session for what each bound means.
+    """Look up a session, renewing it against the provider when `expires`
+    is within REFRESH_LEAD_S (or already past it) but the session has not
+    reached `hard_expires` — see create_session for what each bound means.
 
-    FAIL CLOSED, as before, when there is nothing left to renew with: no
-    refresh token, a refresh token past `refresh_expires`, or
-    `hard_expires` already reached. When the provider REJECTS the refresh
-    (expired/revoked grant) or answers with a different `sub`, the session
-    is dropped the same way. When the provider is merely UNREACHABLE (or
-    answers with a non-rejection HTTP error), the session is kept until
-    `refresh_expires` — the lifetime it already granted — and `expires` is
-    pushed forward by RENEW_RETRY_S so this is not retried on every single
-    request while the provider is down."""
+    THE LEAD WINDOW CHANGES *WHEN RENEWAL IS ATTEMPTED*, NOT WHAT FAIL-CLOSED
+    MEANS. Entering the lead window early is not the same fact as the
+    session having actually expired, so a session that reaches the window
+    with nothing to renew with (no refresh token, or one past its own
+    `refresh_expires`) simply keeps serving the snapshot it already has
+    until `expires` — the bound it was granted — rather than being dropped
+    on the first request inside the window. Only once `expires` has itself
+    passed does "cannot renew" become "gone": see the `actually_expired`
+    branch below.
+
+    FAIL CLOSED, as before, once that line is crossed: no refresh token, a
+    refresh token past `refresh_expires`, or `hard_expires` already
+    reached. When the provider REJECTS the refresh (expired/revoked grant)
+    or answers with a different `sub`, the session is dropped the same
+    way. When the provider is merely UNREACHABLE (or answers with a
+    non-rejection HTTP error), the session is kept until `refresh_expires`
+    — the lifetime it already granted — and `expires` is pushed forward by
+    RENEW_RETRY_S so this is not retried on every single request while the
+    provider is down."""
     if not sid:
         return None
     with _sessions_lock:
@@ -620,12 +685,20 @@ def get_session(sid: str | None) -> dict | None:
         snapshot = dict(s)
 
     now = time.time()
-    if snapshot["expires"] >= now:
+    actually_expired = snapshot["expires"] < now
+    renewal_due = now >= snapshot["expires"] - REFRESH_LEAD_S
+    if not renewal_due:
         return snapshot
 
     if (not snapshot.get("refresh_token")
             or snapshot.get("refresh_expires", 0) < now
             or snapshot.get("hard_expires", 0) < now):
+        if not actually_expired:
+            # Inside the lead window, nothing to renew with, but the bound
+            # this session was granted has not been reached — still valid.
+            # See the docstring: due-for-renewal is not the same claim as
+            # expired, and must not be dropped early.
+            return snapshot
         with _sessions_lock:
             _sessions.pop(sid, None)
         return None
