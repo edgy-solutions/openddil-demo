@@ -1,0 +1,20 @@
+# Declared munitions-per-launcher-variant load, for the
+# admission check and `effector_launcher_counts.remaining` in the projector's
+# effector_launch handler (openddil-projector/src/effector_declared_load.py).
+#
+# TEST FIXTURE VALUES, not real loadout data. Every projector in this compose
+# stack mounts this same file (EFFECTOR_DECLARED_LOAD_PATH) and reloads it
+# wholesale at startup; the munition key is the 7-tuple dotted key
+# `kind.domain.country.category.subcategory.specific.extra` the DIS
+# descriptor carries, matching munition_type_key() in the handler.
+#
+# `asset` keys a specific launcher_urn; `variant` keys a vehicle/platform
+# type and applies to every launcher of that variant with no `asset`-level
+# override. hero_scenario_v3's M1A1 and AH-64E-V6 fixtures use the variant
+# form.
+asset: {}
+variant:
+  M1A1:
+    "2.9.225.2.1.1.0": 8
+  AH-64E-V6:
+    "2.9.225.2.1.1.0": 4

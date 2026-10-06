@@ -1270,8 +1270,15 @@ services:
       OPENDDIL_EDGE_ID:        edge-01
       OPENDDIL_REGION_ID:      region-east
       BUFFER_MONITOR_ENABLED:  "true"
+      # 60s, not the module's 300s default: a compose
+      # test run needs the unresolved-sweep to actually fire inside a test's
+      # patience, the same reasoning asset_ttl_hours uses fractional hours
+      # for in projector_config.yaml.
+      EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
+      EFFECTOR_TERMINAL_TIMEOUT_S: "60"
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
+      - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro
     ports:
       - "8084:8084"
     depends_on:
@@ -1299,8 +1306,12 @@ services:
       OPENDDIL_EDGE_ID:        edge-02
       OPENDDIL_REGION_ID:      region-east
       BUFFER_MONITOR_ENABLED:  "false"
+      # see projector-01 for why 60s here, not 300s.
+      EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
+      EFFECTOR_TERMINAL_TIMEOUT_S: "60"
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
+      - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro
     depends_on:
       redpanda-edge-02:
         condition: service_healthy
@@ -1326,8 +1337,12 @@ services:
       OPENDDIL_EDGE_ID:        edge-03
       OPENDDIL_REGION_ID:      region-west
       BUFFER_MONITOR_ENABLED:  "false"
+      # see projector-01 for why 60s here, not 300s.
+      EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
+      EFFECTOR_TERMINAL_TIMEOUT_S: "60"
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
+      - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro
     depends_on:
       redpanda-edge-03:
         condition: service_healthy
@@ -1361,8 +1376,12 @@ services:
       OPENDDIL_EDGE_ID:        edge-unspecified
       OPENDDIL_REGION_ID:      region-unspecified
       BUFFER_MONITOR_ENABLED:  "false"
+      # see projector-01 for why 60s here, not 300s.
+      EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
+      EFFECTOR_TERMINAL_TIMEOUT_S: "60"
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
+      - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro
     depends_on:
       redpanda-hq:
         condition: service_started

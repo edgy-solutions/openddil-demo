@@ -339,6 +339,8 @@ def build_fire_pdu(
     range_: float = 0.0,
     location_ecef: tuple[float, float, float] = (0.0, 0.0, 0.0),
     velocity: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    event_site: int | None = None,
+    event_application: int | None = None,
 ) -> bytes:
     """
     Hand-roll a Fire PDU (type 2, Warfare family, Section 7.3.2) compatible
@@ -354,9 +356,15 @@ def build_fire_pdu(
                                (0,0,0) wildcard when target_entity is None
                                (a Fire with no declared target).
       munitionExpendableID (6): site, application, munition_entity.
-      eventID (6):            site, application, event_number -- the same
-                               triple a paired Detonation PDU must repeat
-                               to be recognised as the same engagement.
+      eventID (6):            event_site, event_application, event_number
+                               -- a separate DIS identifier space from the
+                               firingEntityID triple (real DIS semantics:
+                               eventID and EntityID are independent fields).
+                               event_site/event_application default to
+                               site/application for callers that don't need
+                               the two spaces to differ. A paired Detonation
+                               PDU must repeat the same eventID triple to be
+                               recognised as the same engagement.
       fireMissionIndex (4):   uint32, always 0 here.
       location (24):          3 doubles, ECEF metres.
       descriptor (16):        MunitionDescriptor -- munitionType (8: kind,
@@ -366,12 +374,14 @@ def build_fire_pdu(
       velocity (12):          3 floats.
       range (4):              float32.
     """
+    ev_site = site if event_site is None else event_site
+    ev_app = application if event_application is None else event_application
     buf = bytearray()
     buf += struct.pack(">BBBBIHBB", 7, 1, 2, 2, 0, 96, 0, 0)
     buf += struct.pack(">HHH", site, application, firing_entity)
     buf += _pack_entity_id_or_zero(site, application, target_entity)
     buf += struct.pack(">HHH", site, application, munition_entity)
-    buf += struct.pack(">HHH", site, application, event_number)
+    buf += struct.pack(">HHH", ev_site, ev_app, event_number)
     buf += struct.pack(">I", 0)
     buf += struct.pack(">ddd", *location_ecef)
     kind, domain, country, category, subcategory, specific, extra = munition_type
@@ -398,18 +408,22 @@ def build_detonation_pdu(
     detonation_result: int = 1,
     location_ecef: tuple[float, float, float] = (0.0, 0.0, 0.0),
     velocity: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    event_site: int | None = None,
+    event_application: int | None = None,
 ) -> bytes:
     """
     Hand-roll a Detonation PDU (type 3, Warfare family, Section 7.3.3),
     same approach as build_fire_pdu. Pass the same event_number,
     firing_entity and target_entity as the Fire PDU it terminates, so both
-    carry the same event_urn/launcher_urn/target_urn on ingest.
+    carry the same event_urn/launcher_urn/target_urn on ingest. event_site/
+    event_application default to site/application (see build_fire_pdu) and
+    must match whatever the paired Fire PDU used for its eventID.
 
     Layout (104 bytes total):
       Header (12):            pduType=3, protocolFamily=2 (Warfare).
       firingEntityID (6), targetEntityID (6): as build_fire_pdu.
       explodingEntityID (6):  site, application, munition_entity.
-      eventID (6):            site, application, event_number.
+      eventID (6):            event_site, event_application, event_number.
       velocity (12):          3 floats.
       location (24):          3 doubles.
       descriptor (16):        MunitionDescriptor, as build_fire_pdu.
@@ -418,12 +432,14 @@ def build_detonation_pdu(
       numberOfVariableParameters (1): uint8, always 0 here.
       pad (2):                uint16, always 0.
     """
+    ev_site = site if event_site is None else event_site
+    ev_app = application if event_application is None else event_application
     buf = bytearray()
     buf += struct.pack(">BBBBIHBB", 7, 1, 3, 2, 0, 104, 0, 0)
     buf += struct.pack(">HHH", site, application, firing_entity)
     buf += _pack_entity_id_or_zero(site, application, target_entity)
     buf += struct.pack(">HHH", site, application, munition_entity)
-    buf += struct.pack(">HHH", site, application, event_number)
+    buf += struct.pack(">HHH", ev_site, ev_app, event_number)
     buf += struct.pack(">fff", *velocity)
     buf += struct.pack(">ddd", *location_ecef)
     kind, domain, country, category, subcategory, specific, extra = munition_type
