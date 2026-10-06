@@ -85,14 +85,23 @@ expected_empty:
   # ordinary entry here would create rather than resolve.
   #
   # So `sparse: true` is CONDITIONAL. The gate permits an empty table only
-  # while check-derive-stage.sh reports the producer completing invocations,
-  # and refuses when it reports otherwise OR when nothing has measured
-  # recently. Absence of evidence buys nothing.
+  # while a producer probe reports the producer completing invocations, and
+  # refuses when it reports otherwise OR when nothing has measured recently.
+  # Absence of evidence buys nothing.
+  #
+  # EACH SPARSE ENTRY NAMES ITS OWN PRODUCER. `producer:` is one of:
+  #   derive-stage     -- check-derive-stage.sh's fusion verdict
+  #   effector-launch  -- check-effector-consumer.sh's consumer-group verdict
+  # A sparse entry with no `producer:` key defaults to `derive-stage`, for
+  # backward compatibility with entries written before this key existed. An
+  # unrecognised value is UNMEASURED, never read as sparse-green -- a typo in
+  # this file must not silently buy an empty table a pass.
   #
   # Same shape as the relay stall probe's `destination reachable` clause: an
   # absence is benign only when something else proves the source is alive.
   tactical_events:
     sparse: true
+    producer: derive-stage
     reason: >-
       Tactical events fire on TRANSITIONS -- a configuration discrepancy
       appearing or clearing, a logistics severity changing band -- so a stable
@@ -109,6 +118,23 @@ expected_empty:
       Declared 2026-09-18, after the root's copy read empty with the newest
       event 33h old against a 24h retention -- correct behaviour that the gate
       had no category for.
+
+  effector_launch:
+    sparse: true
+    producer: effector-launch
+    reason: >-
+      This table holds one row per DIS Fire -- rows exist only when a
+      launcher fires, so an exercise with no fires has none at all, at any
+      tier: that is the correct and common case, not a partial deployment.
+      DECLARING THIS PLAINLY EMPTY WOULD BE WRONG, same move this file's own
+      header names as the thing it exists to make visible: the same
+      declaration would equally excuse a projector whose consumer had
+      stopped reading effector-events, and the table would look identical
+      either way. Its producer is NOT fusion -- the derive-stage verdict
+      says nothing about this table's own consumer -- so liveness is
+      measured on the projector's own consumer group instead, by
+      check-effector-consumer.sh.
+      Declared 2026-10-06.
 
 
   asset_registry:
