@@ -16,9 +16,10 @@
 # HTTP POST, so it ends by deleting the record (`root = deleted()`) — it
 # never needs to reach the output switch. This resource is the opposite: its
 # only sink IS Kafka, on the edge broker, so the record must survive this
-# resource unchanged (only a meta flag is set) and flow all the way to
-# `output.switch` in openddil-base-connect.yaml, which carries a case for it
-# the same way it already carries one for raw-sensor-stream.
+# resource (labels stamped, a meta flag set, every other field carried
+# forward as-is) and flow all the way to `output.switch` in
+# openddil-base-connect.yaml, which carries a case for it the same way it
+# already carries one for raw-sensor-stream.
 #
 # EDGE PROVENANCE IS FORWARDED, NOT ORIGINATED. Entity State, Remove Entity,
 # Fire and Detonation records all carry `provenance.edge_id`/`region_id`,
@@ -59,9 +60,10 @@ processor_resources:
               meta dlq_stage = "dis_effector"
               meta is_dlq = "true"
 
-      # Well-formed arm: pass the record through completely unchanged
-      # (provenance.edge_id is already on it, stamped by sensor-ingest) and
-      # flag it for output.switch's effector-events case.
+      # Well-formed arm: every other field passes unchanged
+      # (provenance.edge_id is already on it, stamped by sensor-ingest); the
+      # releasability labels are stamped here, then the record is flagged for
+      # output.switch's effector-events case.
       - check: ""
         processors:
           - metric:
@@ -70,6 +72,35 @@ processor_resources:
               labels:
                 pdu_type: '${! this.pdu_type }'
           - mapping: |
+              # ===================================================================
+              # RELEASABILITY LABELS (ADR-0029 §3) — labelled exactly as the
+              # launcher's own Entity State is.
+              # ===================================================================
+              # A launch has no originator_nation/releasable_to of its own; the
+              # launcher that fired it does. There is one declaration of who an
+              # asset belongs to (/ontology/releasability.yaml), read at the one
+              # place labels are stamped — sim-dis-mapping.yaml, for Entity State.
+              # This is that same lookup, keyed by launcher_urn instead of the
+              # record's own entity_id_urn, because the record being labelled is
+              # the launch, not the launcher. It must stay identical to
+              # sim-dis-mapping.yaml's copy: same no_cache read, same
+              # default_originator_nation fallback, same absent-stays-absent via
+              # `.or(deleted())`. A launch and its launcher's Entity State are
+              # the same row, so they get the same default and the same silence.
+              let rel_doc = file(path: "/ontology/releasability.yaml", no_cache: true).parse_yaml()
+              let rel_default = if $rel_doc.default_originator_nation != null {
+                {"originator_nation": $rel_doc.default_originator_nation,
+                 "releasable_to": []}
+              } else { {} }
+              let rel = $rel_doc.assets.get(this.launcher_urn).or($rel_default)
+
+              # `root = this` first: every other field (event_urn, launcher_urn,
+              # provenance.edge_id/region_id, ...) must carry forward as-is, and
+              # only the two assignments below are meant to change anything.
+              root = this
+              root.provenance.originator_nation = $rel.originator_nation.or(deleted())
+              root.provenance.releasable_to     = $rel.releasable_to.or(deleted())
+
               meta is_effector = "true"
 
 # NOTE ON SCRAPING: same gap as dis_kind_gate and dis_force_gate. Nothing

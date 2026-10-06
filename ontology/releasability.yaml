@@ -110,7 +110,8 @@ assets:
   "dis:1:1:1006": { originator_nation: ATL, releasable_to: [] }
   "dis:1:1:1007": { originator_nation: ATL, releasable_to: [] }
   "dis:1:1:1008": { originator_nation: ATL, releasable_to: [] }
-  # The interceptor launcher. Its launches are labelled from this row, so a
+  # The interceptor launcher. Its launches are labelled from this row at
+  # ingress (dynamic-mappings/dis-effector.yaml, keyed by launcher_urn), so a
   # Borduria operator sees neither the launcher nor anything it fired.
   "dis:1:1:1009": { originator_nation: ATL, releasable_to: [] }
 

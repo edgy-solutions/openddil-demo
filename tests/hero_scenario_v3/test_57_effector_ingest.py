@@ -53,6 +53,14 @@ on raw-sensor-stream" and pass assertion (2) for the worst possible reason.
 Without (3) a kind/force gate accidentally reordered ahead of the divert
 would count these PDUs as kind or force drops instead of routing them, and
 nothing here would catch it.
+
+Additionally (7): releasability labels on the launch records. 57001/57002
+are both undeclared (no row in ontology/releasability.yaml, and that file's
+default_originator_nation is null), so the 8 records above must carry
+neither originator_nation nor releasable_to. A separate one-off Fire from
+dis:1:1:1000 -- an existing declared row (originator_nation ATL,
+releasable_to [BDR]), reused rather than adding a test-only row -- must
+carry exactly that row's labels, the same way its own Entity State would.
 """
 from __future__ import annotations
 
@@ -122,6 +130,20 @@ DETONATIONS = [
 EXPECTED_FIRE_URNS = {f"dis-event:{SITE}:{APPLICATION}:{n}" for n, _, _ in FIRES}
 EXPECTED_DET_URNS = {f"dis-event:{SITE}:{APPLICATION}:{n}"
                      for n, _, _, _ in DETONATIONS}
+
+# Labels check (assertion 7, see module docstring). dis:1:1:1000 is an
+# existing declared row in ontology/releasability.yaml (originator_nation
+# ATL, releasable_to [BDR]) -- the same asset test_52/test_53 use as their
+# "declared" fixture -- reused here rather than adding a test-only row,
+# since that file has none to extend. A separate eventID application (6,
+# vs. the main engagement's 1) keeps this one-off Fire's event_urn from
+# ever colliding with EXPECTED_FIRE_URNS/EXPECTED_DET_URNS above.
+DECLARED_LAUNCHER = 1000
+DECLARED_LAUNCHER_URN = f"dis:{SITE}:{APPLICATION}:{DECLARED_LAUNCHER}"
+DECLARED_EVENT_APP = 6
+DECLARED_EVENT_URN = f"dis-event:{SITE}:{DECLARED_EVENT_APP}:1"
+DECLARED_EXPECTED_NATION = "ATL"
+DECLARED_EXPECTED_RELEASABLE_TO = ["BDR"]
 
 
 def _hw(topic: str) -> int:
@@ -324,6 +346,62 @@ def main() -> None:
               f"either the divert is eating ordinary platform traffic too, "
               f"or it under/over-delivered")
 
+    # --- 7: releasability labels on the launch records ---------------------
+    # 57001/57002 (LAUNCHER_A/B) are both undeclared -- the 8 records
+    # already consumed above must carry neither key.
+    mislabelled = {
+        v.get("event_urn"): v.get("provenance")
+        for _, v in parsed
+        if "originator_nation" in (v.get("provenance") or {})
+        or "releasable_to" in (v.get("provenance") or {})
+    }
+    if mislabelled:
+        fail_(NAME, f"{TOPIC_EFFECTOR} records from undeclared launchers "
+                    f"{LAUNCHER_A_URN}/{LAUNCHER_B_URN} carry a "
+                    f"releasability label, expected neither key present: "
+                    f"{mislabelled}")
+
+    # A declared launcher's own row labels its launch, the same way it
+    # labels that launcher's Entity State. Own exact [before, after) slice,
+    # same reasoning as assertion 1's.
+    before_wm_declared = partition_high_watermarks(TOPIC_EFFECTOR)
+    send_udp_bytes(build_fire_pdu(
+        site=SITE, application=APPLICATION, event_number=1,
+        firing_entity=DECLARED_LAUNCHER, target_entity=None,
+        event_site=SITE, event_application=DECLARED_EVENT_APP))
+    time.sleep(3.0)
+    after_wm_declared = partition_high_watermarks(TOPIC_EFFECTOR)
+
+    declared_records = consume_topic_records_range(
+        TOPIC_EFFECTOR, before_wm_declared, after_wm_declared, timeout_s=15)
+    declared_parsed = []
+    for rec in declared_records:
+        v = rec.get("value")
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except (ValueError, TypeError):
+                continue
+        if isinstance(v, dict):
+            declared_parsed.append(v)
+
+    declared_match = next(
+        (v for v in declared_parsed if v.get("event_urn") == DECLARED_EVENT_URN),
+        None)
+    if declared_match is None:
+        fail_(NAME, f"{TOPIC_EFFECTOR} exact slice held no record for "
+                    f"{DECLARED_EVENT_URN} (the declared-launcher Fire)")
+    else:
+        prov = declared_match.get("provenance") or {}
+        got = (prov.get("originator_nation"), prov.get("releasable_to"))
+        expected = (DECLARED_EXPECTED_NATION, DECLARED_EXPECTED_RELEASABLE_TO)
+        if got != expected:
+            fail_(NAME, f"{TOPIC_EFFECTOR} record for {DECLARED_LAUNCHER_URN}'s "
+                        f"launch carried provenance {prov}, expected "
+                        f"originator_nation={expected[0]!r} "
+                        f"releasable_to={expected[1]!r} (its own "
+                        f"ontology/releasability.yaml row)")
+
     # --- extra: no stray read-model rows for the 5700x fixture ids ---------
     # Fire/Detonation never reach raw-sensor-stream, so none of these ids
     # should ever be seen by the projector. Checked, not assumed.
@@ -343,7 +421,10 @@ def main() -> None:
           f"{TOPIC_DLQ} unmoved; kind/force drop counters unmoved; "
           f"{METRIC_ROUTED} fire +5 ({routed_fire_before:.0f} -> "
           f"{routed_fire_after:.0f}) detonation +3 ({routed_det_before:.0f} "
-          f"-> {routed_det_after:.0f}); no stray read-model rows")
+          f"-> {routed_det_after:.0f}); undeclared launchers' records carry "
+          f"neither label; {DECLARED_LAUNCHER_URN}'s launch carries "
+          f"{DECLARED_EXPECTED_NATION!r}/{DECLARED_EXPECTED_RELEASABLE_TO!r}; "
+          f"no stray read-model rows")
 
 
 if __name__ == "__main__":
