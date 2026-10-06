@@ -25,6 +25,7 @@
 // inventory around the message. Not-signed-in is a fact about the SESSION,
 // so it is stated once, at the root, and nothing else renders.
 import { deployment } from '../deployment';
+import { loginHref } from '../lib/loginHref';
 
 export function SignedOut() {
   // The overlay's logo when a deployment sets one; the OpenDDIL mark
@@ -58,7 +59,7 @@ export function SignedOut() {
       </div>
 
       <a
-        href="/auth/login"
+        href={loginHref()}
         className="rounded-sm border border-cyan-700/60 bg-cyan-500/10 px-6 py-2
                    text-xs font-bold tracking-widest text-cyan-300
                    hover:bg-cyan-500/20 transition-colors"

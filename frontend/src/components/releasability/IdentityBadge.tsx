@@ -17,6 +17,7 @@
 import { ShieldCheck, LogIn, LogOut } from 'lucide-react';
 import { useSession } from '../../hooks/useSession';
 import { nationStyle } from '../../lib/nationColor';
+import { loginHref } from '../../lib/loginHref';
 
 export default function IdentityBadge() {
   const s = useSession();
@@ -48,7 +49,7 @@ export default function IdentityBadge() {
 
   if (!s.authenticated) {
     return (
-      <a href="/auth/login"
+      <a href={loginHref()}
          className="flex items-center gap-2 rounded border border-sky-500/40
                     bg-sky-500/10 px-2 py-1 text-xs text-sky-300
                     hover:bg-sky-500/20">

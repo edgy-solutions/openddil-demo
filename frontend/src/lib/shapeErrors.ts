@@ -31,6 +31,7 @@
 // FEED UNAVAILABLE on every panel the moment a session lapsed, which sends
 // the operator looking for a network/pipeline problem that does not exist.
 import { FetchError } from '@electric-sql/client';
+import { markSessionExpired } from './sessionExpiry';
 
 export type ShapeErrorKind = 'unlabelable' | 'transport' | 'session';
 
@@ -71,6 +72,10 @@ export function classifyShapeError(
 }
 
 export function reportShapeError(table: string, kind: ShapeErrorKind): void {
+  // A 401 here means the session itself is gone, not just this one feed:
+  // the gate takes over and unmounts every panel, so the signal goes out
+  // regardless of whether THIS table's own kind changed.
+  if (kind === 'session') markSessionExpired();
   if (errors.get(table) === kind) return;
   errors.set(table, kind);
   emit();

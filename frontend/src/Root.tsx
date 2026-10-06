@@ -6,6 +6,8 @@ import { Wrench, Server, Building2, SlidersHorizontal } from 'lucide-react';
 import { deployment } from './deployment';
 import { useSession } from './hooks/useSession';
 import { SignedOut, CheckingSession } from './components/SignedOut';
+import { SessionExpired } from './components/SessionExpired';
+import { useSessionExpired } from './lib/sessionExpiry';
 import IdentityBadge from './components/releasability/IdentityBadge';
 import ShapeErrorBanner from './components/ShapeErrorBanner';
 
@@ -166,10 +168,25 @@ function Root() {
   // Deployment config is loaded once before render (see main.tsx).
   const { title, logo, tier } = deployment();
   const session = useSession();
+  const expired = useSessionExpired();
 
   // ---------------------------------------------------------------------
   // SESSION GATE — before anything renders, including the header.
   // ---------------------------------------------------------------------
+  // EXPIRY TAKES PRIORITY over every other state below. Expiry is not
+  // link loss: once the signal is set — a 401 from a shape request, a
+  // 401 on an /auth/me re-check, or the local deadline passing — the
+  // viewer is no longer entitled, and no fleet value may remain in the
+  // DOM. Checked first and unconditionally (ahead of `authenticated`)
+  // because a session that WAS authenticated and then expired must not
+  // fall through to the app just because `session.authenticated` has not
+  // been re-fetched yet.
+  //
+  // authDisabled is the one case nothing here changes for: there is no
+  // session to expire, so the signal is never set and this branch never
+  // fires — no gate, exactly as if this code were not here.
+  if (!session.authDisabled && expired) return <SessionExpired />;
+
   // Three states, and collapsing any two of them is a defect that has
   // already happened here:
   //
