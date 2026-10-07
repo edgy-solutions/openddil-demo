@@ -175,6 +175,19 @@ expected_empty:
       this table: edge-01, edge-02 and region-east all hold it empty and
       undeclared.
 
+  egress_delivered_events:
+    stores: [tier]
+    reason: >-
+      A durable record of what the forwarder has already sent (or
+      deliberately withheld) to a destination is written by the forwarder
+      process, and in this deployment that process runs at the ROOT store
+      only. No tier projector has a writer for this table, so a tier store
+      has nothing that could populate it and its emptiness there is
+      structural rather than a stopped producer.
+      SCOPED TO TIERS ON PURPOSE, for the same reason as intake_records
+      above: the root's copy holds rows and must keep being checked.
+      REMOVE THIS ROW if the forwarder is ever run per tier.
+
   asset_telemetry_windows:
     reason: >-
       The windowing stage that would fill it is not producing here: the
