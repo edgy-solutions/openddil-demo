@@ -148,22 +148,36 @@ async def _fetch_all_records() -> list[dict[str, Any]]:
 
 async def _fetch_records_by_kind(kind: str) -> list[dict[str, Any]]:
     """Every row of one kind in `intake_records` (ADR-0046 s5's generic
-    record store) that intake already admitted -- `decision->>'allowed'`
-    only, because a row intake refused (bad schema, no label at all) is not
-    re-litigated here. What IS re-decided, fresh, is whether THIS
-    destination's gate admits it; intake's decision and this pane's decision
-    answer different questions; the two are not expected to agree. `ORDER BY
-    key` only for a stable response order across requests."""
+    record store), including the rows intake refused (bad schema, no label
+    at all). Each row carries `intake_decision`, intake's own stored verdict
+    -- allowed, reason, decision_id, provisional -- so the pane can list a
+    refusal with the reason intake gave. Intake's refusal is not re-litigated
+    here; what IS re-decided, fresh, for the rows intake admitted is whether
+    THIS destination's gate admits them. Intake's decision and this pane's
+    decision answer different questions; the two are not expected to agree.
+    `ORDER BY key` only for a stable response order across requests."""
     conn = await asyncpg.connect(POSTGRES_DSN)
     try:
         rows = await conn.fetch(
             "SELECT kind, key, originator_nation, releasable_to, owning_tier, "
             "body, decision, decided_at FROM intake_records WHERE kind = $1 "
-            "AND (decision->>'allowed')::boolean ORDER BY key",
+            "ORDER BY key",
             kind,
         )
     finally:
         await conn.close()
+
+    def _intake_decision(raw: Any) -> dict[str, Any]:
+        stored = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+        if not isinstance(stored, dict):
+            stored = {}
+        return {
+            "allowed": bool(stored.get("allowed")),
+            "reason": stored.get("reason"),
+            "decision_id": stored.get("decision_id"),
+            "provisional": bool(stored.get("provisional", False)),
+        }
+
     return [
         {
             "key": row["key"],
@@ -172,6 +186,7 @@ async def _fetch_records_by_kind(kind: str) -> list[dict[str, Any]]:
             "owning_tier": row["owning_tier"],
             "body": json.loads(row["body"]),
             "decided_at": row["decided_at"].isoformat(),
+            "intake_decision": _intake_decision(row["decision"]),
         }
         for row in rows
     ]
@@ -188,6 +203,12 @@ def build_decisions(destination: str, kind: str | None = None) -> dict[str, Any]
     `kind` itself and `decide` refuses `kind_not_accepted` on its own when
     the destination's `accepts` does not list it; nothing here re-implements
     that check.
+
+    On the kind path a row intake refused is listed, not dropped: it is
+    emitted `allowed: False` with intake's own stored reason and decision_id
+    and `refused_by: "intake"`, and `gate.decide` is never called for it.
+    A row intake admitted is re-decided by THIS destination's gate and
+    carries `refused_by: "gate"` when that refuses, `None` when it admits.
     """
     gate = EgressGate.for_destination(destination, kind=kind)  # the one PDP call
 
@@ -228,14 +249,29 @@ def build_decisions(destination: str, kind: str | None = None) -> dict[str, Any]
     records = []
     admitted = 0
     for row in kind_records:
-        decision = gate.decide(
-            {"originator_nation": row["originator_nation"],
-             "releasable_to": row["releasable_to"]},
-            key=row["key"],
-        )
-        if decision.allowed:
-            admitted += 1
+        intake = row.get("intake_decision")
+        intake_refused = intake is not None and not intake["allowed"]
         body = row["body"]
+        if intake_refused:
+            # Intake's refusal stands as stored: not re-decided here.
+            allowed = False
+            reason = intake["reason"] or "unknown"
+            decision_id = intake["decision_id"]
+            refused_by = "intake"
+            provisional = bool(intake["provisional"])
+        else:
+            decision = gate.decide(
+                {"originator_nation": row["originator_nation"],
+                 "releasable_to": row["releasable_to"]},
+                key=row["key"],
+            )
+            allowed = decision.allowed
+            reason = None if allowed else decision.reason
+            decision_id = decision.decision_id
+            refused_by = None if allowed else "gate"
+            provisional = False
+        if allowed:
+            admitted += 1
         records.append({
             "key": row["key"],
             # Display convenience only, read from `body` -- never used to
@@ -243,9 +279,11 @@ def build_decisions(destination: str, kind: str | None = None) -> dict[str, Any]
             "asset_id": body.get("asset_id") if isinstance(body, dict) else None,
             "originator_nation": row["originator_nation"],
             "releasable_to": row["releasable_to"],
-            "allowed": decision.allowed,
-            "reason": None if decision.allowed else decision.reason,
-            "decision_id": decision.decision_id,
+            "allowed": allowed,
+            "reason": reason,
+            "decision_id": decision_id,
+            "refused_by": refused_by,
+            "provisional": provisional,
             "owning_tier": row["owning_tier"],
             "decided_at": row["decided_at"],
             "body": body,
