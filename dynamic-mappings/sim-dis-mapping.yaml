@@ -288,6 +288,19 @@ processor_resources:
         _ => deleted()
       }
 
+      # --- posture axis input (ADR-0044 amendment, "posture, a third
+      # column") -----------------------------------------------------------
+      # launcher_raised is an INPUT to the edge's posture state machine, not
+      # a decided value itself — the state machine (openddil-tactical-
+      # agents edge/posture.py) is what sets operational_state.posture_
+      # status/posture_since from this field plus speed. Same no-claim-
+      # from-silence rule as power_state above: no appearance, or a
+      # platform with no launcher bit at all (ontology row absent for its
+      # domain), means $ax.launcher_raised is simply missing, and the field
+      # must stay absent here too rather than defaulting to a guessed
+      # true/false.
+      root.operational_state.launcher_raised = $ax.launcher_raised.or(deleted())
+
       # --- lifecycle axis (ADR-0044 slice A) --------------------------------
       # operational_status is the two-column lifecycle model's own axis, not
       # a restatement of health_state above — a DESTROYED entity is BOTH
