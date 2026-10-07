@@ -389,6 +389,7 @@ export default function HqApp() {
               destination={p.destination}
               kind={p.kind}
               columns={p.columns}
+              figure={p.figure}
             />
           ))}
         </div>

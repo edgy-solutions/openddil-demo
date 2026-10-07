@@ -29,11 +29,14 @@
 // endpoint-shaped fixture without exercising the fetch hook
 // (react-dom/server's renderToStaticMarkup — no @testing-library/react, no
 // jsdom, see vitest.config.ts).
+import { Fragment, useState } from 'react';
 import {
   useEgressAdmission,
   type DecisionRecord,
   type DecisionsResponse,
 } from '../../hooks/useEgressAdmission';
+import FigureView from './FigureView';
+import { isSafeIcn } from './figure';
 
 export interface ReleasedRecordsColumn {
   header: string;
@@ -42,11 +45,19 @@ export interface ReleasedRecordsColumn {
   pointer: string;
 }
 
+/** Optional per-row figure: JSON pointers into `record.body` for the figure
+ *  number a record cites and the hotspot it names. */
+export interface ReleasedRecordsFigure {
+  icnPointer: string;
+  hotspotPointer: string;
+}
+
 export interface ReleasedRecordsPaneProps {
   title: string;
   destination: string;
   kind?: string;
   columns: ReleasedRecordsColumn[];
+  figure?: ReleasedRecordsFigure;
 }
 
 /** Resolves an RFC 6901 JSON pointer against `root`. Returns `undefined`
@@ -83,11 +94,14 @@ function tallyRefusals(records: DecisionRecord[]): [string, number][] {
 }
 
 export function ReleasedRecordsView({
-  data, columns,
+  data, columns, figure,
 }: {
   data: DecisionsResponse;
   columns: ReleasedRecordsColumn[];
+  figure?: ReleasedRecordsFigure;
 }) {
+  // One figure open at a time, keyed by record.
+  const [openKey, setOpenKey] = useState<string | null>(null);
   const total = data.records.length;
   const tally = tallyRefusals(data.records);
   // Present only when the PEP filtered this response — see
@@ -143,24 +157,58 @@ export function ReleasedRecordsView({
                 <th key={c.header} className="pb-1 text-left">{c.header}</th>
               ))}
               <th className="pb-1 text-left">decision</th>
+              {figure && <th className="pb-1" />}
             </tr>
           </thead>
           <tbody>
-            {data.records.map((r) => (
-              <tr key={r.key ?? r.decision_id} className="border-t border-slate-800">
-                <td className="py-1 text-slate-300">{r.key ?? '—'}</td>
-                {columns.map((c) => (
-                  <td key={c.header} className="py-1 text-slate-400">
-                    {formatCell(resolvePointer(r.body, c.pointer))}
-                  </td>
-                ))}
-                {/* Verbatim from the endpoint, same as EgressAdmissionPane:
-                    no nation is read here to pick this cell's text or color. */}
-                <td className={r.allowed ? 'py-1 text-emerald-300' : 'py-1 text-rose-300'}>
-                  {r.allowed ? 'ADMIT' : r.reason}
-                </td>
-              </tr>
-            ))}
+            {data.records.map((r) => {
+              const rowKey = r.key ?? r.decision_id;
+              // Both pointers are resolved against the record body; the icn
+              // is only ever used when it is a safe figure number.
+              const icn = figure ? resolvePointer(r.body, figure.icnPointer) : undefined;
+              const hotspot = figure ? resolvePointer(r.body, figure.hotspotPointer) : undefined;
+              const safeIcn = isSafeIcn(icn) ? icn : null;
+              const isOpen = safeIcn !== null && openKey === rowKey;
+              return (
+                <Fragment key={rowKey}>
+                  <tr className="border-t border-slate-800">
+                    <td className="py-1 text-slate-300">{r.key ?? '—'}</td>
+                    {columns.map((c) => (
+                      <td key={c.header} className="py-1 text-slate-400">
+                        {formatCell(resolvePointer(r.body, c.pointer))}
+                      </td>
+                    ))}
+                    {/* Verbatim from the endpoint, same as EgressAdmissionPane:
+                        no nation is read here to pick this cell's text or color. */}
+                    <td className={r.allowed ? 'py-1 text-emerald-300' : 'py-1 text-rose-300'}>
+                      {r.allowed ? 'ADMIT' : r.reason}
+                    </td>
+                    {figure && (
+                      <td className="py-1 text-right">
+                        {safeIcn !== null && (
+                          <button
+                            type="button"
+                            aria-expanded={isOpen}
+                            onClick={() => setOpenKey(isOpen ? null : rowKey)}
+                            className="rounded border border-slate-700 px-1.5 text-[10px] uppercase tracking-widest text-slate-300 hover:border-slate-500"
+                          >Figure</button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                  {isOpen && safeIcn !== null && (
+                    <tr>
+                      <td colSpan={columns.length + 3} className="pb-2">
+                        <FigureView
+                          icn={safeIcn}
+                          hotspotId={typeof hotspot === 'string' ? hotspot : null}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -169,7 +217,7 @@ export function ReleasedRecordsView({
 }
 
 export default function ReleasedRecordsPane({
-  title, destination, kind, columns,
+  title, destination, kind, columns, figure,
 }: ReleasedRecordsPaneProps) {
   const { data, isLoading, isError, isPolicyUnavailable, policyUnavailableDetail } =
     useEgressAdmission(destination, kind);
@@ -191,7 +239,7 @@ export default function ReleasedRecordsPane({
       ) : isLoading && !data ? (
         <div className="text-xs text-slate-500">Loading released records…</div>
       ) : data ? (
-        <ReleasedRecordsView data={data} columns={columns} />
+        <ReleasedRecordsView data={data} columns={columns} figure={figure} />
       ) : (
         <div className="text-xs text-slate-500">No data.</div>
       )}

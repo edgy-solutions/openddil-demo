@@ -4,15 +4,14 @@
 // real-shaped fixture. The fixture is read from disk rather than inlined so
 // the test exercises the same markup a deployment would mount.
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { figureUrl, isSafeIcn, prepareFigure } from '../releasability/figure';
 
+// jsdom replaces the URL global, so import.meta.url is not usable here;
+// vitest provides __dirname.
 const FIXTURE = readFileSync(
-  fileURLToPath(new URL(
-    '../../../../tests/fixtures/s1000d-array-module/ICN-ODMRAD-00001.svg',
-    import.meta.url,
-  )),
+  resolve(__dirname, '../../../../tests/fixtures/s1000d-array-module/ICN-ODMRAD-00001.svg'),
   'utf8',
 );
 

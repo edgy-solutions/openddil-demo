@@ -188,6 +188,13 @@ export interface ReleasedRecordsPaneConfig {
   destination: string;
   kind?: string;
   columns: ReleasedRecordsColumnConfig[];
+  /** Optional: where a record names the illustrated-parts figure it cites
+   *  and the hotspot within it. Both are JSON pointers (RFC 6901, same
+   *  convention as `columns`) into `record.body`; when set, each row whose
+   *  icn resolves to a safe figure number gets a Figure toggle. Absent when
+   *  not configured, or when either pointer is malformed -- a bad `figure`
+   *  never drops the pane itself. */
+  figure?: { icnPointer: string; hotspotPointer: string };
 }
 
 /** How an edge's rows reach HQ's postgres — declared by the deployment,
@@ -492,6 +499,18 @@ export function parseManualQa(raw: unknown): ManualQaConfig | undefined {
   return typeof stub === 'boolean' ? { stub } : {};
 }
 
+/** A `figure` config is kept only when both pointers are strings that are
+ *  RFC 6901 pointers (empty, or starting with "/"); anything else is
+ *  omitted so the pane still renders, just without the Figure control. */
+function parseFigureConfig(raw: unknown): ReleasedRecordsPaneConfig['figure'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const f = raw as Record<string, unknown>;
+  const isPointer = (x: unknown): x is string =>
+    typeof x === 'string' && (x === '' || x.startsWith('/'));
+  if (!isPointer(f.icnPointer) || !isPointer(f.hotspotPointer)) return undefined;
+  return { icnPointer: f.icnPointer, hotspotPointer: f.hotspotPointer };
+}
+
 export function parseReleasedRecordsPanes(raw: unknown): ReleasedRecordsPaneConfig[] {
   if (!Array.isArray(raw)) return [];
   const isColumn = (x: unknown): x is ReleasedRecordsColumnConfig => {
@@ -507,11 +526,13 @@ export function parseReleasedRecordsPanes(raw: unknown): ReleasedRecordsPaneConf
     if (typeof e.destination !== 'string' || !e.destination.trim()) continue;
     if (e.kind !== undefined && typeof e.kind !== 'string') continue;
     if (!Array.isArray(e.columns) || !e.columns.every(isColumn)) continue;
+    const figure = parseFigureConfig(e.figure);
     out.push({
       title: e.title,
       destination: e.destination,
       kind: e.kind as string | undefined,
       columns: e.columns as ReleasedRecordsColumnConfig[],
+      ...(figure ? { figure } : {}),
     });
   }
   return out;
