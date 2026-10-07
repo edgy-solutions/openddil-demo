@@ -85,6 +85,38 @@ TOPAZ_TIMEOUT = float(os.getenv("OPENDDIL_TOPAZ_TIMEOUT", "2.0"))
 # deployment that has not wired a pane gets a clean 404, not a guess.
 EGRESS_PANE = os.getenv("OPENDDIL_EGRESS_PANE_URL", "").rstrip("/")
 
+# --- the service-client picture route ------------------------------------------
+# GET /picture?event_id=<id>, authenticated by an OAuth2 Bearer access token
+# (client_credentials) from this realm. The PEP maps the token's client to a
+# release destination itself; the consumer never names one. Empty URL means
+# "not wired at this tier": a clean 404, same convention as EGRESS_PANE.
+PICTURE_URL = os.getenv("OPENDDIL_PICTURE_URL", "").rstrip("/")
+PICTURE_AUDIENCE = os.getenv("OPENDDIL_PICTURE_AUDIENCE", "openddil-picture")
+
+
+def _parse_picture_clients(raw: str) -> dict:
+    """JSON object of client id -> destination. Anything malformed yields an
+    EMPTY map (so every client is refused), never a partial one."""
+    if not raw.strip():
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        logging.getLogger("pep").error("OPENDDIL_PICTURE_CLIENTS is not valid "
+                                       "JSON; no clients are entitled")
+        return {}
+    if (not isinstance(parsed, dict)
+            or not all(isinstance(k, str) and isinstance(v, str) and v
+                       for k, v in parsed.items())):
+        logging.getLogger("pep").error("OPENDDIL_PICTURE_CLIENTS must map "
+                                       "strings to non-empty strings; no "
+                                       "clients are entitled")
+        return {}
+    return parsed
+
+
+PICTURE_CLIENTS = _parse_picture_clients(os.getenv("OPENDDIL_PICTURE_CLIENTS", ""))
+
 # --- the CM write path --------------------------------------------------------
 # ONE route, one write, one topic. Empty means "not wired at this tier", the
 # same meaning ELECTRIC/TOPAZ/EGRESS_PANE being unset already carries: a
@@ -1670,6 +1702,11 @@ class Pep(BaseHTTPRequestHandler):
         if parsed.path.startswith("/exercise/"):
             self._handle_exercise(parsed, "POST")
             return
+        if parsed.path == "/picture":
+            self._drain_body()
+            self._send(405, json.dumps({"detail": "method not allowed"}).encode(),
+                       [("Content-Type", "application/json"), ("Allow", "GET")])
+            return
         # Every other POST path is refused. The body is drained first so a
         # kept-alive HTTP/1.1 socket is not left desynced by an unread
         # request body ahead of whatever the client sends next.
@@ -1960,6 +1997,66 @@ class Pep(BaseHTTPRequestHandler):
         self._send(200, json.dumps(view).encode(),
                    [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
 
+    def _picture_reply(self, status: int, detail: str,
+                       headers: list | None = None) -> None:
+        self._send(status, json.dumps({"detail": detail}).encode(),
+                   [("Content-Type", "application/json")] + (headers or []))
+
+    def _handle_picture(self, parsed) -> None:
+        """GET /picture -- a service client's Bearer token in, the assembler's
+        picture answer out, for the destination THIS PEP maps the client to.
+        A `destination` the caller supplies is ignored."""
+        if not PICTURE_URL or not oidc.ISSUER:
+            self._deny("no picture route at this tier", subject="",
+                       resource="/picture", status=404)
+            return
+        auth = self.headers.get("Authorization", "")
+        challenge = 'Bearer realm="openddil"'
+        invalid = [("WWW-Authenticate", challenge + ', error="invalid_token"')]
+        if not auth.startswith("Bearer ") or not auth[7:].strip():
+            log.warning("PICTURE refused cause=no bearer token")
+            self._picture_reply(401, "bearer token required",
+                                [("WWW-Authenticate", challenge)])
+            return
+        try:
+            claims = oidc.verify_service_token(auth[7:].strip(),
+                                               audience=PICTURE_AUDIENCE)
+        except oidc.AuthError as exc:
+            log.warning("PICTURE refused cause=invalid token (%s)", exc)
+            self._picture_reply(401, "invalid token", invalid)
+            return
+        azp = claims["azp"]
+        dest = PICTURE_CLIENTS.get(azp)
+        if not dest:
+            log.warning("PICTURE refused azp=%s cause=client not entitled", azp)
+            self._picture_reply(403, "client not entitled to pictures")
+            return
+        raw_id = (urllib.parse.parse_qs(parsed.query).get("event_id") or [""])[0]
+        try:
+            event_id = str(uuid.UUID(raw_id)) if raw_id else ""
+        except ValueError:
+            event_id = ""
+        if not event_id:
+            log.warning("PICTURE refused azp=%s cause=bad event_id", azp)
+            self._picture_reply(400, "event_id must be a UUID")
+            return
+        url = f"{PICTURE_URL}/picture?" + urllib.parse.urlencode(
+            {"event_id": event_id, "destination": dest})
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                status, body = resp.status, resp.read()
+        except urllib.error.HTTPError as exc:
+            status, body = exc.code, exc.read()
+        except Exception as exc:  # noqa: BLE001 -- transport fault
+            log.error("PICTURE upstream unreachable azp=%s event_id=%s: %s",
+                      azp, event_id, exc)
+            self._picture_reply(502, "picture service unreachable")
+            return
+        log.info("PICTURE azp=%s event_id=%s destination=%s status=%s",
+                 azp, event_id, dest, status)
+        self._send(status, body, [("Content-Type", "application/json"),
+                                  ("Cache-Control", "no-store")])
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/healthz":
@@ -1967,6 +2064,11 @@ class Pep(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"ok")
+            return
+        # Machine-to-machine: never consults the session cookie or the
+        # header-mode subject, so it is dispatched before either is read.
+        if parsed.path == "/picture":
+            self._handle_picture(parsed)
             return
         if self._handle_auth(parsed):
             return
@@ -2190,6 +2292,8 @@ def main() -> None:
     log.info("read-path PEP listening on :%s", LISTEN_PORT)
     log.info("  electric:  %s", ELECTRIC)
     log.info("  egress pane: %s", EGRESS_PANE or "(none)")
+    log.info("  picture: %s (%d mapped clients)", PICTURE_URL or "(none)",
+             len(PICTURE_CLIENTS))
     log.info("  topaz:     %s", TOPAZ)
     # THE AUTH MODE IS ANNOUNCED AT BOOT, ONCE, LOUDLY. An operator asking
     # "is this thing actually authenticating?" should not have to infer the

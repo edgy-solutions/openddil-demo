@@ -359,6 +359,56 @@ def verify_id_token(token: str, *, nonce: str | None = None) -> dict:
     return claims
 
 
+def verify_service_token(token: str, *, audience: str) -> dict:
+    """Verify a client_credentials access token minted by this realm for a
+    service client. Signature (RS256 only), issuer, audience, expiry and
+    not-before are checked exactly as for an ID token; the audience is the
+    one the caller names, and the token must carry a non-empty `azp` (the
+    client it was issued to). No nonce: there is no login flow here."""
+    try:
+        h_b64, p_b64, s_b64 = token.split(".")
+        header = json.loads(_b64url_decode(h_b64))
+        claims = json.loads(_b64url_decode(p_b64))
+        signature = _b64url_decode(s_b64)
+    except Exception as exc:  # noqa: BLE001
+        raise AuthError(f"malformed token: {exc}") from exc
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise AuthError("malformed token")
+
+    if header.get("alg") != "RS256":
+        raise AuthError(f"unexpected token algorithm {header.get('alg')!r}; "
+                        "only RS256 is accepted")
+    key = _signing_key(header.get("kid", ""))
+    if key.get("kty") != "RSA":
+        raise AuthError(f"unsupported key type {key.get('kty')!r}")
+    if not _rsa_verify(f"{h_b64}.{p_b64}".encode(), signature,
+                       key["n"], key["e"]):
+        raise AuthError("token signature does not verify")
+
+    if claims.get("iss") != ISSUER:
+        raise AuthError(f"issuer mismatch: token says {claims.get('iss')!r}")
+
+    aud = claims.get("aud")
+    aud = [aud] if isinstance(aud, str) else list(aud or [])
+    if audience not in aud:
+        raise AuthError(f"audience {aud!r} does not include {audience!r}")
+
+    now = time.time()
+    try:
+        expired = float(claims.get("exp", 0)) <= now
+        early = "nbf" in claims and float(claims["nbf"]) > now + 60
+    except (TypeError, ValueError) as exc:
+        raise AuthError("malformed time claim") from exc
+    if expired:
+        raise AuthError("token has expired")
+    if early:
+        raise AuthError("token is not yet valid")
+    azp = claims.get("azp")
+    if not isinstance(azp, str) or not azp:
+        raise AuthError("token carries no authorized party")
+    return claims
+
+
 # --- login flow --------------------------------------------------------------
 _pending: dict[str, dict] = {}
 _pending_lock = threading.Lock()

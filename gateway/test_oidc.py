@@ -836,5 +836,8 @@ def test_service_token_wrong_alg_and_signature(oidc, key):
         oidc.verify_service_token(mint(other, aud="svc-aud", azp="c"),
                                   audience="svc-aud")
     with pytest.raises(oidc.AuthError):
-        oidc.verify_service_token(mint(key, alg="HS256", aud="svc-aud", azp="c"),
-                                  audience="svc-aud")
+        import jwt
+        hs = jwt.encode({"iss": ISSUER, "aud": "svc-aud", "azp": "c",
+                         "exp": int(time.time()) + 300}, "x" * 64,
+                        algorithm="HS256", headers={"kid": KID})
+        oidc.verify_service_token(hs, audience="svc-aud")
