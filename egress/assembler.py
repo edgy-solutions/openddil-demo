@@ -168,6 +168,13 @@ def _parse_rfc3339(value: str) -> datetime:
     return dt
 
 
+def owning_tier_of(cm_state: Mapping[str, Any]) -> str:
+    """The tier that owns this cm-state record's episodes. One definition,
+    shared by `assemble`, `_produce_episode` and the picture index, so the
+    record key they each compute can never drift apart."""
+    return cm_state.get("edge_id") or cm_state.get("region_id") or ""
+
+
 def _label_from_cm_state(cm_state: Mapping[str, Any]) -> dict[str, Any] | None:
     """The label to write at the kind's `label` pointer, straight from the
     cm-state record — never derived, never defaulted to a tier guess. `None`
@@ -292,7 +299,7 @@ def assemble(
     the gate's schema check is what turns that into a visible
     `schema_invalid` refusal, not a guess made here.
     """
-    owning_tier = cm_state.get("edge_id") or cm_state.get("region_id") or ""
+    owning_tier = owning_tier_of(cm_state)
 
     out: dict[str, Any] = {}
     pointer.set(out, decl.key, record_key(
@@ -797,6 +804,25 @@ def _source_ids(episode: Episode) -> tuple[str, ...]:
     return tuple(sorted(s.get("event_id", "") for s in episode.sources))
 
 
+async def build_route_picture(
+    state: _RouteState,
+    cm_state: Mapping[str, Any],
+    episode: Episode,
+    owning_tier: str,
+    *,
+    read_asset: ReadAsset,
+) -> dict[str, Any]:
+    """`build_picture` with the route's own parts book, slot map and
+    designations. The producing loop and the picture endpoint both call
+    this, so they cannot pass different arguments."""
+    return await build_picture(
+        cm_state, episode, owning_tier,
+        read_asset=read_asset, parts=state.parts,
+        part_refs=dict(state.route.part_refs),
+        designations=dict(state.route.battle_condition),
+    )
+
+
 async def _produce_episode(
     state: _RouteState,
     cm_state: Mapping[str, Any],
@@ -811,7 +837,7 @@ async def _produce_episode(
     source event_ids) differs from what this process last produced for that
     key — a second source on an already-open episode is a revision with the
     SAME key, not a new record."""
-    owning_tier = cm_state.get("edge_id") or cm_state.get("region_id") or ""
+    owning_tier = owning_tier_of(cm_state)
     key = record_key(
         state.route.kind, owning_tier, episode.asset, episode.component, episode.fault_code,
         episode.detected_at_ns)
@@ -825,12 +851,8 @@ async def _produce_episode(
     attempt = 0
     while True:
         try:
-            picture = await build_picture(
-                cm_state, episode, owning_tier,
-                read_asset=read_asset, parts=state.parts,
-                part_refs=dict(state.route.part_refs),
-                designations=dict(state.route.battle_condition),
-            )
+            picture = await build_route_picture(
+                state, cm_state, episode, owning_tier, read_asset=read_asset)
             break
         except Exception:  # noqa: BLE001 — retried, then re-raised
             if attempt >= len(postgres_retry):
@@ -983,6 +1005,11 @@ async def _main_async() -> int:
 
     signal_module.signal(signal_module.SIGTERM, _stop)
     signal_module.signal(signal_module.SIGINT, _stop)
+
+    # Off by default: no thread, no extra consumer, today's behaviour.
+    import picture as picture_module  # noqa: PLC0415
+    if routes and picture_module.picture_enabled(os.environ):
+        picture_module.start(routes, states, BROKERS, read_asset)
 
     # R6b: every trigger/parts topic consumed and every output topic
     # produced to must exist before the first poll.
