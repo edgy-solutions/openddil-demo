@@ -10,6 +10,7 @@
 import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
 import { ThisNodeBadge } from '../../lib/thisNode';
 import { useEdgeBuffer } from '../../hooks';
+import ExercisePopup from './ExercisePopup';
 
 interface HqHeaderProps {
   /** Null while useWanLink's GET is in flight or failed -- render the
@@ -74,6 +75,12 @@ export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeade
             <span className="text-[9px] mt-0.5 text-slate-500 tracking-widest">WAN control: supervisor only</span>
           )}
         </div>
+        {/* Exercise control -- role-gated like the WAN toggle above, but a
+            distinct capability (controls the DIS simulator/adapter via its
+            own service, never this uplink). Self-contained: polls its own
+            status, so it takes no props from this header. */}
+        <ExercisePopup />
+
         <div className="flex flex-col items-center text-emerald-400 mr-8">
           <Building2 className="w-6 h-6 mb-1 glow-emerald" />
           <span className="text-xs font-bold tracking-wider text-emerald-300">CENTRAL HQ <ThisNodeBadge /></span>
