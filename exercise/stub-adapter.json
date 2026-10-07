@@ -1,0 +1,11 @@
+{
+  "name": "compose stub adapter",
+  "endpoint": "http://exercise-stub-adapter:8096",
+  "operations": {
+    "pause": {"method": "POST", "path": "/pause", "body": {}},
+    "resume": {"method": "POST", "path": "/resume", "body": {}},
+    "stop": {"method": "POST", "path": "/stop", "body": {}},
+    "run": {"method": "POST", "path": "/run", "body": {}},
+    "restart": {"method": "POST", "path": "/restart", "body": {}}
+  }
+}

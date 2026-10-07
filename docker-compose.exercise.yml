@@ -1,0 +1,75 @@
+# Exercise control: compose override, NOT applied by a plain `docker
+# compose up` -- this file must be added explicitly, and the two new
+# services are also gated behind `--profile exercise`, so neither applies
+# unless both are asked for:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.exercise.yml \
+#     --profile exercise up -d exercise-stub-adapter exercise-control
+#
+# Compose profiles cannot gate a single environment variable on an
+# always-running service (gateway), so this override carries that one
+# line instead. Without -f docker-compose.exercise.yml,
+# OPENDDIL_EXERCISE_CONTROL_URL is unset on the gateway and
+# GET/POST /exercise/... are 404, exactly like before this change (see
+# gateway/pep.py's `EXERCISE_CONTROL_URL` check).
+#
+# Both new services are COMPOSE-ONLY SCAFFOLDING, the same trade as
+# `gateway`/`manual-qa-stub` above them: a bare pinned python image plus a
+# read-only bind mount, because control.py and stub_adapter.py are
+# stdlib-only. The real adapter endpoint is configured by the chart, not
+# by this file.
+services:
+  gateway:
+    environment:
+      OPENDDIL_EXERCISE_CONTROL_URL: http://exercise-control:8095
+
+  # Runs the entity simulator as a child process and exposes
+  # pause/resume/stop/run/restart over HTTP -- see exercise/stub_adapter.py.
+  # Mounts the simulator script read-only from its own repo; does not edit
+  # or own that file.
+  exercise-stub-adapter:
+    image: python:3.11.9-slim
+    container_name: openddil-demo-exercise-stub-adapter
+    profiles: ["exercise"]
+    # The simulator imports opendis; install exactly the version the
+    # sensor-ingest decoder uses, as the other simulator containers do.
+    entrypoint:
+      - sh
+      - -c
+      - pip install --quiet --no-cache-dir opendis==1.0 && exec python -u /app/exercise/stub_adapter.py
+    environment:
+      STUB_PORT: "8096"
+      STUB_SIM_PATH: /dis-sim/dis_sim.py
+      DIS_TARGET_HOST: openddil-sensor-ingest-01
+      DIS_TARGET_PORT: "62040"
+      LOG_LEVEL: INFO
+    volumes:
+      - ./exercise:/app/exercise:ro
+      - ../openddil-customer-bundle-example/tools/dis-sim:/dis-sim:ro
+    depends_on:
+      openddil-sensor-ingest-01:
+        condition: service_started
+    restart: unless-stopped
+
+  # exercise/control.py: the role-gated status/op service the gateway
+  # forwards to. Rate source points at sensor-ingest-01's own sidecar
+  # metrics -- the ONLY thing the UI's running/paused/unknown state is
+  # ever derived from (never the stub adapter's responses).
+  exercise-control:
+    image: python:3.11.9-slim
+    container_name: openddil-demo-exercise-control
+    profiles: ["exercise"]
+    entrypoint: ["python", "-u", "/app/exercise/control.py"]
+    environment:
+      EXERCISE_ADAPTER_FILE: /app/exercise/stub-adapter.json
+      EXERCISE_RATE_SOURCES: http://openddil-sensor-ingest-01:8080/metrics
+      EXERCISE_PORT: "8095"
+      LOG_LEVEL: INFO
+    volumes:
+      - ./exercise:/app/exercise:ro
+    depends_on:
+      exercise-stub-adapter:
+        condition: service_started
+      openddil-sensor-ingest-01:
+        condition: service_started
+    restart: unless-stopped
