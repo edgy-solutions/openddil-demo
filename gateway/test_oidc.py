@@ -804,3 +804,37 @@ def test_role_served_sends_no_where_at_all(monkeypatch):
     if where:
         upstream.append(("where", where))
     assert "where" not in urllib.parse.urlencode(upstream)
+
+
+# --- verify_service_token (client_credentials access tokens) ----------------
+
+def test_service_token_verifies(oidc, key):
+    claims = oidc.verify_service_token(
+        mint(key, aud="svc-aud", azp="client-a"), audience="svc-aud")
+    assert claims["azp"] == "client-a"
+
+
+def test_service_token_audience_list_accepted(oidc, key):
+    oidc.verify_service_token(
+        mint(key, aud=["other", "svc-aud"], azp="c"), audience="svc-aud")
+
+
+@pytest.mark.parametrize("over", [
+    {"aud": "nope"}, {"iss": "https://evil.example"}, {"azp": ""},
+    {"exp": 1}, {"nbf": int(time.time()) + 3600},
+])
+def test_service_token_refusals(oidc, key, over):
+    claims = {"aud": "svc-aud", "azp": "c"}
+    claims.update(over)
+    with pytest.raises(oidc.AuthError):
+        oidc.verify_service_token(mint(key, **claims), audience="svc-aud")
+
+
+def test_service_token_wrong_alg_and_signature(oidc, key):
+    other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    with pytest.raises(oidc.AuthError):
+        oidc.verify_service_token(mint(other, aud="svc-aud", azp="c"),
+                                  audience="svc-aud")
+    with pytest.raises(oidc.AuthError):
+        oidc.verify_service_token(mint(key, alg="HS256", aud="svc-aud", azp="c"),
+                                  audience="svc-aud")
