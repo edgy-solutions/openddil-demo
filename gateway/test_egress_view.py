@@ -232,3 +232,32 @@ def test_kind_record_payload_filters_like_any_other_record(
     # the payload's top level only; a visible record is forwarded whole.
     for record in view["records"]:
         assert "work_order" in record
+
+
+def test_kind_payload_with_intake_refusals_filters_by_viewer_nation():
+    """Intake-refused rows ride the same nation filter: the ATL viewer sees
+    its own refused row with intake's reason intact, never the BDR one, and
+    only the unlabelled row is counted as withheld."""
+    def row(key, originator, reason):
+        return {"key": key, "asset_id": None, "originator_nation": originator,
+                "releasable_to": [], "allowed": False, "reason": reason,
+                "decision_id": f"intake-{key}", "refused_by": "intake",
+                "provisional": False, "owning_tier": "edge-01",
+                "decided_at": "2026-10-02T00:00:00+00:00", "body": {}}
+
+    payload = {
+        "destination": "system:records-dest-test", "kind": "records.v1",
+        "policy_version": "p", "corpus_version": "c",
+        "admitted": 0, "refused": 3,
+        "records": [row("rec-1", "ATL", "schema_invalid"),
+                    row("rec-2", "BDR", "schema_invalid"),
+                    row("rec-3", None, "unlabelled")],
+    }
+
+    view = filter_decisions(payload, ["ATL"])
+
+    assert [r["key"] for r in view["records"]] == ["rec-1"]
+    assert view["records"][0]["reason"] == "schema_invalid"
+    assert view["records"][0]["refused_by"] == "intake"
+    assert view["withheld"] == 1
+    assert "rec-2" not in repr(view)

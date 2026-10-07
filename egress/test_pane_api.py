@@ -52,8 +52,13 @@ def _patch_gate(monkeypatch: pytest.MonkeyPatch, nations: list[str], *,
 def _record(key: str, originator: str | None = None,
             releasable: list[str] | None = None, *, asset_id: str | None = None,
             owning_tier: str = "edge-01",
-            decided_at: str = "2026-10-02T00:00:00+00:00") -> dict:
+            decided_at: str = "2026-10-02T00:00:00+00:00",
+            intake: dict | None = None) -> dict:
     return {
+        "intake_decision": intake if intake is not None else {
+            "allowed": True, "reason": None,
+            "decision_id": f"intake-{key}", "provisional": False,
+        },
         "key": key,
         "originator_nation": originator,
         "releasable_to": releasable or [],
@@ -188,3 +193,96 @@ def test_atl_only_destination_refuses_a_bdr_originated_record():
 
     assert decision.allowed is False
     assert decision.reason == REASON_NO_OVERLAP
+
+
+def _refused(key: str, reason: str, *, provisional: bool = False) -> dict:
+    return {"allowed": False, "reason": reason,
+            "decision_id": f"intake-{key}", "provisional": provisional}
+
+
+def _patch_fetch(monkeypatch, records):
+    async def fake_fetch(kind):
+        return records
+
+    monkeypatch.setattr(pane_api, "_fetch_records_by_kind", fake_fetch)
+
+
+def test_intake_refused_rows_are_listed_with_intakes_reason(monkeypatch):
+    _patch_fetch(monkeypatch, [
+        _record("rec-1", originator="ATL",
+                intake=_refused("rec-1", "schema_invalid")),
+        _record("rec-2", intake=_refused("rec-2", "unlabelled")),
+        _record("rec-3", originator="ATL"),
+    ])
+    _patch_gate(monkeypatch, ["ATL"], accepts=["records.v1"])
+
+    result = pane_api.build_decisions("system:records-dest-test", kind="records.v1")
+
+    assert result["admitted"] == 1
+    assert result["refused"] == 2
+    by_key = {r["key"]: r for r in result["records"]}
+    assert by_key["rec-1"]["allowed"] is False
+    assert by_key["rec-1"]["reason"] == "schema_invalid"
+    assert by_key["rec-1"]["decision_id"] == "intake-rec-1"
+    assert by_key["rec-1"]["refused_by"] == "intake"
+    assert by_key["rec-2"]["allowed"] is False
+    assert by_key["rec-2"]["reason"] == "unlabelled"
+    assert by_key["rec-2"]["decision_id"] == "intake-rec-2"
+    assert by_key["rec-2"]["refused_by"] == "intake"
+    assert by_key["rec-3"]["allowed"] is True
+    assert by_key["rec-3"]["refused_by"] is None
+    assert by_key["rec-3"]["provisional"] is False
+
+
+def test_gate_is_never_asked_about_an_intake_refused_row(monkeypatch):
+    _patch_fetch(monkeypatch, [
+        _record("rec-1", originator="ATL",
+                intake=_refused("rec-1", "schema_invalid")),
+        _record("rec-2", originator="ATL"),
+    ])
+    gate = _gate("system:records-dest-test", ["ATL"], kind="records.v1",
+                 accepts=["records.v1"])
+    seen = []
+    real_decide = gate.decide
+
+    def spy(label, *, key=None, **kw):
+        seen.append(key)
+        return real_decide(label, key=key, **kw)
+
+    gate.decide = spy
+    monkeypatch.setattr(
+        pane_api.EgressGate, "for_destination",
+        classmethod(lambda cls, destination, *, kind=None, **kw: gate),
+    )
+
+    pane_api.build_decisions("system:records-dest-test", kind="records.v1")
+
+    assert seen == ["rec-2"]
+
+
+def test_provisional_intake_refusal_is_flagged(monkeypatch):
+    _patch_fetch(monkeypatch, [
+        _record("rec-1", originator="ATL",
+                intake=_refused("rec-1", "unknown_answered_record",
+                                provisional=True)),
+    ])
+    _patch_gate(monkeypatch, ["ATL"], accepts=["records.v1"])
+
+    result = pane_api.build_decisions("system:records-dest-test", kind="records.v1")
+
+    rec = result["records"][0]
+    assert rec["provisional"] is True
+    assert rec["reason"] == "unknown_answered_record"
+    assert rec["refused_by"] == "intake"
+
+
+def test_gate_refusal_of_an_intake_admitted_row_is_attributed_to_gate(monkeypatch):
+    _patch_fetch(monkeypatch, [_record("rec-1", originator="BDR")])
+    _patch_gate(monkeypatch, ["ATL"], accepts=["records.v1"])
+
+    result = pane_api.build_decisions("system:records-dest-test", kind="records.v1")
+
+    rec = result["records"][0]
+    assert rec["allowed"] is False
+    assert rec["refused_by"] == "gate"
+    assert rec["provisional"] is False
