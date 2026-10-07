@@ -41,6 +41,14 @@ No session is a 401; an authenticated subject whose role is not a
 WAN-control role (default `supervisor`) is a 403; a WAN-control role is
 forwarded to the DDIL sever mechanism. Both GET and POST are gated -- a
 read of the link's current state is no less a capability than flipping it.
+
+THE EXERCISE CONTROL ROUTE (GET /exercise/status, POST /exercise/op/<op>)
+is the same shape of affordance -- role-gated, not nation-gated. This
+gateway forwards ONLY to exercise/control.py's own HTTP surface; no route
+here ever reaches the adapter endpoint or the simulator -- control.py is
+the only thing that calls the adapter, and this file never learns its
+address. The subject header sent upstream is always this session's own
+subject, never a client-supplied one.
 """
 from __future__ import annotations
 
@@ -601,6 +609,19 @@ def _resolve_wan_proxy_name(path: str) -> str | None:
     if remainder in WAN_LINKS:
         return remainder
     return None
+
+
+# --- the exercise control route ----------------------------------------------
+# GET /exercise/status and POST /exercise/op/<op>, forwarded to
+# exercise/control.py -- never to the adapter or the simulator directly (see
+# _handle_exercise_control). Empty URL means "not wired at this tier", same
+# meaning WAN_CONTROL_URL/CM_INTAKE_URL/EGRESS_PANE being unset already
+# carry: the routes do not exist, 404, exactly like today.
+EXERCISE_CONTROL_URL = os.getenv("OPENDDIL_EXERCISE_CONTROL_URL", "").strip().rstrip("/")
+
+# Same role-gating discipline as WAN_CONTROL_ROLES: an affordance, checked
+# against `role` directly, not folded into ask_topaz's allow/deny.
+EXERCISE_CONTROL_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_EXERCISE_CONTROL_ROLES", "supervisor"))
 
 
 def table_class(table: str) -> str:
@@ -1537,6 +1558,104 @@ class Pep(BaseHTTPRequestHandler):
                      subject, decision.get("role"), enabled, upstream_status)
         self._send(upstream_status, upstream_body, [("Content-Type", "application/json")])
 
+    def _handle_exercise(self, parsed, method: str) -> None:
+        """Serve GET /exercise/status and POST /exercise/op/<op>, forwarded
+        to exercise/control.py ONLY -- this route never reaches the
+        adapter endpoint or the simulator; exercise/control.py is itself
+        the only thing that calls the adapter. Any other path under
+        /exercise/ (either method) is 404.
+
+        Order mirrors _handle_wan_control: route existence, then the
+        subject (401), then Topaz, then the role check (403, and nothing
+        is forwarded until an exercise-control role is confirmed).
+        """
+        path = parsed.path
+        op: str | None = None
+        if method == "GET":
+            if path != "/exercise/status":
+                self._deny("unknown path", subject="", resource=path, status=404,
+                           marker="GATEWAY REFUSED (PRE-PDP)")
+                return
+        else:
+            prefix = "/exercise/op/"
+            remainder = path[len(prefix):] if path.startswith(prefix) else ""
+            # A plain lower-case word or nothing: control.py checks the op
+            # against its adapter map, but nothing else is ever sent upstream.
+            if not re.fullmatch(r"[a-z]{1,32}", remainder):
+                self._drain_body()
+                self._deny("unknown path", subject="", resource=path, status=404,
+                           marker="GATEWAY REFUSED (PRE-PDP)")
+                return
+            op = remainder
+
+        if not EXERCISE_CONTROL_URL:
+            if method == "POST":
+                self._drain_body()
+            self._deny("exercise control not configured at this tier", subject="",
+                       resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
+        if method == "POST":
+            # The client's own body is never forwarded -- exercise/control.py
+            # takes the op from the path and the body from the adapter
+            # file, not from the caller. Drained so a kept-alive socket
+            # isn't desynced by an unread body.
+            self._drain_body()
+
+        # Step: the principal. No session -> 401, nothing forwarded.
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        # Step: Topaz, applied verbatim -- this file contains no
+        # authorization logic. Role, not allowed_nations, is what this
+        # route's decision turns on.
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject, resource=path,
+                       status=503)
+            return
+
+        if not decision.get("subject_known") or decision.get("role") not in EXERCISE_CONTROL_ROLES:
+            reason = "exercise control requires role: " + ",".join(sorted(EXERCISE_CONTROL_ROLES))
+            self._deny(reason, subject=subject, resource=path, status=403)
+            return
+
+        # Step: forward, to exercise/control.py's own HTTP surface alone.
+        # `X-OpenDDIL-Subject` is set from THIS session, always -- any
+        # client-sent value on the incoming request was never read above
+        # and is overwritten here, never trusted.
+        url = (EXERCISE_CONTROL_URL + "/exercise/status" if method == "GET"
+               else EXERCISE_CONTROL_URL + "/exercise/op/" + op)
+        req = urllib.request.Request(
+            url, data=(b"" if method == "POST" else None),
+            headers={SUBJECT_HEADER: subject}, method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                upstream_status = resp.status
+                upstream_body = resp.read()
+        except urllib.error.HTTPError as exc:
+            # A real answer from exercise/control.py, just not a 2xx --
+            # relayed verbatim. Only a connection-level failure below is an
+            # upstream-unavailable 502.
+            upstream_status = exc.code
+            upstream_body = exc.read()
+        except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+            log.error("exercise control upstream error subject=%s: %s", subject, exc)
+            self._send(502, json.dumps({"error": "exercise control upstream unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        if method == "POST":
+            log.info("EXERCISE CONTROL subject=%s role=%s op=%s upstream_status=%s",
+                     subject, decision.get("role"), op, upstream_status)
+        self._send(upstream_status, upstream_body, [("Content-Type", "application/json")])
+
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/cm/discrepancy":
@@ -1547,6 +1666,9 @@ class Pep(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/proxies/"):
             self._handle_wan_control(parsed, "POST")
+            return
+        if parsed.path.startswith("/exercise/"):
+            self._handle_exercise(parsed, "POST")
             return
         # Every other POST path is refused. The body is drained first so a
         # kept-alive HTTP/1.1 socket is not left desynced by an unread
@@ -1856,6 +1978,9 @@ class Pep(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/proxies/"):
             self._handle_wan_control(parsed, "GET")
+            return
+        if parsed.path.startswith("/exercise/"):
+            self._handle_exercise(parsed, "GET")
             return
         if not parsed.path.startswith("/v1/shape"):
             self._deny("unknown path", subject="", resource=parsed.path, status=404)
