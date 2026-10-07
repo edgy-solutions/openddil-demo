@@ -9,6 +9,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ReleasedRecordsView, type ReleasedRecordsColumn } from '../releasability/ReleasedRecordsPane';
+import { FigureViewBody, type FigureState } from '../releasability/FigureView';
 import type { DecisionRecord, DecisionsResponse } from '../../hooks/useEgressAdmission';
 
 function record(
@@ -125,5 +126,61 @@ describe('ReleasedRecordsPane ReleasedRecordsView', () => {
     const html = renderToStaticMarkup(<ReleasedRecordsView data={empty} columns={COLUMNS} />);
     expect(html).toContain('No records for this destination are visible to you.');
     expect(html).toContain('4');
+  });
+});
+
+describe('ReleasedRecordsPane figure control', () => {
+  const FIGURE = { icnPointer: '/work_order/parts/0/icn', hotspotPointer: '/work_order/parts/0/hotspot_id' };
+  const withIcn = (icn: unknown): DecisionsResponse => ({
+    ...FIXTURE,
+    records: [record('rec-f', 'ATL', [], true, {
+      work_order: { parts: [{ icn, hotspot_id: 'sec-03' }] },
+    })],
+  });
+
+  it('adds a Figure toggle for a record citing a safe icn', () => {
+    const html = renderToStaticMarkup(
+      <ReleasedRecordsView data={withIcn('ICN-ODMRAD-00001')} columns={COLUMNS} figure={FIGURE} />,
+    );
+    expect(html).toContain('>Figure</button>');
+  });
+
+  it('renders no control without the figure config', () => {
+    const html = renderToStaticMarkup(
+      <ReleasedRecordsView data={withIcn('ICN-ODMRAD-00001')} columns={COLUMNS} />,
+    );
+    expect(html).not.toContain('Figure');
+  });
+
+  it('renders no control for an unsafe or missing icn', () => {
+    for (const icn of ['../x', 'a/b', '', 7, undefined]) {
+      const html = renderToStaticMarkup(
+        <ReleasedRecordsView data={withIcn(icn)} columns={COLUMNS} figure={FIGURE} />,
+      );
+      expect(html).not.toContain('>Figure</button>');
+    }
+  });
+});
+
+describe('FigureViewBody', () => {
+  const render = (state: FigureState, hotspotId: string | null = 'sec-03') =>
+    renderToStaticMarkup(<FigureViewBody icn="ICN-ODMRAD-00001" hotspotId={hotspotId} state={state} />);
+
+  it('renders loading, missing, error and unreadable captions', () => {
+    expect(render({ status: 'loading' })).toContain('Loading figure');
+    expect(render({ status: 'missing' })).toContain('Figure ICN-ODMRAD-00001 is not deployed on this hub.');
+    expect(render({ status: 'error' })).toContain('Could not load figure ICN-ODMRAD-00001.');
+    expect(render({ status: 'unreadable' })).toContain('Figure ICN-ODMRAD-00001 could not be read.');
+  });
+
+  it('renders the svg with a highlighted caption, a not-in-figure caption, or a bare caption', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><g id="a"/></svg>';
+    const ok = render({ status: 'ready', svg, found: true });
+    expect(ok).toContain('<svg');
+    expect(ok).toContain('ICN-ODMRAD-00001 — hotspot sec-03 highlighted');
+    expect(render({ status: 'ready', svg, found: false })).toContain('hotspot sec-03 is not in this figure');
+    const bare = render({ status: 'ready', svg, found: false }, null);
+    expect(bare).not.toContain('hotspot');
+    expect(bare).toContain('ICN-ODMRAD-00001');
   });
 });

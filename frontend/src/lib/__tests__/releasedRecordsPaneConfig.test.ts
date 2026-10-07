@@ -73,3 +73,33 @@ describe('parseReleasedRecordsPanes', () => {
     expect(parseReleasedRecordsPanes('not an array')).toEqual([]);
   });
 });
+
+describe('parseReleasedRecordsPanes figure config', () => {
+  const base = {
+    title: 'Released records',
+    destination: 'system:records-dest-test',
+    columns: [{ header: 'task', pointer: '/task' }],
+  };
+
+  it('keeps a figure whose pointers are both JSON pointers', () => {
+    const figure = { icnPointer: '/work_order/parts/0/icn', hotspotPointer: '/work_order/parts/0/hotspot_id' };
+    expect(parseReleasedRecordsPanes([{ ...base, figure }])).toEqual([{ ...base, figure }]);
+  });
+
+  it('accepts the empty pointer (whole body) as a pointer', () => {
+    const figure = { icnPointer: '', hotspotPointer: '/h' };
+    expect(parseReleasedRecordsPanes([{ ...base, figure }])[0].figure).toEqual(figure);
+  });
+
+  it('drops an invalid figure but keeps the pane', () => {
+    for (const figure of [
+      'nope', null, [], {}, { icnPointer: '/a' }, { icnPointer: 'a', hotspotPointer: '/b' },
+      { icnPointer: '/a', hotspotPointer: 5 },
+    ]) {
+      const out = parseReleasedRecordsPanes([{ ...base, figure }]);
+      expect(out).toHaveLength(1);
+      expect(out[0].title).toBe('Released records');
+      expect(out[0].figure).toBeUndefined();
+    }
+  });
+});
