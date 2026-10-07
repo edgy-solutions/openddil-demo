@@ -38,7 +38,8 @@ held only in this process's memory. A restart starts that memory empty, so
 every still-open episode is assembled and produced again on the next
 cm-state message for its asset — with an UNCHANGED record key, because the
 key is a pure function of (kind, owning_tier, asset, component,
-fault_code), none of which restarting changes. That is a revision of a
+fault_code, first-observed time), none of which restarting changes (the
+time is read from the cm-state record, not from this process). That is a revision of a
 key a downstream consumer has already seen, not a duplicate record under a
 new key, which is exactly what an upsert-by-key destination (the gate's
 sink, and whatever reads it) needs: re-applying the same key is a no-op in
@@ -116,12 +117,19 @@ def episodes(cm_state: Mapping[str, Any]) -> list[Episode]:
     return out
 
 
-def record_key(kind: str, owning_tier: str, asset: str, component: str, fault_code: str) -> str:
-    """The record's stable identity: one uuid5 per (kind, owning_tier,
-    asset, component, fault_code). Deterministic and re-derivable — a
+def record_key(
+    kind: str, owning_tier: str, asset: str, component: str, fault_code: str,
+    detected_at_ns: int,
+) -> str:
+    """The identity of one OCCURRENCE of a fault: one uuid5 per (kind,
+    owning_tier, asset, component, fault_code, first-observed time). A
+    second source inside an open occurrence keeps that time, so it is a
+    revision under the same key. A fault that clears and reappears, or a
+    re-run after the store is emptied, is a new occurrence and a new key.
+    Still deterministic and re-derivable from the cm-state record alone — a
     restart, or a second process reading the same episode, computes the
     identical key without consulting any store."""
-    seed = f"{kind}|{owning_tier}|{asset}|{component}|{fault_code}"
+    seed = f"{kind}|{owning_tier}|{asset}|{component}|{fault_code}|{detected_at_ns}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
@@ -288,7 +296,8 @@ def assemble(
 
     out: dict[str, Any] = {}
     pointer.set(out, decl.key, record_key(
-        kind, owning_tier, episode.asset, episode.component, episode.fault_code))
+        kind, owning_tier, episode.asset, episode.component, episode.fault_code,
+        episode.detected_at_ns))
 
     label = _label_from_cm_state(cm_state)
     if label is not None:
@@ -804,7 +813,8 @@ async def _produce_episode(
     SAME key, not a new record."""
     owning_tier = cm_state.get("edge_id") or cm_state.get("region_id") or ""
     key = record_key(
-        state.route.kind, owning_tier, episode.asset, episode.component, episode.fault_code)
+        state.route.kind, owning_tier, episode.asset, episode.component, episode.fault_code,
+        episode.detected_at_ns)
     source_ids = _source_ids(episode)
     if state.last_produced.get(key) == source_ids:
         return

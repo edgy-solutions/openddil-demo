@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -93,6 +94,29 @@ def discrepancy(component="SLOT-1", fault_code="F001", detected_at_ns=1_700_000_
     }
 
 
+def _ref_for(**disc):
+    state = cm_state(discrepancies=[discrepancy(**disc)])
+    episode = episodes(state)[0]
+    return assemble("KindA", KIND_A_DECL, {}, state, episode, picture={}, now=NOW)["ref"]
+
+
+def test_record_key_differs_per_occurrence():
+    first = _ref_for(detected_at_ns=1_700_000_000_000_000_000)
+    again = _ref_for(detected_at_ns=1_700_000_600_000_000_000)
+    assert first != again
+
+
+def test_record_key_stable_across_sources_in_one_occurrence():
+    one = _ref_for(sources=[{"event_id": "ev-1"}])
+    two = _ref_for(sources=[{"event_id": "ev-1"}, {"event_id": "ev-2"}])
+    assert one == two
+
+
+def test_record_key_is_uuid5_of_tuple_and_first_observed_time():
+    seed = "KindA|edge-03|dis:1:1:1000|SLOT-1|F001|1700000000000000000"
+    assert _ref_for() == str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
 # --- assemble() — pure ------------------------------------------------------
 
 def test_assemble_writes_every_declared_pointer():
@@ -101,7 +125,8 @@ def test_assemble_writes_every_declared_pointer():
 
     record = assemble("KindA", KIND_A_DECL, {}, state, episode, picture={}, now=NOW)
 
-    assert record["ref"] == record_key("KindA", "edge-03", "dis:1:1:1000", "SLOT-1", "F001")
+    assert record["ref"] == record_key("KindA", "edge-03", "dis:1:1:1000", "SLOT-1", "F001",
+                                      1_700_000_000_000_000_000)
     assert record["tier"] == "edge-03"
     assert record["subject"] == "dis:1:1:1000"
     assert record["what"]["part"] == "SLOT-1"
