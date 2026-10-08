@@ -482,6 +482,8 @@ class _FakeStore:
         self.upsert_calls = 0
         self.lookup_failures = 0
         self.upsert_failures = 0
+        self.failed_calls = 0
+        self.failed_failures = 0
 
     def lookup(self, route, event_id):
         self.lookup_calls += 1
@@ -496,6 +498,13 @@ class _FakeStore:
             self.upsert_failures -= 1
             raise RuntimeError("store unavailable")
         self._rows[(route, event_id)] = {"outcome": "held", "case_id": None}
+
+    def upsert_failed(self, *, route, event_id, topic, partition, offset):
+        self.failed_calls += 1
+        if self.failed_failures > 0:
+            self.failed_failures -= 1
+            raise RuntimeError("store unavailable")
+        self._rows[(route, event_id)] = {"outcome": "failed", "case_id": None}
 
     def upsert_delivered(self, *, route, event_id, http_status, case_id, topic, partition, offset):
         self.upsert_calls += 1
@@ -964,3 +973,78 @@ def test_u5_retry_budget_exhausted_holds_and_commits():
     assert store._rows[("to-a", "E9")]["outcome"] == "held"
     assert consumer.committed == [message]
     assert consumer.kinds().count("commit") == 1
+
+
+def _run_exhausted(store, *, retry_max_s=10.0, post=None):
+    route = _route(dedupe_field="event_id", token_file="/nonexistent/token")
+    message = _plain_msg(record={"event_id": "E9"})
+    consumer = _FakeConsumer([message])
+    clock = _Clock()
+    counts: dict[str, int] = {}
+    logged = []
+    run_once(
+        consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
+        post=post or (lambda u, d, h: (200, b"{}")),
+        sleep=clock.sleep, clock=clock.now, poll_timeout=1.0, counts=counts,
+        store=store, read_token=lambda p: None, retry_max_s=retry_max_s,
+        log_outcome=lambda name, key, kind, status, outcome, **_kw: logged.append(outcome),
+    )
+    return consumer, message, counts, logged
+
+
+def test_f1_exhausted_and_held_write_fails_records_failed():
+    store = _FakeStore()
+    store.upsert_failures = 1
+    consumer, message, counts, logged = _run_exhausted(store)
+    assert store.failed_calls == 1
+    assert store._rows[("to-a", "E9")]["outcome"] == "failed"
+    assert counts["failed_recorded"] == 1
+    assert counts.get("undelivered_declared") is None
+    assert "failed" in logged
+    assert consumer.committed == [message]
+    assert consumer.kinds().count("commit") == 1
+
+
+def test_f2_exhausted_and_both_writes_fail_declares_undelivered(caplog):
+    store = _FakeStore()
+    store.upsert_failures = 1
+    store.failed_failures = 1
+    with caplog.at_level("ERROR"):
+        consumer, message, counts, _logged = _run_exhausted(store)
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("declared-undelivered")]
+    assert len(lines) == 1
+    for part in ("route=to-a", "event_id=E9", "topic=", "partition=", "offset=", "store unavailable"):
+        assert part in lines[0]
+    assert counts["undelivered_declared"] == 1
+    assert counts.get("failed_recorded") is None
+    assert store._rows == {}
+    assert consumer.committed == [message]
+    assert consumer.kinds().count("commit") == 1
+
+
+def test_f3_held_write_ok_records_held_and_never_failed():
+    store = _FakeStore()
+    consumer, message, counts, _logged = _run_exhausted(store)
+    assert store._rows[("to-a", "E9")]["outcome"] == "held"
+    assert store.failed_calls == 0
+    assert counts.get("failed_recorded") is None
+    assert consumer.committed == [message]
+
+
+def test_f4_stored_failed_row_does_not_block_a_later_send():
+    route = _route(dedupe_field="event_id")
+    store = _FakeStore()
+    store._rows[("to-a", "E9")] = {"outcome": "failed", "case_id": None}
+    message = _plain_msg(record={"event_id": "E9"})
+    consumer = _FakeConsumer([message])
+    posts = []
+    counts: dict[str, int] = {}
+    run_once(
+        consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
+        post=lambda u, d, h: posts.append(1) or (200, b"{}"),
+        sleep=lambda d: pytest.fail("no retry expected"), poll_timeout=1.0, counts=counts, store=store,
+    )
+    assert posts == [1]
+    assert counts.get("duplicate") is None
+    assert counts["delivered"] == 1
+    assert store._rows[("to-a", "E9")]["outcome"] == "delivered"

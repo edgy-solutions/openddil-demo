@@ -16,6 +16,12 @@ answers from a script the test controls.
   I3  replay after a crash is a no-op (`duplicate`, zero POSTs) -- and the
       same run on a route with no dedupe_field POSTs once, so the check is
       shown able to fail.
+  I4  retries exhausted and the `held` write forced to fail (a trigger in the
+      test database): a `failed` row is written, the offset committed, the
+      forwarder still running. Control A: without the trigger the row is
+      `held`. Control B: with only the original migration (no 'failed' in the
+      CHECK) and the trigger, there is no row and the forwarder logs
+      `declared-undelivered`.
 """
 from __future__ import annotations
 
@@ -42,7 +48,14 @@ from confluent_kafka.admin import AdminClient, NewTopic  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent  # the directory holding openddil-demo, openddil-helm, openddil-stack
-MIGRATION = REPO / "openddil-stack" / "schema" / "migrations" / "20261006020000_egress_delivered_events.sql"
+MIGRATIONS_DIR = REPO / "openddil-stack" / "schema" / "migrations"
+MIGRATION = MIGRATIONS_DIR / "20261006020000_egress_delivered_events.sql"  # the original, without 'failed'
+
+
+def _migrations() -> list[Path]:
+    """Every migration that touches egress_delivered_events, in filename order."""
+    return sorted(MIGRATIONS_DIR.glob("*egress_delivered_events*.sql"), key=lambda p: p.name)
+
 VALUES = REPO / "openddil-helm" / "openddil-demo" / "values.yaml"
 
 # Fallbacks only if the chart values cannot be read; the chart is the source.
@@ -102,7 +115,7 @@ def _wait_for(pred, timeout: float, what: str, interval: float = 0.5):
 def stack():
     if not _docker_ok():
         pytest.skip("docker is not available")
-    if not MIGRATION.exists():
+    if not MIGRATION.exists() or not _migrations():
         pytest.skip(f"migration not found: {MIGRATION}")
 
     started: list[str] = []
@@ -155,12 +168,14 @@ def stack():
                         raise
                     await asyncio.sleep(1.0)
             try:
-                await conn.execute(MIGRATION.read_text(encoding="utf-8"))
+                for migration in _migrations():
+                    await conn.execute(migration.read_text(encoding="utf-8"))
             finally:
                 await conn.close()
 
         asyncio.run(_prep())
-        yield {"brokers": brokers, "dsn": dsn, "admin": admin}
+        yield {"brokers": brokers, "dsn": dsn, "admin": admin,
+               "server_dsn": f"postgres://postgres:pw@127.0.0.1:{pg_port}/postgres"}
     finally:
         for name in started:  # only containers this fixture started
             subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=120)
@@ -220,8 +235,10 @@ def dest():
 class Case:
     """One topic, group and route, with helpers to run the forwarder."""
 
-    def __init__(self, stack, dest, tmp_path, *, dedupe: bool = True, max_poll_ms: int | None = None):
+    def __init__(self, stack, dest, tmp_path, *, dedupe: bool = True, max_poll_ms: int | None = None,
+                 extra_env: dict[str, str] | None = None):
         self.stack, self.dest, self.tmp_path = stack, dest, tmp_path
+        self.extra_env = extra_env or {}
         tag = uuid.uuid4().hex[:8]
         self.topic, self.group, self.route = f"sink-{tag}", f"grp-{tag}", f"route-{tag}"
         self.max_poll_ms = max_poll_ms
@@ -248,6 +265,7 @@ class Case:
             "POSTGRES_DSN": self.stack["dsn"],
             "PYTHONUNBUFFERED": "1",
         })
+        env.update(self.extra_env)
         if self.max_poll_ms is not None:
             env["OPENDDIL_FORWARD_MAX_POLL_INTERVAL_MS"] = str(self.max_poll_ms)
             env["OPENDDIL_FORWARD_SESSION_TIMEOUT_MS"] = "6000"  # must be <= max.poll.interval.ms
@@ -312,7 +330,7 @@ def make_case(stack, dest, tmp_path):
     cases: list[Case] = []
 
     def _make(**kw) -> Case:
-        case = Case(stack, dest, tmp_path, **kw)
+        case = Case(kw.pop("stack", stack), dest, tmp_path, **kw)
         cases.append(case)
         return case
 
@@ -385,3 +403,79 @@ def test_i3_can_fail_same_run_without_dedupe_posts_once(make_case, dest):
     _wait_for(lambda: case.committed_offset() >= 1, 30, "the offset to be committed")
     assert dest.count(event) == 1
     assert '"outcome": "duplicate"' not in case.log(proc)
+
+
+# --- I4: exhausted + held write fails -> failed row (or declared-undelivered) --
+
+_REFUSE_HELD = """
+CREATE FUNCTION refuse_held() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.outcome = 'held' THEN
+    RAISE EXCEPTION 'held write refused by test';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER refuse_held BEFORE INSERT OR UPDATE ON "egress_delivered_events"
+  FOR EACH ROW EXECUTE FUNCTION refuse_held();
+"""
+
+
+def _fresh_db(stack, migrations: list[Path], *, refuse_held: bool) -> dict:
+    """A private database on the fixture's postgres, with just `migrations`
+    applied and optionally the trigger that refuses any `held` write."""
+    name = f"db_{uuid.uuid4().hex[:8]}"
+    dsn = stack["dsn"].rsplit("/", 1)[0] + "/" + name
+
+    async def _x():
+        conn = await asyncpg.connect(stack["server_dsn"])
+        try:
+            await conn.execute(f'CREATE DATABASE "{name}"')
+        finally:
+            await conn.close()
+        conn = await asyncpg.connect(dsn)
+        try:
+            for migration in migrations:
+                await conn.execute(migration.read_text(encoding="utf-8"))
+            if refuse_held:
+                await conn.execute(_REFUSE_HELD)
+        finally:
+            await conn.close()
+    asyncio.run(_x())
+    return {**stack, "dsn": dsn}
+
+
+def _run_exhausted_case(make_case, dest, stack, event, *, migrations, refuse_held):
+    dest.script = lambda eid, n, age: 503
+    case = make_case(stack=_fresh_db(stack, migrations, refuse_held=refuse_held), dedupe=True,
+                     extra_env={"OPENDDIL_FORWARD_RETRY_MAX_S": "5"})
+    case.produce(event)
+    proc = case.start()
+    _wait_for(lambda: case.committed_offset() >= 1, 120, "the exhausted record's offset to be committed")
+    return case, proc
+
+
+def test_i4_exhausted_and_held_write_fails_records_failed(make_case, dest, stack):
+    event = "E-i4"
+    case, proc = _run_exhausted_case(make_case, dest, stack, event, migrations=_migrations(), refuse_held=True)
+    rows = case.rows(event)
+    assert len(rows) == 1 and rows[0]["outcome"] == "failed", rows
+    assert case.committed_offset() == 1
+    assert proc.poll() is None, f"forwarder exited {proc.returncode}"
+    assert "declared-undelivered" not in case.log(proc)
+
+
+def test_i4_control_a_without_the_trigger_the_row_is_held(make_case, dest, stack):
+    event = "E-i4-a"
+    case, proc = _run_exhausted_case(make_case, dest, stack, event, migrations=_migrations(), refuse_held=False)
+    rows = case.rows(event)
+    assert len(rows) == 1 and rows[0]["outcome"] == "held", rows
+    assert proc.poll() is None
+
+
+def test_i4_control_b_original_migration_only_declares_undelivered(make_case, dest, stack):
+    event = "E-i4-b"
+    case, proc = _run_exhausted_case(make_case, dest, stack, event, migrations=[MIGRATION], refuse_held=True)
+    assert case.rows(event) == []
+    assert case.committed_offset() == 1
+    assert proc.poll() is None, f"forwarder exited {proc.returncode}"
+    assert "declared-undelivered" in case.log(proc)

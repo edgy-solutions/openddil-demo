@@ -41,7 +41,12 @@ already-delivered record into `duplicate`. A commit refused because the
 member was evicted or is mid-rebalance is logged and counted, not fatal,
 for the same reason. A record retrying longer than
 OPENDDIL_FORWARD_RETRY_MAX_S is given up on (`exhausted`): recorded `held`
-on a dedupe route (the existing resend path), then committed.
+on a dedupe route (the existing resend path), then committed. If that
+`held` write itself fails, the record is recorded `failed` instead (counter
+`failed_recorded`) and committed; only if that write also fails is it
+declared undelivered -- an ERROR line starting `declared-undelivered` and
+the counter `undelivered_declared` -- and committed. A `failed` row never
+blocks a later send: only `delivered` short-circuits as `duplicate`.
 
 DEDUPE AND THE ONE ACCEPTED WINDOW
 Every Restate wipe and every scenario reset re-emits CM revisions, and a
@@ -331,6 +336,17 @@ class DeliveredStore:
             topic=topic, partition=partition, offset=offset,
         )
 
+    def upsert_failed(
+        self, *, route: str, event_id: str, topic: str | None, partition: int | None, offset: int | None,
+    ) -> None:
+        """Record that a record's retries were exhausted AND its `held`
+        write failed. A `delivered` row is never downgraded to this (see
+        `_upsert`)."""
+        self._upsert(
+            route=route, event_id=event_id, outcome="failed", http_status=None, case_id=None,
+            topic=topic, partition=partition, offset=offset,
+        )
+
     def upsert_delivered(
         self, *, route: str, event_id: str, http_status: int, case_id: str | None,
         topic: str | None, partition: int | None, offset: int | None,
@@ -344,7 +360,7 @@ class DeliveredStore:
         self, *, route: str, event_id: str, outcome: str, http_status: int | None, case_id: str | None,
         topic: str | None, partition: int | None, offset: int | None,
     ) -> None:
-        # A 'delivered' row is never downgraded to 'held': the caller's own
+        # A 'delivered' row is never downgraded to 'held' or 'failed': the caller's own
         # ordering already guarantees this (a 'delivered' row short-circuits
         # as `duplicate` before the held branch is ever reached), and the
         # WHERE guard below holds the same line durably, at the one place
@@ -522,7 +538,8 @@ def _deliver(
 ) -> str | None:
     """Deliver one record to one route. Returns `"abandoned"` (the partition
     was revoked mid-wait: do not commit), `"exhausted"` (the retry budget
-    ran out: recorded and given up on, commit) or `None` (a terminal
+    ran out: recorded `held` -- or `failed` if that write fails -- and given
+    up on, commit) or `None` (a terminal
     outcome was reached, commit). See `_deliver_inner`.
     """
     try:
@@ -550,6 +567,17 @@ def _deliver(
             except Exception as store_exc:  # noqa: BLE001
                 log.error("exhausted record NOT recorded held (route=%s event_id=%s): %s",
                           route.name, event_id, store_exc)
+                try:
+                    store.upsert_failed(route=route.name, event_id=event_id, topic=topic,
+                                        partition=partition, offset=offset)
+                except Exception as failed_exc:  # noqa: BLE001
+                    _bump(counts, "undelivered_declared")
+                    log.error("declared-undelivered route=%s key=%s event_id=%s topic=%s partition=%s offset=%s: %s",
+                              route.name, key, event_id, topic, partition, offset, failed_exc)
+                else:
+                    _bump(counts, "failed_recorded")
+                    log.error("exhausted record recorded failed (route=%s event_id=%s)", route.name, event_id)
+                    log_outcome(route.name, key, route.kind, None, "failed")
         return "exhausted"
     return None
 
