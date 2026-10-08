@@ -1,10 +1,10 @@
 # ADR-0047 exceptions, one per line, tab-separated: <path>	<substring on the line>	<reason>
 # The allowlist only shrinks: an entry that matches nothing fails the check.
 frontend/src/MaintainerApp.tsx	ASSET_ID_PATTERN.test(param)	validation: charset/length check on the URL parameter before use
-frontend/src/MaintainerApp.tsx	selectedAssetId.endsWith('_Sensor')	pending: phase 2, select live element telemetry by platform_variant
-frontend/src/components/DiagnosticCanvas.tsx	assetId.endsWith('_Sensor')	pending: phase 2, select element view by platform_variant
+frontend/src/MaintainerApp.tsx	selectedAssetId.endsWith('_Sensor')	pending: needs a declared sensor-subsystem field from ingest; platform_variant is shared with the chassis
+frontend/src/components/DiagnosticCanvas.tsx	assetId.endsWith('_Sensor')	pending: needs a declared sensor-subsystem field from ingest; platform_variant is shared with the chassis
 frontend/src/components/Inventory.tsx	assetId.replace(/'/g	validation: whole-id SQL literal quoting, no part of the id is read
-frontend/src/hooks/useAssetElementTelemetry.ts	asset_id LIKE	pending: phase 2, element rows keyed by a declared parent asset field
+frontend/src/hooks/useAssetElementTelemetry.ts	asset_id LIKE	validation: whole id as the LIKE literal (large-row filter workaround); no part of the id is read
 frontend/src/lib/munitionAsset.ts	munitionAssetId.includes('-' + launcherId)	pending: phase 2, munition carries a declared launcher field
 frontend/src/lib/munitionAsset.ts	assetId.indexOf('-')	pending: phase 2, munition carries a declared launcher field
 frontend/src/lib/munitionAsset.ts	assetId.substring(0, dashIdx)	pending: phase 2, munition carries a declared launcher field
