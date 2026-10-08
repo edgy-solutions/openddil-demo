@@ -541,12 +541,14 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               transitTriggerKey={selectedEdge}
               operationalState={tel?.operational_state ?? null}
               isPoweredOff={isPoweredOff}
-            />
-            <LocalFleetRadar
-              localAssets={radarAssets}
-              centerLat={radarCenter.lat}
-              centerLon={radarCenter.lon}
-              selectedAssetId={selectedAssetId}
+              bottomLeftSlot={
+                <LocalFleetRadar
+                  localAssets={radarAssets}
+                  centerLat={radarCenter.lat}
+                  centerLon={radarCenter.lon}
+                  selectedAssetId={selectedAssetId}
+                />
+              }
             />
           </div>
         </div>

@@ -153,6 +153,9 @@ interface DiagnosticCanvasProps {
      *  the UI apart from "everything nominal, idle" -- the asset-
      *  level flag is the disambiguator. */
     isPoweredOff?: boolean;
+    /** Content stacked under the manual-question panel in the bottom-left
+     *  column, so the two never share a slot. */
+    bottomLeftSlot?: React.ReactNode;
 }
 
 export default function DiagnosticCanvas({
@@ -167,6 +170,7 @@ export default function DiagnosticCanvas({
     transitTriggerKey,
     operationalState,
     isPoweredOff = false,
+    bottomLeftSlot,
 }: DiagnosticCanvasProps) {
     // The transit hook gates internally on first-mount + same-key.
     // The MRAD telemetry hook USED to live here but was lifted to
@@ -235,13 +239,16 @@ export default function DiagnosticCanvas({
     }
 
     const manualQuestionOverlay = (
-        <div className="absolute bottom-4 left-4 w-[280px] z-20">
-            <ManualQuestionPanel
-                assetId={assetId}
-                platformVariant={platformVariant}
-                scope={manualQuestionScope}
-                scopeLabels={manualQaScopeLabels}
-            />
+        <div className="absolute bottom-4 left-4 w-[280px] z-20 flex flex-col gap-2 max-h-[calc(100%-2rem)]">
+            <div className="min-h-0 overflow-auto">
+                <ManualQuestionPanel
+                    assetId={assetId}
+                    platformVariant={platformVariant}
+                    scope={manualQuestionScope}
+                    scopeLabels={manualQaScopeLabels}
+                />
+            </div>
+            {bottomLeftSlot}
         </div>
     );
 
