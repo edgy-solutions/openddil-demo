@@ -1752,8 +1752,13 @@ class Pep(BaseHTTPRequestHandler):
             next_raw = (urllib.parse.parse_qs(parsed.query).get("next")
                        or [""])[0]
             next_path = oidc.safe_next(next_raw)
+            # `?prompt=login` is the only provider parameter honoured, by
+            # exact match; anything else is dropped, never forwarded.
+            prompt_raw = (urllib.parse.parse_qs(parsed.query).get("prompt")
+                          or [""])[0]
+            force_login = (prompt_raw == "login")
             try:
-                url = oidc.begin_login(next_path)
+                url = oidc.begin_login(next_path, force_login=force_login)
             except oidc.AuthError as exc:
                 # The IdP is unreachable. That is a failure to AUTHENTICATE,
                 # not a denial of anything — but it still ends in a refusal,

@@ -578,7 +578,7 @@ def test_login_route_validates_next_before_begin_login(monkeypatch):
     import pep as _pep
     monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
     captured = {}
-    def fake_begin_login(next_path):
+    def fake_begin_login(next_path, *, force_login=False):
         captured["next_path"] = next_path
         return "https://idp.example/authorize?state=xxx"
     monkeypatch.setattr(oidc, "begin_login", fake_begin_login)
@@ -597,7 +597,7 @@ def test_login_route_passes_a_valid_next_through_unchanged(monkeypatch):
     import pep as _pep
     monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
     captured = {}
-    def fake_begin_login(next_path):
+    def fake_begin_login(next_path, *, force_login=False):
         captured["next_path"] = next_path
         return "https://idp.example/authorize?state=xxx"
     monkeypatch.setattr(oidc, "begin_login", fake_begin_login)
@@ -841,3 +841,53 @@ def test_service_token_wrong_alg_and_signature(oidc, key):
                          "exp": int(time.time()) + 300}, "x" * 64,
                         algorithm="HS256", headers={"kid": KID})
         oidc.verify_service_token(hs, audience="svc-aud")
+
+
+# ===========================================================================
+# prompt=login: forced re-authentication, requested only by exact match
+# ===========================================================================
+def _authorize_query(oidc, monkeypatch, **kwargs):
+    import urllib.parse
+    monkeypatch.setattr(
+        oidc, "metadata",
+        lambda: {"authorization_endpoint": "https://idp.example/authorize"})
+    url = oidc.begin_login("/x", **kwargs)
+    return urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+
+
+def test_begin_login_force_login_adds_prompt_login(oidc, monkeypatch):
+    q = _authorize_query(oidc, monkeypatch, force_login=True)
+    assert q["prompt"] == ["login"]
+
+
+def test_begin_login_default_has_no_prompt_key(oidc, monkeypatch):
+    q = _authorize_query(oidc, monkeypatch)
+    assert "prompt" not in q
+
+
+@pytest.mark.parametrize("query,want", [
+    ("next=/x&prompt=login", True),
+    ("next=/x&prompt=none", False),
+    ("next=/x&prompt=consent", False),
+    ("next=/x&prompt=LOGIN", False),
+    ("next=/x&prompt=select_account", False),
+    ("next=/x&prompt=", False),
+    ("next=/x", False),
+])
+def test_login_route_forwards_force_login_only_for_exact_prompt_login(
+        monkeypatch, query, want):
+    import urllib.parse
+
+    import oidc
+    import pep as _pep
+    monkeypatch.setattr(_pep, "AUTH_MODE", "oidc")
+    captured = {}
+    def fake_begin_login(next_path, *, force_login=False):
+        captured["force_login"] = force_login
+        return "https://idp.example/authorize?state=xxx"
+    monkeypatch.setattr(oidc, "begin_login", fake_begin_login)
+    handler = object.__new__(_pep.Pep)
+    handler.headers = {}
+    handler._send = lambda *a, **k: None
+    handler._handle_auth(urllib.parse.urlparse("/auth/login?" + query))
+    assert captured["force_login"] is want

@@ -1,9 +1,9 @@
 // =============================================================================
 // SessionExpired — expiry is not link loss
 // =============================================================================
-// THE DEFECT THIS REPLACES. On expiry the screen used to say "SESSION
-// EXPIRED … the data below is the last copy" in a thin banner at the top,
-// while every fleet value stayed on screen underneath it. That is correct
+// THE DEFECT THIS REPLACES. On expiry the screen used to be a thin
+// "last copy" banner at the top, while every fleet value stayed on screen
+// underneath it. That is correct
 // for LINK LOSS (the viewer is still entitled, the network is not) and
 // wrong for EXPIRY (the viewer is no longer entitled) — the data panels
 // must come OUT of the DOM, not just get a warning stapled above them.
@@ -34,16 +34,19 @@ export function SessionExpired() {
 
       <div className="text-center">
         <div className="font-orbitron tracking-widest text-amber-400 text-lg">
-          SESSION ENDED
+          SESSION EXPIRED
         </div>
         <p className="mt-3 max-w-md text-xs leading-relaxed text-slate-500">
-          Your session has ended. Sign in again to continue — you will
+          Your session has expired. Sign in again to continue — you will
           return to the same view.
         </p>
       </div>
 
+      {/* prompt=login: the PEP session ending does not end the identity
+          provider's session; without it, sign-in returns through that live
+          session with no password asked. */}
       <a
-        href={loginHref()}
+        href={loginHref({ forceLogin: true })}
         className="rounded-sm border border-cyan-700/60 bg-cyan-500/10 px-6 py-2
                    text-xs font-bold tracking-widest text-cyan-300
                    hover:bg-cyan-500/20 transition-colors"

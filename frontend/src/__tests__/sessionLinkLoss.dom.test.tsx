@@ -63,7 +63,7 @@ describe('session gate — link loss is not expiry', () => {
 
     expect(document.body.textContent).toContain(SENTINEL);
     expect(document.body.textContent).toContain('FEED UNAVAILABLE');
-    expect(document.body.textContent).not.toContain('SESSION ENDED');
+    expect(document.body.textContent).not.toContain('SESSION EXPIRED');
     expect(screen.queryByRole('link', { name: /sign in/i })).toBeNull();
   });
 
@@ -80,7 +80,7 @@ describe('session gate — link loss is not expiry', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
 
     expect(document.body.textContent).toContain(SENTINEL);
-    expect(document.body.textContent).not.toContain('SESSION ENDED');
+    expect(document.body.textContent).not.toContain('SESSION EXPIRED');
     expect(screen.queryByRole('link', { name: /sign in/i })).toBeNull();
   });
 });

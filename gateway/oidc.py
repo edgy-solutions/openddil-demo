@@ -457,7 +457,8 @@ def safe_next(raw: str | None) -> str:
     return raw
 
 
-def begin_login(next_path: str = POST_LOGIN_PATH) -> str:
+def begin_login(next_path: str = POST_LOGIN_PATH, *,
+                force_login: bool = False) -> str:
     """Return the URL to send the browser to, and remember the state.
 
     PKCE IS USED EVEN THOUGH THIS IS A CONFIDENTIAL CLIENT. It is not
@@ -469,7 +470,12 @@ def begin_login(next_path: str = POST_LOGIN_PATH) -> str:
     `next_path` is the already-validated (see safe_next) return path, kept
     with the rest of this login attempt's state so the callback can send
     the browser back where it asked to go instead of always to
-    POST_LOGIN_PATH."""
+    POST_LOGIN_PATH.
+
+    `force_login` adds the OIDC `prompt=login` parameter. Ending the PEP
+    session does not end the identity provider's own session, so without it
+    a sign-in after expiry can return through that live session without
+    asking for credentials."""
     _sweep(_pending, _pending_lock)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(16)
@@ -480,7 +486,7 @@ def begin_login(next_path: str = POST_LOGIN_PATH) -> str:
         _pending[state] = {"verifier": verifier, "nonce": nonce,
                            "next": next_path,
                            "expires": time.time() + _PENDING_TTL}
-    q = urllib.parse.urlencode({
+    params = {
         "response_type": "code",
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
@@ -489,7 +495,10 @@ def begin_login(next_path: str = POST_LOGIN_PATH) -> str:
         "nonce": nonce,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-    })
+    }
+    if force_login:
+        params["prompt"] = "login"
+    q = urllib.parse.urlencode(params)
     # NOT internalized: this URL is handed to the BROWSER, which can only
     # reach the external address. Internalizing it here would produce a
     # redirect to a hostname that resolves only inside the cluster.

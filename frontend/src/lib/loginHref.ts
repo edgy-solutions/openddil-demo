@@ -6,7 +6,8 @@
 // view after login" is exactly "send the gateway back to this path and
 // query string", validated gateway-side by oidc.safe_next before it is
 // ever acted on.
-export function loginHref(): string {
+export function loginHref(opts?: { forceLogin?: boolean }): string {
   const next = encodeURIComponent(window.location.pathname + window.location.search);
-  return `/auth/login?next=${next}`;
+  const base = `/auth/login?next=${next}`;
+  return opts?.forceLogin ? `${base}&prompt=login` : base;
 }
