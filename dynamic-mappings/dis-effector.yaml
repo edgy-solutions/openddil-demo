@@ -2,9 +2,10 @@
 # DIS EFFECTOR EVENT DIVERSION (ingress)
 # =============================================================================
 # Answers ONE question: does this record describe a weapon being fired or a
-# munition detonating, rather than an entity's own state? A Fire or
-# Detonation PDU (pdu_type "fire" / "detonation") is a transient event ABOUT
-# a launch or an impact, not a platform's kinematics or health — it has no
+# munition detonating, or a launcher being resupplied, rather than an
+# entity's own state? A Fire, Detonation or Resupply Received PDU (pdu_type
+# "fire" / "detonation" / "resupply_received") is a transient event ABOUT a
+# launch, an impact or a refill, not a platform's kinematics or health — it has no
 # `dis_entity_type.kind` of its own to admit or refuse, and sim_dis_mapping
 # has no branch that could shape it into an asset-telemetry event. So it is
 # diverted here, in openddil-base-connect.yaml's top-of-pipeline switch,
@@ -22,7 +23,7 @@
 # already carries one for raw-sensor-stream.
 #
 # EDGE PROVENANCE IS FORWARDED, NOT ORIGINATED. Entity State, Remove Entity,
-# Fire and Detonation records all carry `provenance.edge_id`/`region_id`,
+# Fire, Detonation and Resupply Received records all carry `provenance.edge_id`/`region_id`,
 # stamped by sensor-ingest itself from its own OPENDDIL_EDGE_ID/
 # OPENDDIL_REGION_ID at ingest time. This resource runs on Connect, which has
 # no such identity of its own in every deployment topology — it only ever
@@ -38,7 +39,7 @@
 #
 # THE DROP IS A NUMBER, NOT SILENCE, same convention as dis_kind_gate and
 # dis_force_gate. Every record this resource routes to effector-events
-# increments `dis_effector_routed{pdu_type="fire"|"detonation"}` on the
+# increments `dis_effector_routed{pdu_type="fire"|"detonation"|"resupply_received"}` on the
 # Connect metrics endpoint (:4196/metrics). Read it directly (the Connect
 # image has no wget/curl, so go through the API server's proxy instead):
 #

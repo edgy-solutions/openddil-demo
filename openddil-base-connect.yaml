@@ -76,7 +76,7 @@ pipeline:
             processors:
               - resource: "dis_event_report"
 
-          - check: 'this.pdu_type.or("") == "fire" || this.pdu_type.or("") == "detonation"'
+          - check: 'this.pdu_type.or("") == "fire" || this.pdu_type.or("") == "detonation" || this.pdu_type.or("") == "resupply_received"'
             processors:
               - resource: "dis_effector"
 
