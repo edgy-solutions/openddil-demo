@@ -320,3 +320,136 @@ def test_adapter_unreachable_records_transport_error(app, monkeypatch):
     assert code == 200  # this service's own route still answers
     assert body["status"] is None
     assert body["error"]  # some transport error string, recorded not guessed
+
+
+# =============================================================================
+# The restart gate: never without a fresh measured zero
+# =============================================================================
+
+@pytest.fixture
+def gate(tmp_path):
+    adapter_srv = _serve(FakeAdapter)
+    metrics_srv = _serve(FakeMetrics)
+    state.update(adapter_calls=[], adapter_status=200,
+                 metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
+    ops = {op: {"method": "POST", "path": "/" + op, "body": {}}
+           for op in ("pause", "resume", "stop", "restart", "run")}
+    cfg = {"name": "stand-in",
+           "endpoint": f"http://127.0.0.1:{adapter_srv.server_port}",
+           "operations": ops}
+    adapter = control.load_adapter_config(_write(tmp_path, cfg))
+    store = control.RateStore(sources=[f"http://127.0.0.1:{metrics_srv.server_port}/metrics"],
+                               window=30.0, min_rate=0.1)
+    record = tmp_path / "record.json"
+    app_state = control.AppState(adapter=adapter, store=store,
+                                 reset_record_file=str(record))
+    handler_srv = _serve(control.make_handler(app_state))
+    yield f"http://127.0.0.1:{handler_srv.server_port}", record
+    for s in (adapter_srv, metrics_srv, handler_srv):
+        s.shutdown()
+
+
+def _zero(record, verdict="PASS", age_s=10, stamp=None):
+    from datetime import datetime, timedelta, timezone
+    at = stamp or (datetime.now(timezone.utc) - timedelta(seconds=age_s)).isoformat(
+        timespec="seconds")
+    record.write_text(json.dumps({"measured_zero_at": at, "verdict": verdict}))
+    return at
+
+
+def test_g1_no_record_is_409_no_record_and_no_call(gate):
+    url, _record = gate
+    code, body = _post(url + "/exercise/op/restart", subject="s")
+    assert code == 409
+    assert body == {"error": "reset required", "reason": "no_record",
+                    "measured_zero_at": None, "verdict": None}
+    assert state["adapter_calls"] == []
+    assert _get(url + "/exercise/status")[1]["last_command"] is None
+
+
+def test_g2_verdict_fail_is_409_verdict_not_pass(gate):
+    url, record = gate
+    _zero(record, verdict="FAIL")
+    code, body = _post(url + "/exercise/op/restart", subject="s")
+    assert code == 409
+    assert body["reason"] == "verdict_not_pass"
+    assert body["verdict"] == "FAIL"
+    assert state["adapter_calls"] == []
+
+
+def test_g2b_unparseable_timestamp_is_409_unparseable(gate):
+    url, record = gate
+    _zero(record, stamp="yesterday-ish")
+    code, body = _post(url + "/exercise/op/restart", subject="s")
+    assert code == 409
+    assert body["reason"] == "unparseable"
+    assert state["adapter_calls"] == []
+
+
+def test_g3_fresh_pass_sends_once_then_already_used(gate):
+    url, record = gate
+    at = _zero(record)
+    code, body = _post(url + "/exercise/op/restart", subject="s")
+    assert code == 200
+    assert body["op"] == "restart" and body["status"] == 200
+    assert [c["path"] for c in state["adapter_calls"]] == ["/restart"]
+    code, body = _post(url + "/exercise/op/restart", subject="s")
+    assert code == 409
+    assert body["reason"] == "already_used"
+    assert body["measured_zero_at"] == at
+    assert body["verdict"] == "PASS"
+    assert len(state["adapter_calls"]) == 1
+    # a new measured zero re-arms the gate
+    _zero(record, age_s=1)
+    assert _post(url + "/exercise/op/restart", subject="s")[0] == 200
+    assert len(state["adapter_calls"]) == 2
+
+
+def test_g4_stale_zero_is_409_stale(gate):
+    url, record = gate
+    _zero(record, age_s=control.DEFAULT_RESTART_MAX_ZERO_AGE_S + 60)
+    code, body = _post(url + "/exercise/op/restart", subject="s")
+    assert code == 409
+    assert body["reason"] == "stale"
+    assert state["adapter_calls"] == []
+
+
+def test_g5_adapter_503_does_not_use_up_the_zero(gate):
+    url, record = gate
+    _zero(record)
+    state["adapter_status"] = 503
+    code, body = _post(url + "/exercise/op/restart", subject="s")
+    assert code == 200 and body["status"] == 503
+    state["adapter_status"] = 200
+    code, body = _post(url + "/exercise/op/restart", subject="s")
+    assert code == 200 and body["status"] == 200
+    assert len(state["adapter_calls"]) == 2
+
+
+def test_g6_other_ops_are_not_gated(gate):
+    url, _record = gate  # no record file at all
+    for op in ("pause", "stop", "run", "resume"):
+        assert _post(url + f"/exercise/op/{op}", subject="s")[0] == 200
+    assert [c["path"] for c in state["adapter_calls"]] == [
+        "/pause", "/stop", "/run", "/resume"]
+
+
+def test_g7_status_shows_restart_allowed(gate):
+    url, record = gate
+    body = _get(url + "/exercise/status")[1]
+    assert body["restart_allowed"] is False
+    assert body["restart_refusal"] == "no_record"
+    _zero(record)
+    body = _get(url + "/exercise/status")[1]
+    assert body["restart_allowed"] is True
+    assert body["restart_refusal"] is None
+    _post(url + "/exercise/op/restart", subject="s")
+    body = _get(url + "/exercise/status")[1]
+    assert body["restart_allowed"] is False
+    assert body["restart_refusal"] == "already_used"
+
+
+@pytest.mark.parametrize("bad", ["0", "-5", "abc"])
+def test_g8_non_positive_max_age_refuses_startup(monkeypatch, bad):
+    monkeypatch.setenv("EXERCISE_RESTART_MAX_ZERO_AGE_S", bad)
+    assert control.main() == 2

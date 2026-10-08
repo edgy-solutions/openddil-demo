@@ -42,6 +42,10 @@ log = logging.getLogger("exercise.control")
 # The only op keys an adapter file may map — anything else refuses startup.
 ALLOWED_OPS = frozenset({"pause", "resume", "stop", "restart", "run"})
 
+# The restart gate (see AppState.restart_refusal): how old a measured zero may
+# be before it no longer licenses a restart.
+DEFAULT_RESTART_MAX_ZERO_AGE_S = 1800.0
+
 PDU_METRIC = "dis_pdus_received_total"
 _METRIC_LINE_RE = re.compile(
     r'^dis_pdus_received_total(\{(?P<labels>[^}]*)\})?\s+(?P<value>[-+0-9.eE]+)'
@@ -283,8 +287,14 @@ def _now_iso() -> str:
 
 
 class AppState:
-    def __init__(self, adapter: dict[str, Any], store: RateStore, reset_record_file: str | None):
+    def __init__(self, adapter: dict[str, Any], store: RateStore, reset_record_file: str | None,
+                 restart_max_zero_age_s: float = DEFAULT_RESTART_MAX_ZERO_AGE_S):
         self.adapter = adapter
+        self.restart_max_zero_age_s = restart_max_zero_age_s
+        # measured_zero_at values an earlier successful restart already used.
+        # In memory only: a pod restart loses it, and restart_max_zero_age_s
+        # bounds how long a zero can then be reused -- the declared limit.
+        self.restart_zero_used: str | None = None
         self.store = store
         self.reset_record_file = reset_record_file
         self._lock = threading.Lock()
@@ -311,6 +321,47 @@ class AppState:
         if not isinstance(data, dict):
             return {"measured_zero_at": None, "verdict": None}
         return {"measured_zero_at": data.get("measured_zero_at"), "verdict": data.get("verdict")}
+
+    def restart_refusal(self, now: datetime | None = None) -> tuple[str | None, dict[str, Any]]:
+        """(reason | None, reset record). THE restart gate, and the only copy
+        of the rule: POST /exercise/op/restart and GET /exercise/status both
+        call this. It lives here, in the one place that calls the adapter, so
+        no client (popup, script, curl) can get around it.
+
+        A restart is allowed only on a reset record with verdict PASS and a
+        parseable UTC measured_zero_at that is no older than
+        restart_max_zero_age_s and was not already used by an earlier
+        successful restart. Reasons: no_record, verdict_not_pass,
+        unparseable, stale, already_used.
+
+        Limit: the "used" mark is in memory; after a pod restart it is lost,
+        so the same zero can be used once more until it ages out -- the max
+        age bounds that reuse."""
+        rec = self.read_reset()
+        at, verdict = rec["measured_zero_at"], rec["verdict"]
+        if at is None and verdict is None:
+            return "no_record", rec
+        if verdict != "PASS":
+            return "verdict_not_pass", rec
+        try:
+            if not isinstance(at, str):
+                raise ValueError("not a string")
+            parsed = datetime.fromisoformat(at.strip().replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                raise ValueError("no UTC offset")
+        except ValueError:
+            return "unparseable", rec
+        age = ((now or datetime.now(timezone.utc)) - parsed).total_seconds()
+        if age > self.restart_max_zero_age_s:
+            return "stale", rec
+        with self._lock:
+            if self.restart_zero_used == at:
+                return "already_used", rec
+        return None, rec
+
+    def mark_restart_zero_used(self, measured_zero_at: str) -> None:
+        with self._lock:
+            self.restart_zero_used = measured_zero_at
 
     def call_adapter(self, op: str) -> tuple[int | None, str | None]:
         """(status, error) -- the adapter's response BODY is read (to drain
@@ -370,6 +421,7 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
             if self.path == "/exercise/status":
                 now = time.time()
                 activity = app.store.status(now)
+                refusal, _rec = app.restart_refusal()
                 self._send_json(200, {
                     "adapter": {"name": app.adapter["name"],
                                 "ops": sorted(app.adapter["operations"].keys())},
@@ -382,6 +434,8 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                         "sources": activity["sources"],
                     },
                     "reset": app.read_reset(),
+                    "restart_allowed": refusal is None,
+                    "restart_refusal": refusal,
                 })
                 return
             self._send_json(404, {"error": "not found"})
@@ -406,7 +460,23 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                 self._send_json(400, {"error": "missing subject header"})
                 return
 
+            if op == "restart":
+                reason, rec = app.restart_refusal()
+                if reason is not None:
+                    # Refused BEFORE any outward call; last_command (what was
+                    # last SENT) is deliberately left alone.
+                    log.info(json.dumps({"exercise_op_refused": op, "reason": reason,
+                                          "subject": subject}))
+                    self._send_json(409, {"error": "reset required", "reason": reason,
+                                          "measured_zero_at": rec["measured_zero_at"],
+                                          "verdict": rec["verdict"]})
+                    return
+
             status, error = app.call_adapter(op)
+            if op == "restart" and status is not None and 200 <= status < 300:
+                # Only a 2xx uses the zero up; a transport error or non-2xx
+                # leaves it available.
+                app.mark_restart_zero_used(rec["measured_zero_at"])
             record = {"op": op, "at": _now_iso(), "status": status, "error": error,
                       "subject": subject}
             app.set_last_command(record)
@@ -422,6 +492,15 @@ def main() -> int:
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s [exercise-control] %(message)s",
     )
+
+    try:
+        max_zero_age = float(os.getenv("EXERCISE_RESTART_MAX_ZERO_AGE_S",
+                                       str(DEFAULT_RESTART_MAX_ZERO_AGE_S)))
+        if not max_zero_age > 0:
+            raise ValueError
+    except ValueError:
+        print("EXERCISE_RESTART_MAX_ZERO_AGE_S must be a number > 0", file=sys.stderr)
+        return 2
 
     adapter_file = os.getenv("EXERCISE_ADAPTER_FILE", "")
     if not adapter_file:
@@ -441,7 +520,8 @@ def main() -> int:
     port = int(os.getenv("EXERCISE_PORT", "8095"))
 
     store = RateStore(sources=sources, window=window, min_rate=min_rate)
-    app = AppState(adapter=adapter, store=store, reset_record_file=reset_record_file)
+    app = AppState(adapter=adapter, store=store, reset_record_file=reset_record_file,
+                   restart_max_zero_age_s=max_zero_age)
 
     stop_event = threading.Event()
     scraper = threading.Thread(target=scrape_loop, args=(store, scrape_interval, stop_event),
