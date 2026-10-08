@@ -46,10 +46,12 @@ export interface ReleasedRecordsColumn {
 }
 
 /** Optional per-row figure: JSON pointers into `record.body` for the figure
- *  number a record cites and the hotspot it names. */
+ *  number (ICN) a record cites and the applicationStructureIdent of the
+ *  object to highlight in it, e.g. an IPD citation's `/citations/ipd/icn` and
+ *  `/citations/ipd/hotspot_ids/faulted_section`. */
 export interface ReleasedRecordsFigure {
   icnPointer: string;
-  hotspotPointer: string;
+  applicationStructureIdentPointer: string;
 }
 
 export interface ReleasedRecordsPaneProps {
@@ -166,7 +168,7 @@ export function ReleasedRecordsView({
               // Both pointers are resolved against the record body; the icn
               // is only ever used when it is a safe figure number.
               const icn = figure ? resolvePointer(r.body, figure.icnPointer) : undefined;
-              const hotspot = figure ? resolvePointer(r.body, figure.hotspotPointer) : undefined;
+              const ident = figure ? resolvePointer(r.body, figure.applicationStructureIdentPointer) : undefined;
               const safeIcn = isSafeIcn(icn) ? icn : null;
               const isOpen = safeIcn !== null && openKey === rowKey;
               return (
@@ -201,7 +203,7 @@ export function ReleasedRecordsView({
                       <td colSpan={columns.length + 3} className="pb-2">
                         <FigureView
                           icn={safeIcn}
-                          hotspotId={typeof hotspot === 'string' ? hotspot : null}
+                          applicationStructureIdent={typeof ident === 'string' ? ident : null}
                         />
                       </td>
                     </tr>

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Same rendering strategy as EgressAdmissionPane.test.tsx: renderToStaticMarkup
 // rather than @testing-library/react (not a dev dep here — see
 // vitest.config.ts's comment on environment: 'node'). The fixture below is
@@ -6,8 +7,10 @@
 // decision_id every record carries), not a hand-built list — this test
 // exercises the same JSON shape the endpoint returns, and the same
 // JSON-pointer column configuration a deployment supplies at runtime.
+import { act } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ReleasedRecordsView, type ReleasedRecordsColumn } from '../releasability/ReleasedRecordsPane';
 import { FigureViewBody, type FigureState } from '../releasability/FigureView';
 import type { DecisionRecord, DecisionsResponse } from '../../hooks/useEgressAdmission';
@@ -130,7 +133,7 @@ describe('ReleasedRecordsPane ReleasedRecordsView', () => {
 });
 
 describe('ReleasedRecordsPane figure control', () => {
-  const FIGURE = { icnPointer: '/work_order/parts/0/icn', hotspotPointer: '/work_order/parts/0/hotspot_id' };
+  const FIGURE = { icnPointer: '/work_order/parts/0/icn', applicationStructureIdentPointer: '/work_order/parts/0/hotspot_id' };
   const withIcn = (icn: unknown): DecisionsResponse => ({
     ...FIXTURE,
     records: [record('rec-f', 'ATL', [], true, {
@@ -163,8 +166,8 @@ describe('ReleasedRecordsPane figure control', () => {
 });
 
 describe('FigureViewBody', () => {
-  const render = (state: FigureState, hotspotId: string | null = 'sec-03') =>
-    renderToStaticMarkup(<FigureViewBody icn="ICN-ODMRAD-00001" hotspotId={hotspotId} state={state} />);
+  const render = (state: FigureState, applicationStructureIdent: string | null = 'sec-03') =>
+    renderToStaticMarkup(<FigureViewBody icn="ICN-ODMRAD-00001" applicationStructureIdent={applicationStructureIdent} state={state} />);
 
   it('renders loading, missing, error and unreadable captions', () => {
     expect(render({ status: 'loading' })).toContain('Loading figure');
@@ -177,10 +180,44 @@ describe('FigureViewBody', () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><g id="a"/></svg>';
     const ok = render({ status: 'ready', svg, found: true });
     expect(ok).toContain('<svg');
-    expect(ok).toContain('ICN-ODMRAD-00001 — hotspot sec-03 highlighted');
-    expect(render({ status: 'ready', svg, found: false })).toContain('hotspot sec-03 is not in this figure');
+    expect(ok).toContain('ICN-ODMRAD-00001 — applicationStructureIdent sec-03 highlighted');
+    expect(render({ status: 'ready', svg, found: false })).toContain('applicationStructureIdent sec-03 is not in this figure');
     const bare = render({ status: 'ready', svg, found: false }, null);
-    expect(bare).not.toContain('hotspot');
+    expect(bare).not.toContain('applicationStructureIdent');
     expect(bare).toContain('ICN-ODMRAD-00001');
+  });
+});
+
+describe('ReleasedRecordsPane figure click', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('opens the cited figure and highlights the applicationStructureIdent from the record', async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><g id="sec-03" class="hotspot"/><g id="hot-sec-03"/></svg>';
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => svg });
+    vi.stubGlobal('fetch', fetchMock);
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const data: DecisionsResponse = {
+      ...FIXTURE,
+      records: [record('rec-ipd', 'ATL', [], true, {
+        citations: { ipd: { icn: 'ICN-ODMRAD-00001', hotspot_ids: { faulted_section: 'sec-03', detail: 'item-0001' } } },
+      })],
+    };
+    const figure = {
+      icnPointer: '/citations/ipd/icn',
+      applicationStructureIdentPointer: '/citations/ipd/hotspot_ids/faulted_section',
+    };
+    const host = document.createElement('div');
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(<ReleasedRecordsView data={data} columns={COLUMNS} figure={figure} />);
+    });
+    const button = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Figure');
+    expect(button).toBeDefined();
+    await act(async () => { button!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(String(fetchMock.mock.calls[0][0])).toContain('ICN-ODMRAD-00001');
+    expect(host.textContent).toContain('ICN-ODMRAD-00001 — applicationStructureIdent sec-03 highlighted');
+    expect(host.querySelectorAll('svg .active')).toHaveLength(1);
+    await act(async () => { root.unmount(); });
   });
 });

@@ -1,5 +1,5 @@
 // Shows the illustrated-parts figure a released record cites, with the
-// hotspot it names highlighted. The fetch lives in `FigureView`; the
+// object it names highlighted. The fetch lives in `FigureView`; the
 // rendering lives in the pure `FigureViewBody` so a test can render each
 // state with renderToStaticMarkup (see ReleasedRecordsPane.tsx on why).
 // The markup is sanitized by `prepareFigure` before it reaches
@@ -16,11 +16,11 @@ export type FigureState =
 
 export interface FigureViewProps {
   icn: string;
-  hotspotId: string | null;
+  applicationStructureIdent: string | null;
 }
 
 export function FigureViewBody({
-  icn, hotspotId, state,
+  icn, applicationStructureIdent, state,
 }: FigureViewProps & { state: FigureState }) {
   switch (state.status) {
     case 'loading':
@@ -39,18 +39,18 @@ export function FigureViewBody({
             dangerouslySetInnerHTML={{ __html: state.svg }}
           />
           <div className="mt-1 text-[11px] text-slate-400">
-            {hotspotId === null
+            {applicationStructureIdent === null
               ? icn
               : state.found
-                ? `${icn} — hotspot ${hotspotId} highlighted`
-                : `${icn} — hotspot ${hotspotId} is not in this figure`}
+                ? `${icn} — applicationStructureIdent ${applicationStructureIdent} highlighted`
+                : `${icn} — applicationStructureIdent ${applicationStructureIdent} is not in this figure`}
           </div>
         </div>
       );
   }
 }
 
-function FigureFetch({ icn, hotspotId }: FigureViewProps) {
+function FigureFetch({ icn, applicationStructureIdent }: FigureViewProps) {
   const [state, setState] = useState<FigureState>({ status: 'loading' });
 
   useEffect(() => {
@@ -61,20 +61,20 @@ function FigureFetch({ icn, hotspotId }: FigureViewProps) {
         if (cancelled) return;
         if (res.status === 404) return setState({ status: 'missing' });
         if (!res.ok) return setState({ status: 'error' });
-        const prepared = prepareFigure(await res.text(), hotspotId);
+        const prepared = prepareFigure(await res.text(), applicationStructureIdent);
         if (cancelled) return;
         setState(prepared ? { status: 'ready', ...prepared } : { status: 'unreadable' });
       })
       .catch(() => { if (!cancelled) setState({ status: 'error' }); });
     return () => { cancelled = true; };
-  }, [icn, hotspotId]);
+  }, [icn, applicationStructureIdent]);
 
   // Never render a figure control for an unsafe number.
   if (!isSafeIcn(icn)) return null;
-  return <FigureViewBody icn={icn} hotspotId={hotspotId} state={state} />;
+  return <FigureViewBody icn={icn} applicationStructureIdent={applicationStructureIdent} state={state} />;
 }
 
-// Keyed so a different figure or hotspot starts again from loading.
+// Keyed so a different figure or ident starts again from loading.
 export default function FigureView(props: FigureViewProps) {
-  return <FigureFetch key={`${props.icn}|${props.hotspotId ?? ''}`} {...props} />;
+  return <FigureFetch key={`${props.icn}|${props.applicationStructureIdent ?? ''}`} {...props} />;
 }

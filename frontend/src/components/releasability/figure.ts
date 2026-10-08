@@ -2,11 +2,13 @@
 // Figure helpers for the released-records pane
 // =============================================================================
 // A released record can cite an illustrated-parts figure (`<ICN>.svg`, served
-// session-gated at /figures/) and name one hotspot in it. The file is
+// session-gated at /figures/) and name one object in it. The figure's objects are
+// named by their applicationStructureIdent (the object's `id`), and the record
+// names the object by that ident. The file is
 // operator-mounted, not authored here, and its markup is injected into the
 // page, so `prepareFigure` treats it as untrusted: it parses, strips
 // everything that can run script or reach off-document, then marks the
-// named hotspot. The figure's own <style> already styles `.hotspot.active`,
+// named object. The figure's own <style> already styles `.hotspot.active`,
 // so highlighting is just adding that class.
 //
 // Runs in the browser (DOMParser / XMLSerializer); tests run it under jsdom.
@@ -34,10 +36,10 @@ function hrefOf(el: Element): string | null {
 
 /** Parses, sanitizes and (optionally) highlights a figure. Returns null when
  *  the text is not a well-formed SVG document. `found` says whether
- *  `hotspotId` named an element in the figure. */
+ *  `applicationStructureIdent` named an object in the figure. */
 export function prepareFigure(
   svgText: string,
-  hotspotId: string | null,
+  applicationStructureIdent: string | null,
 ): { svg: string; found: boolean } | null {
   const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
   if (doc.getElementsByTagName('parsererror').length > 0) return null;
@@ -77,10 +79,10 @@ export function prepareFigure(
     }
   }
   let found = false;
-  if (hotspotId !== null) {
+  if (applicationStructureIdent !== null) {
     // Compared as strings, never built into a selector: the id is record data.
     for (const el of doc.querySelectorAll('[id]')) {
-      if (el.getAttribute('id') === hotspotId) {
+      if (el.getAttribute('id') === applicationStructureIdent) {
         const cls = (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean);
         if (!cls.includes('active')) cls.push('active');
         el.setAttribute('class', cls.join(' '));

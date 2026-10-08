@@ -189,12 +189,14 @@ export interface ReleasedRecordsPaneConfig {
   kind?: string;
   columns: ReleasedRecordsColumnConfig[];
   /** Optional: where a record names the illustrated-parts figure it cites
-   *  and the hotspot within it. Both are JSON pointers (RFC 6901, same
+   *  and the object within it, named by its applicationStructureIdent
+   *  (the object's `id` in the figure). Both are JSON pointers (RFC 6901, same
    *  convention as `columns`) into `record.body`; when set, each row whose
    *  icn resolves to a safe figure number gets a Figure toggle. Absent when
    *  not configured, or when either pointer is malformed -- a bad `figure`
-   *  never drops the pane itself. */
-  figure?: { icnPointer: string; hotspotPointer: string };
+   *  never drops the pane itself. A config still using the old
+   *  pointer name is dropped with a console warning. */
+  figure?: { icnPointer: string; applicationStructureIdentPointer: string };
 }
 
 /** How an edge's rows reach HQ's postgres — declared by the deployment,
@@ -507,8 +509,12 @@ function parseFigureConfig(raw: unknown): ReleasedRecordsPaneConfig['figure'] {
   const f = raw as Record<string, unknown>;
   const isPointer = (x: unknown): x is string =>
     typeof x === 'string' && (x === '' || x.startsWith('/'));
-  if (!isPointer(f.icnPointer) || !isPointer(f.hotspotPointer)) return undefined;
-  return { icnPointer: f.icnPointer, hotspotPointer: f.hotspotPointer };
+  if ('hotspotPointer' in f && !('applicationStructureIdentPointer' in f)) {
+    console.warn('[deployment] releasedRecordsPanes figure dropped: hotspotPointer was renamed applicationStructureIdentPointer', raw);
+    return undefined;
+  }
+  if (!isPointer(f.icnPointer) || !isPointer(f.applicationStructureIdentPointer)) return undefined;
+  return { icnPointer: f.icnPointer, applicationStructureIdentPointer: f.applicationStructureIdentPointer };
 }
 
 export function parseReleasedRecordsPanes(raw: unknown): ReleasedRecordsPaneConfig[] {

@@ -49,6 +49,18 @@ describe('prepareFigure', () => {
     expect(out.found).toBe(false);
   });
 
+  it('matches only the applicationStructureIdent, never the data module hotspot id', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><g id="sec-03" class="hotspot"/><g id="hot-sec-03"/></svg>';
+    const hit = prepareFigure(svg, 'sec-03');
+    expect(hit!.found).toBe(true);
+    const active = [...parse(hit!.svg).querySelectorAll('.active')];
+    expect(active).toHaveLength(1);
+    expect(active[0].getAttribute('id')).toBe('sec-03');
+    const miss = prepareFigure(svg, 'hot-sec-03-x');
+    expect(miss!.found).toBe(false);
+    expect(parse(miss!.svg).querySelectorAll('.active')).toHaveLength(0);
+  });
+
   it('highlights nothing when no hotspot is named', () => {
     const out = prepareFigure(FIXTURE, null)!;
     expect(out.found).toBe(false);

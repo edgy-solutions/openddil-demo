@@ -3,7 +3,7 @@
 // `loadDeployment` would test a fetch stub, a JSON parse and a DOM write
 // alongside the one thing under examination. A parser is a decision;
 // decisions get direct tests (see deployment.ts's own comment on this).
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { parseReleasedRecordsPanes } from '../../deployment';
 
 describe('parseReleasedRecordsPanes', () => {
@@ -82,19 +82,32 @@ describe('parseReleasedRecordsPanes figure config', () => {
   };
 
   it('keeps a figure whose pointers are both JSON pointers', () => {
-    const figure = { icnPointer: '/work_order/parts/0/icn', hotspotPointer: '/work_order/parts/0/hotspot_id' };
+    const figure = { icnPointer: '/work_order/parts/0/icn', applicationStructureIdentPointer: '/work_order/parts/0/hotspot_id' };
     expect(parseReleasedRecordsPanes([{ ...base, figure }])).toEqual([{ ...base, figure }]);
   });
 
   it('accepts the empty pointer (whole body) as a pointer', () => {
-    const figure = { icnPointer: '', hotspotPointer: '/h' };
+    const figure = { icnPointer: '', applicationStructureIdentPointer: '/h' };
     expect(parseReleasedRecordsPanes([{ ...base, figure }])[0].figure).toEqual(figure);
+  });
+
+  it('drops the renamed-away pointer loudly', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = parseReleasedRecordsPanes([{ ...base, figure: { icnPointer: '/a', hotspotPointer: '/b' } }]);
+      expect(out).toHaveLength(1);
+      expect(out[0].figure).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('applicationStructureIdentPointer');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('drops an invalid figure but keeps the pane', () => {
     for (const figure of [
-      'nope', null, [], {}, { icnPointer: '/a' }, { icnPointer: 'a', hotspotPointer: '/b' },
-      { icnPointer: '/a', hotspotPointer: 5 },
+      'nope', null, [], {}, { icnPointer: '/a' }, { icnPointer: 'a', applicationStructureIdentPointer: '/b' },
+      { icnPointer: '/a', applicationStructureIdentPointer: 5 },
     ]) {
       const out = parseReleasedRecordsPanes([{ ...base, figure }]);
       expect(out).toHaveLength(1);
