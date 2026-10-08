@@ -32,13 +32,24 @@ export interface Projection {
  *
  * Empty fobs collapses to a (0,0)-centered identity-ish projection, which
  * is harmless on an OSS-default install with no overlay FOBs (the scene
- * just renders without anchors).
+ * just renders without anchors). When `fallbackPoints` is given and there
+ * are no FOBs, the centre is the mean of those points instead, so live
+ * assets still land on screen.
  */
 export function makeProjection(
   fobs: Fob[],
   scaleUnitsPerDegLat: number,
+  fallbackPoints?: { lat: number; lon: number }[],
 ): Projection {
-  const center = fobs.length === 0
+  const pts = fobs.length === 0 && fallbackPoints && fallbackPoints.length > 0
+    ? fallbackPoints
+    : null;
+  const center = pts
+    ? {
+        lat: pts.reduce((s, p) => s + p.lat, 0) / pts.length,
+        lon: pts.reduce((s, p) => s + p.lon, 0) / pts.length,
+      }
+    : fobs.length === 0
     ? { lat: 0, lon: 0 }
     : {
         lat: fobs.reduce((s, f) => s + f.lat, 0) / fobs.length,
@@ -59,4 +70,35 @@ export function makeProjection(
   }
 
   return { project, center };
+}
+
+const WGS84_A = 6378137;
+const WGS84_F = 1 / 298.257223563;
+const WGS84_E2 = WGS84_F * (2 - WGS84_F);
+
+/**
+ * Convert an ECEF position (metres) to geodetic lat/lon in degrees.
+ * Height is discarded. Iterative; converges well below 1e-9 deg.
+ * Returns null for non-finite input or a point within 1 km of the Earth's
+ * centre, where the conversion is meaningless.
+ */
+export function ecefToWgs84(
+  x: number,
+  y: number,
+  z: number,
+): { lat: number; lon: number } | null {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  if (Math.hypot(x, y, z) < 1000) return null;
+  const p = Math.hypot(x, y);
+  const lon = Math.atan2(y, x);
+  let lat = Math.atan2(z, p * (1 - WGS84_E2));
+  for (let i = 0; i < 10; i++) {
+    const s = Math.sin(lat);
+    const n = WGS84_A / Math.sqrt(1 - WGS84_E2 * s * s);
+    const next = Math.atan2(z + WGS84_E2 * n * s, p);
+    const done = Math.abs(next - lat) < 1e-14;
+    lat = next;
+    if (done) break;
+  }
+  return { lat: (lat * 180) / Math.PI, lon: (lon * 180) / Math.PI };
 }

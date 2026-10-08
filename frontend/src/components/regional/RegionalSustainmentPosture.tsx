@@ -758,9 +758,15 @@ export default function RegionalSustainmentPosture({
     () => (regionId ? fobs.filter((f) => f.region_id === regionId) : fobs),
     [fobs, regionId],
   );
+  // With no FOBs, centre on the fleet itself so live assets stay on screen.
   const proj = useMemo(
-    () => makeProjection(regionFobs, SCENE_SCALE_UNITS_PER_DEG),
-    [regionFobs],
+    () =>
+      makeProjection(
+        regionFobs,
+        SCENE_SCALE_UNITS_PER_DEG,
+        hardwareFleet.flatMap((a) => (a.position ? [a.position] : [])),
+      ),
+    [regionFobs, hardwareFleet],
   );
 
   const renderables = useMemo(

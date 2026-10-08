@@ -2,6 +2,7 @@
 // Backs the fleet picker / asset list. Source: telemetry_latest_state.
 import { num, sqlLiteral, useTableShape, type ShapeResult } from './electric';
 import type { OperationalState } from './useTelemetryLatest';
+import { ecefToWgs84 } from '../lib/geoProjection';
 
 export interface FleetAsset {
   asset_id: string;
@@ -49,21 +50,40 @@ export interface FleetAsset {
   releasable_to: string[];
 }
 
-function extractPosition(kinematics: any): { lat: number; lon: number } | null {
+export function extractPosition(kinematics: any): { lat: number; lon: number } | null {
   // Tolerant of proto-JSON variants: camelCase from the proto encoder OR
   // short keys from compose-era hand-rolled JSON. Mirrors the projector's
   // edge_assignment.extract_wgs84 logic.
   const wgs84 = kinematics?.position?.wgs84;
-  if (!wgs84 || typeof wgs84 !== 'object') return null;
+  if (!wgs84 || typeof wgs84 !== 'object') return extractEcefPosition(kinematics);
   let lat = wgs84.latitude ?? wgs84.lat;
   let lon = wgs84.longitude ?? wgs84.lon;
   // Unwrap {unit, value} objects emitted by sensor-ingest's unit-aware
   // encoder. Mirrors projector's extract_wgs84.
   if (lat && typeof lat === 'object' && 'value' in lat) lat = (lat as any).value;
   if (lon && typeof lon === 'object' && 'value' in lon) lon = (lon as any).value;
-  if (typeof lat !== 'number' || typeof lon !== 'number') return null;
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (typeof lat !== 'number' || typeof lon !== 'number') return extractEcefPosition(kinematics);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return extractEcefPosition(kinematics);
   return { lat, lon };
+}
+
+// ECEF-only producers: each axis is a number or {unit, value}; metres only.
+function ecefAxis(v: any): number | null {
+  if (v && typeof v === 'object') {
+    if (v.unit !== undefined && v.unit !== 'm') return null;
+    v = v.value;
+  }
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+function extractEcefPosition(kinematics: any): { lat: number; lon: number } | null {
+  const ecef = kinematics?.position?.ecef;
+  if (!ecef || typeof ecef !== 'object') return null;
+  const x = ecefAxis(ecef.x);
+  const y = ecefAxis(ecef.y);
+  const z = ecefAxis(ecef.z);
+  if (x === null || y === null || z === null) return null;
+  return ecefToWgs84(x, y, z);
 }
 
 function mapFleetAsset(row: Record<string, any>): FleetAsset {
