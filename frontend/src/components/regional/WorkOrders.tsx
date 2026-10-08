@@ -110,11 +110,11 @@ export default function WorkOrders() {
                     <AdvisoryBadge provenance={it.advisory_provenance} />
                   </div>
                 </td>
-                <td className="text-right align-top">
+                <td className="text-right align-top pl-2 whitespace-nowrap">
                   {(() => {
                     const badge = cmStatusBadge(it.overall_status);
                     return (
-                      <span className={`px-1.5 py-0.5 rounded text-[9px] border ${badge.cls}`}>
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] border whitespace-nowrap inline-block ${badge.cls}`}>
                         {badge.label}
                       </span>
                     );

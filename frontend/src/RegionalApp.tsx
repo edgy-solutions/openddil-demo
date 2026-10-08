@@ -55,14 +55,8 @@ import {
 } from './lib/fleetAggregates';
 import { assetCallsign } from './lib/assetLabel';
 import { deployment } from './deployment';
-
-// URL-param shape check. The region picker itself is data-driven (built
-// from FOB-declared region_ids + aggregator-observed region_ids); this
-// regex only gates the ?region= deep-link param against URL injection.
-// Accepts any kebab-case identifier so deployments that name regions
-// geographically (e.g. "region-north", "regional-south") work without
-// code changes.
-const REGION_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
+import { acceptRegionParam, healRegion } from './lib/regionScope';
+import { SubtreeScopeLabel } from './components/SubtreeScopeLabel';
 
 /** Pick the initial selected region on first mount.
  *
@@ -84,15 +78,13 @@ const REGION_ID_PATTERN = /^[a-zA-Z0-9-]+$/;
  *  parameter must not repoint a tier's UI at a different tier. */
 function initialRegion(tierScopeValue?: string | null): string | null {
   if (tierScopeValue) return tierScopeValue;
-  const param = new URLSearchParams(window.location.search).get('region');
-  if (param && REGION_ID_PATTERN.test(param)) return param;
-
   const fobRegions = Array.from(new Set(
     deployment().fobs
       .map((f) => f.region_id)
       .filter((r): r is string => !!r && r !== 'region-unspecified'),
   )).sort();
-  return fobRegions[0] ?? null;
+  const param = new URLSearchParams(window.location.search).get('region');
+  return acceptRegionParam(param, fobRegions) ?? fobRegions[0] ?? null;
 }
 
 // --- panels ----------------------------------------------------------------
@@ -329,14 +321,25 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
   // null. If the aggregator later produces a region_id, lock the picker
   // onto that. When FOBs are configured (typical), initialRegion() already
   // resolved selectedRegion at mount and this useEffect is dormant.
+  // Also heals a selection (e.g. a stale ?region= link) that matches no
+  // declared or observed region.
   useEffect(() => {
-    if (selectedRegion) return;
     const observed = fleetSummary.data
       .map((r) => r.region_id)
       .filter((r): r is string => !!r && r !== 'region-unspecified')
       .sort();
-    if (observed.length > 0) setSelectedRegion(observed[0]);
-  }, [fleetSummary.data, selectedRegion]);
+    if (!selectedRegion) {
+      if (observed.length > 0) setSelectedRegion(observed[0]);
+      return;
+    }
+    const fobRegions = deployment().fobs
+      .map((f) => f.region_id)
+      .filter((r): r is string => !!r && r !== 'region-unspecified');
+    // A tier's configured scope is its identity; never heal it away.
+    if (tierScopeValue) return;
+    const healed = healRegion(selectedRegion, fobRegions, observed);
+    if (healed) setSelectedRegion(healed);
+  }, [fleetSummary.data, selectedRegion, tierScopeValue]);
 
   // Keep ?region= in sync so reload / shared link lands on the same scope.
   useEffect(() => {
@@ -435,13 +438,20 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
       {/* Pulldown — dev/demo mechanism. Visually unobtrusive per the
           regional-vs-maintainer asymmetry; see follow-up #15. */}
       <div className="px-4 py-1 border-b border-slate-800 bg-slate-900/50">
-        <RegionPulldown
-          scopeLabel={isIntermediate ? 'Subtree scope' : 'Region scope'}
-          emptyLabel={isIntermediate ? 'no child tiers observed yet' : 'no regions observed yet'}
-          available={availableRegions}
-          selected={selectedRegion}
-          onSelect={setSelectedRegion}
-        />
+        {isIntermediate ? (
+          <SubtreeScopeLabel
+            tiers={availableRegions}
+            emptyText="no child tiers observed yet"
+          />
+        ) : (
+          <RegionPulldown
+            scopeLabel="Region scope"
+            emptyLabel="no regions observed yet"
+            available={availableRegions}
+            selected={selectedRegion}
+            onSelect={setSelectedRegion}
+          />
+        )}
       </div>
 
       <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden min-h-0">
