@@ -16,6 +16,7 @@ import {
   useLogisticsStatus,
   useTelemetryLatest,
   useEffectorLaunches,
+  useAssetElementTelemetry,
 } from '../../hooks';
 
 interface AssetDeepDiveProps {
@@ -28,6 +29,7 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
   const logistics = useLogisticsStatus(assetId);
   const telemetry = useTelemetryLatest(assetId);
   const effectorLaunches = useEffectorLaunches(assetId);
+  const elementTelemetry = useAssetElementTelemetry(assetId);
 
   const tel = telemetry.data[0] ?? null;
   const variant = tel?.platform_variant ?? null;
@@ -56,7 +58,14 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
       <CmStateCard cm={cm.data[0] ?? null} isLoading={cm.isLoading} />
       <LogisticsStatusCard logistics={logistics.data[0] ?? null} isLoading={logistics.isLoading} />
       <EffectorTracksCard launches={effectorLaunches.data} />
-      <TelemetryCharts telemetry={tel} platformVariant={variant} degraded={false} isLoading={telemetry.isLoading} />
+      <TelemetryCharts
+        telemetry={tel}
+        platformVariant={variant}
+        degraded={false}
+        isLoading={telemetry.isLoading}
+        liveTelemetry={elementTelemetry.liveTelemetry}
+        assetId={assetId}
+      />
     </div>
   );
 }

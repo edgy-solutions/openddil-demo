@@ -183,16 +183,20 @@ function hasSimElements(live: LiveElementTelemetry | undefined): boolean {
 }
 
 /** Resolve the active field list + source for a given (sustainment,
- *  liveTelemetry) pair. Priority: sustainment > sim > empty. */
-function resolveFields(
+ *  liveTelemetry) pair. Priority: sustainment > sim > empty. Exported
+ *  for unit tests only. */
+// eslint-disable-next-line react-refresh/only-export-components -- pure helper exported for tests; costs only HMR granularity
+export function resolveFields(
   config: ReturnType<typeof platformChartConfig>,
   sustainment: any,
   liveTelemetry: LiveElementTelemetry | undefined,
 ): { fields: ResolvedField[]; source: FieldSource } {
+  // Sustainment counts only when a configured field resolves to a
+  // Quantity; an empty health block must not draw flat-zero charts.
   const hasSustainment =
     sustainment != null &&
     typeof sustainment === 'object' &&
-    Object.keys(sustainment).length > 0;
+    config.fields.some((f) => readQuantity(sustainment, f) != null);
 
   if (hasSustainment) {
     return {
@@ -403,7 +407,13 @@ export default function TelemetryCharts({
       {isLoading && <SyncingNotice label="Syncing telemetry…" />}
 
       {!isLoading && source === 'empty' && (
-        <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-3 rounded-sm">
+        <div
+          data-testid="telemetry-empty"
+          className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-3 rounded-sm"
+        >
+          <div className="font-mono text-[10px] tracking-widest text-slate-400 mb-1">
+            NO TELEMETRY
+          </div>
           No sustainment telemetry yet — derived prognostics from kinematic
           history are not yet wired for DIS-sourced assets. Measured
           sustainment arrives via the sim-a / proprietary feeds.

@@ -39,7 +39,6 @@ import {
 import { useWanLink } from './hooks/useWanLink';
 import { makeAssetClassifier } from './lib/assetClass';
 import { useMunitionLaunches } from './hooks/useEffectorLaunches';
-import { isDeclaredSensor } from './lib/assetSubsystem';
 import { platformClass } from './config/platformChartConfig';
 import { deployment } from './deployment';
 
@@ -595,33 +594,12 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               this one shows the derived stockpile view (max-seen
               accumulator drives the initial baseline). */}
           <MunitionsLoadoutCard assetId={selectedAssetId} />
-          {/* TelemetryCharts uses a layered data source -- real
-              sustainment when the customer/DIS feed provides it,
-              sim-derived per-element aggregates when not. mradLive
-              is the same hook the 3D drill-down above consumes,
-              so when sustainment is absent the chart panel and
-              the 3D tiles tell the same story from the same data.
-              selectedAssetId is passed so the rolling chart history
-              resets when the operator switches assets (otherwise
-              the prior asset's 30-sample history scrolls through
-              the new asset's chart for ~30 ticks).
-
-              Sim-derived path is gated to per-site SENSOR assets
-              (asset_id ending in `_Sensor`). Per-site radar Unit
-              chassis (`*_radar`) and per-site launchers (`*_Launcher*`)
-              are also rostered by the sim today (variant=MRAD_Sensor /
-              MRAD_Interceptor after aliasing) and have a 4080-element
-              synthetic tree that the sim emits -- but those platforms
-              don't have arrays; only the sensor subsystem does. The
-              3D drill-down's DiagnosticCanvas already gates the
-              multi-array view on the same suffix check, but
-              TelemetryCharts read liveTelemetry directly, so the
-              chassis + launcher views showed sim-derived aggregates
-              for elements that aren't physically there. Skip the
-              live-telemetry path for non-sensor assets so the card
-              falls back to the sustainment path (or empty state if
-              the customer feed doesn't carry sustainment, which is
-              the truthful answer for those platforms today). */}
+          {/* TelemetryCharts uses a layered data source: real sustainment
+              first, else sim-derived per-element aggregates from the same
+              hook the 3D drill-down reads (mradLive), else the empty
+              state. The sim publishes rows only for assets a simulator
+              profile matched, so row presence is the gate. selectedAssetId
+              resets the rolling chart history on asset change. */}
           <TelemetryCharts
             telemetry={tel}
             platformVariant={variant}
@@ -631,7 +609,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             // selected asset).
             degraded={false}
             isLoading={telemetry.isLoading}
-            liveTelemetry={isDeclaredSensor(selectedAsset?.subsystem) ? mradLive : undefined}
+            liveTelemetry={mradLive}
             assetId={selectedAssetId}
             isPoweredOff={isPoweredOff}
           />
