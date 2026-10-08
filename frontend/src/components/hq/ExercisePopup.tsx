@@ -16,11 +16,13 @@
 // outcome, subject), never as a state.
 import { useState } from 'react';
 import { useExerciseControl } from '../../hooks/useExerciseControl';
-import type { ExerciseActivity, ExerciseLastCommand, ExerciseReset } from '../../lib/exerciseControl';
+import type {
+  ExerciseActivity, ExerciseLastCommand, ExerciseReset, ExerciseResetJob,
+} from '../../lib/exerciseControl';
 
 // Ops whose effect is disruptive enough to ask once before sending --
 // starting or losing the running simulator, not merely pausing/resuming it.
-const CONFIRM_OPS = new Set(['stop', 'restart']);
+const CONFIRM_OPS = new Set(['stop', 'restart', 'reset']);
 
 export interface ExercisePopupViewProps {
   kind: 'absent' | 'forbidden' | 'ok' | 'loading';
@@ -28,6 +30,8 @@ export interface ExercisePopupViewProps {
   activity: ExerciseActivity | null;
   lastCommand: ExerciseLastCommand | null;
   reset: ExerciseReset | null;
+  resetJob?: ExerciseResetJob | null;
+  refusal?: string | null;
   open: boolean;
   onToggleOpen: () => void;
   pendingConfirmOp: string | null;
@@ -54,13 +58,21 @@ function resetText(reset: ExerciseReset | null): string {
   return `Reset required before restart: last measured zero at ${reset.measured_zero_at}`;
 }
 
+function resetJobText(job: ExerciseResetJob | null | undefined): string {
+  const latest = job?.latest;
+  if (!latest) return 'Reset job: none yet';
+  const done = latest.finished_at ? ` (${latest.finished_at})` : '';
+  return `Reset job ${latest.name}: ${latest.state}${done}`;
+}
+
 export function ExercisePopupView({
-  kind, ops, activity, lastCommand, reset, open, onToggleOpen,
+  kind, ops, activity, lastCommand, reset, resetJob, refusal, open, onToggleOpen,
   pendingConfirmOp, onOpClick, onConfirm, onCancelConfirm,
 }: ExercisePopupViewProps) {
   if (kind === 'absent' || kind === 'loading') return null;
 
   const forbidden = kind === 'forbidden';
+  const resetAvailable = resetJob?.available === true;
 
   return (
     <div className="relative flex flex-col items-center">
@@ -106,9 +118,23 @@ export function ExercisePopupView({
             ))}
           </div>
 
+          {resetAvailable && (
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => onOpClick('reset')}
+                className="text-[10px] px-2 py-1 border border-slate-600 rounded"
+              >
+                Restart exercise
+              </button>
+            </div>
+          )}
+
           {pendingConfirmOp && (
             <div className="mt-2 text-[10px] text-amber-400">
-              Confirm {pendingConfirmOp}?
+              {pendingConfirmOp === 'reset'
+                ? 'Restart exercise: reset (deletes scenario state), then restart?'
+                : `Confirm ${pendingConfirmOp}?`}
               <button type="button" onClick={onConfirm} className="ml-2 underline">yes</button>
               <button type="button" onClick={onCancelConfirm} className="ml-2 underline">cancel</button>
             </div>
@@ -116,8 +142,14 @@ export function ExercisePopupView({
 
           <div className="mt-2 text-[10px] text-slate-300">{lastCommandText(lastCommand)}</div>
           <div className="mt-1 text-[10px] text-slate-300">{resetText(reset)}</div>
+          {resetAvailable && (
+            <div className="mt-1 text-[10px] text-slate-300">{resetJobText(resetJob)}</div>
+          )}
+          {refusal && <div className="mt-1 text-[10px] text-amber-400">Refused: {refusal}</div>}
           <div className="mt-1 text-[9px] text-slate-500">
-            Restart is two halves: stop here, then an operator runs the reset elsewhere, then restart and run here.
+            {resetAvailable
+              ? 'Restart exercise runs the reset in the cluster, then sends restart only if the reset measured zero.'
+              : 'Restart is two halves: stop here, then an operator runs the reset, then restart and run here.'}
           </div>
         </div>
       )}
@@ -126,7 +158,7 @@ export function ExercisePopupView({
 }
 
 export default function ExercisePopup() {
-  const { kind, status, runOp } = useExerciseControl();
+  const { kind, status, refusal, runOp } = useExerciseControl();
   const [open, setOpen] = useState(false);
   const [pendingConfirmOp, setPendingConfirmOp] = useState<string | null>(null);
 
@@ -150,6 +182,8 @@ export default function ExercisePopup() {
       activity={status?.activity ?? null}
       lastCommand={status?.last_command ?? null}
       reset={status?.reset ?? null}
+      resetJob={status?.reset_job ?? null}
+      refusal={refusal}
       open={open}
       onToggleOpen={() => setOpen((v) => !v)}
       pendingConfirmOp={pendingConfirmOp}

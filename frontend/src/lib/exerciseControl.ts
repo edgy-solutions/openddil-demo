@@ -49,11 +49,28 @@ export interface ExerciseReset {
   verdict: string | null;
 }
 
+export interface ExerciseResetJobLatest {
+  name: string;
+  state: 'running' | 'succeeded' | 'failed';
+  started_at: string | null;
+  finished_at: string | null;
+  requested_by: string | null;
+}
+
+/** The in-cluster reset Job behind the "Restart exercise" action. */
+export interface ExerciseResetJob {
+  available: boolean;
+  latest: ExerciseResetJobLatest | null;
+  error: string | null;
+}
+
 export interface ExerciseStatusBody {
   adapter: ExerciseAdapter;
   last_command: ExerciseLastCommand | null;
   activity: ExerciseActivity;
   reset: ExerciseReset;
+  /** Absent from servers that predate the reset Job. */
+  reset_job?: ExerciseResetJob;
 }
 
 export interface ExerciseControlState {
@@ -69,6 +86,10 @@ export interface ExerciseControlState {
    *  the UI keeps the last good status rather than blanking it. Never
    *  guessed into absent/forbidden — those are answers, this is silence. */
   stale: boolean;
+  /** Why the last op was refused (e.g. 'reset_running'), or absent. A refusal
+   *  sent nothing, so it is kept apart from last_command. Cleared by the
+   *  next op that is accepted. */
+  refusal?: string;
 }
 
 export interface ExerciseControlController {
@@ -89,7 +110,9 @@ export function createExerciseControlController(
   const listeners = new Set<() => void>();
 
   function setState(next: ExerciseControlState): void {
-    state = next;
+    // Omitted rather than null when there is no refusal, so the state keeps
+    // its pre-existing shape.
+    state = next.refusal ? next : { kind: next.kind, status: next.status, stale: next.stale };
     for (const l of Array.from(listeners)) l();
   }
 
@@ -106,7 +129,7 @@ export function createExerciseControlController(
       }
       if (!res.ok) throw new Error(`GET ${EXERCISE_STATUS_URL} -> ${res.status}`);
       const body = (await res.json()) as ExerciseStatusBody;
-      setState({ kind: 'ok', status: body, stale: false });
+      setState({ kind: 'ok', status: body, stale: false, refusal: state.refusal });
     } catch (err) {
       console.error('exercise control status error', err);
       // A transport failure talking to the GATEWAY — keep whatever is
@@ -127,6 +150,22 @@ export function createExerciseControlController(
       }
       if (res.status === 404) {
         setState({ kind: 'absent', status: null, stale: false });
+        return;
+      }
+      if (res.status === 409 || res.status === 502) {
+        // Refused or not created: nothing was sent, so last_command stays.
+        const refused = (await res.json()) as { reason?: string; error?: string };
+        setState({ ...state, refusal: refused.reason ?? refused.error ?? `refused (${res.status})` });
+        return;
+      }
+      if (res.status === 202) {
+        // reset: a Job was created. The body carries no status of its own;
+        // 202 is the send outcome.
+        const accepted = (await res.json()) as Omit<ExerciseLastCommand, 'status' | 'error'>;
+        if (state.status) {
+          const sent = { ...accepted, status: 202, error: null };
+          setState({ kind: 'ok', status: { ...state.status, last_command: sent }, stale: state.stale });
+        }
         return;
       }
       // The gateway forwarded this call -- its response body IS the new

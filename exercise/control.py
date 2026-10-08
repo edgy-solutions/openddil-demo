@@ -26,11 +26,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import copy
 import re
+import ssl
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -280,6 +283,180 @@ def scrape_loop(store: RateStore, interval_s: float, stop_event: threading.Event
         stop_event.wait(interval_s)
 
 
+# --- in-cluster reset Job ------------------------------------------------------
+#
+# POST /exercise/op/reset creates a Job from a chart-rendered template. The Job
+# runs scripts/restart-exercise.sh in its in-cluster mode: the scenario reset,
+# then the restart POST back to this service through the same restart gate
+# (restart_refusal) every other client goes through. A halted reset is never
+# retried: the chart's template sets backoffLimit 0, so a refusal ends the Job.
+# "reset" is not an adapter op and never reaches the adapter.
+
+RESET_COMPONENT_LABEL = "app.kubernetes.io/component"
+RESET_INSTANCE_LABEL = "app.kubernetes.io/instance"
+RESET_COMPONENT = "exercise-reset"
+REQUESTED_BY_ANNOTATION = "openddil.io/requested-by"
+RESET_SUBJECT_ENV = "RESTART_SUBJECT"
+RESET_SUBJECT_PREFIX = "reset-job:"
+SUBJECT_RE = re.compile(r"[A-Za-z0-9._@:-]{1,96}")
+DEFAULT_SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+KUBE_API_TIMEOUT_S = 5.0
+
+
+class ResetJobConfigError(AdapterConfigError):
+    """The reset Job template is malformed. Startup refuses rather than guessing."""
+
+
+class KubeApiError(RuntimeError):
+    """A transport fault or non-2xx answer from the Kubernetes API."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+class InvalidSubject(ValueError):
+    pass
+
+
+def load_reset_job_template(path: str | os.PathLike) -> dict[str, Any]:
+    try:
+        tpl = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ResetJobConfigError(f"reset job template unreadable: {exc}") from exc
+    if not isinstance(tpl, dict) or tpl.get("kind") != "Job":
+        raise ResetJobConfigError("reset job template must be an object with kind Job")
+    meta = tpl.get("metadata")
+    labels = meta.get("labels") if isinstance(meta, dict) else None
+    if not isinstance(labels, dict) or labels.get(RESET_COMPONENT_LABEL) != RESET_COMPONENT:
+        raise ResetJobConfigError(
+            f"reset job template needs label {RESET_COMPONENT_LABEL}={RESET_COMPONENT}")
+    instance = labels.get(RESET_INSTANCE_LABEL)
+    if not isinstance(instance, str) or not instance:
+        raise ResetJobConfigError(f"reset job template needs label {RESET_INSTANCE_LABEL}")
+    try:
+        env = tpl["spec"]["template"]["spec"]["containers"][0]["env"]
+        has_subject = any(isinstance(e, dict) and e.get("name") == RESET_SUBJECT_ENV for e in env)
+    except (KeyError, IndexError, TypeError):
+        has_subject = False
+    if not has_subject:
+        raise ResetJobConfigError(f"reset job template needs a {RESET_SUBJECT_ENV} env entry")
+    return tpl
+
+
+def _job_state(job: dict[str, Any]) -> str:
+    status = job.get("status") or {}
+    conds = {c.get("type"): c.get("status") for c in status.get("conditions") or []
+             if isinstance(c, dict)}
+    if conds.get("Failed") == "True":
+        return "failed"
+    if conds.get("Complete") == "True":
+        return "succeeded"
+    if (status.get("active") or 0) > 0:
+        return "running"
+    if not status.get("completionTime"):
+        return "running"
+    return "succeeded"
+
+
+def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
+    meta = job.get("metadata") or {}
+    status = job.get("status") or {}
+    done = [c for c in status.get("conditions") or [] if isinstance(c, dict)
+            and c.get("type") in ("Complete", "Failed") and c.get("status") == "True"]
+    finished = status.get("completionTime") or (done[0].get("lastTransitionTime") if done else None)
+    return {
+        "name": meta.get("name"),
+        "state": _job_state(job),
+        "started_at": status.get("startTime") or meta.get("creationTimestamp"),
+        "finished_at": finished,
+        "requested_by": (meta.get("annotations") or {}).get(REQUESTED_BY_ANNOTATION),
+    }
+
+
+class ResetJobLauncher:
+    """Creates the reset Job and reports the newest one. Talks to the API with
+    the pod's service account; TLS always verifies against the SA's ca.crt.
+    `base_url` is a test-only injection (a loopback fake API over plain HTTP);
+    production leaves it None and gets https://KUBERNETES_SERVICE_HOST:PORT."""
+
+    def __init__(self, template_file: str | os.PathLike, sa_dir: str | os.PathLike | None = None,
+                 base_url: str | None = None):
+        self.template = load_reset_job_template(template_file)
+        self.release = self.template["metadata"]["labels"][RESET_INSTANCE_LABEL]
+        self.sa_dir = Path(sa_dir or os.getenv("EXERCISE_SA_DIR") or DEFAULT_SA_DIR)
+        self.base_url = base_url
+        # Serialises latest-check + create, so two clicks cannot both create.
+        self._launch_lock = threading.Lock()
+
+    def _namespace(self) -> str:
+        return (self.sa_dir / "namespace").read_text(encoding="utf-8").strip()
+
+    def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            token = (self.sa_dir / "token").read_text(encoding="utf-8").strip()  # rotates
+            if self.base_url:
+                base, ctx = self.base_url, None
+            else:
+                host = os.environ["KUBERNETES_SERVICE_HOST"]
+                port = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+                if ":" in host:
+                    host = f"[{host}]"
+                base = f"https://{host}:{port}"
+                ctx = ssl.create_default_context(cafile=str(self.sa_dir / "ca.crt"))
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            data = None
+            if body is not None:
+                data = json.dumps(body).encode("utf-8")
+                headers["Content-Type"] = "application/json"
+            req = urllib.request.Request(base + path, data=data, method=method, headers=headers)
+            with urllib.request.urlopen(req, timeout=KUBE_API_TIMEOUT_S, context=ctx) as resp:
+                raw = resp.read()
+                status = resp.status
+        except urllib.error.HTTPError as exc:
+            detail = exc.read()[:300].decode("utf-8", "replace")
+            log.warning("kube api %s %s -> %d %s", method, path.split("?")[0], exc.code, detail)
+            raise KubeApiError(f"kube api answered {exc.code}", exc.code) from exc
+        except Exception as exc:  # noqa: BLE001 -- transport, TLS or file fault
+            raise KubeApiError(f"kube api unreachable: {exc}") from exc
+        if not 200 <= status < 300:
+            raise KubeApiError(f"kube api answered {status}", status)
+        try:
+            return json.loads(raw)
+        except ValueError as exc:
+            raise KubeApiError("kube api answered non-JSON", status) from exc
+
+    def _jobs_path(self) -> str:
+        return f"/apis/batch/v1/namespaces/{self._namespace()}/jobs"
+
+    def latest(self) -> dict[str, Any] | None:
+        selector = (f"{RESET_COMPONENT_LABEL}={RESET_COMPONENT},"
+                    f"{RESET_INSTANCE_LABEL}={self.release}")
+        listing = self._request(
+            "GET", self._jobs_path() + "?labelSelector=" + urllib.parse.quote(selector, safe=""))
+        items = [j for j in listing.get("items") or [] if isinstance(j, dict)]
+        if not items:
+            return None
+        newest = max(items, key=lambda j: (j.get("metadata") or {}).get("creationTimestamp") or "")
+        return _job_summary(newest)
+
+    def launch(self, subject: str) -> tuple[str, str | None]:
+        """("running", existing job name) or ("created", new job name)."""
+        if not SUBJECT_RE.fullmatch(subject):
+            raise InvalidSubject(subject[:96])
+        with self._launch_lock:
+            current = self.latest()
+            if current is not None and current["state"] == "running":
+                return "running", current["name"]
+            job = copy.deepcopy(self.template)
+            for entry in job["spec"]["template"]["spec"]["containers"][0]["env"]:
+                if isinstance(entry, dict) and entry.get("name") == RESET_SUBJECT_ENV:
+                    entry["value"] = RESET_SUBJECT_PREFIX + subject
+            job["metadata"].setdefault("annotations", {})[REQUESTED_BY_ANNOTATION] = subject
+            created = self._request("POST", self._jobs_path(), job)
+            return "created", (created.get("metadata") or {}).get("name")
+
+
 # --- app state: adapter, last command, reset record ----------------------------
 
 def _now_iso() -> str:
@@ -288,8 +465,10 @@ def _now_iso() -> str:
 
 class AppState:
     def __init__(self, adapter: dict[str, Any], store: RateStore, reset_record_file: str | None,
-                 restart_max_zero_age_s: float = DEFAULT_RESTART_MAX_ZERO_AGE_S):
+                 restart_max_zero_age_s: float = DEFAULT_RESTART_MAX_ZERO_AGE_S,
+                 reset_launcher: ResetJobLauncher | None = None):
         self.adapter = adapter
+        self.reset_launcher = reset_launcher
         self.restart_max_zero_age_s = restart_max_zero_age_s
         # measured_zero_at values an earlier successful restart already used.
         # In memory only: a pod restart loses it, and restart_max_zero_age_s
@@ -426,6 +605,13 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                 now = time.time()
                 activity = app.store.status(now)
                 refusal, _rec = app.restart_refusal()
+                reset_job: dict[str, Any] = {"available": app.reset_launcher is not None,
+                                             "latest": None, "error": None}
+                if app.reset_launcher is not None:
+                    try:
+                        reset_job["latest"] = app.reset_launcher.latest()
+                    except KubeApiError as exc:
+                        reset_job["error"] = str(exc)
                 self._send_json(200, {
                     "adapter": {"name": app.adapter["name"],
                                 "ops": sorted(app.adapter["operations"].keys())},
@@ -440,6 +626,7 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                     "reset": app.read_reset(),
                     "restart_allowed": refusal is None,
                     "restart_refusal": refusal,
+                    "reset_job": reset_job,
                 })
                 return
             self._send_json(404, {"error": "not found"})
@@ -450,6 +637,10 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                 self._send_json(404, {"error": "not found"})
                 return
             op = self.path[len("/exercise/op/"):]
+            if op == "reset" and app.reset_launcher is not None:
+                self._drain()
+                self._handle_reset()
+                return
             if op not in app.adapter["operations"]:
                 # Refused BEFORE any outward call -- an unknown op never
                 # reaches the adapter.
@@ -490,6 +681,33 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                                   "subject": subject}))
             self._send_json(200, record)
 
+        def _handle_reset(self) -> None:
+            subject = self.headers.get(SUBJECT_HEADER, "").strip()
+            if not subject:
+                self._send_json(400, {"error": "missing subject header"})
+                return
+            try:
+                outcome, job = app.reset_launcher.launch(subject)
+            except InvalidSubject:
+                self._send_json(400, {"error": "invalid subject"})
+                return
+            except KubeApiError as exc:
+                log.warning(json.dumps({"exercise_reset_job": "not_created", "status": exc.status,
+                                         "subject": subject}))
+                self._send_json(502, {"error": "reset job not created", "status": exc.status})
+                return
+            if outcome == "running":
+                log.info(json.dumps({"exercise_op_refused": "reset", "reason": "reset_running",
+                                      "job": job, "subject": subject}))
+                self._send_json(409, {"error": "reset already running",
+                                      "reason": "reset_running", "job": job})
+                return
+            at = _now_iso()
+            app.set_last_command({"op": "reset", "at": at, "status": 201, "error": None,
+                                  "subject": subject, "job": job})
+            log.info(json.dumps({"exercise_reset_job": job, "subject": subject}))
+            self._send_json(202, {"op": "reset", "at": at, "job": job, "subject": subject})
+
     return Handler
 
 
@@ -525,9 +743,19 @@ def main() -> int:
     reset_record_file = os.getenv("EXERCISE_RESET_RECORD_FILE", "").strip() or None
     port = int(os.getenv("EXERCISE_PORT", "8095"))
 
+    reset_launcher = None
+    reset_job_file = os.getenv("EXERCISE_RESET_JOB_FILE", "").strip()
+    if reset_job_file:
+        try:
+            reset_launcher = ResetJobLauncher(reset_job_file)
+        except AdapterConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
     store = RateStore(sources=sources, window=window, min_rate=min_rate)
     app = AppState(adapter=adapter, store=store, reset_record_file=reset_record_file,
-                   restart_max_zero_age_s=max_zero_age)
+                   restart_max_zero_age_s=max_zero_age,
+                   reset_launcher=reset_launcher)
 
     stop_event = threading.Event()
     scraper = threading.Thread(target=scrape_loop, args=(store, scrape_interval, stop_event),

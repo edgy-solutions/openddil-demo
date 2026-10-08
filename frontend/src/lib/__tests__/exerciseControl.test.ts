@@ -123,4 +123,42 @@ describe('createExerciseControlController', () => {
     expect(state.stale).toBe(true);
     expect(state.status?.last_command).toEqual(PAUSED_STATUS.last_command);
   });
+
+  it('runOp(reset) 202 is folded as a sent command; no refusal', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(PAUSED_STATUS), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        op: 'reset', at: '2026-10-08T00:00:00Z', job: 'rel-exercise-reset-abc', subject: 'supervisor.1',
+      }), { status: 202 }));
+    const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+    await c.poll();
+    await c.runOp('reset');
+    const state = c.getState();
+    expect(state.refusal).toBeUndefined();
+    expect(state.status?.last_command).toMatchObject({ op: 'reset', status: 202, error: null, subject: 'supervisor.1' });
+  });
+
+  it('runOp(reset) 409 keeps last_command and exposes the reason', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(PAUSED_STATUS), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: 'reset already running', reason: 'reset_running', job: 'rel-exercise-reset-abc',
+      }), { status: 409 }));
+    const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+    await c.poll();
+    await c.runOp('reset');
+    const state = c.getState();
+    expect(state.refusal).toBe('reset_running');
+    expect(state.status?.last_command).toEqual(PAUSED_STATUS.last_command);
+  });
+
+  it('poll() carries reset_job through, and tolerates its absence', async () => {
+    const withJob: ExerciseStatusBody = {
+      ...PAUSED_STATUS, reset_job: { available: true, latest: null, error: null },
+    };
+    const fetchImpl = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(withJob), { status: 200 }));
+    const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+    await c.poll();
+    expect(c.getState().status?.reset_job?.available).toBe(true);
+  });
 });

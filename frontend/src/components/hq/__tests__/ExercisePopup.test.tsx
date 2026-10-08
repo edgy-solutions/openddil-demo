@@ -12,7 +12,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ExercisePopupView, type ExercisePopupViewProps } from '../ExercisePopup';
-import type { ExerciseActivity, ExerciseLastCommand } from '../../../lib/exerciseControl';
+import type { ExerciseActivity, ExerciseLastCommand, ExerciseResetJob } from '../../../lib/exerciseControl';
 
 const BASE: ExercisePopupViewProps = {
   kind: 'ok',
@@ -124,10 +124,11 @@ describe('ExercisePopupView', () => {
     expect(html).toContain('no measured zero on record');
   });
 
-  it('explains the two-halves restart flow', () => {
+  it('without the reset Job, explains the two-halves restart flow and shows no button', () => {
     const html = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} activity={PAUSED} />);
     expect(html).toContain('two halves');
-    expect(html).toContain('an operator runs the reset elsewhere');
+    expect(html).toContain('then restart and run here');
+    expect(html).not.toContain('Restart exercise');
   });
 
   it('a pending confirm on stop shows a confirm prompt, not yet an op call', () => {
@@ -142,5 +143,57 @@ describe('ExercisePopupView', () => {
     expect(html).toContain('>pause<');
     expect(html).toContain('>resume<');
     expect(html).not.toContain('>stop<');
+  });
+
+  describe('reset Job', () => {
+    const JOB = (state: 'running' | 'succeeded' | 'failed', finished: string | null): ExerciseResetJob => ({
+      available: true,
+      latest: { name: 'rel-exercise-reset-abc', state, started_at: '2026-10-08T00:00:00Z', finished_at: finished, requested_by: 's' },
+      error: null,
+    });
+
+    it('shows the Restart exercise button only when available', () => {
+      const on = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} resetJob={JOB('running', null)} />);
+      expect(on).toContain('Restart exercise</button>');
+      const off = renderToStaticMarkup(
+        <ExercisePopupView {...BASE} open={true} resetJob={{ available: false, latest: null, error: null }} />,
+      );
+      expect(off).not.toContain('Restart exercise</button>');
+      const old = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} />);
+      expect(old).not.toContain('Restart exercise</button>');
+    });
+
+    it('the button needs a confirm prompt with its own wording', () => {
+      const html = renderToStaticMarkup(
+        <ExercisePopupView {...BASE} open={true} resetJob={JOB('succeeded', null)} pendingConfirmOp="reset" />,
+      );
+      expect(html).toContain('Restart exercise: reset (deletes scenario state), then restart?');
+      expect(html).not.toContain('Confirm reset?');
+    });
+
+    it('renders the job line for each state', () => {
+      const run = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} resetJob={JOB('running', null)} />);
+      expect(run).toContain('Reset job rel-exercise-reset-abc: running');
+      const ok = renderToStaticMarkup(
+        <ExercisePopupView {...BASE} open={true} resetJob={JOB('succeeded', '2026-10-08T00:05:00Z')} />,
+      );
+      expect(ok).toContain('Reset job rel-exercise-reset-abc: succeeded (2026-10-08T00:05:00Z)');
+      const bad = renderToStaticMarkup(
+        <ExercisePopupView {...BASE} open={true} resetJob={JOB('failed', '2026-10-08T00:06:00Z')} />,
+      );
+      expect(bad).toContain('Reset job rel-exercise-reset-abc: failed (2026-10-08T00:06:00Z)');
+      const none = renderToStaticMarkup(
+        <ExercisePopupView {...BASE} open={true} resetJob={{ available: true, latest: null, error: null }} />,
+      );
+      expect(none).toContain('Reset job: none yet');
+      expect(none).toContain('Restart exercise runs the reset in the cluster, then sends restart only if the reset measured zero.');
+    });
+
+    it('shows a refusal reason', () => {
+      const html = renderToStaticMarkup(
+        <ExercisePopupView {...BASE} open={true} resetJob={JOB('running', null)} refusal="reset_running" />,
+      );
+      expect(html).toContain('Refused: reset_running');
+    });
   });
 });

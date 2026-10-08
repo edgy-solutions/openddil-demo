@@ -488,3 +488,249 @@ def test_g9_control_failed_restart_does_not_use_the_zero(gate):
     out = _two_concurrent_restarts(url)
     assert len(state["adapter_calls"]) == 2
     assert [c for c, _ in out] == [200, 200]
+
+
+# =============================================================================
+# in-cluster reset Job -- POST /exercise/op/reset against a fake Kubernetes API
+# =============================================================================
+
+kube = {"jobs": [], "posts": [], "gets": [], "list_status": 200, "post_status": 201, "post_delay": 0.0}
+
+TEMPLATE = {
+    "apiVersion": "batch/v1",
+    "kind": "Job",
+    "metadata": {"generateName": "rel-exercise-reset-",
+                 "labels": {"app.kubernetes.io/component": "exercise-reset",
+                            "app.kubernetes.io/instance": "rel"}},
+    "spec": {"backoffLimit": 0, "template": {"spec": {"containers": [
+        {"name": "reset", "env": [{"name": "RESTART_SUBJECT", "value": ""}]}]}}},
+}
+
+
+def _job(name, created, active=0, conds=None, completion=None, by=None):
+    status = {"active": active, "conditions": conds or []}
+    if completion:
+        status["completionTime"] = completion
+    meta = {"name": name, "creationTimestamp": created}
+    if by:
+        meta["annotations"] = {"openddil.io/requested-by": by}
+    return {"metadata": meta, "status": status}
+
+
+class FakeKube(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _reply(self, code, obj):
+        out = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def do_GET(self):
+        kube["gets"].append({"path": self.path, "auth": self.headers.get("Authorization")})
+        if kube["list_status"] != 200:
+            self._reply(kube["list_status"], {"message": "denied"})
+            return
+        self._reply(200, {"items": list(kube["jobs"])})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = json.loads(self.rfile.read(length))
+        if kube["post_delay"]:
+            time.sleep(kube["post_delay"])
+        if kube["post_status"] != 201:
+            self._reply(kube["post_status"], {"message": "failed"})
+            return
+        kube["posts"].append({"path": self.path, "body": body})
+        name = f"rel-exercise-reset-{len(kube['posts'])}"
+        kube["jobs"].append(_job(name, f"2026-01-01T00:00:{len(kube['posts']):02d}Z", active=1))
+        self._reply(201, {"metadata": {"name": name}})
+
+
+@pytest.fixture
+def kapp(tmp_path):
+    kube.update(jobs=[], posts=[], gets=[], list_status=200, post_status=201, post_delay=0.0)
+    state.update(adapter_calls=[])
+    kube_srv = _serve(FakeKube)
+    sa = tmp_path / "sa"
+    sa.mkdir()
+    (sa / "token").write_text("tok-1\n")
+    (sa / "namespace").write_text("ns1\n")
+    tpl = tmp_path / "job.json"
+    tpl.write_text(json.dumps(TEMPLATE))
+    launcher = control.ResetJobLauncher(tpl, sa_dir=sa, base_url=f"http://127.0.0.1:{kube_srv.server_port}")
+    adapter_srv = _serve(FakeAdapter)
+    cfg = {"name": "stand-in", "endpoint": f"http://127.0.0.1:{adapter_srv.server_port}",
+           "operations": {"pause": {"method": "POST", "path": "/pause", "body": {}}}}
+    adapter = control.load_adapter_config(_write(tmp_path, cfg))
+    store = control.RateStore(sources=[], window=30.0, min_rate=0.1)
+    app_state = control.AppState(adapter=adapter, store=store, reset_record_file=None,
+                                 reset_launcher=launcher)
+    handler_srv = _serve(control.make_handler(app_state))
+    yield f"http://127.0.0.1:{handler_srv.server_port}", app_state
+    for s in (kube_srv, adapter_srv, handler_srv):
+        s.shutdown()
+
+
+def test_r1_reset_creates_job_with_subject_env_and_annotation(kapp):
+    url, app_state = kapp
+    code, body = _post(url + "/exercise/op/reset", subject="sup@x")
+    assert code == 202
+    assert body["op"] == "reset" and body["subject"] == "sup@x"
+    assert body["job"] == "rel-exercise-reset-1"
+    assert len(kube["posts"]) == 1
+    posted = kube["posts"][0]
+    assert posted["path"] == "/apis/batch/v1/namespaces/ns1/jobs"
+    env = posted["body"]["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert {"name": "RESTART_SUBJECT", "value": "reset-job:sup@x"} in env
+    assert posted["body"]["metadata"]["annotations"]["openddil.io/requested-by"] == "sup@x"
+    last = app_state.get_last_command()
+    assert last["op"] == "reset" and last["status"] == 201 and last["error"] is None
+    assert last["job"] == body["job"] and last["subject"] == "sup@x"
+    assert state["adapter_calls"] == []  # reset never reaches the adapter
+    # the template itself is not mutated by a launch
+    tpl_env = app_state.reset_launcher.template["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert tpl_env[0]["value"] == ""
+
+
+def test_r2_selector_is_encoded_and_token_sent(kapp):
+    url, _ = kapp
+    _post(url + "/exercise/op/reset", subject="s")
+    g = kube["gets"][0]
+    assert ("labelSelector=app.kubernetes.io%2Fcomponent%3Dexercise-reset%2C"
+            "app.kubernetes.io%2Finstance%3Drel") in g["path"]
+    assert g["auth"] == "Bearer tok-1"
+
+
+def test_r3_running_job_is_409_and_creates_nothing(kapp):
+    url, app_state = kapp
+    kube["jobs"].append(_job("rel-exercise-reset-old", "2026-01-01T00:00:00Z", active=1))
+    code, body = _post(url + "/exercise/op/reset", subject="s")
+    assert code == 409
+    assert body == {"error": "reset already running", "reason": "reset_running",
+                    "job": "rel-exercise-reset-old"}
+    assert kube["posts"] == []
+    assert app_state.get_last_command() is None
+
+
+@pytest.mark.parametrize("api_status", [403, 500])
+def test_r4_api_error_is_502_and_last_command_untouched(kapp, api_status):
+    url, app_state = kapp
+    kube["post_status"] = api_status
+    code, body = _post(url + "/exercise/op/reset", subject="s")
+    assert code == 502
+    assert body == {"error": "reset job not created", "status": api_status}
+    assert app_state.get_last_command() is None
+    kube.update(post_status=201, list_status=api_status)
+    code, body = _post(url + "/exercise/op/reset", subject="s")
+    assert (code, body["status"]) == (502, api_status)
+    assert app_state.get_last_command() is None
+
+
+def test_r5_reset_is_404_when_feature_off(app):
+    url, _app_state, _store = app
+    code, body = _post(url + "/exercise/op/reset", subject="s")
+    assert code == 404 and body["error"] == "unknown op"
+
+
+def test_r6_missing_subject_and_bad_subject_are_400(kapp):
+    url, _ = kapp
+    assert _post(url + "/exercise/op/reset")[0] == 400
+    for bad in ["has space", "semi;colon", "x" * 97]:
+        assert _post(url + "/exercise/op/reset", subject=bad)[0] == 400
+    assert kube["posts"] == [] and kube["gets"] == []
+
+
+def test_r7_status_without_launcher(app):
+    url, _app_state, _store = app
+    _, body = _get(url + "/exercise/status")
+    assert body["reset_job"] == {"available": False, "latest": None, "error": None}
+
+
+def test_r8_status_with_launcher_and_states(kapp):
+    url, _ = kapp
+    _, body = _get(url + "/exercise/status")
+    assert body["reset_job"] == {"available": True, "latest": None, "error": None}
+    kube["jobs"] = [
+        _job("old", "2026-01-01T00:00:00Z", conds=[{"type": "Failed", "status": "True"}]),
+        _job("new", "2026-01-02T00:00:00Z", by="sup",
+             conds=[{"type": "Complete", "status": "True"}], completion="2026-01-02T00:05:00Z"),
+    ]
+    _, body = _get(url + "/exercise/status")
+    latest = body["reset_job"]["latest"]
+    assert latest["name"] == "new" and latest["state"] == "succeeded"
+    assert latest["requested_by"] == "sup" and latest["finished_at"] == "2026-01-02T00:05:00Z"
+    kube["jobs"] = [_job("f", "2026-01-03T00:00:00Z", conds=[{"type": "Failed", "status": "True"}])]
+    assert _get(url + "/exercise/status")[1]["reset_job"]["latest"]["state"] == "failed"
+    kube["jobs"] = [_job("r", "2026-01-04T00:00:00Z")]  # no active, no completion, no condition
+    assert _get(url + "/exercise/status")[1]["reset_job"]["latest"]["state"] == "running"
+
+
+def test_r9_status_still_answers_when_api_is_down(kapp):
+    url, _ = kapp
+    kube["list_status"] = 500
+    code, body = _get(url + "/exercise/status")
+    assert code == 200
+    assert body["reset_job"]["available"] is True
+    assert body["reset_job"]["latest"] is None and body["reset_job"]["error"]
+    assert "adapter" in body and "restart_allowed" in body
+
+
+def test_r10_concurrent_resets_create_exactly_one_job(kapp):
+    url, _ = kapp
+    kube["post_delay"] = 0.5
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(
+        _post(url + "/exercise/op/reset", subject="s", timeout=10))) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert len(kube["posts"]) == 1
+    assert sorted(c for c, _ in out) == [202, 409]
+
+
+def test_r11_reset_is_never_an_adapter_op(tmp_path):
+    cfg = {"name": "x", "endpoint": "http://e", "operations": {"reset": {"method": "POST", "path": "/r"}}}
+    with pytest.raises(control.AdapterConfigError, match="reset"):
+        control.load_adapter_config(_write(tmp_path, cfg))
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda t: t.update(kind="Pod"),
+    lambda t: t["metadata"]["labels"].pop("app.kubernetes.io/component"),
+    lambda t: t["metadata"]["labels"].update({"app.kubernetes.io/component": "other"}),
+    lambda t: t["metadata"]["labels"].pop("app.kubernetes.io/instance"),
+    lambda t: t["spec"]["template"]["spec"]["containers"][0].update(env=[{"name": "OTHER", "value": "x"}]),
+    lambda t: t["spec"]["template"]["spec"]["containers"][0].pop("env"),
+])
+def test_r12_template_validation_refuses(tmp_path, mutate):
+    import copy
+    tpl = copy.deepcopy(TEMPLATE)
+    mutate(tpl)
+    f = tmp_path / "job.json"
+    f.write_text(json.dumps(tpl))
+    with pytest.raises(control.AdapterConfigError):
+        control.ResetJobLauncher(f, sa_dir=tmp_path)
+
+
+def test_r12_template_missing_or_not_json_or_not_object_refuses(tmp_path):
+    with pytest.raises(control.AdapterConfigError):
+        control.ResetJobLauncher(tmp_path / "absent.json", sa_dir=tmp_path)
+    for text in ["{nope", "[]"]:
+        f = tmp_path / "bad.json"
+        f.write_text(text)
+        with pytest.raises(control.AdapterConfigError):
+            control.ResetJobLauncher(f, sa_dir=tmp_path)
+
+
+def test_r13_main_refuses_on_bad_template(monkeypatch, tmp_path):
+    f = tmp_path / "job.json"
+    f.write_text("{}")
+    a = tmp_path / "adapter.json"
+    a.write_text(json.dumps({"name": "x", "endpoint": "http://e", "operations": {"pause": {"method": "POST", "path": "/p"}}}))
+    monkeypatch.setenv("EXERCISE_ADAPTER_FILE", str(a))
+    monkeypatch.setenv("EXERCISE_RESET_JOB_FILE", str(f))
+    assert control.main() == 1
