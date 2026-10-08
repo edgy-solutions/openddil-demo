@@ -298,6 +298,10 @@ class AppState:
         self.store = store
         self.reset_record_file = reset_record_file
         self._lock = threading.Lock()
+        # Serialises restart POSTs from the gate check through the adapter
+        # call and the "used" mark, so two concurrent restarts cannot both
+        # pass the gate on one zero. Never held by GET /exercise/status.
+        self.restart_lock = threading.Lock()
         self.last_command: dict[str, Any] | None = None
 
     def set_last_command(self, record: dict[str, Any]) -> None:
@@ -461,22 +465,24 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                 return
 
             if op == "restart":
-                reason, rec = app.restart_refusal()
-                if reason is not None:
-                    # Refused BEFORE any outward call; last_command (what was
-                    # last SENT) is deliberately left alone.
-                    log.info(json.dumps({"exercise_op_refused": op, "reason": reason,
-                                          "subject": subject}))
-                    self._send_json(409, {"error": "reset required", "reason": reason,
-                                          "measured_zero_at": rec["measured_zero_at"],
-                                          "verdict": rec["verdict"]})
-                    return
-
-            status, error = app.call_adapter(op)
-            if op == "restart" and status is not None and 200 <= status < 300:
-                # Only a 2xx uses the zero up; a transport error or non-2xx
-                # leaves it available.
-                app.mark_restart_zero_used(rec["measured_zero_at"])
+                with app.restart_lock:
+                    reason, rec = app.restart_refusal()
+                    if reason is not None:
+                        # Refused BEFORE any outward call; last_command (what
+                        # was last SENT) is deliberately left alone.
+                        log.info(json.dumps({"exercise_op_refused": op, "reason": reason,
+                                              "subject": subject}))
+                        self._send_json(409, {"error": "reset required", "reason": reason,
+                                              "measured_zero_at": rec["measured_zero_at"],
+                                              "verdict": rec["verdict"]})
+                        return
+                    status, error = app.call_adapter(op)
+                    if status is not None and 200 <= status < 300:
+                        # Only a 2xx uses the zero up; a transport error or
+                        # non-2xx leaves it available.
+                        app.mark_restart_zero_used(rec["measured_zero_at"])
+            else:
+                status, error = app.call_adapter(op)
             record = {"op": op, "at": _now_iso(), "status": status, "error": error,
                       "subject": subject}
             app.set_last_command(record)

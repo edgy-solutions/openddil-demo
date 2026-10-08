@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -188,7 +189,7 @@ def test_malformed_json_refuses(tmp_path):
 # Integration: the real HTTP handler against fake sources + a fake adapter
 # =============================================================================
 
-state = {"adapter_calls": [], "adapter_status": 200, "metrics_text": ""}
+state = {"adapter_calls": [], "adapter_status": 200, "adapter_delay": 0.0, "metrics_text": ""}
 
 
 class FakeAdapter(BaseHTTPRequestHandler):
@@ -199,6 +200,8 @@ class FakeAdapter(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else b""
         state["adapter_calls"].append({"path": self.path, "body": body})
+        if state["adapter_delay"]:
+            time.sleep(state["adapter_delay"])
         out = json.dumps({"state": "running"}).encode()  # the stub's own
         # lie about state -- control.py must never read this field.
         self.send_response(state["adapter_status"])
@@ -229,7 +232,7 @@ def _serve(handler):
 def app(tmp_path):
     adapter_srv = _serve(FakeAdapter)
     metrics_srv = _serve(FakeMetrics)
-    state.update(adapter_calls=[], adapter_status=200,
+    state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0,
                  metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
 
     cfg = {
@@ -330,7 +333,7 @@ def test_adapter_unreachable_records_transport_error(app, monkeypatch):
 def gate(tmp_path):
     adapter_srv = _serve(FakeAdapter)
     metrics_srv = _serve(FakeMetrics)
-    state.update(adapter_calls=[], adapter_status=200,
+    state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0,
                  metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
     ops = {op: {"method": "POST", "path": "/" + op, "body": {}}
            for op in ("pause", "resume", "stop", "restart", "run")}
@@ -453,3 +456,35 @@ def test_g7_status_shows_restart_allowed(gate):
 def test_g8_non_positive_max_age_refuses_startup(monkeypatch, bad):
     monkeypatch.setenv("EXERCISE_RESTART_MAX_ZERO_AGE_S", bad)
     assert control.main() == 2
+
+
+def _two_concurrent_restarts(url):
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(
+        _post(url + "/exercise/op/restart", subject="s", timeout=10))) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    return out
+
+
+def test_g9_concurrent_restarts_send_exactly_one(gate):
+    url, record = gate
+    _zero(record)
+    state["adapter_delay"] = 0.5
+    out = _two_concurrent_restarts(url)
+    assert len(state["adapter_calls"]) == 1
+    assert sorted(c for c, _ in out) == [200, 409]
+    refused = [b for c, b in out if c == 409][0]
+    assert refused["reason"] == "already_used"
+
+
+def test_g9_control_failed_restart_does_not_use_the_zero(gate):
+    url, record = gate
+    _zero(record)
+    state["adapter_delay"] = 0.5
+    state["adapter_status"] = 503
+    out = _two_concurrent_restarts(url)
+    assert len(state["adapter_calls"]) == 2
+    assert [c for c, _ in out] == [200, 200]
