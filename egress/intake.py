@@ -75,8 +75,8 @@ import delivery
 import pointer
 from client_credentials import ClientCredentials, parse_auth
 from gate import (
-    AuthzUnavailable, EgressGate, Label, extract_label_at, load_registry_versions,
-    new_decision_id,
+    AuthzUnavailable, EgressGate, Label, ask_topaz, extract_label_at,
+    load_registry_versions, new_decision_id,
 )
 from startup import require_tables, require_topics
 from kinds import Declarations
@@ -341,12 +341,12 @@ class IntakeDecision:
     on_behalf_of: str | None
     policy_version: str = "unknown"
     corpus_version: str = "unknown"
-    # "startup" for the four reasons decided before any gate is asked
+    # "probe" for the four reasons decided before any gate is asked
     # (`schema_invalid`, `answered_record_unknown`, `label_mismatch`,
-    # `approvers_missing`) — citing the versions `load_registry_versions`
-    # loaded at process start; "decision" once a gate has actually answered
-    # (every other reason, admit included). Never "unknown" — see
-    # `decide_artifact`.
+    # `approvers_missing`) — citing the versions this process's own probe
+    # last loaded (at start, refreshed by `refresh_versions`); "decision"
+    # once a gate has actually answered (every other reason, admit included).
+    # Never "unknown" — see `decide_artifact`.
     versions_from: str = "decision"
     detail: str = ""
     # A refusal for an unknown answered record that may still resolve once
@@ -422,8 +422,9 @@ def decide_artifact(
     place that turns it into "store nothing, retry next poll" without
     confusing it for a refusal.
 
-    `startup_versions` is what `load_registry_versions` loaded at process
-    start (`{"policy_version": ..., "corpus_version": ...}`) — cited by a
+    `startup_versions` is the versions from this process's own probe
+    (`{"policy_version": ..., "corpus_version": ...}`: loaded at start and
+    refreshed by `refresh_versions`, hence `versions_from="probe"`) — cited by a
     decision made before any gate in this call is asked (`schema_invalid`,
     `answered_record_unknown`, `label_mismatch`, `approvers_missing`).
     Omitted (as every existing caller before this parameter existed still
@@ -453,7 +454,7 @@ def decide_artifact(
     versions = {
         "policy_version": (startup_versions or {}).get("policy_version", "unknown"),
         "corpus_version": (startup_versions or {}).get("corpus_version", "unknown"),
-        "versions_from": "startup",
+        "versions_from": "probe",
     }
 
     def _note_versions(g: EgressGate) -> None:
@@ -949,6 +950,37 @@ class _AnswersConsumer:
             for pos in positions)
 
 
+def _registry_refresh_s() -> float:
+    return float(os.getenv("OPENDDIL_REGISTRY_REFRESH_S", "15"))
+
+
+_VERSION_KEYS = ("policy_version", "corpus_version", "registry_version")
+
+
+def refresh_versions(
+    entry_name: str, subject: str, held: Mapping[str, str] | None,
+) -> Mapping[str, str] | None:
+    """Ask the PDP again for the versions pre-PDP refusals cite.
+
+    A changed answer is logged as REGISTRY_VERSIONS_CHANGED and returned. If
+    the PDP is unreachable `held` comes back unchanged: the decisions that
+    need the PDP already fail closed per call, so this does not exit."""
+    try:
+        answer = ask_topaz(subject)
+    except AuthzUnavailable as exc:
+        log.warning(
+            "REGISTRY_VERSIONS refresh failed for entry=%s: %s; "
+            "pre-PDP refusals keep citing %s",
+            entry_name, exc, json.dumps(held, sort_keys=True))
+        return held
+    new = {k: answer[k] for k in _VERSION_KEYS}
+    if dict(held or {}) != new:
+        log.info("REGISTRY_VERSIONS_CHANGED entry=%s %s -> %s", entry_name,
+                 json.dumps(held, sort_keys=True), json.dumps(new, sort_keys=True))
+        return new
+    return held
+
+
 async def _run_entry_forever(
     entry: IntakeEntry, decl: Declarations, answers_decl: Declarations,
     validator: Callable[[Mapping[str, Any]], str | None], *,
@@ -960,15 +992,21 @@ async def _run_entry_forever(
     produce = _make_produce(producer)
     counters: dict[str, int] = {}
     last_counter_log = asyncio.get_event_loop().time()
+    versions = startup_versions
+    refresh_s = _registry_refresh_s()
+    last_ask = asyncio.get_event_loop().time()
     try:
         while _running:
+            if refresh_s > 0 and asyncio.get_event_loop().time() - last_ask >= refresh_s:
+                versions = refresh_versions(entry.name, entry.source_destination, versions)
+                last_ask = asyncio.get_event_loop().time()
             answers_consumer.drain(answered, answers_decl, entry.answers.id_pointer, _decode)
             await run_poll(
                 entry, decl, validator,
                 fetch=http_fetch, store=store, answered=answered,
                 gate_for=lambda subject: EgressGate.for_destination(subject),
                 produce=produce, counters=counters, now=datetime.now(timezone.utc),
-                startup_versions=startup_versions,
+                startup_versions=versions,
             )
             now_monotonic = asyncio.get_event_loop().time()
             if now_monotonic - last_counter_log >= COUNTER_LOG_INTERVAL_S:

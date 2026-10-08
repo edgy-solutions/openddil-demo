@@ -304,7 +304,7 @@ def test_schema_invalid_cites_startup_versions():
     assert outcome.decision.reason == REASON_SCHEMA_INVALID
     assert outcome.decision.policy_version == "startup-pv"
     assert outcome.decision.corpus_version == "startup-cv"
-    assert outcome.decision.versions_from == "startup"
+    assert outcome.decision.versions_from == "probe"
 
 
 def test_answered_record_unknown_cites_startup_versions():
@@ -318,7 +318,7 @@ def test_answered_record_unknown_cites_startup_versions():
         startup_versions=STARTUP_VERSIONS,
     )
     assert outcome.decision.reason == REASON_ANSWERED_RECORD_UNKNOWN
-    assert outcome.decision.versions_from == "startup"
+    assert outcome.decision.versions_from == "probe"
     assert outcome.decision.policy_version == "startup-pv"
 
 
@@ -332,7 +332,7 @@ def test_label_mismatch_cites_startup_versions():
         startup_versions=STARTUP_VERSIONS,
     )
     assert outcome.decision.reason == REASON_LABEL_MISMATCH
-    assert outcome.decision.versions_from == "startup"
+    assert outcome.decision.versions_from == "probe"
 
 
 def test_approvers_missing_cites_startup_versions():
@@ -345,7 +345,7 @@ def test_approvers_missing_cites_startup_versions():
         startup_versions=STARTUP_VERSIONS,
     )
     assert outcome.decision.reason == REASON_APPROVERS_MISSING
-    assert outcome.decision.versions_from == "startup"
+    assert outcome.decision.versions_from == "probe"
 
 
 def test_without_startup_versions_pre_pdp_refusal_still_says_unknown_by_default():
@@ -359,7 +359,7 @@ def test_without_startup_versions_pre_pdp_refusal_still_says_unknown_by_default(
         gate_for=lambda subject: resolved_gate(),
     )
     assert outcome.decision.policy_version == "unknown"
-    assert outcome.decision.versions_from == "startup"
+    assert outcome.decision.versions_from == "probe"
 
 
 def test_pdp_answered_decision_cites_its_own_versions_not_startup():

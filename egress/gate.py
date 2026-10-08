@@ -530,9 +530,12 @@ class EgressGate:
 
     Constructed with a PDP answer already in hand — `for_destination` does the
     asking — so that the object's whole life shares one policy version, one
-    corpus version and one nation set. A gate that re-asked mid-stream could
-    emit a batch whose records were decided under two different corpora with
-    nothing in the log saying which was which.
+    corpus version and one nation set. The object is immutable and never
+    re-asks. The process asks again once per refresh interval and, when the
+    answer changed, replaces the object with a new one between polls, never
+    mid-record, logging GATE_RELOAD with the old->new versions. Every decision
+    line cites the versions of the gate that made it, so no batch is decided
+    under two corpora with nothing in the log saying which was which.
     """
 
     def __init__(

@@ -16,18 +16,23 @@ ONE DESTINATION PER PROCESS, ON PURPOSE
 A gate serving several destinations from one loop would have to hold several
 compiled predicates and would produce a decision log in which "admitted" is
 ambiguous until you read the destination field. One process, one link, one
-entitlement, one PDP answer for its whole life — which is also what makes
-`policy_version` and `corpus_version` fixed facts in every line it writes
-rather than moving ones.
+entitlement, one PDP answer per refresh interval
+(`OPENDDIL_REGISTRY_REFRESH_S`, default 15 s; 0 turns refresh off). A changed
+answer replaces the compiled gate between polls, never mid-record, and is
+logged as GATE_RELOAD with the old->new versions. Every decision line still
+cites the versions it was decided under, so a GATE_RELOAD line marks the
+boundary between two sets of decisions.
 
 FAILURE IS CLOSED AND LOUD
 If the PDP cannot be reached at startup the process exits non-zero rather
 than starting with no entitlement: a gate that starts and admits nothing
 looks exactly like a gate correctly refusing everything, and the difference
 is the whole of the operator's diagnosis. If the PDP becomes unreachable
-mid-stream the process stops forwarding and exits; it does not fall back to
-its last answer, because a stale entitlement is precisely the thing an
-entitlement revocation is meant to stop.
+at a refresh, polling stops: the whole set of routes is retried with a
+bounded wait (REFRESH_WAITING per failed attempt), no record is polled or
+decided meanwhile, and when the wait is exhausted the process exits. It does
+not fall back to its last answer, because a stale entitlement is precisely
+the thing an entitlement revocation is meant to stop.
 """
 from __future__ import annotations
 
@@ -36,11 +41,16 @@ import logging
 import os
 import signal
 import sys
+import time
 from pathlib import Path
+from typing import Callable, Iterable
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from gate import AuthzUnavailable, EgressGate, load_registry_versions  # noqa: E402
+from gate import (  # noqa: E402
+    REGISTRY_VERSIONS_RETRY_DELAYS, AuthzUnavailable, EgressGate,
+    load_registry_versions,
+)
 from kinds import load_declarations, load_kinds  # noqa: E402
 from routes import GROUP, Route, load_routes, run_once  # noqa: E402
 from startup import require_topics  # noqa: E402
@@ -57,6 +67,9 @@ ROUTES_PATH = os.getenv("OPENDDIL_EGRESS_ROUTES_PATH")
 KINDS_DIR = Path(os.getenv(
     "OPENDDIL_EGRESS_KINDS_DIR", str(Path(__file__).parent / "kind-schemas")))
 POLL_TIMEOUT = float(os.getenv("OPENDDIL_EGRESS_POLL_TIMEOUT", "1.0"))
+# How often the PDP is asked again between polls. 0 or less: never; the
+# answer taken at startup is then the answer for the process's life.
+REGISTRY_REFRESH_S = float(os.getenv("OPENDDIL_REGISTRY_REFRESH_S", "15"))
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -112,6 +125,16 @@ def _load_known_kinds() -> tuple[dict, dict]:
     return load_kinds(KINDS_DIR), load_declarations(KINDS_DIR)
 
 
+def _build_gate(route: Route, kinds_map: dict, declarations_map: dict) -> EgressGate:
+    """One route's gate: `for_destination` once. May raise `AuthzUnavailable`."""
+    validator = kinds_map.get(route.kind) if route.kind else None
+    declarations = declarations_map.get(route.kind) if route.kind else None
+    label_pointer = declarations.label if declarations is not None else None
+    return EgressGate.for_destination(
+        route.destination, kind=route.kind, kind_validator=validator,
+        label_pointer=label_pointer)
+
+
 def _build_gates(
     routes: list[Route], kinds_map: dict, declarations_map: dict,
 ) -> dict[Route, EgressGate]:
@@ -120,12 +143,7 @@ def _build_gates(
     that has no entitlement; see the module docstring."""
     gates: dict[Route, EgressGate] = {}
     for route in routes:
-        validator = kinds_map.get(route.kind) if route.kind else None
-        declarations = declarations_map.get(route.kind) if route.kind else None
-        label_pointer = declarations.label if declarations is not None else None
-        gate = EgressGate.for_destination(
-            route.destination, kind=route.kind, kind_validator=validator,
-            label_pointer=label_pointer)
+        gate = _build_gate(route, kinds_map, declarations_map)
         gates[route] = gate
         log.info(
             "gate open: route=%s destination=%s nations=%s known=%s kind=%s "
@@ -135,6 +153,81 @@ def _build_gates(
             gate.registry_version, route.source_topic, route.sink_topic,
         )
     return gates
+
+
+def _fingerprint(gate: EgressGate) -> tuple:
+    """The PDP's answer, as the gate holds it."""
+    return (
+        gate.nations, gate.destination_known, gate.accepts, gate.policy_version,
+        gate.corpus_version, gate.registry_version, gate.trust_on_behalf_of,
+    )
+
+
+def _interruptible_sleep(delay: float, sleep: Callable[[float], None]) -> None:
+    """Sleep in slices of at most 1 s, stopping early once SIGTERM has landed."""
+    remaining = delay
+    while remaining > 0 and _running:
+        step = min(1.0, remaining)
+        sleep(step)
+        remaining -= step
+
+
+def refresh_gates(
+    routes: list[Route], gates: dict[Route, EgressGate],
+    kinds_map: dict, declarations_map: dict, *,
+    sleep: Callable[[float], None] = time.sleep,
+    retry_delays: Iterable[float] = REGISTRY_VERSIONS_RETRY_DELAYS,
+) -> dict[Route, EgressGate]:
+    """Ask the PDP again for every route and return the gates to use next.
+
+    ALL ROUTES OR NONE: if any route's ask fails, nothing is replaced and the
+    whole set is retried after a bounded wait (nothing is polled meanwhile).
+    When the wait is exhausted `AuthzUnavailable` propagates; the caller exits.
+    A route whose answer is unchanged keeps its existing gate object."""
+    delays = list(retry_delays)
+    attempt = 0
+    while True:
+        try:
+            fresh = {r: _build_gate(r, kinds_map, declarations_map) for r in routes}
+            break
+        except AuthzUnavailable as exc:
+            if attempt >= len(delays):
+                raise
+            log.warning("REFRESH_WAITING %s", exc)
+            _interruptible_sleep(delays[attempt], sleep)
+            attempt += 1
+            if not _running:
+                return gates
+
+    result: dict[Route, EgressGate] = {}
+    for route in routes:
+        old, new = gates[route], fresh[route]
+        if _fingerprint(old) == _fingerprint(new):
+            result[route] = old
+            continue
+        new.counts = old.counts
+        result[route] = new
+        log.info(
+            "GATE_RELOAD route=%s destination=%s policy=%s->%s corpus=%s->%s "
+            "registry=%s->%s known=%s->%s nations=%s->%s accepts=%s->%s "
+            "trust_on_behalf_of=%s->%s",
+            route.name, new.destination,
+            old.policy_version, new.policy_version,
+            old.corpus_version, new.corpus_version,
+            old.registry_version, new.registry_version,
+            old.destination_known, new.destination_known,
+            list(old.nations), list(new.nations),
+            list(old.accepts), list(new.accepts),
+            old.trust_on_behalf_of, new.trust_on_behalf_of,
+        )
+        if (old.policy_version, old.corpus_version, old.registry_version) == (
+                new.policy_version, new.corpus_version, new.registry_version):
+            log.warning(
+                "GATE_RELOAD_UNVERSIONED route=%s: the answer changed under "
+                "unchanged versions policy=%s corpus=%s registry=%s",
+                route.name, new.policy_version, new.corpus_version,
+                new.registry_version)
+    return result
 
 
 def main() -> int:
@@ -199,8 +292,18 @@ def main() -> int:
     consumer.subscribe(sorted(routes_by_topic))
 
     seen = 0
+    last_ask = time.monotonic()
     try:
         while _running:
+            if REGISTRY_REFRESH_S > 0 and time.monotonic() - last_ask >= REGISTRY_REFRESH_S:
+                try:
+                    gates = refresh_gates(routes, gates, kinds_map, declarations_map)
+                except AuthzUnavailable as exc:
+                    log.error("FATAL: PDP unreachable at refresh: %s", exc)
+                    return 2
+                last_ask = time.monotonic()
+                if not _running:
+                    break
             if run_once(
                 consumer, producer,
                 routes_by_topic=routes_by_topic, gates=gates,
