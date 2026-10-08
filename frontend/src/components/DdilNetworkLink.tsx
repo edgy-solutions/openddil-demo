@@ -3,10 +3,14 @@ import { useFrame } from '@react-three/fiber';
 import { Line } from '@react-three/drei';
 import * as THREE from 'three';
 
+// NOMINAL up, IDLE up with no traffic (amber, solid), SEVERED down, UNKNOWN not
+// measured (slate, dashed).
+const LINK_COLOR = { NOMINAL: '#10b981', IDLE: '#f59e0b', SEVERED: '#f43f5e', UNKNOWN: '#64748b' } as const;
+
 interface DdilNetworkLinkProps {
   start: THREE.Vector3;
   end: THREE.Vector3;
-  status: 'NOMINAL' | 'SEVERED';
+  status: 'NOMINAL' | 'SEVERED' | 'IDLE' | 'UNKNOWN';
 }
 
 export default function DdilNetworkLink({ start, end, status }: DdilNetworkLinkProps) {
@@ -14,8 +18,8 @@ export default function DdilNetworkLink({ start, end, status }: DdilNetworkLinkP
   
   const points = useMemo(() => [start, end], [start, end]);
   
-  const color = status === 'NOMINAL' ? '#10b981' : '#f43f5e';
-  const dashed = status === 'SEVERED';
+  const color = LINK_COLOR[status];
+  const dashed = status === 'SEVERED' || status === 'UNKNOWN';
   
   useFrame((state) => {
     const time = state.clock.getElapsedTime();
@@ -32,12 +36,12 @@ export default function DdilNetworkLink({ start, end, status }: DdilNetworkLinkP
       <Line
         points={points}
         color={color}
-        lineWidth={status === 'NOMINAL' ? 1.5 : 3}
+        lineWidth={status === 'SEVERED' ? 3 : 1.5}
         dashed={dashed}
         dashSize={5}
         gapSize={5}
         transparent
-        opacity={status === 'NOMINAL' ? 0.6 : 1}
+        opacity={status === 'SEVERED' ? 1 : 0.6}
       />
       
       {status === 'SEVERED' && (

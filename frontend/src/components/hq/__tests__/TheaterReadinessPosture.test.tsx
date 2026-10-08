@@ -79,3 +79,19 @@ describe('FobLabel — HQ-ATTACHED tag', () => {
     expect(html).not.toContain('HQ-ATTACHED');
   });
 });
+
+describe('FobLabel — link state word', () => {
+  const words: Array<[any, string]> = [
+    [{ state: 'up', declaredIdle: false }, 'UP'],
+    [{ state: 'idle', declaredIdle: false }, 'IDLE'],
+    [{ state: 'idle', declaredIdle: true }, 'IDLE · declared'],
+    [{ state: 'down', declaredIdle: false }, 'DOWN'],
+    [{ state: 'unknown', declaredIdle: false }, 'UNKNOWN'],
+  ];
+  it.each(words)('renders %j as %s', (link, word) => {
+    const html = renderToStaticMarkup(
+      <FobLabel position={[0, 0, 0]} label="edge-01" total={1} composition={composition} link={link} />
+    );
+    expect(html).toContain(`data-link-state="${word}"`);
+  });
+});

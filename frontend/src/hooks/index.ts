@@ -51,6 +51,10 @@ export {
   type EdgeBufferResult,
 } from './useEdgeBuffer';
 export {
+  useLinkStatus,
+  type LinkStatusResult,
+} from './useLinkStatus';
+export {
   useRegionFleetSummary,
   type RegionFleetSummary,
 } from './useRegionFleetSummary';

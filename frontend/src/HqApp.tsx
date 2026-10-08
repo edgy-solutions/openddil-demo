@@ -343,7 +343,7 @@ export default function HqApp() {
       )}
 
       <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden relative z-0 min-h-0">
-        <TheaterReadinessPosture severed={severed} />
+        <TheaterReadinessPosture />
 
         {/* Explicit viewport-bounded max-h: the grid-rows + min-h-0 chain
             empirically did not constrain the column to viewport on its

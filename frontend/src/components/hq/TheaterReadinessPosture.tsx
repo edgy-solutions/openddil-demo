@@ -14,14 +14,14 @@
 //                                       break the count down per FOB.
 //
 // DDIL links: one per FOB, from theater origin (0, 0, 0) to the FOB's
-// projected position. Status comes from `severed` (currently a single
-// hq-link-severed bool wired in from HqApp). Per-FOB link health is a
-// Phase B follow-up — needs a per-edge buffer status hook.
+// projected position. Each link's state comes from the link_status row
+// whose id is the FOB's edge_id (useLinkStatus + classifyLink). A FOB with
+// no row, or a stale one, reads UNKNOWN — never UP.
 //
 // Phase B owns: visual polish, label placement, clutter management at
-// scale, per-edge link status, severity-breakdown styling.
+// scale, severity-breakdown styling.
 // =============================================================================
-import React, { useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -33,10 +33,20 @@ import { deployment, edgeAttachment, type Fob, type EdgeAttachment } from '../..
 import {
   useClassifiedFleet,
   useAllLogisticsStatus,
+  useLinkStatus,
   type ClassifiedFleetAsset,
 } from '../../hooks';
 import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
+import {
+  allLinksDown,
+  linkForFob,
+  linkStateWord,
+  summarizeLinks,
+  summaryText,
+  type LinkReading,
+  type LinkState,
+} from '../../lib/linkStatus';
 
 // Scene scale: HQ canvas spans ~2000 units; ~400 units per deg of lat
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
@@ -268,8 +278,22 @@ function AbstractContinents() {
  *  render. Exporting this inner piece lets it be render-tested directly,
  *  same reasoning as deployment.ts's parseTier/parseEgressPane: a render
  *  decision gets a direct test rather than one that can't observe it. */
+const LINK_WORD_CLASS: Record<LinkState, string> = {
+  up: 'text-emerald-400',
+  idle: 'text-amber-400',
+  down: 'text-rose-400',
+  unknown: 'text-slate-400',
+};
+
+const DDIL_STATUS: Record<LinkState, 'NOMINAL' | 'IDLE' | 'SEVERED' | 'UNKNOWN'> = {
+  up: 'NOMINAL',
+  idle: 'IDLE',
+  down: 'SEVERED',
+  unknown: 'UNKNOWN',
+};
+
 export function FobLabel({
-  position, label, total, composition, attachment,
+  position, label, total, composition, attachment, link,
 }: {
   position: [number, number, number];
   label: string;
@@ -281,7 +305,11 @@ export function FobLabel({
   /** This FOB's edge's declared attachment. 'hq' renders the HQ-ATTACHED
    *  tag; 'tier' and undeclared (undefined) render the label unchanged. */
   attachment?: EdgeAttachment;
+  /** This FOB's link reading. Absent renders as UNKNOWN, never UP. */
+  link?: LinkReading;
 }) {
+  const reading: LinkReading = link ?? { state: 'unknown', declaredIdle: false };
+  const word = linkStateWord(reading);
   // Composition pill: sensors + LAUNCHER hardware + facilities. In-flight
   // munitions surface as a smaller separate ticker (IN FLIGHT: N) so
   // they don't distort the hardware picture -- a FOB with 4 launchers
@@ -312,6 +340,12 @@ export function FobLabel({
               HQ-ATTACHED
             </span>
           )}
+          <span
+            className={`ml-2 text-[9px] tracking-widest ${LINK_WORD_CLASS[reading.state]}`}
+            data-link-state={word}
+          >
+            {word}
+          </span>
         </div>
         {hasOrbatComposition ? (
           <div className="flex gap-2 text-[9px] mt-0.5">
@@ -343,14 +377,16 @@ export function FobLabel({
   );
 }
 
-export default function TheaterReadinessPosture({
-  severed,
-}: {
-  /** True when the hq-link is severed — wired from HqApp's useEdgeBuffer.
-   *  Drives the per-FOB DDIL link color and the GLOBAL LINK STATUS overlay. */
-  severed: boolean;
-}) {
+export default function TheaterReadinessPosture() {
   const { fobs } = deployment();
+  const linkRows = useLinkStatus();
+  // Re-evaluated on a timer so a monitor that stops writing ages out to
+  // UNKNOWN without waiting for another row to arrive.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
   const fleet = useClassifiedFleet();
   const logistics = useAllLogisticsStatus();
 
@@ -380,12 +416,16 @@ export default function TheaterReadinessPosture({
     [fleet.data, logistics.data],
   );
 
-  // With one global hq_link_severed today, every FOB shares the same
-  // link color. linksUp/linksDown count over the FOB list, not the
-  // pre-§A invented "17 radars."
+  // One link per FOB, each read from its own link_status row. Counts run
+  // over the FOB list, not the pre-§A invented "17 radars."
   const totalLinks = metrics.length;
-  const linksUp = severed ? 0 : totalLinks;
-  const linksDown = severed ? totalLinks : 0;
+  const fobLinks = useMemo(
+    () => metrics.map((m) => linkForFob(linkRows.links, m.fob.edge_id, nowMs)),
+    [metrics, linkRows.links, nowMs],
+  );
+  const linkCounts = summarizeLinks(fobLinks);
+  // The panel goes red only when nothing is reachable, not on one bad link.
+  const severed = allLinksDown(fobLinks);
 
   return (
     <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${severed ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-theater-readiness">
@@ -406,7 +446,7 @@ export default function TheaterReadinessPosture({
           </p>
         </div>
         <div className="text-right flex flex-col gap-2">
-          {/* GLOBAL LINK STATUS — transport-level (the hq_link_severed signal)
+          {/* GLOBAL LINK STATUS — transport-level, counted per FOB from link_status
               ⚠ THE LINK COUNT IS THE FOB COUNT. `totalLinks = metrics.length`,
               and metrics come from `deployment().fobs`. A deployment that
               supplies no FOB topology therefore has ZERO links, and the
@@ -425,10 +465,7 @@ export default function TheaterReadinessPosture({
               </div>
             ) : (
               <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-                <span className="text-emerald-400">{linksUp} UP</span>
-                {linksDown > 0 && (
-                  <span className="text-rose-400 ml-4">{linksDown} DOWN</span>
-                )}
+                <span className={severed ? 'text-rose-400' : 'text-emerald-400'}>{summaryText(linkCounts)}</span>
               </div>
             )}
           </div>
@@ -479,7 +516,9 @@ export default function TheaterReadinessPosture({
 
       <div className="absolute bottom-4 right-4 z-10 bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
         <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-emerald-500"></div><span className="text-slate-300">NOMINAL LINK</span></div>
-        <div className="flex items-center gap-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
+        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-amber-500"></div><span className="text-slate-300">IDLE LINK</span></div>
+        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
+        <div className="flex items-center gap-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
       </div>
 
       <div className="absolute inset-0 cursor-move">
@@ -555,17 +594,17 @@ export default function TheaterReadinessPosture({
           ))}
 
           {/* DDIL links from theater origin to each FOB. */}
-          {metrics.map((m) => (
+          {metrics.map((m, i) => (
             <DdilNetworkLink
               key={`link-${m.fob.edge_id}`}
               start={new THREE.Vector3(0, 0, 0)}
               end={new THREE.Vector3(m.scenePos[0], 0, m.scenePos[1])}
-              status={severed ? 'SEVERED' : 'NOMINAL'}
+              status={DDIL_STATUS[fobLinks[i].state]}
             />
           ))}
 
           {/* Per-FOB label + composition breakdown. */}
-          {metrics.map((m) => (
+          {metrics.map((m, i) => (
             <FobLabel
               key={`label-${m.fob.edge_id}`}
               position={[m.scenePos[0], 0, m.scenePos[1]]}
@@ -573,6 +612,7 @@ export default function TheaterReadinessPosture({
               total={m.total}
               composition={m.composition}
               attachment={m.attachment}
+              link={fobLinks[i]}
             />
           ))}
 
