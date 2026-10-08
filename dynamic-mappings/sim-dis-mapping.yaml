@@ -146,6 +146,17 @@ processor_resources:
       root.asset.cbm_schema               = $ont.cbm_schema.or("")
       root.asset.domain_authority         = $ont.domain_authority.or("")
 
+      # Subsystem (AssetIdentity.subsystem). DIS maps each entity to exactly
+      # one record, so for a sensor variant that record IS the sensor: the
+      # mapper declares it from the resolved variant, the same declaration a
+      # source that splits a site into chassis + sensor records makes on its
+      # sensor record. Every other variant leaves it unset (the record is the
+      # platform). Interior code reads this field, never the asset_id.
+      let sensor_variants = ["MRAD_Sensor"]
+      if $sensor_variants.contains($ont.platform_variant.or("")) {
+        root.asset.subsystem = "ASSET_SUBSYSTEM_SENSOR"
+      }
+
       # Structured 7-tuple through to Silver for downstream CM matching
       root.asset.dis_entity_type.kind        = $et.kind.or(0)
       root.asset.dis_entity_type.domain      = $et.domain.or(0)
