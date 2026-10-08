@@ -1,94 +1,48 @@
 // =============================================================================
 // munitionAsset -- helpers for the in-flight MUNITION-class row family
 // =============================================================================
-// When a launcher fires, the producer emits two entity rows per firing --
-// one for the delivery vehicle (matches the *_Interceptor variant of the
-// launcher's magazine), and one for the seeker payload (matches
-// MISSILE_LAUNCHER variant with a distinguishing suffix). Both carry the
-// same firing sequence and reference the same parent launcher through
-// their asset_id.
+// The parent launcher of an in-flight munition is read from the launch
+// table: effector_launch carries one row per Fire, with the munition entity
+// (munition_asset_id), the firing launcher (launcher_asset_id) and the Fire's
+// event_urn. A munition with no launch row has no declared launcher; it is
+// shown as such and never guessed, because asset_id is opaque and is not
+// parsed for a launcher or a sequence.
 //
-// Canonical shape of an in-flight munition asset_id:
-//
-//   prop:<MUNITION_TYPE>_<SEQ>-<PARENT_LAUNCHER_ID>[_<seeker-suffix>]
-//
-// Examples (structure-only, no customer strings):
-//
-//   prop:<TYPE>_10-<LAUNCHER>
-//   prop:<TYPE>_10-<LAUNCHER>_<seeker-suffix>
-//
-// Both rows for a single firing share (parent_launcher, seq); dedup on
-// that tuple gives one row per firing.
-//
-// Parent-launcher discovery: rather than parsing the "-<parent>[_<suffix>]"
-// tail with a regex (fragile if the seeker suffix is ambiguous), we take
-// the SET of known launcher asset_ids (everything in asset_capability_state)
-// and search for whichever known launcher appears as a "-<launcher>"
-// substring in the munition's asset_id. If more than one launcher's id
-// is a substring, prefer the LONGEST match (a producer whose naming
-// happens to nest one launcher's id inside another still resolves to
-// the right parent).
-//
-// This is entirely generic across producers: any wire that follows the
-// "in-flight asset_id embeds the launcher's asset_id" convention works
-// without customizing this file. Producers that use a different linkage
-// mechanism (e.g., a `parent_launcher_id` field on the entity message)
-// would land in the OpenDDIL canonical shape via their Bloblang layer,
-// stamping the field at ingest time -- the frontend then reads that
-// field directly and skips this fallback pathway.
+// Firing identity is (parent launcher, launch event_urn). The producer may
+// emit a delivery-vehicle row and a seeker-payload row per firing; rows that
+// resolve to the same launch collapse to one, and rows with no launch row
+// stay as themselves.
 // =============================================================================
 
-/**
- * Try to extract the parent launcher asset_id from an in-flight
- * munition's asset_id, using the set of known launcher asset_ids
- * (typically derived from asset_capability_state).
- *
- * Returns the matched launcher asset_id, or null if no match.
- */
-export function extractParentLauncherFromAssetId(
-  munitionAssetId: string,
-  launcherAssetIds: ReadonlySet<string>,
-): string | null {
-  let best: string | null = null;
-  for (const launcherId of launcherAssetIds) {
-    // Anchor the check on `-<launcher>` so we don't false-match on a
-    // launcher whose id happens to be a prefix of another string in the
-    // munition's asset_id. The dash prefix is the reliable separator in
-    // the observed naming pattern.
-    if (munitionAssetId.includes('-' + launcherId)) {
-      if (best === null || launcherId.length > best.length) {
-        best = launcherId;
-      }
-    }
+/** The slice of an effector_launch row needed to attribute a munition. */
+export interface LaunchRef {
+  launcher_asset_id: string;
+  event_urn: string;
+}
+
+/** Index launch rows by munition entity. Rows with no munition_asset_id are
+ *  skipped; they cannot be joined to a fleet row. */
+export function launchesByMunition(
+  rows: ReadonlyArray<{
+    munition_asset_id: string | null;
+    launcher_asset_id: string;
+    event_urn: string;
+  }>,
+): Map<string, LaunchRef> {
+  const out = new Map<string, LaunchRef>();
+  for (const r of rows) {
+    if (r.munition_asset_id === null) continue;
+    out.set(r.munition_asset_id, {
+      launcher_asset_id: r.launcher_asset_id,
+      event_urn: r.event_urn,
+    });
   }
-  return best;
+  return out;
 }
 
 /**
- * Extract the firing-sequence integer from a munition asset_id.
- * Returns the sequence value, or null if the pattern doesn't match.
- *
- * Rule: an underscore-separated numeric segment immediately preceding
- * the first '-'. The segment must be pure digits.
- */
-export function extractFiringSequence(assetId: string): number | null {
-  // Take everything before the first '-'.
-  const dashIdx = assetId.indexOf('-');
-  if (dashIdx < 0) return null;
-  const beforeDash = assetId.substring(0, dashIdx);
-  // The sequence is the trailing underscore-delimited segment.
-  const underscoreIdx = beforeDash.lastIndexOf('_');
-  if (underscoreIdx < 0) return null;
-  const tail = beforeDash.substring(underscoreIdx + 1);
-  if (!/^\d+$/.test(tail)) return null;
-  const n = Number(tail);
-  return Number.isFinite(n) ? n : null;
-}
-
-/**
- * A stable identity for a firing = (parent_launcher, sequence). Both
- * rows for the same firing (delivery vehicle + seeker payload) share
- * this identity; dedup by this key.
+ * A stable identity for a firing = (parent_launcher, launch event_urn).
+ * Rows resolving to the same launch share this identity; dedup by this key.
  *
  * When either component is unknown, falls back to the asset_id itself
  * so we still count the row rather than dropping it silently.
@@ -96,17 +50,17 @@ export function extractFiringSequence(assetId: string): number | null {
 export function firingIdentity(
   assetId: string,
   parentLauncherId: string | null,
-  sequence: number | null,
+  firingEventUrn: string | null,
 ): string {
-  if (parentLauncherId !== null && sequence !== null) {
-    return `${parentLauncherId}#${sequence}`;
+  if (parentLauncherId !== null && firingEventUrn !== null) {
+    return `${parentLauncherId}#${firingEventUrn}`;
   }
   return `raw:${assetId}`;
 }
 
 /**
  * Given a list of MUNITION-class rows carrying (parent_launcher,
- * sequence, platform_variant), return one representative row per
+ * firing_event_urn, platform_variant), return one representative row per
  * firing. Preference order:
  *   1. Interceptor variant (delivery vehicle) over MISSILE_LAUNCHER
  *      (seeker payload) -- the interceptor's variant carries the
@@ -122,13 +76,13 @@ export interface DedupCandidate {
   asset_id: string;
   platform_variant: string | null;
   parent_launcher_id: string | null;
-  firing_sequence: number | null;
+  firing_event_urn: string | null;
 }
 
 export function dedupFirings<T extends DedupCandidate>(rows: T[]): T[] {
   const byFiring = new Map<string, T>();
   for (const r of rows) {
-    const key = firingIdentity(r.asset_id, r.parent_launcher_id, r.firing_sequence);
+    const key = firingIdentity(r.asset_id, r.parent_launcher_id, r.firing_event_urn);
     const existing = byFiring.get(key);
     if (!existing) {
       byFiring.set(key, r);
@@ -152,4 +106,18 @@ function preferForFiring<T extends DedupCandidate>(candidate: T, existing: T): b
   // Same variant class -> prefer shorter asset_id (drops the seeker
   // suffix when the two variants tie).
   return candidate.asset_id.length < existing.asset_id.length;
+}
+
+/** A munition's declared launch, read from the launch table: its launcher
+ *  and the Fire it came from. No launch row means no declared launcher --
+ *  both null, never recovered from the asset_id. */
+export function launchFor(
+  assetId: string,
+  launches: ReadonlyMap<string, LaunchRef>,
+): { parent_launcher_id: string | null; firing_event_urn: string | null } {
+  const l = launches.get(assetId);
+  return {
+    parent_launcher_id: l?.launcher_asset_id ?? null,
+    firing_event_urn: l?.event_urn ?? null,
+  };
 }

@@ -27,7 +27,7 @@ const asset = (edge_id: string): ClassifiedFleetAsset => ({
   platform_variant: 'TEST',
   last_sample_at: new Date().toISOString(),
   parent_launcher_id: null,
-  firing_sequence: null,
+  firing_event_urn: null,
 } as unknown as ClassifiedFleetAsset);
 
 let MOCK_FLEET: ClassifiedFleetAsset[] = [];

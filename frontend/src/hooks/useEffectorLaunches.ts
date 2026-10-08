@@ -67,3 +67,27 @@ export function useEffectorLaunches(launcherAssetId: string): ShapeResult<Effect
     where: `launcher_asset_id = ${sqlLiteral(launcherAssetId)}`,
   });
 }
+
+/** One launch row's join keys: which munition entity a Fire produced and
+ *  which launcher fired it. */
+export interface MunitionLaunch {
+  munition_asset_id: string | null;
+  launcher_asset_id: string;
+  event_urn: string;
+}
+
+export function mapMunitionLaunch(row: Record<string, unknown>): MunitionLaunch {
+  return {
+    munition_asset_id: nullableStr(row.munition_asset_id),
+    launcher_asset_id: str(row.launcher_asset_id),
+    event_urn: str(row.event_urn),
+  };
+}
+
+/** Every launch that declares its munition entity, for attributing
+ *  in-flight munitions to their launcher. */
+export function useMunitionLaunches(): ShapeResult<MunitionLaunch> {
+  return useTableShape('effector_launch', mapMunitionLaunch, {
+    where: 'munition_asset_id IS NOT NULL',
+  });
+}

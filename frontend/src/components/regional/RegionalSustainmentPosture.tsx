@@ -51,9 +51,10 @@ import {
   type OperationalState,
 } from '../../hooks';
 import { classifyAsset } from '../../lib/assetClass';
+import { useMunitionLaunches } from '../../hooks/useEffectorLaunches';
 import {
-  extractParentLauncherFromAssetId,
-  extractFiringSequence,
+  launchesByMunition,
+  launchFor,
   dedupFirings,
 } from '../../lib/munitionAsset';
 import { isTierVisibleIn3D, type AssetTier } from '../../lib/assetTier';
@@ -708,14 +709,16 @@ export default function RegionalSustainmentPosture({
   // asset_capability_state is small (one row per real launcher --
   // in-flight munitions never land in that table by design).
   const allCapability = useAllCapabilityState();
+  const munitionLaunches = useMunitionLaunches();
   const { hardwareFleet, inflightCount } = useMemo(() => {
     const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
+    const launchByMunition = launchesByMunition(munitionLaunches.data);
     const hw: FleetAsset[] = [];
     const inflightSeed: Array<{
       asset_id: string;
       platform_variant: string | null;
       parent_launcher_id: string | null;
-      firing_sequence: number | null;
+      firing_event_urn: string | null;
     }> = [];
     for (const a of fleet.data) {
       const cls = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
@@ -723,8 +726,7 @@ export default function RegionalSustainmentPosture({
         inflightSeed.push({
           asset_id: a.asset_id,
           platform_variant: a.platform_variant,
-          parent_launcher_id: extractParentLauncherFromAssetId(a.asset_id, launcherIds),
-          firing_sequence: extractFiringSequence(a.asset_id),
+          ...launchFor(a.asset_id, launchByMunition),
         });
       } else {
         hw.push(a);
@@ -735,7 +737,7 @@ export default function RegionalSustainmentPosture({
     // + FORCE POSTURE + per-launcher Loadout card so all four views
     // agree on "N in flight."
     return { hardwareFleet: hw, inflightCount: dedupFirings(inflightSeed).length };
-  }, [fleet.data, allCapability.data]);
+  }, [fleet.data, allCapability.data, munitionLaunches.data]);
 
   // 5-tier liveness map. This is a REMOTE view of the edge, so
   // COMM_LOST (stale AND severed) is a legitimate reading here -- but

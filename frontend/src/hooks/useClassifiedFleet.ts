@@ -16,24 +16,19 @@ import { useMemo } from 'react';
 import { useFleetAssets, type FleetAsset } from './useFleetAssets';
 import { useAllCapabilityState } from './useCapabilityState';
 import { classifyAsset, type AssetClass } from '../lib/assetClass';
-import {
-  extractParentLauncherFromAssetId,
-  extractFiringSequence,
-} from '../lib/munitionAsset';
+import { useMunitionLaunches } from './useEffectorLaunches';
+import { launchesByMunition, launchFor } from '../lib/munitionAsset';
 
 export interface ClassifiedFleetAsset extends FleetAsset {
   asset_class: AssetClass;
-  /** Set only for MUNITION-class assets: the launcher this in-flight
-   *  munition was fired from (derived by matching the launcher's asset_id
-   *  as a substring in the munition's asset_id). Null when we can't
-   *  attribute -- e.g. a munition variant whose naming doesn't embed
-   *  the launcher id. */
+  /** Set only for MUNITION-class assets: the launcher declared by the
+   *  munition's effector_launch row. Null when no launch row names this
+   *  munition -- never inferred from the asset_id. */
   parent_launcher_id: string | null;
-  /** Set only for MUNITION-class assets: the integer firing sequence
-   *  parsed from the asset_id (`<TYPE>_<SEQ>-<PARENT>...` convention).
-   *  Null when the pattern doesn't match. Paired with parent_launcher_id
-   *  it forms a stable firing identity for dedup. */
-  firing_sequence: number | null;
+  /** Set only for MUNITION-class assets: the event_urn of the munition's
+   *  launch row. Paired with parent_launcher_id it forms the firing
+   *  identity for dedup. Null when there is no launch row. */
+  firing_event_urn: string | null;
 }
 
 export interface ClassifiedFleetResult {
@@ -45,33 +40,33 @@ export interface ClassifiedFleetResult {
 export function useClassifiedFleet(): ClassifiedFleetResult {
   const fleet = useFleetAssets();
   const capabilities = useAllCapabilityState();
+  const launches = useMunitionLaunches();
 
   const data = useMemo<ClassifiedFleetAsset[]>(() => {
     // Set membership check is O(1); building the Set once per data change
     // is cheaper than an inner-loop find over capabilities.data for every
     // fleet asset (~O(f * c) -> O(f + c)).
     const launcherIds = new Set(capabilities.data.map((c) => c.asset_id));
+    const launchByMunition = launchesByMunition(launches.data);
     return fleet.data.map((a) => {
       const asset_class = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
-      // Parent-launcher + firing-sequence extraction only makes sense for
-      // MUNITION-class rows (in-flight munitions embed both in the asset_id).
-      // For every other class the fields stay null.
+      // Launcher + launch event come from the declared launch row, and
+      // only for MUNITION-class rows. For every other class they stay null.
       if (asset_class === 'MUNITION') {
         return {
           ...a,
           asset_class,
-          parent_launcher_id: extractParentLauncherFromAssetId(a.asset_id, launcherIds),
-          firing_sequence: extractFiringSequence(a.asset_id),
+          ...launchFor(a.asset_id, launchByMunition),
         };
       }
       return {
         ...a,
         asset_class,
         parent_launcher_id: null,
-        firing_sequence: null,
+        firing_event_urn: null,
       };
     });
-  }, [fleet.data, capabilities.data]);
+  }, [fleet.data, capabilities.data, launches.data]);
 
   return {
     data,
@@ -79,7 +74,7 @@ export function useClassifiedFleet(): ClassifiedFleetResult {
     // BOTH have first-synced we're stable, even if one is empty (e.g.
     // pre-scenario the capability table has zero rows -- valid, not
     // still-loading).
-    isLoading: fleet.isLoading || capabilities.isLoading,
-    isError: fleet.isError || capabilities.isError,
+    isLoading: fleet.isLoading || capabilities.isLoading || launches.isLoading,
+    isError: fleet.isError || capabilities.isError || launches.isError,
   };
 }

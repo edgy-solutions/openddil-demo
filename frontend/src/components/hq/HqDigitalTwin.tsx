@@ -139,9 +139,6 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
                   >
                     <span className="min-w-0 flex-1 truncate text-slate-300">
                       <span className="text-amber-300">{munitionType}</span>
-                      {a.firing_sequence !== null && (
-                        <span className="text-slate-500"> #{a.firing_sequence}</span>
-                      )}
                       {a.parent_launcher_id && (
                         <span className="opacity-60"> ← {a.parent_launcher_id}</span>
                       )}
