@@ -11,18 +11,37 @@ ONE CONSUMER, MANY DESTINATIONS, THE SAME SHAPE ROUTES.PY ALREADY USES
 configured entry whose sink topic matches — the same fan-out and the same
 "decode once, undecodable is per matching entry, commit once at the end"
 shape `routes.run_once` uses for the gate's own fan-out. No `confluent_kafka`
-import here: `consumer` is used only through `.poll`, `.error`, `.topic`,
-`.key`, `.value` and `.commit` — the exact seam a fake object can stand in
-for in tests.
+import at module level: `consumer` is used only through `.poll`, `.error`,
+`.topic`, `.key`, `.value`, `.commit`, `.assignment`, `.pause`, `.resume`
+and `.seek` — the exact seam a fake object can stand in for in tests.
 
 RETRY IS A BLOCKING LOOP INSIDE ONE MESSAGE, NOT A SECOND POLL
 A retryable outcome (a 408/429/5xx/connection error, a credential that has
 not arrived yet, or the delivered-events store being unreachable) is
-retried in place, with the injected `sleep` backing off between attempts,
-until it reaches a terminal outcome. Nothing is committed until every entry
-a message matched has reached one. This keeps the whole thing synchronous
-and keeps "retry the same record" literally true — there is no second
-message to redeliver, because this process never let go of the first one.
+retried in place, backing off between attempts, until it reaches a terminal
+outcome. Nothing is committed until every entry a message matched has
+reached one. This keeps the whole thing synchronous and keeps "retry the
+same record" literally true — there is no second message to redeliver,
+because this process never let go of the first one.
+
+THE BACKOFF IS NOT A SLEEP, IT KEEPS THE MEMBERSHIP ALIVE
+Every backoff wait goes through `_make_wait`'s function, which pauses the
+consumer's whole current assignment and then `poll`s in slices of at most
+one second until the delay has elapsed — `poll` is what services
+max.poll.interval.ms (the background thread already heartbeats). A
+partition paused this way yields nothing, so head-of-line order is the
+existing guarantee: one record in flight, every assigned partition paused
+while it retries. A message a poll returns anyway (a partition newly
+assigned after a rebalance is not paused) is never dropped or processed: it
+is seeked back to its own offset and its partition paused too. If the
+in-flight partition is revoked during a wait, the record is abandoned
+without a commit — whoever owns the partition next replays it from the
+committed offset, and the delivered-events table turns a replay of an
+already-delivered record into `duplicate`. A commit refused because the
+member was evicted or is mid-rebalance is logged and counted, not fatal,
+for the same reason. A record retrying longer than
+OPENDDIL_FORWARD_RETRY_MAX_S is given up on (`exhausted`): recorded `held`
+on a dedupe route (the existing resend path), then committed.
 
 DEDUPE AND THE ONE ACCEPTED WINDOW
 Every Restate wipe and every scenario reset re-emits CM revisions, and a
@@ -64,6 +83,11 @@ POLL_TIMEOUT = float(os.getenv("OPENDDIL_EGRESS_POLL_TIMEOUT", "1.0"))
 HTTP_TIMEOUT_S = float(os.getenv("OPENDDIL_FORWARD_HTTP_TIMEOUT_S", "5.0"))
 INITIAL_BACKOFF_S = float(os.getenv("OPENDDIL_FORWARD_INITIAL_BACKOFF_S", "1.0"))
 MAX_BACKOFF_S = float(os.getenv("OPENDDIL_FORWARD_MAX_BACKOFF_S", "30.0"))
+RETRY_MAX_S = float(os.getenv("OPENDDIL_FORWARD_RETRY_MAX_S", "86400"))
+# Left unset (librdkafka's own defaults) unless the env names a value.
+MAX_POLL_INTERVAL_MS = os.getenv("OPENDDIL_FORWARD_MAX_POLL_INTERVAL_MS")
+SESSION_TIMEOUT_MS = os.getenv("OPENDDIL_FORWARD_SESSION_TIMEOUT_MS")
+WAIT_SLICE_S = 1.0
 COUNTER_LOG_INTERVAL_S = 60.0
 REJECTED_BODY_LOG_BYTES = 300
 POSTGRES_DSN = os.getenv(
@@ -349,16 +373,134 @@ class DeliveredStore:
 
 def _log_outcome(
     name: str, key: str | None, kind: str | None, status: int | None, outcome: str,
-    *, case_id: Any = _NO_CASE_ID,
+    *, case_id: Any = _NO_CASE_ID, case_id_mismatch: bool = False,
 ) -> None:
     payload: dict[str, Any] = {"forward": name, "key": key, "kind": kind, "status": status, "outcome": outcome}
     if case_id is not _NO_CASE_ID:
         payload["case_id"] = case_id
+    if case_id_mismatch:
+        payload["case_id_mismatch"] = True
     log.info(json.dumps(payload))
 
 
 def _bump(counts: dict[str, int], outcome: str) -> None:
     counts[outcome] = counts.get(outcome, 0) + 1
+
+
+class InFlight:
+    """Which partition's record is being delivered right now, and whether it
+    has been revoked since. `on_revoke` is the callback handed to
+    `consumer.subscribe`; it runs inside `poll`, which is only ever called
+    from a backoff wait or from `run_once`'s own poll."""
+
+    def __init__(self) -> None:
+        self.current: tuple[str, int] | None = None
+        self.revoked = False
+
+    def begin(self, topic: str, partition: int) -> None:
+        self.current, self.revoked = (topic, partition), False
+
+    def end(self) -> None:
+        self.current, self.revoked = None, False
+
+    def on_revoke(self, _consumer, partitions) -> None:
+        if self.current is not None and any((p.topic, p.partition) == self.current for p in partitions):
+            self.revoked = True
+
+
+class _Abandoned(Exception):
+    """The in-flight partition was revoked during a backoff wait."""
+
+
+class _Exhausted(Exception):
+    """The record has been retrying longer than the retry budget."""
+
+    def __init__(self, after_delivery: bool) -> None:
+        super().__init__("retry budget exhausted")
+        self.after_delivery = after_delivery
+
+
+def _make_wait(
+    consumer, flight: InFlight, sleep: Callable[[float], None], clock: Callable[[], float],
+) -> Callable[[float], bool]:
+    """The backoff wait `_deliver` uses in place of a bare sleep. Returns
+    True once `delay` seconds have been waited out, False if the in-flight
+    partition was revoked meanwhile. See the module docstring."""
+    from confluent_kafka import TopicPartition  # noqa: PLC0415 — kept off module import
+
+    def wait(delay: float) -> bool:
+        paused: dict[tuple[str, int], Any] = {}
+        for tp in consumer.assignment():
+            paused[(tp.topic, tp.partition)] = tp
+        if paused:
+            consumer.pause(list(paused.values()))
+        try:
+            remaining = delay
+            while remaining > 0:
+                slice_s = min(remaining, WAIT_SLICE_S)
+                started = clock()
+                msg = consumer.poll(slice_s)
+                if msg is not None and msg.error() is None:
+                    # Not ours to process while a record is in flight: hand it
+                    # back and keep its partition quiet like the others.
+                    tp = TopicPartition(msg.topic(), msg.partition(), msg.offset())
+                    try:
+                        consumer.seek(tp)
+                        consumer.pause([tp])
+                        paused[(msg.topic(), msg.partition())] = tp
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("could not hand back %s[%s]@%s during a wait: %s",
+                                    msg.topic(), msg.partition(), msg.offset(), exc)
+                elif msg is not None:
+                    log.warning("consumer error during wait: %s", msg.error())
+                if flight.revoked:
+                    return False
+                # A poll that returned early (a message, an error) did not
+                # use up its slice; make the slice real so a hot partition
+                # cannot turn the wait into a busy loop.
+                idle = slice_s - (clock() - started)
+                if idle > 0.001:
+                    sleep(idle)
+                remaining -= slice_s
+            return not flight.revoked
+        finally:
+            _resume(consumer, paused)
+
+    return wait
+
+
+def _resume(consumer, paused: Mapping[tuple[str, int], Any]) -> None:
+    """Resume what a wait paused, minus anything no longer assigned (pausing
+    or resuming an unassigned partition raises)."""
+    try:
+        assigned = {(tp.topic, tp.partition) for tp in consumer.assignment()}
+        back = [tp for k, tp in paused.items() if k in assigned]
+        if back:
+            consumer.resume(back)
+    except Exception as exc:  # noqa: BLE001 — a failed resume must not mask the outcome
+        log.warning("could not resume partitions after a wait: %s", exc)
+
+
+_COMMIT_NONFATAL = ("UNKNOWN_MEMBER_ID", "ILLEGAL_GENERATION", "REBALANCE_IN_PROGRESS")
+
+
+def _commit(consumer, msg, counts: dict[str, int]) -> None:
+    """Commit `msg`; a commit refused because this member was evicted or the
+    group is rebalancing is not fatal — the record replays after re-join and
+    the delivered-events table makes that a no-op. Anything else raises."""
+    from confluent_kafka import KafkaError, KafkaException  # noqa: PLC0415
+
+    try:
+        consumer.commit(msg, asynchronous=False)
+    except KafkaException as exc:
+        err = exc.args[0] if exc.args else None
+        code = err.code() if hasattr(err, "code") else None
+        if code in {getattr(KafkaError, name) for name in _COMMIT_NONFATAL}:
+            _bump(counts, "commit_failed")
+            log.warning("commit_failed topic=%s partition=%s offset=%s: %s",
+                        msg.topic(), msg.partition(), msg.offset(), exc)
+            return
+        raise
 
 
 def _deliver(
@@ -367,7 +509,7 @@ def _deliver(
     record: Mapping[str, Any],
     *,
     post: Callable[[str, bytes, Mapping[str, str]], tuple[int, bytes]],
-    sleep: Callable[[float], None],
+    wait: Callable[[float], bool],
     read_token: Callable[[str], str | None],
     counts: dict[str, int],
     log_outcome: Callable[..., None],
@@ -375,11 +517,64 @@ def _deliver(
     topic: str | None = None,
     partition: int | None = None,
     offset: int | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    retry_max_s: float = RETRY_MAX_S,
+) -> str | None:
+    """Deliver one record to one route. Returns `"abandoned"` (the partition
+    was revoked mid-wait: do not commit), `"exhausted"` (the retry budget
+    ran out: recorded and given up on, commit) or `None` (a terminal
+    outcome was reached, commit). See `_deliver_inner`.
+    """
+    try:
+        _deliver_inner(
+            route, key, record, post=post, wait=wait, read_token=read_token, counts=counts,
+            log_outcome=log_outcome, store=store, topic=topic, partition=partition, offset=offset,
+            clock=clock, retry_max_s=retry_max_s,
+        )
+    except _Abandoned:
+        _bump(counts, "abandoned")
+        log.warning("abandoned route=%s key=%s topic=%s partition=%s offset=%s: partition revoked mid-retry",
+                    route.name, key, topic, partition, offset)
+        log_outcome(route.name, key, route.kind, None, "abandoned")
+        return "abandoned"
+    except _Exhausted as exc:
+        event_id = record.get(route.dedupe_field) if route.dedupe_field is not None else None
+        _bump(counts, "exhausted")
+        log.error("exhausted route=%s key=%s event_id=%s topic=%s partition=%s offset=%s: gave up after %ss%s",
+                  route.name, key, event_id, topic, partition, offset, retry_max_s,
+                  " (the destination had already accepted it)" if exc.after_delivery else "")
+        log_outcome(route.name, key, route.kind, None, "exhausted")
+        if route.dedupe_field is not None and not exc.after_delivery:
+            try:
+                store.upsert_held(route=route.name, event_id=event_id, topic=topic, partition=partition, offset=offset)
+            except Exception as store_exc:  # noqa: BLE001
+                log.error("exhausted record NOT recorded held (route=%s event_id=%s): %s",
+                          route.name, event_id, store_exc)
+        return "exhausted"
+    return None
+
+
+def _deliver_inner(
+    route: ForwardRoute,
+    key: str | None,
+    record: Mapping[str, Any],
+    *,
+    post: Callable[[str, bytes, Mapping[str, str]], tuple[int, bytes]],
+    wait: Callable[[float], bool],
+    read_token: Callable[[str], str | None],
+    counts: dict[str, int],
+    log_outcome: Callable[..., None],
+    store: DeliveredStore | None,
+    topic: str | None,
+    partition: int | None,
+    offset: int | None,
+    clock: Callable[[], float],
+    retry_max_s: float,
 ) -> None:
     """Deliver one record to one route, blocking and retrying with backoff
     until a terminal outcome (held, duplicate, no_event_id, delivered or
-    rejected) is reached. See the module docstring on why this is a loop
-    here rather than a second poll.
+    rejected) is reached, or raising `_Abandoned` / `_Exhausted`. See the
+    module docstring on why this is a loop here rather than a second poll.
 
     `store` is only ever touched when `route.dedupe_field` is set — a route
     without it is unchanged from before either field existed. `topic`/
@@ -396,6 +591,17 @@ def _deliver(
         event_id = raw_event_id
 
     delay = INITIAL_BACKOFF_S
+    first_attempt = clock()
+    delivered_to_destination = False
+
+    def backoff() -> None:
+        nonlocal delay
+        if clock() - first_attempt > retry_max_s:
+            raise _Exhausted(after_delivery=delivered_to_destination)
+        if not wait(delay):
+            raise _Abandoned()
+        delay = min(delay * 2, MAX_BACKOFF_S)
+
     while True:
         if route.dedupe_field is not None:
             try:
@@ -404,8 +610,7 @@ def _deliver(
                 log.warning("delivered-events store unavailable (route=%s): %s", route.name, exc)
                 _bump(counts, "store_unavailable")
                 log_outcome(route.name, key, route.kind, None, "store_unavailable")
-                sleep(delay)
-                delay = min(delay * 2, MAX_BACKOFF_S)
+                backoff()
                 continue
             if existing is not None and existing.get("outcome") == "delivered":
                 _bump(counts, "duplicate")
@@ -420,8 +625,7 @@ def _deliver(
                     log.warning("delivered-events store unavailable (route=%s): %s", route.name, exc)
                     _bump(counts, "store_unavailable")
                     log_outcome(route.name, key, route.kind, None, "store_unavailable")
-                    sleep(delay)
-                    delay = min(delay * 2, MAX_BACKOFF_S)
+                    backoff()
                     continue
             _bump(counts, "held")
             log_outcome(route.name, key, route.kind, None, "held")
@@ -433,8 +637,7 @@ def _deliver(
             if token is None:
                 _bump(counts, "no_credential")
                 log_outcome(route.name, key, route.kind, None, "no_credential")
-                sleep(delay)
-                delay = min(delay * 2, MAX_BACKOFF_S)
+                backoff()
                 continue
         elif route.auth is not None:
             token = route.auth.token()
@@ -444,8 +647,7 @@ def _deliver(
                 # operational event regardless of which source it came from.
                 _bump(counts, "no_credential")
                 log_outcome(route.name, key, route.kind, None, "no_credential")
-                sleep(delay)
-                delay = min(delay * 2, MAX_BACKOFF_S)
+                backoff()
                 continue
 
         body = json.dumps(build_envelope(route, key, record), separators=(",", ":")).encode("utf-8")
@@ -459,21 +661,36 @@ def _deliver(
             log.warning("connection error forwarding to %s (route=%s): %s", route.url, route.name, exc)
             _bump(counts, "retried")
             log_outcome(route.name, key, route.kind, None, "retried")
-            sleep(delay)
-            delay = min(delay * 2, MAX_BACKOFF_S)
+            backoff()
             continue
 
         if 200 <= status < 300:
+            delivered_to_destination = True
             case_id: str | None = None
             try:
                 parsed_body = json.loads(resp_body)
             except (ValueError, UnicodeDecodeError):
                 parsed_body = None
             if isinstance(parsed_body, Mapping):
-                maybe_case_id = parsed_body.get("case_id")
-                if isinstance(maybe_case_id, str) and maybe_case_id:
-                    case_id = maybe_case_id
+                # The door's documented rule: the case key is our event_id,
+                # carried at workflow.case_id; a top-level case_id is the
+                # older shape.
+                workflow = parsed_body.get("workflow")
+                for candidate in (
+                    workflow.get("case_id") if isinstance(workflow, Mapping) else None,
+                    parsed_body.get("case_id"),
+                ):
+                    if isinstance(candidate, str) and candidate:
+                        case_id = candidate
+                        break
             # Never log the rest of the body -- only the case_id it carried.
+            case_id_mismatch = event_id is not None and case_id is not None and case_id != event_id
+            if case_id_mismatch:
+                _bump(counts, "case_id_mismatch")
+                log.warning("case_id_mismatch route=%s key=%s event_id=%s case_id=%s",
+                            route.name, key, event_id, case_id)
+            elif case_id is None:
+                _bump(counts, "case_id_missing")
 
             if route.dedupe_field is not None:
                 while True:
@@ -489,18 +706,20 @@ def _deliver(
                         log.warning("delivered-events store unavailable (route=%s): %s", route.name, exc)
                         _bump(counts, "store_unavailable")
                         log_outcome(route.name, key, route.kind, None, "store_unavailable")
-                        sleep(delay)
-                        delay = min(delay * 2, MAX_BACKOFF_S)
+                        backoff()
 
             _bump(counts, "delivered")
-            log_outcome(route.name, key, route.kind, status, "delivered", case_id=case_id)
+            if case_id_mismatch:
+                log_outcome(route.name, key, route.kind, status, "delivered",
+                            case_id=case_id, case_id_mismatch=True)
+            else:
+                log_outcome(route.name, key, route.kind, status, "delivered", case_id=case_id)
             return
 
         if status in (408, 429) or status >= 500:
             _bump(counts, "retried")
             log_outcome(route.name, key, route.kind, status, "retried")
-            sleep(delay)
-            delay = min(delay * 2, MAX_BACKOFF_S)
+            backoff()
             continue
 
         # Another 4xx: a destination refusing a record is a decision, not
@@ -526,13 +745,19 @@ def run_once(
     read_token: Callable[[str], str | None] = _default_read_token,
     log_outcome: Callable[..., None] = _log_outcome,
     store: DeliveredStore | None = None,
+    flight: InFlight | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    retry_max_s: float = RETRY_MAX_S,
 ) -> bool:
     """Poll once. Decode once; hand the record to every configured entry
     whose sink topic matches, each delivered (and retried) in turn; commit
     once, after every matching entry has reached a terminal outcome.
 
     `store` is passed straight through to `_deliver`, which only ever
-    touches it for a route that sets `dedupe_field`.
+    touches it for a route that sets `dedupe_field`. `sleep`/`clock` are the
+    injectable time sources of the backoff wait (see the module docstring);
+    `flight` is the `InFlight` whose `on_revoke` the caller subscribed with.
+    A revoked in-flight partition abandons the record and skips the commit.
 
     Returns `True` when a message was processed, `False` on an empty poll
     (a consumer error counts as empty), the same contract `routes.run_once`
@@ -559,14 +784,24 @@ def run_once(
             _bump(counts, "undecodable")
             log_outcome(route.name, key, route.kind, None, "undecodable")
     else:
-        for route in matching:
-            _deliver(
-                route, key, record, post=post, sleep=sleep,
-                read_token=read_token, counts=counts, log_outcome=log_outcome,
-                store=store, topic=msg.topic(), partition=msg.partition(), offset=msg.offset(),
-            )
+        if flight is None:
+            flight = InFlight()
+        wait = _make_wait(consumer, flight, sleep, clock)
+        flight.begin(msg.topic(), msg.partition())
+        try:
+            for route in matching:
+                outcome = _deliver(
+                    route, key, record, post=post, wait=wait,
+                    read_token=read_token, counts=counts, log_outcome=log_outcome,
+                    store=store, topic=msg.topic(), partition=msg.partition(), offset=msg.offset(),
+                    clock=clock, retry_max_s=retry_max_s,
+                )
+                if outcome == "abandoned":
+                    return True  # not committed: the next owner replays it
+        finally:
+            flight.end()
 
-    consumer.commit(msg, asynchronous=False)
+    _commit(consumer, msg, counts)
     return True
 
 
@@ -602,6 +837,11 @@ def main() -> int:
         log.error("FATAL: OPENDDIL_FORWARD_CONFIG is not set")
         return 2
 
+    if RETRY_MAX_S <= 0:
+        log.error("FATAL: OPENDDIL_FORWARD_RETRY_MAX_S must be > 0 (got %s); unbounded retry is not an option",
+                  RETRY_MAX_S)
+        return 2
+
     try:
         routes = load_forward_config(CONFIG_PATH)
     except Exception as exc:  # noqa: BLE001 — a bad config must not start the forwarder
@@ -626,13 +866,19 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    consumer = Consumer({
+    consumer_conf: dict[str, Any] = {
         "bootstrap.servers": BROKERS,
         "group.id": GROUP,
         "auto.offset.reset": "earliest",
         "enable.auto.commit": False,
-    })
-    consumer.subscribe(sorted(routes_by_topic))
+    }
+    if MAX_POLL_INTERVAL_MS:
+        consumer_conf["max.poll.interval.ms"] = int(MAX_POLL_INTERVAL_MS)
+    if SESSION_TIMEOUT_MS:
+        consumer_conf["session.timeout.ms"] = int(SESSION_TIMEOUT_MS)
+    consumer = Consumer(consumer_conf)
+    flight = InFlight()
+    consumer.subscribe(sorted(routes_by_topic), on_revoke=flight.on_revoke)
 
     counts: dict[str, int] = {}
     last_counter_log = time.monotonic()
@@ -641,7 +887,7 @@ def main() -> int:
             run_once(
                 consumer, routes_by_topic=routes_by_topic, decode=_decode,
                 post=_default_post, sleep=time.sleep, poll_timeout=POLL_TIMEOUT,
-                counts=counts, store=store,
+                counts=counts, store=store, flight=flight,
             )
             now = time.monotonic()
             if now - last_counter_log >= COUNTER_LOG_INTERVAL_S:
