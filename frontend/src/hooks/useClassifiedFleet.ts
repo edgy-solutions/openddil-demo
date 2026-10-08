@@ -15,7 +15,7 @@ import { useMemo } from 'react';
 
 import { useFleetAssets, type FleetAsset } from './useFleetAssets';
 import { useAllCapabilityState } from './useCapabilityState';
-import { classifyAsset, type AssetClass } from '../lib/assetClass';
+import { makeAssetClassifier, type AssetClass } from '../lib/assetClass';
 import { useMunitionLaunches } from './useEffectorLaunches';
 import { launchesByMunition, launchFor } from '../lib/munitionAsset';
 
@@ -43,13 +43,11 @@ export function useClassifiedFleet(): ClassifiedFleetResult {
   const launches = useMunitionLaunches();
 
   const data = useMemo<ClassifiedFleetAsset[]>(() => {
-    // Set membership check is O(1); building the Set once per data change
-    // is cheaper than an inner-loop find over capabilities.data for every
-    // fleet asset (~O(f * c) -> O(f + c)).
-    const launcherIds = new Set(capabilities.data.map((c) => c.asset_id));
+    // The classifier builds its id Sets once per data change (O(f + c)).
+    const classify = makeAssetClassifier(capabilities.data, launches.data);
     const launchByMunition = launchesByMunition(launches.data);
     return fleet.data.map((a) => {
-      const asset_class = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
+      const asset_class = classify(a);
       // Launcher + launch event come from the declared launch row, and
       // only for MUNITION-class rows. For every other class they stay null.
       if (asset_class === 'MUNITION') {

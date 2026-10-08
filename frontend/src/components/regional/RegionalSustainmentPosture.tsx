@@ -50,7 +50,7 @@ import {
   type LogisticsStatus,
   type OperationalState,
 } from '../../hooks';
-import { classifyAsset } from '../../lib/assetClass';
+import { makeAssetClassifier } from '../../lib/assetClass';
 import { useMunitionLaunches } from '../../hooks/useEffectorLaunches';
 import {
   launchesByMunition,
@@ -711,7 +711,7 @@ export default function RegionalSustainmentPosture({
   const allCapability = useAllCapabilityState();
   const munitionLaunches = useMunitionLaunches();
   const { hardwareFleet, inflightCount } = useMemo(() => {
-    const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
+    const classify = makeAssetClassifier(allCapability.data, munitionLaunches.data);
     const launchByMunition = launchesByMunition(munitionLaunches.data);
     const hw: FleetAsset[] = [];
     const inflightSeed: Array<{
@@ -721,7 +721,7 @@ export default function RegionalSustainmentPosture({
       firing_event_urn: string | null;
     }> = [];
     for (const a of fleet.data) {
-      const cls = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
+      const cls = classify(a);
       if (cls === 'MUNITION') {
         inflightSeed.push({
           asset_id: a.asset_id,

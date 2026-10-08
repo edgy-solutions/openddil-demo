@@ -17,26 +17,30 @@
 //   * Everything else (PLATFORM) is the legacy DIS fleet (M1A2, AH-64E)
 //     or a genuinely unfamiliar variant.
 //
-// This file derives the class client-side from the pair
-// (platform_variant, hasCapability) so we don't need a server-side
-// column or view for the display split. Both signals are already
-// streaming to the frontend via useFleetAssets + useCapabilityRoster.
+// This file derives the class client-side from the platform_variant plus
+// three pieces of evidence (see classifyAsset) so we don't need a
+// server-side column or view for the display split. The signals already
+// stream to the frontend via useFleetAssets, useCapabilityRoster and
+// useMunitionLaunches.
 //
-// KEY DISCRIMINATOR: a LAUNCHER is defined as "emits a weapons-capability
-// snapshot" (i.e., appears in asset_capability_state). Fired munitions
-// land in telemetry_latest_state but never in asset_capability_state --
-// so the presence check cleanly separates the two even when they share
-// a platform_variant. The canonical shape is designed from open sources
-// (DIS Fire/Detonation PDUs, AFSim stores modeling, Link 16 J3.7 weapon
-// status); source-specific decompositions land in this shape at the
-// Bloblang layer.
+// KEY DISCRIMINATORS: a LAUNCHER emits a weapons-capability snapshot
+// (appears in asset_capability_state). A fired MUNITION is the child
+// track named by an effector_launch row (munition_asset_id). The launch
+// row is the definitive in-flight evidence. The mere ABSENCE of a
+// capability row is only evidence of a munition while the capability
+// feed is alive (has rows at all); on a deployment with no capability
+// feed every launcher lacks a row, so absence says nothing and
+// launchers must stay launchers. The canonical shape is designed from
+// open sources (DIS Fire/Detonation PDUs, AFSim stores modeling, Link 16
+// J3.7 weapon status); source-specific decompositions land in this shape
+// at the Bloblang layer.
 //
 // Suffix-family fallback: `*_Sensor` -> SENSOR, `*_Interceptor` or
-// `MISSILE_LAUNCHER` (and no capability) -> MUNITION. Adding a new
-// tier (MRAD_ADVANCED, HYPERSONIC_MRAD, ...) that follows the
-// convention needs no code change here -- pairs with the
+// `MISSILE_LAUNCHER` -> LAUNCHER or MUNITION per the evidence above.
+// Adding a new tier (MRAD_ADVANCED, HYPERSONIC_MRAD, ...) that follows
+// the convention needs no code change here -- pairs with the
 // resolveSchematic() suffix-family fallback in platform-schematics/
-// index.tsx (2026-07-13).
+// index.tsx.
 // =============================================================================
 
 export type AssetClass =
@@ -56,35 +60,69 @@ const FACILITY_VARIANTS: ReadonlySet<string> = new Set([
   'INSTALLATION_FACILITY_CIVILIAN',
 ]);
 
-// Munition-candidate variants. An asset with one of these variants that
-// ALSO emits a weapons-capability snapshot is a LAUNCHER; without
-// capability, it's a fired-and-in-flight MUNITION.
+// Munition-candidate variants. Such an asset is a LAUNCHER unless there
+// is evidence it fired (a launch row, or a live capability feed that
+// does not list it).
 function isMunitionCandidateVariant(variant: string): boolean {
   return variant === 'MISSILE_LAUNCHER' || variant.endsWith('_Interceptor');
 }
 
+export interface AssetClassEvidence {
+  /** Asset appears in asset_capability_state. */
+  hasCapability: boolean;
+  /** asset_capability_state has at least one row (the feed exists). */
+  capabilityFeedAlive: boolean;
+  /** Asset id appears as munition_asset_id in an effector_launch row. */
+  isLaunchedMunition: boolean;
+}
+
 /**
  * Classify one asset. Precedence order:
- *   1. No variant known               -> UNKNOWN
- *   2. Variant ends `_Sensor`         -> SENSOR
- *   3. Variant is a facility          -> FACILITY
+ *   1. No variant known                -> UNKNOWN
+ *   2. Variant ends `_Sensor`          -> SENSOR
+ *   3. Variant is a facility           -> FACILITY
  *   4. Asset emits capability snapshot -> LAUNCHER  (definitive)
- *   5. Variant is munition-candidate  -> MUNITION  (fired-in-flight)
- *   6. Fallthrough                    -> PLATFORM
- *
- * `hasCapability` = true iff the asset appears in asset_capability_state
- * (i.e. the customer's weapons-capability feed carries it).
+ *   5. Asset is a declared launch munition -> MUNITION (definitive)
+ *   6. Munition-candidate variant      -> MUNITION while the capability
+ *      feed has rows (and omits this asset), otherwise LAUNCHER: with
+ *      no feed, a missing capability row is not evidence of a missile.
+ *   7. Fallthrough                     -> PLATFORM
  */
 export function classifyAsset(
   variant: string | null | undefined,
-  hasCapability: boolean,
+  evidence: AssetClassEvidence,
 ): AssetClass {
   if (!variant) return 'UNKNOWN';
   if (variant.endsWith('_Sensor')) return 'SENSOR';
   if (FACILITY_VARIANTS.has(variant)) return 'FACILITY';
-  if (hasCapability) return 'LAUNCHER';
-  if (isMunitionCandidateVariant(variant)) return 'MUNITION';
+  if (evidence.hasCapability) return 'LAUNCHER';
+  if (evidence.isLaunchedMunition) return 'MUNITION';
+  if (isMunitionCandidateVariant(variant)) {
+    return evidence.capabilityFeedAlive ? 'MUNITION' : 'LAUNCHER';
+  }
   return 'PLATFORM';
+}
+
+/**
+ * Build a per-asset classifier from the capability and launch rows. The
+ * id Sets are built once, so the returned function is O(1) per asset.
+ */
+export function makeAssetClassifier(
+  capabilityRows: ReadonlyArray<{ asset_id: string }>,
+  launchRows: ReadonlyArray<{ munition_asset_id: string | null }>,
+): (asset: { asset_id: string; platform_variant: string | null | undefined }) => AssetClass {
+  const capabilityIds = new Set(capabilityRows.map((c) => c.asset_id));
+  const launchedIds = new Set<string>();
+  for (const l of launchRows) {
+    if (l.munition_asset_id) launchedIds.add(l.munition_asset_id);
+  }
+  const capabilityFeedAlive = capabilityRows.length > 0;
+  return (a) =>
+    classifyAsset(a.platform_variant, {
+      hasCapability: capabilityIds.has(a.asset_id),
+      capabilityFeedAlive,
+      isLaunchedMunition: launchedIds.has(a.asset_id),
+    });
 }
 
 /** Human-facing label for the class -- consistent across cards. */

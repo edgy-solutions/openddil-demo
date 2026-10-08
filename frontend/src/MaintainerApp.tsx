@@ -37,7 +37,8 @@ import {
   useAssetElementTelemetry,
 } from './hooks';
 import { useWanLink } from './hooks/useWanLink';
-import { classifyAsset } from './lib/assetClass';
+import { makeAssetClassifier } from './lib/assetClass';
+import { useMunitionLaunches } from './hooks/useEffectorLaunches';
 import { isDeclaredSensor } from './lib/assetSubsystem';
 import { platformClass } from './config/platformChartConfig';
 import { deployment } from './deployment';
@@ -180,15 +181,16 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // made it possible to drill into an asset whose telemetry stopped
   // updating five seconds ago. Classification per src/lib/assetClass:
   // an asset is LAUNCHER if it emits a weapons-capability snapshot,
-  // MUNITION if
-  // it has a munition-candidate variant AND doesn't. Capability
-  // data is fleet-wide (not edge-scoped) which is fine -- Set
-  // membership is O(1).
+  // MUNITION if a launch row names it (or, while the capability feed
+  // has rows, it is a munition-candidate variant the feed omits).
+  // Capability and launch data are fleet-wide (not edge-scoped) which
+  // is fine -- Set membership is O(1).
   const allCapability = useAllCapabilityState();
+  const munitionLaunches = useMunitionLaunches();
   const fleet = useMemo(() => {
-    const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
+    const classify = makeAssetClassifier(allCapability.data, munitionLaunches.data);
     const kept = fleetRaw.data.filter((a) => {
-      const cls = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
+      const cls = classify(a);
       return cls !== 'MUNITION';
     });
     // Return in the same ShapeResult shape the rest of this component
@@ -200,7 +202,8 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
       isError:   fleetRaw.isError   || allCapability.isError,
     };
   }, [fleetRaw.data, fleetRaw.isLoading, fleetRaw.isError,
-      allCapability.data, allCapability.isLoading, allCapability.isError]);
+      allCapability.data, allCapability.isLoading, allCapability.isError,
+      munitionLaunches.data]);
 
   // 5-tier liveness per asset (see lib/assetTier). Drives the picker
   // suffix + the dim styling in Header so the operator can still

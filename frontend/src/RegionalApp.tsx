@@ -46,7 +46,8 @@ import {
   type RegionTopFactors,
   type RegionWearTrends,
 } from './hooks';
-import { classifyAsset } from './lib/assetClass';
+import { makeAssetClassifier } from './lib/assetClass';
+import { useMunitionLaunches } from './hooks/useEffectorLaunches';
 import {
   aorAssetList,
   severityHeatClass,
@@ -295,6 +296,7 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
   const wearTrends = useRegionWearTrends();
   const fleetRaw = useFleetAssetsForRegion(selectedRegion);
   const allCapability = useAllCapabilityState();
+  const munitionLaunches = useMunitionLaunches();
   // Filter fired-and-in-flight MUNITION-class rows out of the region-
   // scoped fleet before ANY downstream consumer sees them. Same rule
   // MaintainerApp applies to its picker: a missile in flight isn't a
@@ -304,9 +306,9 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
   // instead through the RegionalSustainmentPosture header IN FLIGHT
   // ticker (kept separate from the hardware count).
   const fleet = useMemo(() => {
-    const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
+    const classify = makeAssetClassifier(allCapability.data, munitionLaunches.data);
     const kept = fleetRaw.data.filter((a) => {
-      const cls = classifyAsset(a.platform_variant, launcherIds.has(a.asset_id));
+      const cls = classify(a);
       return cls !== 'MUNITION';
     });
     return {
@@ -315,7 +317,8 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
       isError:   fleetRaw.isError   || allCapability.isError,
     };
   }, [fleetRaw.data, fleetRaw.isLoading, fleetRaw.isError,
-      allCapability.data, allCapability.isLoading, allCapability.isError]);
+      allCapability.data, allCapability.isLoading, allCapability.isError,
+      munitionLaunches.data]);
   // Per-asset logistics still needed for AorAssetList severity coloring
   // (aggregator outputs are region-level; the picker is per-asset).
   const logistics = useAllLogisticsStatus();
