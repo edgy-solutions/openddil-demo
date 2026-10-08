@@ -53,6 +53,7 @@ import {
     type FaultCatalog,
 } from '../lib/cmReport';
 import { manualQaScope } from '../lib/manualQa';
+import { isDeclaredSensor } from '../lib/assetSubsystem';
 
 const DEMO_MOCK = true;
 
@@ -87,10 +88,8 @@ function titleForVariant(platformVariant: string | null | undefined): { title: s
 //      publishes. Should render as the multi-array MRAD detailed view.
 //
 // Both end up with platform_variant=MRAD_Sensor after the alias map.
-// Differentiating them requires looking at the asset_id pattern --
-// per the customer's naming convention (parentUnitId + "_" + sensorId),
-// the per-site sensor asset_id always ENDS in `_Sensor` (one of
-// MRAD_Sensor, SHORAD_Sensor, VSHORAD_Sensor, CUAS_Sensor).
+// Differentiating them uses the row's declared subsystem field
+// (ASSET_SUBSYSTEM_SENSOR for the sensor record); asset_id is opaque.
 //
 // Without this filter, the chassis asset for every radar (and the
 // launcher asset, which carries variant=MRAD_Interceptor and was
@@ -109,15 +108,6 @@ const MRAD_VARIANTS: ReadonlySet<string> = new Set([
                        // proprietary feed (demo:*_MRAD2_radar)
 ]);
 
-/** True when the asset_id is a per-site SENSOR asset (sensor-subsystem-
- *  sourced, has operational_state from the customer wire). False for
- *  Unit-sourced chassis / launcher assets. Identifies the customer's
- *  parentUnitId_sensorId naming convention. */
-function isPerSiteSensorAsset(assetId: string | null | undefined): boolean {
-    if (!assetId) return false;
-    return assetId.endsWith('_Sensor');
-}
-
 interface DiagnosticCanvasProps {
     /** Canonical platform_variant from the fleet asset. Drives the schematic
      *  dispatch via SCHEMATIC_REGISTRY. Null/undefined => no asset selected
@@ -131,6 +121,9 @@ interface DiagnosticCanvasProps {
      *  seeded-RNG (and, once wired, the live mrad-sim telemetry hook)
      *  produces per-asset-stable, per-asset-independent element values. */
     assetId?: string | null;
+    /** The selected asset's declared subsystem (ASSET_SUBSYSTEM_SENSOR for a
+     *  site's sensor record, null for the platform itself). */
+    subsystem?: string | null;
     degraded: boolean;
     coreTemp: number;
     /** Asset uptime in hours. Threaded from MaintainerApp which
@@ -166,6 +159,7 @@ export default function DiagnosticCanvas({
     platformVariant,
     assetType,
     assetId,
+    subsystem,
     degraded,
     coreTemp,
     uptimeHours,
@@ -299,14 +293,14 @@ export default function DiagnosticCanvas({
 
     // MRAD-class variants get the dedicated multi-array detailed view --
     // BUT only when the asset is the per-site SENSOR subsystem
-    // (asset_id ending in `_Sensor`). The chassis Unit assets (`*_radar`,
+    // (declared subsystem is sensor). The chassis Unit assets (`*_radar`,
     // `*_Launcher*`) also carry platform_variant=MRAD_Sensor/Interceptor
     // after the alias map, but they're the platform holding the sensor,
     // not the sensor itself -- they should render as a regular radar or
     // launcher visual via SCHEMATIC_REGISTRY below. See the MRAD_VARIANTS
     // comment block for the full rationale + the 2026-06-24 per-site
     // sensor identity fix that surfaced this distinction.
-    if (platformVariant && MRAD_VARIANTS.has(platformVariant) && isPerSiteSensorAsset(assetId)) {
+    if (platformVariant && MRAD_VARIANTS.has(platformVariant) && isDeclaredSensor(subsystem)) {
         return (
             <>
                 <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} />

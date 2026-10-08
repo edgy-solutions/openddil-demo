@@ -6,6 +6,9 @@ import type { OperationalState } from './useTelemetryLatest';
 export interface FleetAsset {
   asset_id: string;
   platform_variant: string | null;
+  /** Declared by the boundary mapper; ASSET_SUBSYSTEM_SENSOR for a site's
+   *  sensor record, null for the platform itself. */
+  subsystem: string | null;
   callsign: string | null;
   force_id: string | null;
   last_sample_at: string | null;
@@ -67,6 +70,7 @@ function mapFleetAsset(row: Record<string, any>): FleetAsset {
   return {
     asset_id: row.asset_id,
     platform_variant: row.platform_variant ?? null,
+    subsystem: row.subsystem ?? null,
     callsign: row.callsign ?? null,
     force_id: row.force_id ?? null,
     last_sample_at: row.last_sample_at ?? null,

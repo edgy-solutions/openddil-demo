@@ -40,6 +40,8 @@ export interface OperationalState {
 export interface TelemetryLatest {
   asset_id: string;
   platform_variant: string | null;
+  /** Declared subsystem; ASSET_SUBSYSTEM_SENSOR for a sensor record, null for the platform. */
+  subsystem: string | null;
   callsign: string | null;
   force_id: string | null;
   /** Nested KinematicState proto (position/velocity/attitude). */
@@ -60,6 +62,7 @@ function mapTelemetry(row: Record<string, any>): TelemetryLatest {
   return {
     asset_id: row.asset_id,
     platform_variant: row.platform_variant ?? null,
+    subsystem: row.subsystem ?? null,
     callsign: row.callsign ?? null,
     force_id: row.force_id ?? null,
     kinematics: row.kinematics ?? null,

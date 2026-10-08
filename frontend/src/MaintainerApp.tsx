@@ -38,6 +38,7 @@ import {
 } from './hooks';
 import { useWanLink } from './hooks/useWanLink';
 import { classifyAsset } from './lib/assetClass';
+import { isDeclaredSensor } from './lib/assetSubsystem';
 import { platformClass } from './config/platformChartConfig';
 import { deployment } from './deployment';
 
@@ -526,6 +527,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               platformVariant={variant}
               assetType={assetClass === 'RADAR' ? 'RADAR' : undefined}
               assetId={selectedAssetId}
+              subsystem={selectedAsset?.subsystem ?? null}
               /* The canvas takes no link-derived signal: DiagnosticCanvas.tsx
                  keeps its `degraded` prop, so this always passes `false`
                  rather than a value derived from link1/hq_link_severed. */
@@ -624,7 +626,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             // selected asset).
             degraded={false}
             isLoading={telemetry.isLoading}
-            liveTelemetry={selectedAssetId.endsWith('_Sensor') ? mradLive : undefined}
+            liveTelemetry={isDeclaredSensor(selectedAsset?.subsystem) ? mradLive : undefined}
             assetId={selectedAssetId}
             isPoweredOff={isPoweredOff}
           />
