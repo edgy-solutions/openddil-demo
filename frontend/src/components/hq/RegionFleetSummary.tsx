@@ -67,75 +67,77 @@ export default function RegionFleetSummary() {
           Awaiting first emission — no region has been observed yet
         </div>
       ) : (
-        <table className="w-full text-xs font-mono">
-          <thead>
-            <tr className="text-[10px] text-slate-500 uppercase">
-              <th className="text-left pb-1">region</th>
-              <th className="text-right pb-1">
-                <span className="text-emerald-400">nominal</span>
-              </th>
-              <th className="text-right pb-1">
-                <span className="text-amber-400">degraded</span>
-              </th>
-              <th className="text-right pb-1">
-                <span className="text-orange-400">critical</span>
-              </th>
-              <th className="text-right pb-1" title={ELEM_TITLE}>
-                <span className="text-rose-400">elem crit</span>
-              </th>
-              <th className="text-right pb-1" title={ELEM_TITLE}>
-                <span className="text-amber-400">elem deg</span>
-              </th>
-              <th className="text-right pb-1">
-                <span className="text-red-400">N-O</span>
-              </th>
-              <th className="text-right pb-1">
-                <span className="text-slate-400">destroyed</span>
-              </th>
-              <th className="text-right pb-1">
-                <span className="text-slate-400">deactivated</span>
-              </th>
-              <th className="text-right pb-1">
-                <span className="text-slate-400">removed</span>
-              </th>
-              <th className="text-right pb-1">assets</th>
-              <th className="text-right pb-1">observed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr
-                key={r.region_id}
-                className="text-slate-300 border-t border-slate-800"
-              >
-                <td className="py-1 text-cyan-300">{r.region_id}</td>
-                <td className="py-1 text-right text-emerald-300">{r.nominal}</td>
-                <td className="py-1 text-right text-amber-300">{r.degraded}</td>
-                <td className="py-1 text-right text-orange-300">{r.critical}</td>
-                <td
-                  className="py-1 text-right text-rose-300"
-                  data-testid={`region-elements-critical-${r.region_id}`}
-                >
-                  {elementCounts.get(r.region_id)?.critical ?? '—'}
-                </td>
-                <td
-                  className="py-1 text-right text-amber-300"
-                  data-testid={`region-elements-degraded-${r.region_id}`}
-                >
-                  {elementCounts.get(r.region_id)?.degraded ?? '—'}
-                </td>
-                <td className="py-1 text-right text-red-300">{r.non_operational}</td>
-                <td className="py-1 text-right text-slate-300">{r.destroyed}</td>
-                <td className="py-1 text-right text-slate-300">{r.deactivated}</td>
-                <td className="py-1 text-right text-slate-300">{r.removed}</td>
-                <td className="py-1 text-right">{r.asset_count}</td>
-                <td className="py-1 text-right text-slate-400">
-                  {relativeAge(r.observed_at)}
-                </td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs font-mono">
+            <thead>
+              <tr className="text-[10px] text-slate-500 uppercase">
+                <th className="text-left pb-1 whitespace-nowrap">region</th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">
+                  <span className="text-emerald-400">nominal</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">
+                  <span className="text-amber-400">degraded</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">
+                  <span className="text-orange-400">critical</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap" title={ELEM_TITLE}>
+                  <span className="text-rose-400">elem crit</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap" title={ELEM_TITLE}>
+                  <span className="text-amber-400">elem deg</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">
+                  <span className="text-red-400">N-O</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">
+                  <span className="text-slate-400">destroyed</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">
+                  <span className="text-slate-400">deactivated</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">
+                  <span className="text-slate-400">removed</span>
+                </th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">assets</th>
+                <th className="text-right pb-1 pl-3 whitespace-nowrap">observed</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={r.region_id}
+                  className="text-slate-300 border-t border-slate-800"
+                >
+                  <td className="py-1 text-cyan-300">{r.region_id}</td>
+                  <td className="py-1 pl-3 text-right text-emerald-300">{r.nominal}</td>
+                  <td className="py-1 pl-3 text-right text-amber-300">{r.degraded}</td>
+                  <td className="py-1 pl-3 text-right text-orange-300">{r.critical}</td>
+                  <td
+                    className="py-1 pl-3 text-right text-rose-300"
+                    data-testid={`region-elements-critical-${r.region_id}`}
+                  >
+                    {elementCounts.get(r.region_id)?.critical ?? '—'}
+                  </td>
+                  <td
+                    className="py-1 pl-3 text-right text-amber-300"
+                    data-testid={`region-elements-degraded-${r.region_id}`}
+                  >
+                    {elementCounts.get(r.region_id)?.degraded ?? '—'}
+                  </td>
+                  <td className="py-1 pl-3 text-right text-red-300">{r.non_operational}</td>
+                  <td className="py-1 pl-3 text-right text-slate-300">{r.destroyed}</td>
+                  <td className="py-1 pl-3 text-right text-slate-300">{r.deactivated}</td>
+                  <td className="py-1 pl-3 text-right text-slate-300">{r.removed}</td>
+                  <td className="py-1 pl-3 text-right">{r.asset_count}</td>
+                  <td className="py-1 pl-3 text-right text-slate-400">
+                    {relativeAge(r.observed_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
       {unattributed > 0 && (
         <div
