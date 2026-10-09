@@ -6,8 +6,26 @@
 // signal). Used by per-asset trend charts.
 import { num, useTableShape, sqlLiteral, type ShapeResult } from './electric';
 
+/** Asset-level rollup of the per-element snapshot, derived at the owning
+ *  edge (proto JSON, snake_case). Absent numeric keys are proto3 zero
+ *  defaults; consumers read them as 0. */
+export interface ElementRollup {
+  profile_name?: string;
+  element_count?: number;
+  critical_count?: number;
+  degraded_count?: number;
+  avg_temp_c?: number;
+  avg_load_pct?: number;
+  /** RFC3339 timestamp of the snapshot the edge rolled up. */
+  observed_at?: string;
+  core_temp_c?: number;
+  uptime_hours?: number;
+}
+
 export interface TelemetryWindows {
   asset_id: string;
+  /** Owning edge stamped by the projector; null when unstamped. */
+  edge_id: string | null;
   platform_variant: string | null;
   /** map<string, ScalarTrend> — keyed by fluid name (e.g. fuel_remaining). */
   fluid_trends: Record<string, any>;
@@ -16,6 +34,8 @@ export interface TelemetryWindows {
   window_duration_seconds: number | null;
   sample_count: number | null;
   computed_at: string | null;
+  /** Edge-derived element rollup; null when the asset has no element profile. */
+  element_rollup: ElementRollup | null;
 }
 
 function nullableNum(v: unknown): number | null {
@@ -25,6 +45,7 @@ function nullableNum(v: unknown): number | null {
 function mapWindows(row: Record<string, any>): TelemetryWindows {
   return {
     asset_id: row.asset_id,
+    edge_id: row.edge_id ?? null,
     platform_variant: row.platform_variant ?? null,
     fluid_trends: row.fluid_trends ?? {},
     consumable_trends: row.consumable_trends ?? [],
@@ -32,6 +53,7 @@ function mapWindows(row: Record<string, any>): TelemetryWindows {
     window_duration_seconds: nullableNum(row.window_duration_seconds),
     sample_count: nullableNum(row.sample_count),
     computed_at: row.computed_at ?? null,
+    element_rollup: row.element_rollup ?? null,
   };
 }
 

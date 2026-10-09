@@ -31,6 +31,7 @@ import {
   useAllCapabilityState,
   useFleetTiers,
   useTelemetryLatest,
+  useTelemetryWindows,
   useCmState,
   useLogisticsStatus,
   useTacticalEvents,
@@ -219,6 +220,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   const tiers = useFleetTiers(fleet.data);
 
   const telemetry = useTelemetryLatest(selectedAssetId);
+  const telemetryWindows = useTelemetryWindows(selectedAssetId);
   const cm = useCmState(selectedAssetId);
   const logistics = useLogisticsStatus(selectedAssetId);
   // Maintainer view: recent events filtered to the selected asset.
@@ -596,7 +598,8 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
           <MunitionsLoadoutCard assetId={selectedAssetId} />
           {/* TelemetryCharts uses a layered data source: real sustainment
               first, else sim-derived per-element aggregates from the same
-              hook the 3D drill-down reads (mradLive), else the empty
+              hook the 3D drill-down reads (mradLive), else the edge's
+              element rollup (only when the element row is missing), else the empty
               state. The sim publishes rows only for assets a simulator
               profile matched, so row presence is the gate. selectedAssetId
               resets the rolling chart history on asset change. */}
@@ -612,6 +615,8 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             liveTelemetry={mradLive}
             assetId={selectedAssetId}
             isPoweredOff={isPoweredOff}
+            elementRollup={telemetryWindows.data[0]?.element_rollup ?? null}
+            rollupEdgeId={telemetryWindows.data[0]?.edge_id ?? null}
           />
           <AlertFeed
             events={events.data}

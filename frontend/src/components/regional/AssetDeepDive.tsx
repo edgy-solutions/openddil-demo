@@ -15,6 +15,7 @@ import {
   useCmState,
   useLogisticsStatus,
   useTelemetryLatest,
+  useTelemetryWindows,
   useEffectorLaunches,
   useAssetElementTelemetry,
 } from '../../hooks';
@@ -28,11 +29,18 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
   const cm = useCmState(assetId);
   const logistics = useLogisticsStatus(assetId);
   const telemetry = useTelemetryLatest(assetId);
+  const telemetryWindows = useTelemetryWindows(assetId);
   const effectorLaunches = useEffectorLaunches(assetId);
   const elementTelemetry = useAssetElementTelemetry(assetId);
 
   const tel = telemetry.data[0] ?? null;
   const variant = tel?.platform_variant ?? null;
+  const rollupRow = telemetryWindows.data[0] ?? null;
+  // Same wire power signal the edge asset view uses: a powered-off asset
+  // must not stream its last rollup as if live.
+  const wirePower = tel?.operational_state?.power_state;
+  const isPoweredOff =
+    wirePower === 'POWER_STATE_OFF' || wirePower === 'POWER_STATE_SHUTTING_DOWN';
 
   return (
     <div className="flex flex-col gap-4 h-full overflow-y-auto pr-2 pb-2">
@@ -65,6 +73,9 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
         isLoading={telemetry.isLoading}
         liveTelemetry={elementTelemetry.liveTelemetry}
         assetId={assetId}
+        isPoweredOff={isPoweredOff}
+        elementRollup={rollupRow?.element_rollup ?? null}
+        rollupEdgeId={rollupRow?.edge_id ?? null}
       />
     </div>
   );

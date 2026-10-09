@@ -43,4 +43,43 @@ describe('resolveFields', () => {
   it('treats null sustainment with no live data as empty', () => {
     expect(resolveFields(config, null, undefined).source).toBe('empty');
   });
+
+  describe('edge rollup', () => {
+    const rollup = {
+      element_count: 12,
+      critical_count: 2,
+      degraded_count: 5,
+      avg_temp_c: 41.5,
+      avg_load_pct: 63.25,
+      observed_at: '2026-01-01T10:20:30Z',
+    };
+    const sus = () => nest(config.fields[0].path, { value: 42, unit: 'C' });
+
+    it('prefers sustainment over sim over rollup', () => {
+      expect(resolveFields(config, sus(), live, rollup).source).toBe('sustainment');
+      expect(resolveFields(config, null, live, rollup).source).toBe('sim');
+      expect(resolveFields(config, null, undefined, rollup).source).toBe('rollup');
+      expect(resolveFields(config, null, undefined, null).source).toBe('empty');
+    });
+
+    it('maps rollup values exactly onto the four shared fields', () => {
+      const r = resolveFields(config, null, undefined, rollup);
+      const sim = resolveFields(config, null, live);
+      expect(r.fields.map((f) => f.id)).toEqual(sim.fields.map((f) => f.id));
+      expect(r.fields.map((f) => f.label)).toEqual(sim.fields.map((f) => f.label));
+      expect(r.fields.map((f) => f.unit)).toEqual(sim.fields.map((f) => f.unit));
+      expect(r.fields.map((f) => f.value)).toEqual([2, 5, 41.5, 63.25]);
+    });
+
+    it('reads missing numeric keys as 0', () => {
+      const r = resolveFields(config, null, undefined, { element_count: 3 });
+      expect(r.source).toBe('rollup');
+      expect(r.fields.map((f) => f.value)).toEqual([0, 0, 0, 0]);
+    });
+
+    it('treats element_count 0 or missing as no rollup', () => {
+      expect(resolveFields(config, null, undefined, { ...rollup, element_count: 0 }).source).toBe('empty');
+      expect(resolveFields(config, null, undefined, { critical_count: 4 }).source).toBe('empty');
+    });
+  });
 });

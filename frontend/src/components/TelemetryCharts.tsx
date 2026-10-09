@@ -16,8 +16,14 @@
 //      AVG ELEMENT LOAD). Clearly badged as SYNTHESIZED so an operator
 //      doesn't confuse it with the real-sustainment path.
 //
-//   3. EMPTY STATE: no sustainment AND no sim element data → existing
-//      "telemetry not yet wired" copy.
+//   3. EDGE ROLLUP: per-element snapshots stay at the owning edge; the
+//      edge derives the same four aggregates and the region receives them
+//      as asset_telemetry_windows.element_rollup. Used only where the
+//      per-element data is not present locally. Also badged SYNTHESIZED,
+//      with a note naming the edge the rollup came from.
+//
+//   4. EMPTY STATE: no sustainment, no sim element data, no rollup →
+//      existing "telemetry not yet wired" copy.
 //
 // The instant the customer/DIS feed starts emitting `sustainment.*`,
 // the card switches back to the real-sustainment path automatically —
@@ -34,6 +40,7 @@ import type { TelemetryLatest, Quantity } from '../hooks';
 import { platformChartConfig, type ChartField } from '../config/platformChartConfig';
 import { SyncingNotice } from './SyncingNotice';
 import type { LiveElementTelemetry } from './SensorArrayView';
+import type { ElementRollup } from '../hooks/useTelemetryWindows';
 
 Chart.register(...registerables);
 Chart.defaults.color = '#64748b';
@@ -90,7 +97,7 @@ interface ResolvedField {
   hasValue: boolean;
 }
 
-type FieldSource = 'sustainment' | 'sim' | 'empty' | 'off';
+type FieldSource = 'sustainment' | 'sim' | 'rollup' | 'empty' | 'off';
 
 // ---------------------------------------------------------------------------
 // Sim-derived aggregation -- collapses per-element telemetry into 4
@@ -114,6 +121,8 @@ interface SimDerivedField {
   unit: string;
   anomalyThreshold?: number;
   readValue: (live: LiveElementTelemetry) => number;
+  /** Same stat read from the edge's element rollup (missing key = 0). */
+  readRollup: (rollup: ElementRollup) => number;
 }
 
 const SIM_DERIVED_FIELDS: SimDerivedField[] = [
@@ -129,6 +138,7 @@ const SIM_DERIVED_FIELDS: SimDerivedField[] = [
       }
       return n;
     },
+    readRollup: (r) => r.critical_count ?? 0,
   },
   {
     id: 'sim.degraded_elements',
@@ -142,6 +152,7 @@ const SIM_DERIVED_FIELDS: SimDerivedField[] = [
       }
       return n;
     },
+    readRollup: (r) => r.degraded_count ?? 0,
   },
   {
     id: 'sim.avg_element_temp',
@@ -158,6 +169,7 @@ const SIM_DERIVED_FIELDS: SimDerivedField[] = [
       }
       return count > 0 ? sum / count : 0;
     },
+    readRollup: (r) => r.avg_temp_c ?? 0,
   },
   {
     id: 'sim.avg_element_load',
@@ -174,6 +186,7 @@ const SIM_DERIVED_FIELDS: SimDerivedField[] = [
       }
       return count > 0 ? sum / count : 0;
     },
+    readRollup: (r) => r.avg_load_pct ?? 0,
   },
 ];
 
@@ -182,14 +195,21 @@ function hasSimElements(live: LiveElementTelemetry | undefined): boolean {
   return !!live && Object.keys(live).length > 0;
 }
 
+/** Does the edge rollup describe at least one element? A missing or
+ *  zero element_count means the edge had nothing to roll up. */
+function hasRollup(rollup: ElementRollup | null | undefined): rollup is ElementRollup {
+  return !!rollup && (rollup.element_count ?? 0) > 0;
+}
+
 /** Resolve the active field list + source for a given (sustainment,
- *  liveTelemetry) pair. Priority: sustainment > sim > empty. Exported
- *  for unit tests only. */
+ *  liveTelemetry, elementRollup) triple. Priority: sustainment > sim >
+ *  rollup > empty. Exported for unit tests only. */
 // eslint-disable-next-line react-refresh/only-export-components -- pure helper exported for tests; costs only HMR granularity
 export function resolveFields(
   config: ReturnType<typeof platformChartConfig>,
   sustainment: any,
   liveTelemetry: LiveElementTelemetry | undefined,
+  elementRollup?: ElementRollup | null,
 ): { fields: ResolvedField[]; source: FieldSource } {
   // Sustainment counts only when a configured field resolves to a
   // Quantity; an empty health block must not draw flat-zero charts.
@@ -229,7 +249,28 @@ export function resolveFields(
     };
   }
 
+  if (hasRollup(elementRollup)) {
+    return {
+      fields: SIM_DERIVED_FIELDS.map((f) => ({
+        id: f.id,
+        label: f.label,
+        unit: f.unit,
+        anomalyThreshold: f.anomalyThreshold,
+        value: f.readRollup(elementRollup),
+        hasValue: true,
+      })),
+      source: 'rollup',
+    };
+  }
+
   return { fields: [], source: 'empty' };
+}
+
+/** HH:MM:SSZ from an RFC3339 timestamp; placeholder when unparseable. */
+function formatObservedAt(observedAt: string | undefined): string {
+  const t = observedAt ? new Date(observedAt) : null;
+  if (!t || Number.isNaN(t.getTime())) return '--:--:--Z';
+  return t.toISOString().slice(11, 19) + 'Z';
 }
 
 interface TelemetryChartsProps {
@@ -256,6 +297,11 @@ interface TelemetryChartsProps {
    *  the parent supplies the disambiguator. Both POWER_STATE_OFF
    *  and POWER_STATE_SHUTTING_DOWN treat as off for display. */
   isPoweredOff?: boolean;
+  /** Edge-derived element rollup (asset_telemetry_windows). Used only
+   *  when neither sustainment nor per-element data is present. */
+  elementRollup?: ElementRollup | null;
+  /** Edge that produced the rollup, named in the card's rollup note. */
+  rollupEdgeId?: string | null;
 }
 
 export default function TelemetryCharts({
@@ -266,10 +312,12 @@ export default function TelemetryCharts({
   liveTelemetry,
   assetId,
   isPoweredOff = false,
+  elementRollup,
+  rollupEdgeId,
 }: TelemetryChartsProps) {
   const config = platformChartConfig(platformVariant);
   const sustainment = telemetry?.sustainment ?? null;
-  const resolved = resolveFields(config, sustainment, liveTelemetry);
+  const resolved = resolveFields(config, sustainment, liveTelemetry, elementRollup);
   // Power-off short-circuit: don't render synthesized charts when the
   // asset is off. The sim already zeroes elements + tx/rx, but the
   // aggregated stats still trend visibly (from prior history) which
@@ -361,7 +409,7 @@ export default function TelemetryCharts({
         <span className="flex items-center">
           <Activity className="w-4 h-4 mr-2" /> Prognostics &amp; Telemetry
         </span>
-        {source === 'sim' && (
+        {(source === 'sim' || source === 'rollup') && (
           // SYNTHESIZED badge -- distinguishes sim-derived aggregates
           // from real sustainment. Same color family as the existing
           // DEMO MOCK marker so the operator recognizes the provenance
@@ -390,12 +438,25 @@ export default function TelemetryCharts({
               "
               role="tooltip"
             >
-              Real sustainment is not yet wired for this asset. Showing
-              per-element rollups synthesized by logistics-sim — the
-              same data driving the 3D drill-down above. When the
-              upstream feed begins emitting <span className="text-amber-300">sustainment.*</span>,
-              this panel will switch back to real measurements
-              automatically.
+              {source === 'rollup' ? (
+                <>
+                  Real sustainment is not yet wired for this asset. The
+                  per-element tree stays at the owning edge; this card
+                  shows the edge's rollup of it. When the upstream feed
+                  begins emitting <span className="text-amber-300">sustainment.*</span>,
+                  this panel will switch back to real measurements
+                  automatically.
+                </>
+              ) : (
+                <>
+                  Real sustainment is not yet wired for this asset. Showing
+                  per-element rollups synthesized by logistics-sim — the
+                  same data driving the 3D drill-down above. When the
+                  upstream feed begins emitting <span className="text-amber-300">sustainment.*</span>,
+                  this panel will switch back to real measurements
+                  automatically.
+                </>
+              )}
             </div>
           </span>
         )}
@@ -405,6 +466,16 @@ export default function TelemetryCharts({
           (real sustainment). The syncing state must never fall through
           to the "no sustainment" copy (cold-start race). */}
       {isLoading && <SyncingNotice label="Syncing telemetry…" />}
+
+      {!isLoading && source === 'rollup' && (
+        <div
+          data-testid="telemetry-rollup"
+          className="text-[10px] font-mono text-slate-500 mb-3"
+        >
+          Rollup from {rollupEdgeId || 'the owning edge'} · per-element detail
+          lives at the edge · as of {formatObservedAt(elementRollup?.observed_at)}
+        </div>
+      )}
 
       {!isLoading && source === 'empty' && (
         <div
