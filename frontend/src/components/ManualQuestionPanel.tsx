@@ -152,7 +152,7 @@ export function ManualQuestionPanelView({
 
   return (
     <div className="panel shrink-0 p-3 relative">
-      {stubBanner && <DemoMockBanner note="manual question service is a stub" />}
+      {stubBanner && <DemoMockBanner note="manual question service is a stub" position="inline" />}
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm text-slate-400 tracking-wider uppercase flex items-center">
           <BookOpen className="w-4 h-4 mr-2" /> Ask the manual

@@ -920,8 +920,10 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                 />
             </Canvas>
 
-            {/* Depth indicator — one tick per configured layer. */}
-            <div className="absolute bottom-6 right-6 z-10 flex gap-2 pointer-events-none">
+            {/* Depth indicator — one tick per configured layer. Sits in the
+                strip under DiagnosticCanvas's bottom-right fault overlay
+                (bottom-4), not behind its button. */}
+            <div className="absolute bottom-1.5 right-4 z-10 flex gap-2 pointer-events-none">
                 {config.layers.map((_, i) => (
                     <div key={i} className={`w-8 h-1 ${i <= currentDepth ? 'bg-cyan-400' : 'bg-slate-800'}`}></div>
                 ))}

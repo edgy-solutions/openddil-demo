@@ -99,9 +99,13 @@ export default function HudFrame({
                 {headerExtras}
             </div>
 
-            {/* Bottom Left Context Hint (optional) */}
+            {/* Bottom-center context hint (optional). DiagnosticCanvas stacks
+                280px overlays in both bottom corners (manual + radar left,
+                fault report right), so the hint is centered between them,
+                wraps rather than reaching under them, and clears the
+                bottom-center banner. */}
             {bottomHint && (
-                <div className="absolute bottom-6 left-6 z-10 text-[0.7rem] uppercase tracking-tighter opacity-50 pointer-events-none">
+                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 w-max max-w-[calc(100%-38rem)] text-center z-10 text-[0.7rem] uppercase tracking-tighter opacity-50 pointer-events-none">
                     {bottomHint}
                 </div>
             )}
