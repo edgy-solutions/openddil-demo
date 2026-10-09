@@ -75,11 +75,20 @@ describe('ReleasedRecordsPane ReleasedRecordsView', () => {
     expect(html).toContain('edge-01');
   });
 
-  it('renders an array found at a pointer as compact JSON text', () => {
+  it('renders an array of objects one element per line, as key value pairs', () => {
     const html = renderToStaticMarkup(<ReleasedRecordsView data={FIXTURE} columns={COLUMNS} />);
-    // renderToStaticMarkup HTML-escapes quotes in text content -- assert on
-    // the escaped form rather than the raw JSON string.
-    expect(html).toContain('[{&quot;ref&quot;:&quot;PN-1234&quot;,&quot;quantity&quot;:1}]');
+    expect(html).toMatch(/<li[^>]*>[\s\S]*?>ref<\/span> <span[^>]*>PN-1234<\/span>[\s\S]*?>quantity<\/span> <span[^>]*>1<\/span>[\s\S]*?<\/li>/);
+    // No raw JSON for a one-level shape.
+    expect(html).not.toContain('&quot;ref&quot;');
+  });
+
+  it('falls back to compact JSON for a value nested past one level', () => {
+    const nested: DecisionsResponse = {
+      ...FIXTURE,
+      records: [record('rec-nested', 'ATL', [], true, { parts: [{ ref: 'PN-9', bin: { site: 'A' } }] })],
+    };
+    const html = renderToStaticMarkup(<ReleasedRecordsView data={nested} columns={COLUMNS} />);
+    expect(html).toContain('{&quot;site&quot;:&quot;A&quot;}');
   });
 
   it('resolves a nested pointer past an array index', () => {

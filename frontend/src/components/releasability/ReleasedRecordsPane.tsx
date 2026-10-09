@@ -20,9 +20,10 @@
 // into `record.body` — the generic payload the kind path reads off
 // `intake_records` (egress/pane_api.py's `build_decisions`). This file does
 // not know what a record "is"; it only knows how to walk a pointer. An
-// array or object found at a pointer renders as compact JSON text rather
-// than attempting a nested layout — there is no generic way to render an
-// arbitrary nested shape, and compact JSON is at least complete and exact.
+// array renders one line per element and an object renders its fields as
+// `key value` pairs, one level deep; anything nested past that falls back to
+// compact JSON. Every key and value is still shown verbatim, so the cell
+// stays complete and exact without knowing the kind.
 //
 // `ReleasedRecordsView` is exported separately from the default for the
 // same reason `DecisionsView` is: a test can render it off an
@@ -77,12 +78,60 @@ function resolvePointer(root: unknown, pointer: string): unknown {
   return cur;
 }
 
-/** Arrays and objects render as compact JSON text; everything else renders
- *  as its own string form, with `undefined`/`null` as an em dash. */
-function formatCell(value: unknown): string {
+/** Scalars render as their own string form, with `undefined`/`null` as an
+ *  em dash; anything deeper renders as compact JSON. */
+function formatScalar(value: unknown): string {
   if (value === undefined || value === null) return '—';
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
+}
+
+/** Strings longer than this wrap inside a minimum width instead of holding
+ *  the row to one line. */
+const WRAP_AFTER = 24;
+
+/** An object's fields as `key value` pairs on one line; nested values fall
+ *  back to compact JSON. */
+function FieldLine({ obj }: { obj: Record<string, unknown> }) {
+  const entries = Object.entries(obj);
+  if (entries.length === 0) return <>{'{}'}</>;
+  return (
+    <span className="whitespace-nowrap">
+      {entries.map(([k, v], i) => (
+        <Fragment key={k}>
+          {i > 0 && <span className="text-slate-600"> · </span>}
+          <span className="text-slate-500">{k}</span>{' '}
+          <span className="text-slate-300">{formatScalar(v)}</span>
+        </Fragment>
+      ))}
+    </span>
+  );
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function Cell({ value }: { value: unknown }) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return <span className="text-slate-600">none</span>;
+    return (
+      <ul className="space-y-0.5">
+        {value.map((item, i) => (
+          <li key={i} className="whitespace-nowrap">
+            {isPlainObject(item) ? <FieldLine obj={item} /> : formatScalar(item)}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+  if (isPlainObject(value)) return <FieldLine obj={value} />;
+  const text = formatScalar(value);
+  return (
+    <span className={text.length > WRAP_AFTER ? 'block min-w-[14rem]' : 'whitespace-nowrap'}>
+      {text}
+    </span>
+  );
 }
 
 function tallyRefusals(records: DecisionRecord[]): [string, number][] {
@@ -137,10 +186,14 @@ export function ReleasedRecordsView({
       )}
 
       {tally.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
+        <div className="mb-2 flex flex-wrap gap-2 text-[11px]">
           {tally.map(([reason, count]) => (
-            <span key={reason}>
-              <span className="font-mono text-rose-300">{count}</span> {reason}
+            <span
+              key={reason}
+              className="rounded-full border border-rose-900/60 bg-rose-950/40 px-2 py-0.5 text-rose-200"
+            >
+              <span className="font-mono font-semibold text-rose-300">{count}</span>{' '}
+              <span className="font-mono">{reason}</span>
             </span>
           ))}
         </div>
@@ -151,68 +204,80 @@ export function ReleasedRecordsView({
           No records for this destination are visible to you.
         </div>
       ) : (
-        <table className="w-full text-xs font-mono">
-          <thead>
-            <tr className="text-[10px] uppercase tracking-widest text-slate-500">
-              <th className="pb-1 text-left">key</th>
-              {columns.map((c) => (
-                <th key={c.header} className="pb-1 text-left">{c.header}</th>
-              ))}
-              <th className="pb-1 text-left">decision</th>
-              {figure && <th className="pb-1" />}
-            </tr>
-          </thead>
-          <tbody>
-            {data.records.map((r) => {
-              const rowKey = r.key ?? r.decision_id;
-              // Both pointers are resolved against the record body; the icn
-              // is only ever used when it is a safe figure number.
-              const icn = figure ? resolvePointer(r.body, figure.icnPointer) : undefined;
-              const ident = figure ? resolvePointer(r.body, figure.applicationStructureIdentPointer) : undefined;
-              const safeIcn = isSafeIcn(icn) ? icn : null;
-              const isOpen = safeIcn !== null && openKey === rowKey;
-              return (
-                <Fragment key={rowKey}>
-                  <tr className="border-t border-slate-800">
-                    <td className="py-1 text-slate-300">{r.key ?? '—'}</td>
-                    {columns.map((c) => (
-                      <td key={c.header} className="py-1 text-slate-400">
-                        {formatCell(resolvePointer(r.body, c.pointer))}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs font-mono">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-widest text-slate-500">
+                <th className="whitespace-nowrap pb-1.5 pr-4 text-left font-normal">key</th>
+                {columns.map((c) => (
+                  <th key={c.header} className="whitespace-nowrap pb-1.5 pr-4 text-left font-normal">
+                    {c.header}
+                  </th>
+                ))}
+                <th className="whitespace-nowrap pb-1.5 pr-4 text-left font-normal">decision</th>
+                {figure && <th className="pb-1.5" />}
+              </tr>
+            </thead>
+            <tbody>
+              {data.records.map((r) => {
+                const rowKey = r.key ?? r.decision_id;
+                // Both pointers are resolved against the record body; the icn
+                // is only ever used when it is a safe figure number.
+                const icn = figure ? resolvePointer(r.body, figure.icnPointer) : undefined;
+                const ident = figure ? resolvePointer(r.body, figure.applicationStructureIdentPointer) : undefined;
+                const safeIcn = isSafeIcn(icn) ? icn : null;
+                const isOpen = safeIcn !== null && openKey === rowKey;
+                return (
+                  <Fragment key={rowKey}>
+                    <tr className="border-t border-slate-800 align-top hover:bg-slate-800/30">
+                      <td className="whitespace-nowrap py-2 pr-4 text-slate-200">{r.key ?? '—'}</td>
+                      {columns.map((c) => (
+                        <td key={c.header} className="py-2 pr-4 text-slate-400">
+                          <Cell value={resolvePointer(r.body, c.pointer)} />
+                        </td>
+                      ))}
+                      {/* Verbatim from the endpoint, same as EgressAdmissionPane:
+                          no nation is read here to pick this cell's text or color. */}
+                      <td className="whitespace-nowrap py-2 pr-4">
+                        <span
+                          className={
+                            r.allowed
+                              ? 'rounded border border-emerald-800/70 bg-emerald-950/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-emerald-300'
+                              : 'rounded border border-rose-900/70 bg-rose-950/40 px-1.5 py-0.5 text-[10px] text-rose-300'
+                          }
+                        >
+                          {r.allowed ? 'ADMIT' : r.reason}
+                        </span>
                       </td>
-                    ))}
-                    {/* Verbatim from the endpoint, same as EgressAdmissionPane:
-                        no nation is read here to pick this cell's text or color. */}
-                    <td className={r.allowed ? 'py-1 text-emerald-300' : 'py-1 text-rose-300'}>
-                      {r.allowed ? 'ADMIT' : r.reason}
-                    </td>
-                    {figure && (
-                      <td className="py-1 text-right">
-                        {safeIcn !== null && (
-                          <button
-                            type="button"
-                            aria-expanded={isOpen}
-                            onClick={() => setOpenKey(isOpen ? null : rowKey)}
-                            className="rounded border border-slate-700 px-1.5 text-[10px] uppercase tracking-widest text-slate-300 hover:border-slate-500"
-                          >Figure</button>
-                        )}
-                      </td>
-                    )}
-                  </tr>
-                  {isOpen && safeIcn !== null && (
-                    <tr>
-                      <td colSpan={columns.length + 3} className="pb-2">
-                        <FigureView
-                          icn={safeIcn}
-                          applicationStructureIdent={typeof ident === 'string' ? ident : null}
-                        />
-                      </td>
+                      {figure && (
+                        <td className="py-2 text-right">
+                          {safeIcn !== null && (
+                            <button
+                              type="button"
+                              aria-expanded={isOpen}
+                              onClick={() => setOpenKey(isOpen ? null : rowKey)}
+                              className="rounded border border-slate-700 px-1.5 text-[10px] uppercase tracking-widest text-slate-300 hover:border-slate-500"
+                            >Figure</button>
+                          )}
+                        </td>
+                      )}
                     </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+                    {isOpen && safeIcn !== null && (
+                      <tr>
+                        <td colSpan={columns.length + 3} className="pb-2">
+                          <FigureView
+                            icn={safeIcn}
+                            applicationStructureIdent={typeof ident === 'string' ? ident : null}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
