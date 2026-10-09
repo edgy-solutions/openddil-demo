@@ -21,7 +21,8 @@
 // ElectricSQL hasn't even returned a Shape response yet.
 
 import { useMemo } from 'react';
-import { useRegionFleetSummary } from '../../hooks';
+import { useRegionFleetSummary, useAllTelemetryWindows } from '../../hooks';
+import { elementCountsByRegion } from '../../hooks/useTelemetryWindows';
 
 function relativeAge(iso: string | null): string {
   if (!iso) return '—';
@@ -34,8 +35,17 @@ function relativeAge(iso: string | null): string {
   return `${Math.round(ageS / 86400)}d ago`;
 }
 
+const ELEM_TITLE =
+  "elements in the critical / degraded band, summed over the region's latest window rollups";
+
 export default function RegionFleetSummary() {
   const rollup = useRegionFleetSummary();
+  const windows = useAllTelemetryWindows();
+  const elementCounts = useMemo(
+    () => elementCountsByRegion(windows.data),
+    [windows.data],
+  );
+  const unattributed = elementCounts.get('')?.rollups ?? 0;
 
   const rows = useMemo(
     () => [...rollup.data].sort((a, b) => a.region_id.localeCompare(b.region_id)),
@@ -47,7 +57,7 @@ export default function RegionFleetSummary() {
       <h3 className="text-xs text-slate-200 tracking-widest uppercase mb-2 flex items-center justify-between">
         <span>REGION FLEET SUMMARY</span>
         <span className="text-[10px] text-slate-500 normal-case">
-          region_fleet_summary live from faust-regional aggregator
+          region_fleet_summary live from faust-regional aggregator · element bands from window rollups
         </span>
       </h3>
       {rollup.isLoading && rows.length === 0 ? (
@@ -69,6 +79,12 @@ export default function RegionFleetSummary() {
               </th>
               <th className="text-right pb-1">
                 <span className="text-orange-400">critical</span>
+              </th>
+              <th className="text-right pb-1" title={ELEM_TITLE}>
+                <span className="text-rose-400">elem crit</span>
+              </th>
+              <th className="text-right pb-1" title={ELEM_TITLE}>
+                <span className="text-amber-400">elem deg</span>
               </th>
               <th className="text-right pb-1">
                 <span className="text-red-400">N-O</span>
@@ -96,6 +112,18 @@ export default function RegionFleetSummary() {
                 <td className="py-1 text-right text-emerald-300">{r.nominal}</td>
                 <td className="py-1 text-right text-amber-300">{r.degraded}</td>
                 <td className="py-1 text-right text-orange-300">{r.critical}</td>
+                <td
+                  className="py-1 text-right text-rose-300"
+                  data-testid={`region-elements-critical-${r.region_id}`}
+                >
+                  {elementCounts.get(r.region_id)?.critical ?? '—'}
+                </td>
+                <td
+                  className="py-1 text-right text-amber-300"
+                  data-testid={`region-elements-degraded-${r.region_id}`}
+                >
+                  {elementCounts.get(r.region_id)?.degraded ?? '—'}
+                </td>
                 <td className="py-1 text-right text-red-300">{r.non_operational}</td>
                 <td className="py-1 text-right text-slate-300">{r.destroyed}</td>
                 <td className="py-1 text-right text-slate-300">{r.deactivated}</td>
@@ -108,6 +136,14 @@ export default function RegionFleetSummary() {
             ))}
           </tbody>
         </table>
+      )}
+      {unattributed > 0 && (
+        <div
+          className="mt-1 text-[10px] text-slate-500"
+          data-testid="region-elements-unattributed"
+        >
+          {unattributed} element rollup(s) without a region
+        </div>
       )}
     </div>
   );

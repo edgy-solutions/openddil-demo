@@ -29,6 +29,8 @@ export interface TelemetryWindows {
   asset_id: string;
   /** Owning edge stamped by the projector; null when unstamped. */
   edge_id: string | null;
+  /** Owning region stamped by the projector; null when unstamped. */
+  region_id: string | null;
   platform_variant: string | null;
   /** map<string, ScalarTrend> — keyed by fluid name (e.g. fuel_remaining). */
   fluid_trends: Record<string, any>;
@@ -49,6 +51,7 @@ function mapWindows(row: Record<string, any>): TelemetryWindows {
   return {
     asset_id: row.asset_id,
     edge_id: row.edge_id ?? null,
+    region_id: row.region_id ?? null,
     platform_variant: row.platform_variant ?? null,
     fluid_trends: row.fluid_trends ?? {},
     consumable_trends: row.consumable_trends ?? [],
@@ -70,4 +73,35 @@ export function useTelemetryWindows(assetId: string): ShapeResult<TelemetryWindo
 /** Windowed telemetry for the whole fleet — for HQ wear-trend rollups. */
 export function useAllTelemetryWindows(): ShapeResult<TelemetryWindows> {
   return useTableShape('asset_telemetry_windows', mapWindows);
+}
+
+export interface RegionElementCounts {
+  critical: number;
+  degraded: number;
+  elements: number;
+  rollups: number;
+}
+
+/** Sum the element-band counts of each row's rollup per region. Rows with
+ *  no region land under "" (shown, never dropped); rows with no rollup
+ *  contribute nothing. Absent numeric keys count as 0. */
+export function elementCountsByRegion(
+  rows: TelemetryWindows[],
+): Map<string, RegionElementCounts> {
+  const out = new Map<string, RegionElementCounts>();
+  for (const row of rows) {
+    const r = row.element_rollup;
+    if (!r) continue;
+    const key = row.region_id ?? '';
+    let e = out.get(key);
+    if (!e) {
+      e = { critical: 0, degraded: 0, elements: 0, rollups: 0 };
+      out.set(key, e);
+    }
+    e.critical += num(r.critical_count);
+    e.degraded += num(r.degraded_count);
+    e.elements += num(r.element_count);
+    e.rollups += 1;
+  }
+  return out;
 }
