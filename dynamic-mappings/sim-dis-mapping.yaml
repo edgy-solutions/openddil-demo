@@ -15,6 +15,7 @@ processor_resources:
       #   location_ecef:   {x, y, z}  — metres
       #   linear_velocity_ecef: {x, y, z}  — m/s
       #   orientation_euler:    {psi, theta, phi}  — radians
+      #   condition:       {level, moved_by[], claims[]}  — optional, resolved by the sidecar
       #
       # SUSTAINMENT NOTE: DIS Entity State PDUs carry NO sustainment data.
       # Do not map thermal/fuel/power fields from DIS input — they are
@@ -353,5 +354,17 @@ processor_resources:
       ].filter(v -> v != null)
 
       root.sustainment.health.weapons_fault = $ax.firepower_kill.or(false)
+
+      # =====================================================================
+      # CONDITION (openddil.telemetry.v1.Condition)
+      # =====================================================================
+      # Copied, never interpreted. The sidecar keeps the per-entity state the
+      # three sources need (appearance, emission against its declared
+      # baseline, the health datum), resolves the worst by the order declared
+      # in ontology/dis_condition.yaml, and writes it in the proto's JSON
+      # shape. Outside the appearance block on purpose: an emission or datum
+      # claim stands without any appearance at all. Absent key = no source
+      # claimed anything, so the field stays absent too.
+      root.operational_state.condition = $src.condition.or(deleted())
 
       }
