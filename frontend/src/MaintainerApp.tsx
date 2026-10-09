@@ -617,6 +617,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             isPoweredOff={isPoweredOff}
             elementRollup={telemetryWindows.data[0]?.element_rollup ?? null}
             rollupEdgeId={telemetryWindows.data[0]?.edge_id ?? null}
+            condition={assetElementTelemetry.operational?.condition ?? null}
           />
           <AlertFeed
             events={events.data}

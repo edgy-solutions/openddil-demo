@@ -76,6 +76,7 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
         isPoweredOff={isPoweredOff}
         elementRollup={rollupRow?.element_rollup ?? null}
         rollupEdgeId={rollupRow?.edge_id ?? null}
+        condition={elementTelemetry.operational?.condition ?? null}
       />
     </div>
   );

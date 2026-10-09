@@ -41,6 +41,15 @@ import { platformChartConfig, type ChartField } from '../config/platformChartCon
 import { SyncingNotice } from './SyncingNotice';
 import type { LiveElementTelemetry } from './SensorArrayView';
 import type { ElementRollup } from '../hooks/useTelemetryWindows';
+import {
+  OFF_LEVELS,
+  conditionLine,
+  conditionTone,
+  levelWords,
+  sourceWords,
+  type Condition,
+  type ConditionTone,
+} from '../lib/condition';
 
 Chart.register(...registerables);
 Chart.defaults.color = '#64748b';
@@ -302,7 +311,19 @@ interface TelemetryChartsProps {
   elementRollup?: ElementRollup | null;
   /** Edge that produced the rollup, named in the card's rollup note. */
   rollupEdgeId?: string | null;
+  /** Edge envelope's resolved condition (operational.condition). Wins over
+   *  the rollup's; the line names what moved the asset. */
+  condition?: Condition | null;
 }
+
+// Condition-line tones, from this file's palette: cyan for nominal, the
+// DEGRADED-element yellow, the anomaly rose, slate when the asset is off.
+const CONDITION_TONE_CLASS: Record<ConditionTone, string> = {
+  nominal: 'text-cyan-400',
+  degraded: 'text-yellow-400',
+  critical: 'text-rose-400',
+  off: 'text-slate-400',
+};
 
 export default function TelemetryCharts({
   telemetry,
@@ -314,6 +335,7 @@ export default function TelemetryCharts({
   isPoweredOff = false,
   elementRollup,
   rollupEdgeId,
+  condition,
 }: TelemetryChartsProps) {
   const config = platformChartConfig(platformVariant);
   const sustainment = telemetry?.sustainment ?? null;
@@ -323,8 +345,15 @@ export default function TelemetryCharts({
   // aggregated stats still trend visibly (from prior history) which
   // reads as "asset is up." Force an 'off' source so the panel shows
   // POWERED OFF instead of streaming curves.
-  const fields: ResolvedField[] = isPoweredOff ? [] : resolved.fields;
-  const source: FieldSource = isPoweredOff ? 'off' : resolved.source;
+  // A condition at an off level (not emitting, deactivated, destroyed)
+  // enters the same state even when the power axis says nothing.
+  const displayedCondition = condition ?? elementRollup?.condition ?? null;
+  const conditionOff =
+    displayedCondition?.level != null && OFF_LEVELS.has(displayedCondition.level);
+  const isOff = isPoweredOff || conditionOff;
+  const fields: ResolvedField[] = isOff ? [] : resolved.fields;
+  const source: FieldSource = isOff ? 'off' : resolved.source;
+  const condLine = conditionLine(displayedCondition);
 
   // One canvas ref per resolved field. Re-created when source, variant,
   // OR selected asset_id changes (different field list, different
@@ -477,6 +506,15 @@ export default function TelemetryCharts({
         </div>
       )}
 
+      {!isLoading && condLine && (
+        <div
+          data-testid="telemetry-condition"
+          className={`text-[10px] font-mono tracking-wider mb-3 ${CONDITION_TONE_CLASS[conditionTone(displayedCondition)]}`}
+        >
+          {condLine}
+        </div>
+      )}
+
       {!isLoading && source === 'empty' && (
         <div
           data-testid="telemetry-empty"
@@ -495,10 +533,21 @@ export default function TelemetryCharts({
       {!isLoading && source === 'off' && (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-3 rounded-sm">
           <div className="font-mono text-[10px] tracking-widest text-slate-400 mb-1">
-            POWERED OFF
+            {conditionOff ? levelWords(displayedCondition?.level) : 'POWERED OFF'}
           </div>
-          Asset is powered off — no telemetry streaming. Prognostics and
-          per-field charts resume when the asset returns to POWER_STATE_ON.
+          {conditionOff ? (
+            <>
+              No emission — the condition reports {levelWords(displayedCondition?.level)}
+              {(displayedCondition?.moved_by?.length ?? 0) > 0 &&
+                `, moved by ${(displayedCondition?.moved_by ?? []).map(sourceWords).join(' + ')}`}
+              .
+            </>
+          ) : (
+            <>
+              Asset is powered off — no telemetry streaming. Prognostics and
+              per-field charts resume when the asset returns to POWER_STATE_ON.
+            </>
+          )}
         </div>
       )}
 

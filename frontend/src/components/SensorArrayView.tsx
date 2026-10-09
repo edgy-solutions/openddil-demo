@@ -26,6 +26,7 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import * as TWEEN from '@tweenjs/tween.js';
 import HudFrame from './HudFrame';
+import { sourceWords } from '../lib/condition';
 
 const COLORS = { nominal: 0x22d3ee, warning: 0xfacc15, critical: 0xef4444, bg: 0x020617, housing: 0x0f172a, card: 0x1e293b };
 
@@ -161,6 +162,7 @@ interface ElementData {
     size: [number, number, number];
     color: number;
     wireframe?: boolean;
+    movedBy?: string;
 }
 
 /** Per-element telemetry from a live source (logistics-sim). Keyed
@@ -178,6 +180,8 @@ export interface LiveElementTelemetry {
         load?: number;
         txActive?: boolean;
         rxActive?: boolean;
+        /** Short code(s), "+"-joined, of what moved this element. */
+        movedBy?: string;
     };
 }
 
@@ -833,6 +837,12 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
             return;
         }
         const live = liveTelemetry?.[selectedElement.id];
+        // "Moved by" refreshes on every tick, independent of health, so
+        // the row appears and disappears as the condition changes.
+        if (live && live.movedBy !== selectedElement.movedBy) {
+            setSelectedElement({ ...selectedElement, movedBy: live.movedBy });
+            return;
+        }
         if (live?.health == null) return;
         if (live.health === selectedElement.healthValue) return;
         const status = getStatusFromHealth(live.health);
@@ -993,6 +1003,14 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                                 {selectedElement?.status.label || 'NOMINAL'}
                             </span>
                         </div>
+                        {selectedElement?.movedBy && (
+                            <div data-testid="element-moved-by" className="flex justify-between items-center mt-2">
+                                <span className="text-xs">MOVED BY</span>
+                                <span className="text-[0.7rem] font-bold text-cyan-300">
+                                    {sourceWords(selectedElement.movedBy)}
+                                </span>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>

@@ -26,6 +26,7 @@
 import { useMemo, useRef } from 'react';
 import { useTableShape, sqlLiteral, type ShapeResult } from './electric';
 import type { LiveElementTelemetry } from '../components/SensorArrayView';
+import type { Condition } from '../lib/condition';
 
 export interface AssetElementOperational {
   power_state?: string;
@@ -40,6 +41,9 @@ export interface AssetElementOperational {
   // hardcoded literals in SensorArrayView.
   core_temp_c?: number;
   uptime_hours?: number;
+  // Resolved DIS-state condition with the sources that moved it. Absent
+  // when no source claims (absence is not health).
+  condition?: Condition;
 }
 
 interface AssetElementTelemetryRow {
@@ -63,6 +67,8 @@ interface ElementJson {
   load_pct: number;
   tx_active?: boolean;
   rx_active?: boolean;
+  /** Short code(s), "+"-joined, of what lifted or forced this element off. */
+  moved_by?: string;
 }
 
 // Electric's Shape API returns JSONB columns as JSON-encoded STRINGS,
@@ -167,6 +173,7 @@ export function useAssetElementTelemetry(assetId: string | null | undefined): {
         // propagate per face element from the logistics-sim publisher.
         txActive: e.tx_active,
         rxActive: e.rx_active,
+        movedBy: e.moved_by,
       };
     }
     lastGoodRef.current = out;

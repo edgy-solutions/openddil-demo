@@ -5,6 +5,7 @@
 // mirroring the WindowedTelemetry proto (slope + latest + r_squared per
 // signal). Used by per-asset trend charts.
 import { num, useTableShape, sqlLiteral, type ShapeResult } from './electric';
+import type { Condition } from '../lib/condition';
 
 /** Asset-level rollup of the per-element snapshot, derived at the owning
  *  edge (proto JSON, snake_case). Absent numeric keys are proto3 zero
@@ -20,6 +21,8 @@ export interface ElementRollup {
   observed_at?: string;
   core_temp_c?: number;
   uptime_hours?: number;
+  /** Resolved DIS-state condition; absent when no source claims. */
+  condition?: Condition;
 }
 
 export interface TelemetryWindows {
