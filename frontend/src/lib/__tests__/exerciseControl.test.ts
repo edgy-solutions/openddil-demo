@@ -110,6 +110,42 @@ describe('createExerciseControlController', () => {
     expect(c.getState().kind).toBe('forbidden');
   });
 
+  it('runOp(reset) 403 with a reason -> refusal set, kind stays ok (not forbidden)', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(PAUSED_STATUS), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'forbidden', reason: 'supervisor role required' }), { status: 403 }));
+    const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+
+    await c.poll();
+    await c.runOp('reset');
+
+    const state = c.getState();
+    expect(state.kind).toBe('ok');
+    expect(state.refusal).toBe('supervisor role required');
+    expect(state.status?.last_command).toEqual(PAUSED_STATUS.last_command);
+  });
+
+  it('runOp(reset) 403 without a reason falls back to the error, then to refused (403)', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 403 }));
+    const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+
+    await c.runOp('reset');
+    expect(c.getState().refusal).toBe('forbidden');
+    await c.runOp('reset');
+    expect(c.getState().refusal).toBe('refused (403)');
+  });
+
+  it('runOp(reset) 401 and runOp(pause) 403 still -> forbidden', async () => {
+    for (const [op, status] of [['reset', 401], ['pause', 403]] as const) {
+      const fetchImpl = vi.fn().mockResolvedValueOnce(new Response(null, { status }));
+      const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+      await c.runOp(op);
+      expect(c.getState().kind).toBe('forbidden');
+    }
+  });
+
   it('runOp() transport error on a stopped adapter sets stale, not a fabricated last_command', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(PAUSED_STATUS), { status: 200 }))

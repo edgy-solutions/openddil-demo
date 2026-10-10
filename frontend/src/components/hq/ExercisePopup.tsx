@@ -73,6 +73,8 @@ export function ExercisePopupView({
 
   const forbidden = kind === 'forbidden';
   const resetAvailable = resetJob?.available === true;
+  // An older gateway omits may_press; only an explicit false disables.
+  const resetBlocked = resetJob?.may_press === false;
 
   return (
     <div className="relative flex flex-col items-center">
@@ -122,11 +124,18 @@ export function ExercisePopupView({
             <div className="mt-2">
               <button
                 type="button"
-                onClick={() => onOpClick('reset')}
-                className="text-[10px] px-2 py-1 border border-slate-600 rounded"
+                disabled={resetBlocked}
+                title={resetBlocked ? 'The reset destroys exercise state and takes about 13 minutes.' : undefined}
+                onClick={resetBlocked ? undefined : () => onOpClick('reset')}
+                className="text-[10px] px-2 py-1 border border-slate-600 rounded disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Restart exercise
               </button>
+              {resetBlocked && (
+                <div className="mt-0.5 text-[10px] text-slate-500">
+                  Restart exercise: supervisor login only
+                </div>
+              )}
             </div>
           )}
 

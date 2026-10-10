@@ -318,6 +318,26 @@ export function deployment(): Deployment {
   return active;
 }
 
+/** This tier's parent id from its own configuration, or null when it has
+ *  none. Independent of link control: a tier knows its parent whether or not
+ *  the link toggles are available. */
+export function parentTierName(): string | null {
+  return active.tier?.parent ?? null;
+}
+
+/** Is `id` the root tier? The root is the tier with no parent: this tier's
+ *  own id when it has no parent, otherwise the implicit root's id. */
+export function isRootTier(id: string): boolean {
+  const t = active.tier;
+  if (t && !t.parent && t.id === id) return true;
+  return id === IMPLICIT_ROOT.id;
+}
+
+/** How a parent is shown: 'HQ' for the root, otherwise the id as configured. */
+export function parentDisplay(id: string): string {
+  return isRootTier(id) ? 'HQ' : id;
+}
+
 function isValidFob(x: unknown): x is Fob {
   if (!x || typeof x !== 'object') return false;
   const f = x as Record<string, unknown>;

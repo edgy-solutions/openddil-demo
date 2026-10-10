@@ -88,7 +88,7 @@ export default function WorkOrders() {
         <div className="absolute inset-0 bg-rose-950/80 backdrop-blur-sm z-20 flex flex-col items-center justify-center border-2 border-rose-500 mt-12 mx-3 mb-3">
           <Lock className="w-8 h-8 text-rose-500 mb-2" />
           <span className="font-bold text-rose-400 tracking-widest text-sm">SYSTEM FREEZE</span>
-          <span className="text-[10px] text-rose-300 mt-1">EDGE→HQ LINK SEVERED</span>
+          <span className="text-[10px] text-rose-300 mt-1">UPLINK SEVERED</span>
         </div>
       )}
 

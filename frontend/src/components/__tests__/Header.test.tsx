@@ -23,6 +23,7 @@ vi.mock('../../hooks', () => ({
 }));
 
 import Header from '../Header';
+import { __setDeploymentForTest } from '../../deployment';
 
 function setStatus(status: EdgeBufferStatus | null): void {
   mockUseEdgeBuffer.mockReturnValue({ status, isError: false });
@@ -91,6 +92,35 @@ describe('Header', () => {
     expect(html).toMatch(/<input[^>]*id="toggle1"[^>]*disabled=""/);
     expect(html).toContain('Link state unknown');
     expect(html).toContain('>UPLINK<');
+  });
+});
+
+describe('Header — parent from tier configuration', () => {
+  it('config parent region-east: named with link control off, no toggle', () => {
+    setStatus(SEVERED_STATUS);
+    __setDeploymentForTest({ id: 'edge-a', scope: null, has_children: false, parent: 'region-east' });
+    try {
+      const html = render(control({ status: 'off', uplink: null }));
+      expect(html).toContain('UPLINK TO REGION-EAST');
+      expect(html).toContain('UPLINK BUFFER → region-east');
+      expect(html).not.toContain('type="checkbox"');
+      expect(html).not.toContain('CENTRAL HQ');
+    } finally {
+      __setDeploymentForTest(undefined);
+    }
+  });
+
+  it('config parent is the root: CENTRAL HQ, UPLINK TO HQ, UPLINK BUFFER → HQ', () => {
+    setStatus(SEVERED_STATUS);
+    __setDeploymentForTest({ id: 'edge-a', scope: null, has_children: false, parent: 'root' });
+    try {
+      const html = render(control({ status: 'off', uplink: null }));
+      expect(html).toContain('CENTRAL HQ');
+      expect(html).toContain('UPLINK TO HQ');
+      expect(html).toContain('UPLINK BUFFER → HQ');
+    } finally {
+      __setDeploymentForTest(undefined);
+    }
   });
 });
 

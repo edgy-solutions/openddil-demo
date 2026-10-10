@@ -7,7 +7,7 @@
 // tier's own uplink to its parent (one proxy per link); the label beside it
 // is the observed reachability, never the commanded state. The vestigial
 // second link toggle (link2 — never backed by anything) was removed.
-import { Laptop, Building2, TrendingUp } from 'lucide-react';
+import { Laptop, Building2, Server, TrendingUp } from 'lucide-react';
 import { ThisNodeBadge } from '../lib/thisNode';
 import type { FleetAsset, FleetTierMap } from '../hooks';
 import { useEdgeBuffer } from '../hooks';
@@ -26,6 +26,7 @@ import type { UseLinkControlResult } from '../hooks/useLinkControl';
 import { LinkControlCaption, LinkToggle } from './LinkToggle';
 import { LinkToxicsControl } from './LinkToxics';
 import { linkToggleAvailability } from '../lib/linkControl';
+import { isRootTier, parentDisplay, parentTierName } from '../deployment';
 
 // Label text/tone per observed LinkIndicatorKind. UNKNOWN/STALE are
 // deliberately neutral (grey) -- they are "no confirmed answer", not good
@@ -150,17 +151,22 @@ export default function Header({
   const linkIndicator = useLinkIndicator(status, isError);
   const lag = status?.bridge_group_lag ?? 0;
   // Unrelated to the link label above: this still backs the separate
-  // "EDGE→HQ BUFFER" MSGS-count row's dash-vs-number display.
+  // "UPLINK BUFFER" MSGS-count row's dash-vs-number display.
   const probeDown = status != null && !status.probe_healthy;
   // `severed` still drives the rose/slate divider line + MSGS-row glow
   // below; kept as an observed-only derivation so it
   // stays consistent with the indicator it sits next to.
   const severed = linkIndicator === 'severed';
+  // The parent comes from this tier's configuration, so it is named whether
+  // or not link control is on; the listing is only a fallback.
+  const configParent = parentTierName();
+  const parentName = configParent ? parentDisplay(configParent) : (linkControl.uplink?.parent ?? null);
+  const parentIsRoot = configParent == null || isRootTier(configParent);
   const uplinkToggle = linkToggleAvailability(
     linkControl.status,
     linkControl.uplink?.enabled ?? null,
     'this tier',
-    linkControl.uplink?.parent ?? null,
+    parentName,
   );
 
   return (
@@ -261,7 +267,7 @@ export default function Header({
         <div className="flex-1 flex flex-col items-center relative">
           <div className={`absolute w-full h-[2px] top-3 -z-10 ${severed ? 'bg-rose-900' : 'bg-slate-700'}`}></div>
           <span className="text-[9px] tracking-widest text-slate-500">
-            {linkControl.uplink?.parent ? `UPLINK TO ${linkControl.uplink.parent.toUpperCase()}` : 'UPLINK'}
+            {parentName ? `UPLINK TO ${parentName.toUpperCase()}` : 'UPLINK'}
           </span>
           {uplinkToggle.show && (
             <div className="mt-1 mr-2 flex items-center gap-2">
@@ -289,13 +295,17 @@ export default function Header({
             so the THIS-NODE highlight on TACTICAL EDGE reads clearly.
             Same dim-state styling HqHeader uses for TACTICAL EDGE. */}
         <div className="flex flex-col items-center text-slate-500 mr-8">
-          <Building2 className="w-6 h-6 mb-1 text-slate-600" />
-          <span className="text-[10px] font-bold tracking-wider">CENTRAL HQ</span>
+          {parentIsRoot
+            ? <Building2 className="w-6 h-6 mb-1 text-slate-600" />
+            : <Server className="w-6 h-6 mb-1 text-slate-600" />}
+          <span className="text-[10px] font-bold tracking-wider">
+            {parentIsRoot ? 'CENTRAL HQ' : parentName!.toUpperCase()}
+          </span>
         </div>
 
         {/* Real edge-buffer depth: bridge-group consumer lag on redpanda-edge */}
         <div className="pl-6 border-l border-slate-700 min-w-[160px]">
-          <div className="text-[10px] text-slate-400 tracking-wider">EDGE→HQ BUFFER</div>
+          <div className="text-[10px] text-slate-400 tracking-wider">{parentName ? `UPLINK BUFFER → ${parentName}` : 'UPLINK BUFFER'}</div>
           <div className="flex items-baseline space-x-2">
             <span className="text-3xl font-bold text-slate-100">
               {probeDown ? '—' : lag > 1000 ? (lag / 1000).toFixed(1) + 'K' : lag}

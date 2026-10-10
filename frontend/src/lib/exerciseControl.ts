@@ -62,6 +62,9 @@ export interface ExerciseResetJob {
   available: boolean;
   latest: ExerciseResetJobLatest | null;
   error: string | null;
+  /** False when the gateway would refuse this subject's reset. Absent from
+   *  gateways that predate the field, which is treated as allowed. */
+  may_press?: boolean;
 }
 
 export interface ExerciseStatusBody {
@@ -144,6 +147,12 @@ export function createExerciseControlController(
         method: 'POST',
         credentials: 'same-origin',
       });
+      if (op === 'reset' && res.status === 403) {
+        // A refused reset is a refusal, not a loss of exercise-control access.
+        const refused = (await res.json()) as { reason?: string; error?: string };
+        setState({ ...state, refusal: refused.reason ?? refused.error ?? 'refused (403)' });
+        return;
+      }
       if (res.status === 401 || res.status === 403) {
         setState({ kind: 'forbidden', status: state.status, stale: state.stale });
         return;

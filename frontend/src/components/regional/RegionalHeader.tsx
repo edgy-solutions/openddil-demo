@@ -22,6 +22,7 @@ import {
 } from '../LinkToggle';
 import { LinkToxicsControl } from '../LinkToxics';
 import { linkToggleAvailability } from '../../lib/linkControl';
+import { parentDisplay, parentTierName } from '../../deployment';
 
 // Same tones as Header.tsx -- see lib/linkIndicator.ts for why
 // UNKNOWN/STALE are neutral rather than borrowing the up/severed palette.
@@ -70,14 +71,16 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
     ? Array.from(linkRows.links.keys()).sort()
     : linkControl.children.map((c) => c.id);
   const childrenDown = allLinksDown(childIds.map((id) => classifyLink(linkRows.links.get(id), nowMs)));
+  // The parent comes from this tier's configuration, so it is named with
+  // control off too; the listing is only a fallback.
+  const configParent = parentTierName();
+  const parentName = configParent ? parentDisplay(configParent) : (linkControl.uplink?.parent ?? null);
   const uplinkToggle = linkToggleAvailability(
     linkControl.status,
     linkControl.uplink?.enabled ?? null,
     'this hub',
-    linkControl.uplink?.parent ?? null,
+    parentName,
   );
-  // Named only from the listing; with control off the parent is not known here.
-  const parentName = linkControl.uplink?.parent ?? null;
 
   return (
     <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
@@ -162,7 +165,7 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
 
         {/* Real edge-buffer depth: bridge-group consumer lag on redpanda-edge */}
         <div className="pl-6 border-l border-slate-700 min-w-[160px]">
-          <div className="text-[10px] text-slate-400 tracking-wider">EDGE→HQ BUFFER</div>
+          <div className="text-[10px] text-slate-400 tracking-wider">{parentName ? `UPLINK BUFFER → ${parentName}` : 'UPLINK BUFFER'}</div>
           <div className="flex items-baseline space-x-2">
             <span className="text-3xl font-bold text-slate-100">
               {probeDown ? '—' : lag > 1000 ? (lag / 1000).toFixed(1) + 'K' : lag}

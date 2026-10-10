@@ -26,6 +26,7 @@ vi.mock('../../../hooks/useLinkStatus', () => ({
 }));
 
 import RegionalHeader from '../RegionalHeader';
+import { __setDeploymentForTest } from '../../../deployment';
 
 const SEVERED_STATUS: EdgeBufferStatus = {
   bridge_group_lag: 0,
@@ -102,6 +103,18 @@ describe('RegionalHeader', () => {
     // The parent is named only by the listing; off means it is not known here.
     expect(html).toContain('>UPLINK<');
     expect(html).not.toContain('UPLINK TO');
+  });
+
+  it('config parent is the root: HQ named and buffer labelled with control off', () => {
+    setup([]);
+    __setDeploymentForTest({ id: 'region-a', scope: null, has_children: true, parent: 'root' });
+    try {
+      const html = render(control({ status: 'off', uplink: null, children: [] }));
+      expect(html).toContain('UPLINK TO HQ');
+      expect(html).toContain('UPLINK BUFFER → HQ');
+    } finally {
+      __setDeploymentForTest(undefined);
+    }
   });
 
   it('forbidden: disabled checkboxes and the caption; observed words stay', () => {

@@ -190,6 +190,20 @@ describe('ExercisePopupView', () => {
       expect(none).toContain('Restart exercise runs the reset in the cluster, then sends restart only if the reset measured zero.');
     });
 
+    it('may_press false: disabled button and the supervisor-only line; true or absent: enabled', () => {
+      const blocked = renderToStaticMarkup(
+        <ExercisePopupView {...BASE} open={true} resetJob={{ ...JOB('succeeded', null), may_press: false }} />,
+      );
+      expect(blocked).toMatch(/<button[^>]*disabled=""[^>]*>Restart exercise<\/button>/);
+      expect(blocked).toContain('Restart exercise: supervisor login only');
+      expect(blocked).toContain('The reset destroys exercise state and takes about 13 minutes.');
+      for (const job of [{ ...JOB('succeeded', null), may_press: true }, JOB('succeeded', null)]) {
+        const html = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} resetJob={job} />);
+        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Restart exercise<\/button>/);
+        expect(html).not.toContain('supervisor login only');
+      }
+    });
+
     it('shows a refusal reason', () => {
       const html = renderToStaticMarkup(
         <ExercisePopupView {...BASE} open={true} resetJob={JOB('running', null)} refusal="reset_running" />,
