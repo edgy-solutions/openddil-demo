@@ -43,6 +43,9 @@ state = {
 }
 
 
+ORIGINAL_BODY = state["body"]
+
+
 class FakeTopaz(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -309,3 +312,67 @@ def test_get_on_op_path_is_404(pep_url):
     code, _ = _get(pep_url + "/exercise/op/pause", "supervisor.1")
     assert code == 404
     assert state["calls"] == []
+
+
+# --- the reset is the one supervisor-only exercise action --------------------
+
+RESET_REFUSAL = ("Restart exercise needs the supervisor login: it destroys "
+                 "exercise state and takes about 13 minutes.")
+
+
+def test_supervisor_reset_is_forwarded(pep_url):
+    state["status"] = 202
+    code, _ = _post(pep_url + "/exercise/op/reset", "supervisor.1")
+    assert code == 202
+    assert len(state["calls"]) == 1
+    assert state["calls"][0]["path"] == "/exercise/op/reset"
+
+
+def test_operator_reset_is_403_with_zero_upstream_calls(pep_url, caplog):
+    with caplog.at_level("WARNING"):
+        code, body = _post(pep_url + "/exercise/op/reset", "operator.1")
+    assert code == 403
+    doc = json.loads(body)
+    assert doc["error"] == "forbidden"
+    assert doc["reason"] == RESET_REFUSAL
+    assert state["calls"] == []
+    msgs = [r.getMessage() for r in caplog.records if "RESET REFUSED" in r.getMessage()]
+    assert msgs and "operator.1" in msgs[0] and "role=edge-operator" in msgs[0]
+
+
+def test_operator_pause_is_still_forwarded(pep_url):
+    code, _ = _post(pep_url + "/exercise/op/pause", "operator.1")
+    assert code == 200
+    assert len(state["calls"]) == 1
+
+
+def test_status_reports_may_press_per_role(pep_url):
+    state["body"] = json.dumps({"adapter": {"name": "x"}, "reset_job": {"state": "idle"}}).encode()
+    try:
+        _, body = _get(pep_url + "/exercise/status", "operator.1")
+        assert json.loads(body)["reset_job"]["may_press"] is False
+        assert json.loads(body)["reset_job"]["state"] == "idle"
+        _, body = _get(pep_url + "/exercise/status", "supervisor.1")
+        assert json.loads(body)["reset_job"]["may_press"] is True
+    finally:
+        state["body"] = ORIGINAL_BODY
+
+
+def test_status_without_reset_job_is_byte_identical(pep_url):
+    for raw in (ORIGINAL_BODY, b"not json {", b'["reset_job"]', b'{"reset_job": 3}'):
+        state["body"] = raw
+        try:
+            _, body = _get(pep_url + "/exercise/status", "operator.1")
+            assert body == raw
+        finally:
+            state["body"] = ORIGINAL_BODY
+
+
+def test_reset_roles_override_admits_operator(pep_url, monkeypatch):
+    import pep  # noqa: PLC0415
+    # The env var is read once at import through this parser.
+    monkeypatch.setattr(pep, "EXERCISE_RESET_ROLES",
+                        pep._parse_roles_csv("edge-operator,supervisor"))
+    code, _ = _post(pep_url + "/exercise/op/reset", "operator.1")
+    assert code == 200
+    assert len(state["calls"]) == 1

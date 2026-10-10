@@ -654,6 +654,16 @@ def _resolve_wan_route(path: str, method: str) -> tuple[str, str | None] | None:
 EXERCISE_CONTROL_URL = os.getenv("OPENDDIL_EXERCISE_CONTROL_URL", "").strip().rstrip("/")
 
 
+def _parse_roles_csv(raw: str) -> frozenset:
+    return frozenset(r.strip() for r in raw.split(",") if r.strip())
+
+
+# Roles that may start the exercise reset (the one gated exercise action).
+EXERCISE_RESET_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_EXERCISE_RESET_ROLES", "supervisor"))
+EXERCISE_RESET_REFUSAL = ("Restart exercise needs the supervisor login: it destroys "
+                          "exercise state and takes about 13 minutes.")
+
+
 def table_class(table: str) -> str:
     """'nation' | 'role' | 'subject' | 'refused'.
 
@@ -1807,6 +1817,20 @@ class Pep(BaseHTTPRequestHandler):
                        resource=path, status=403)
             return
 
+        # The one role gate on this route. Toggles, toxics and the other
+        # exercise ops are demo apparatus that change nothing durable and
+        # are open to any known subject. The reset destroys exercise state
+        # and takes about 13 minutes, so it is the one exercise action that
+        # needs the supervisor login. Refused before any upstream call.
+        role = decision.get("role")
+        may_reset = role in EXERCISE_RESET_ROLES
+        if method == "POST" and op == "reset" and not may_reset:
+            log.warning("EXERCISE RESET REFUSED subject=%s role=%s", subject, role)
+            self._send(403, json.dumps({"error": "forbidden",
+                                        "reason": EXERCISE_RESET_REFUSAL}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
         # Step: forward, to exercise/control.py's own HTTP surface alone.
         # `X-OpenDDIL-Subject` is set from THIS session, always -- any
         # client-sent value on the incoming request was never read above
@@ -1836,6 +1860,17 @@ class Pep(BaseHTTPRequestHandler):
         if method == "POST":
             log.info("EXERCISE CONTROL subject=%s op=%s upstream_status=%s",
                      subject, op, upstream_status)
+        if method == "GET":
+            # Tell the page whether this subject may press the reset. A body
+            # that is not a JSON object with a reset_job object is relayed
+            # untouched.
+            try:
+                doc = json.loads(upstream_body)
+            except ValueError:
+                doc = None
+            if isinstance(doc, dict) and isinstance(doc.get("reset_job"), dict):
+                doc["reset_job"]["may_press"] = may_reset
+                upstream_body = json.dumps(doc).encode()
         self._send(upstream_status, upstream_body, [("Content-Type", "application/json")])
 
     def do_POST(self) -> None:  # noqa: N802
