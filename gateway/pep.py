@@ -34,13 +34,15 @@ network at boot. The source is delivered from the runtime bundle into a
 stock python image. A component that will refuse requests should not have a
 dependency that can fail to install.
 
-THE WAN CONTROL ROUTE (GET/POST /proxies/hq-link) is not a read-path
-decision -- it is an operator action with a blast radius (severing or
-restoring the uplink for everyone), gated on ROLE rather than on nations.
-No session is a 401; an authenticated subject whose role is not a
-WAN-control role (default `supervisor`) is a 403; a WAN-control role is
-forwarded to the DDIL sever mechanism. Both GET and POST are gated -- a
-read of the link's current state is no less a capability than flipping it.
+THE WAN CONTROL ROUTE (GET /proxies/, GET/POST /proxies/uplink and
+/proxies/<child id>) is not a read-path decision -- it is an operator
+action with a blast radius (severing or restoring a tier's uplink). A link
+is a child tier's uplink to its parent, one toxiproxy proxy each. A PEP
+addresses only its own uplink and the uplinks of its direct children; any
+other path is a 404. No session is a 401; a subject the PDP does not know
+is a 403; any known subject is forwarded to the DDIL sever mechanism. Both
+GET and POST are gated -- a read of a link's state is no less a capability
+than flipping it.
 
 THE EXERCISE CONTROL ROUTE (GET /exercise/status, POST /exercise/op/<op>)
 is the same shape of affordance -- role-gated, not nation-gated. This
@@ -584,8 +586,8 @@ OVERSIGHT_ROLES = {
 # --- the WAN control route ---------------------------------------------------
 # The frontend's WAN-link toggle used to reach the DDIL sever mechanism's
 # HTTP API directly (frontend/nginx.conf's old /proxies/ location) with no
-# session and no role check -- anyone who could reach the frontend could cut
-# or restore the uplink. This route puts that control behind the same
+# session and no check -- anyone who could reach the frontend could cut or
+# restore a link. This route puts that control behind the same
 # subject-then-Topaz sequence every other write in this file goes through.
 # Empty URL means "not wired at this tier", the same meaning
 # CM_INTAKE_URL/EGRESS_PANE/MANUAL_QA_URL being unset already carry.
@@ -601,45 +603,52 @@ def _parse_roles_csv(value: str) -> frozenset[str]:
     return frozenset(r.strip() for r in value.split(",") if r.strip())
 
 
-# A role, not a nation entitlement -- severing the uplink is an affordance
-# within a tier, not a question of which rows a subject may see, so this is
-# checked against `role` directly rather than folded into ask_topaz's
-# allow/deny.
-WAN_CONTROL_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_WAN_CONTROL_ROLES", "supervisor"))
+def _parse_csv_ordered(value: str) -> tuple[str, ...]:
+    """Comma-separated values -> a tuple in the given order, stripped,
+    empties dropped (the listing keeps the chart's child order)."""
+    return tuple(r.strip() for r in value.split(",") if r.strip())
 
-# OPENDDIL_WAN_UPLINK: this PEP's own uplink, in toxiproxy proxy-name terms.
+
+# A link is a child tier's uplink to its parent: one toxiproxy proxy named
+# "uplink-<child id>". This PEP may address its own uplink and the uplinks
+# of its DIRECT children, and nothing else. Any subject the PDP knows may
+# read and flip them; there is no role gate.
+#
+# OPENDDIL_WAN_UPLINK: this tier's own proxy name, e.g. "uplink-region-east".
 # `/proxies/uplink` resolves to it, so the frontend never needs to learn
-# which tier it's served from -- the origin decides. Root PEP: "hq-link".
-# Tier PEP: "uplink-<tier id>" for a tier that has one. Unset means
-# "hq-link", which is today's (pre-P5) single link.
-WAN_UPLINK = os.getenv("OPENDDIL_WAN_UPLINK", "hq-link").strip() or "hq-link"
+# which tier it's served from. Unset means this tier has no uplink (HQ).
+WAN_UPLINK = os.getenv("OPENDDIL_WAN_UPLINK", "").strip()
 
-# OPENDDIL_WAN_LINKS: proxy names this PEP may address by their EXACT name
-# (comma-separated), in addition to "uplink" itself. Root: every uplink plus
-# "hq-link". Tier: its own uplink only. Unset means {"hq-link"} alone, so a
-# frontend that still calls /proxies/hq-link directly keeps working.
-WAN_LINKS = _parse_roles_csv(os.getenv("OPENDDIL_WAN_LINKS", "hq-link"))
+# OPENDDIL_WAN_UPLINK_PARENT: the parent tier's id, for display only.
+WAN_UPLINK_PARENT = os.getenv("OPENDDIL_WAN_UPLINK_PARENT", "").strip()
+
+# OPENDDIL_WAN_CHILDREN: direct child tier ids (comma-separated, order kept).
+# `/proxies/<id>` forwards to "uplink-<id>" only for an id listed here.
+WAN_CHILDREN = _parse_csv_ordered(os.getenv("OPENDDIL_WAN_CHILDREN", ""))
 
 
-def _resolve_wan_proxy_name(path: str) -> str | None:
-    """`/proxies/<name>` -> the toxiproxy proxy name to forward to, or None
-    if this exact path isn't a permitted WAN-control route.
+def _resolve_wan_route(path: str, method: str) -> tuple[str, str | None] | None:
+    """Map a request path to a WAN-control route, or None for a 404.
 
-    `/proxies/uplink` resolves through WAN_UPLINK -- this tier's own link.
-    Any other name is forwarded only when it's an EXACT match (no
-    sub-paths: `/proxies/uplink/toxics` is not this route, same as
-    `/proxies/hq-link/toxics` never was) for a name in WAN_LINKS.
+    ("list", None)  GET /proxies/ -- the listing (never POST).
+    ("link", name)  /proxies/uplink -> WAN_UPLINK (None if unset), or
+                    /proxies/<id> -> "uplink-<id>" for an id in WAN_CHILDREN.
+
+    Paths are exact: any sub-path (`/proxies/edge-01/toxics`) is None, and
+    so is the bare proxy-name form (`/proxies/uplink-edge-01`).
     """
     prefix = "/proxies/"
     if not path.startswith(prefix):
         return None
     remainder = path[len(prefix):]
-    if not remainder or "/" in remainder:
+    if not remainder:
+        return ("list", None) if method == "GET" else None
+    if "/" in remainder:
         return None
     if remainder == "uplink":
-        return WAN_UPLINK
-    if remainder in WAN_LINKS:
-        return remainder
+        return ("link", WAN_UPLINK) if WAN_UPLINK else None
+    if remainder in WAN_CHILDREN:
+        return ("link", "uplink-" + remainder)
     return None
 
 
@@ -651,8 +660,8 @@ def _resolve_wan_proxy_name(path: str) -> str | None:
 # carry: the routes do not exist, 404, exactly like today.
 EXERCISE_CONTROL_URL = os.getenv("OPENDDIL_EXERCISE_CONTROL_URL", "").strip().rstrip("/")
 
-# Same role-gating discipline as WAN_CONTROL_ROLES: an affordance, checked
-# against `role` directly, not folded into ask_topaz's allow/deny.
+# A role-gated affordance, checked against `role` directly, not folded
+# into ask_topaz's allow/deny.
 EXERCISE_CONTROL_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_EXERCISE_CONTROL_ROLES", "supervisor"))
 
 
@@ -1468,21 +1477,21 @@ class Pep(BaseHTTPRequestHandler):
 
     # --- the WAN control route ------------------------------------------------
     def _handle_wan_control(self, parsed, method: str) -> None:
-        """Serve GET/POST /proxies/uplink (this tier's own link) or
-        /proxies/<name> (any name in WAN_LINKS): the WAN slider's commanded
-        and observed state, reached through this gateway instead of the
-        DDIL sever mechanism directly. Both methods run the same gate --
-        reading the link's current state is a capability too, not just
-        flipping it.
+        """Serve GET /proxies/ (the listing of this tier's own uplink and
+        its direct children's), and GET/POST /proxies/uplink or
+        /proxies/<child id> (one link's commanded and observed state),
+        reached through this gateway instead of the DDIL sever mechanism
+        directly. Every route runs the same gate -- reading a link's
+        current state is a capability too, not just flipping it.
 
         Order mirrors _handle_cm_discrepancy: route existence, then (POST
         only) the request-shape checks, THEN the subject, THEN Topaz, THEN
-        the role check. Nothing is forwarded until a WAN-control role is
-        confirmed.
+        the known-subject check. Nothing is forwarded until the PDP
+        confirms the subject.
         """
         path = parsed.path
-        proxy_name = _resolve_wan_proxy_name(path)
-        if proxy_name is None:
+        route = _resolve_wan_route(path, method)
+        if route is None:
             if method == "POST":
                 self._drain_body()
             self._deny("unknown path", subject="", resource=path, status=404,
@@ -1496,6 +1505,7 @@ class Pep(BaseHTTPRequestHandler):
                        resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
             return
 
+        kind, proxy_name = route
         enabled: bool | None = None
         if method == "POST":
             # --- request-shape checks, pre-PDP, same discipline as the CM
@@ -1542,8 +1552,7 @@ class Pep(BaseHTTPRequestHandler):
             return
 
         # Step: Topaz, applied verbatim -- this file contains no
-        # authorization logic. Role, not allowed_nations, is what this
-        # route's decision turns on.
+        # authorization logic. Only subject_known is read here.
         try:
             decision = ask_topaz(subject)
         except AuthzUnavailable as exc:
@@ -1551,9 +1560,13 @@ class Pep(BaseHTTPRequestHandler):
                        status=503)
             return
 
-        if not decision.get("subject_known") or decision.get("role") not in WAN_CONTROL_ROLES:
-            reason = "wan control requires role: " + ",".join(sorted(WAN_CONTROL_ROLES))
-            self._deny(reason, subject=subject, resource=path, status=403)
+        if not decision.get("subject_known"):
+            self._deny("subject unknown to the PDP", subject=subject,
+                       resource=path, status=403)
+            return
+
+        if kind == "list":
+            self._send_wan_listing(subject)
             return
 
         # Step: forward. `User-Agent: openddil-pep` because the sever
@@ -1586,9 +1599,41 @@ class Pep(BaseHTTPRequestHandler):
             return
 
         if method == "POST":
-            log.info("WAN CONTROL subject=%s role=%s enabled=%s upstream_status=%s",
-                     subject, decision.get("role"), enabled, upstream_status)
+            log.info("WAN CONTROL subject=%s proxy=%s enabled=%s upstream_status=%s",
+                     subject, proxy_name, enabled, upstream_status)
         self._send(upstream_status, upstream_body, [("Content-Type", "application/json")])
+
+    def _send_wan_listing(self, subject: str) -> None:
+        """GET /proxies/: one upstream GET /proxies, shaped into this tier's
+        own uplink plus its direct children. `enabled` is null for a proxy
+        the sever mechanism does not know. Any transport failure or non-2xx
+        answer is a 502 -- a listing has no partial verdict to relay."""
+        req = urllib.request.Request(
+            WAN_CONTROL_URL + "/proxies",
+            headers={"User-Agent": "openddil-pep"}, method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                proxies = json.loads(resp.read())
+            if not isinstance(proxies, dict):
+                raise ValueError("upstream listing is not an object")
+        except Exception as exc:  # noqa: BLE001 -- transport fault or bad answer
+            log.error("wan control listing error subject=%s: %s", subject, exc)
+            self._send(502, json.dumps({"error": "wan control upstream unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        def enabled_of(name: str):
+            entry = proxies.get(name)
+            return entry.get("enabled") if isinstance(entry, dict) else None
+
+        body = {
+            "uplink": ({"proxy": WAN_UPLINK, "parent": WAN_UPLINK_PARENT or None,
+                        "enabled": enabled_of(WAN_UPLINK)} if WAN_UPLINK else None),
+            "children": [{"id": c, "proxy": "uplink-" + c,
+                          "enabled": enabled_of("uplink-" + c)} for c in WAN_CHILDREN],
+        }
+        self._send(200, json.dumps(body).encode(), [("Content-Type", "application/json")])
 
     def _handle_exercise(self, parsed, method: str) -> None:
         """Serve GET /exercise/status and POST /exercise/op/<op>, forwarded

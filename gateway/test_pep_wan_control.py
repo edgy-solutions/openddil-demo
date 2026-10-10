@@ -1,11 +1,13 @@
-"""GET/POST /proxies/hq-link, run through the real PEP handler.
+"""GET /proxies/, GET/POST /proxies/uplink and /proxies/<child id>, run
+through the real PEP handler.
 
-The WAN slider used to reach the DDIL sever mechanism's HTTP API directly,
-with no session and no role check -- this checks that both methods now go
-through the gateway's subject-then-Topaz sequence, that a role other than
-the configured WAN-control role is refused with nothing forwarded, and that
-an admitted request is forwarded verbatim (method, body, User-Agent) with
-the upstream's own status and body relayed back.
+A link is a child tier's uplink to its parent. A PEP addresses its own
+uplink and its direct children's, any PDP-known subject may read and flip
+them (no role gate), and everything else is a 404. This checks the route
+table for a root and a tier configuration, the gate order (401, 503, 403
+for an unknown subject), the listing's shape, and that an admitted request
+is forwarded verbatim (method, body, User-Agent) with the upstream's own
+status and body relayed back.
 
 pep.py reads its upstreams at import, so Topaz and the "toxiproxy" stand-in
 are fakes on loopback started before the import, and the PEP runs in header
@@ -39,6 +41,8 @@ state = {
     "wan_calls": [],
     "wan_status": 200,
     "wan_body": b'{"enabled": false}',
+    # What the fake toxiproxy answers to GET /proxies (name -> proxy).
+    "proxy_map": {},
 }
 
 
@@ -70,7 +74,7 @@ class FakeTopaz(BaseHTTPRequestHandler):
 
 
 class FakeWanControl(BaseHTTPRequestHandler):
-    """Stands in for the DDIL sever mechanism's HTTP API at /proxies/hq-link."""
+    """Stands in for the DDIL sever mechanism's HTTP API under /proxies."""
 
     def log_message(self, *a):
         pass
@@ -85,6 +89,8 @@ class FakeWanControl(BaseHTTPRequestHandler):
             "user_agent": self.headers.get("User-Agent", ""),
         })
         out = state["wan_body"]
+        if method == "GET" and self.path == "/proxies":
+            out = json.dumps(state["proxy_map"]).encode()
         self.send_response(state["wan_status"])
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
@@ -114,7 +120,6 @@ def pep_factory():
     os.environ["OPENDDIL_ELECTRIC_URL"] = "http://127.0.0.1:1"
     os.environ["OPENDDIL_TOPAZ_URL"] = f"http://127.0.0.1:{topaz.server_port}"
     os.environ["OPENDDIL_WAN_CONTROL_URL"] = f"http://127.0.0.1:{wan.server_port}"
-    os.environ.pop("OPENDDIL_WAN_CONTROL_ROLES", None)  # default: supervisor
     os.environ.pop("OPENDDIL_OIDC_ISSUER", None)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     sys.modules.pop("pep", None)
@@ -132,8 +137,7 @@ def pep_factory():
     yield start
     for s in servers + [topaz, wan]:
         s.shutdown()
-    for var in ("OPENDDIL_WAN_CONTROL_URL", "OPENDDIL_WAN_CONTROL_ROLES"):
-        os.environ.pop(var, None)
+    os.environ.pop("OPENDDIL_WAN_CONTROL_URL", None)
 
 
 def _get(url: str, subject: str | None):
@@ -147,12 +151,16 @@ def _get(url: str, subject: str | None):
         return e.code, e.read()
 
 
-def _post(url: str, subject: str | None, body: dict | bytes | None):
+def _post(url: str, subject: str | None, body: dict | bytes | None,
+          content_type: str | None = "application/json", origin: str | None = None):
     data = body if isinstance(body, (bytes, type(None))) else json.dumps(body).encode()
     req = urllib.request.Request(url, data=data or b"", method="POST")
     if subject:
         req.add_header("X-OpenDDIL-Subject", subject)
-    req.add_header("Content-Type", "application/json")
+    if content_type:
+        req.add_header("Content-Type", content_type)
+    if origin:
+        req.add_header("Origin", origin)
     try:
         with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, r.read()
@@ -160,183 +168,243 @@ def _post(url: str, subject: str | None, body: dict | bytes | None):
         return e.code, e.read()
 
 
+def _reset():
+    state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": false}',
+                 proxy_map={})
+
+
 @pytest.fixture
-def pep_url(pep_factory):
-    state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": false}')
+def root_url(pep_factory, monkeypatch):
+    """Root configuration: no uplink, direct children edge-03 and region-east."""
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "WAN_UPLINK", "")
+    monkeypatch.setattr(pep, "WAN_UPLINK_PARENT", "")
+    monkeypatch.setattr(pep, "WAN_CHILDREN", ("edge-03", "region-east"))
+    _reset()
+    return pep_factory()
+
+
+@pytest.fixture
+def tier_url(pep_factory, monkeypatch):
+    """Tier configuration: own uplink to hq, direct children edge-01/02."""
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "WAN_UPLINK", "uplink-region-east")
+    monkeypatch.setattr(pep, "WAN_UPLINK_PARENT", "hq")
+    monkeypatch.setattr(pep, "WAN_CHILDREN", ("edge-01", "edge-02"))
+    _reset()
     return pep_factory()
 
 
 GOOD_BODY = {"enabled": False}
 
 
-# --- 1-2: no session -------------------------------------------------------
+# --- root configuration -----------------------------------------------------
 
-def test_no_session_get_is_401(pep_url):
-    code, _ = _get(pep_url + "/proxies/hq-link", None)
-    assert code == 401
+def test_root_has_no_uplink(root_url):
+    code, _ = _get(root_url + "/proxies/uplink", "supervisor.1")
+    assert code == 404
     assert state["wan_calls"] == []
 
 
-def test_no_session_post_is_401(pep_url):
-    code, _ = _post(pep_url + "/proxies/hq-link", None, GOOD_BODY)
-    assert code == 401
+def test_root_child_post_forwards_to_uplink_proxy(root_url):
+    code, _ = _post(root_url + "/proxies/region-east", "supervisor.1", GOOD_BODY)
+    assert code == 200
+    assert len(state["wan_calls"]) == 1
+    call = state["wan_calls"][0]
+    assert call["method"] == "POST"
+    assert call["path"] == "/proxies/uplink-region-east"
+    assert json.loads(call["body"]) == {"enabled": False}
+    assert call["user_agent"] == "openddil-pep"
+
+
+def test_root_grandchild_is_404(root_url):
+    code, _ = _get(root_url + "/proxies/edge-01", "supervisor.1")
+    assert code == 404
     assert state["wan_calls"] == []
 
 
-# --- 3-4: a non-WAN-control role is refused ---------------------------------
+def test_root_listing(root_url):
+    # edge-03 is deliberately absent from the upstream map.
+    state["proxy_map"] = {
+        "uplink-region-east": {"name": "uplink-region-east", "enabled": False},
+        "uplink-edge-01": {"name": "uplink-edge-01", "enabled": True},
+    }
+    code, body = _get(root_url + "/proxies/", "supervisor.1")
+    assert code == 200
+    assert json.loads(body) == {
+        "uplink": None,
+        "children": [
+            {"id": "edge-03", "proxy": "uplink-edge-03", "enabled": None},
+            {"id": "region-east", "proxy": "uplink-region-east", "enabled": False},
+        ],
+    }
+    assert [c["path"] for c in state["wan_calls"]] == ["/proxies"]
 
-def test_operator_role_post_is_403_and_logged_through_deny(pep_url, caplog):
+
+# --- tier configuration -----------------------------------------------------
+
+def test_tier_uplink_forwards_to_own_proxy(tier_url):
+    state["wan_body"] = b'{"enabled": true}'
+    code, body = _get(tier_url + "/proxies/uplink", "supervisor.1")
+    assert code == 200
+    assert json.loads(body) == {"enabled": True}
+    assert len(state["wan_calls"]) == 1
+    assert state["wan_calls"][0]["method"] == "GET"
+    assert state["wan_calls"][0]["path"] == "/proxies/uplink-region-east"
+
+
+def test_tier_non_child_is_404(tier_url):
+    code, _ = _get(tier_url + "/proxies/edge-03", "supervisor.1")
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
+def test_tier_itself_is_404(tier_url):
+    code, _ = _get(tier_url + "/proxies/region-east", "supervisor.1")
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
+def test_tier_old_proxy_name_form_is_404(tier_url):
+    code, _ = _get(tier_url + "/proxies/uplink-edge-01", "supervisor.1")
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
+def test_tier_listing_has_uplink_parent_and_children(tier_url):
+    state["proxy_map"] = {
+        "uplink-region-east": {"enabled": True},
+        "uplink-edge-01": {"enabled": False},
+        "uplink-edge-02": {"enabled": True},
+    }
+    code, body = _get(tier_url + "/proxies/", "operator.1")
+    assert code == 200
+    assert json.loads(body) == {
+        "uplink": {"proxy": "uplink-region-east", "parent": "hq", "enabled": True},
+        "children": [
+            {"id": "edge-01", "proxy": "uplink-edge-01", "enabled": False},
+            {"id": "edge-02", "proxy": "uplink-edge-02", "enabled": True},
+        ],
+    }
+
+
+def test_post_listing_is_404(tier_url):
+    code, _ = _post(tier_url + "/proxies/", "supervisor.1", GOOD_BODY)
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
+# --- the gate ---------------------------------------------------------------
+
+def test_operator_role_is_forwarded(tier_url, caplog):
+    state["wan_status"] = 207  # distinguishable from a hardcoded 200
+    with caplog.at_level("INFO"):
+        code, _ = _post(tier_url + "/proxies/uplink", "operator.1", GOOD_BODY)
+    assert code == 207  # the upstream's own status, relayed verbatim
+    assert len(state["wan_calls"]) == 1
+    msgs = [r.getMessage() for r in caplog.records if "WAN CONTROL" in r.getMessage()]
+    assert msgs and "operator.1" in msgs[0] and "uplink-region-east" in msgs[0]
+    assert "enabled=False" in msgs[0]
+
+
+def test_unknown_subject_is_403(tier_url, caplog):
     with caplog.at_level("WARNING"):
-        code, _ = _post(pep_url + "/proxies/hq-link", "operator.1", GOOD_BODY)
+        code, _ = _post(tier_url + "/proxies/uplink", "stranger", GOOD_BODY)
     assert code == 403
     assert state["wan_calls"] == []
     assert any("TOPAZ AUTHZ DENIED" in r.getMessage() for r in caplog.records)
 
 
-def test_operator_role_get_is_403(pep_url):
-    code, _ = _get(pep_url + "/proxies/hq-link", "operator.1")
+def test_unknown_subject_listing_is_403(tier_url):
+    code, _ = _get(tier_url + "/proxies/", "stranger")
     assert code == 403
     assert state["wan_calls"] == []
 
 
-# --- 5: unknown subject -----------------------------------------------------
-
-def test_unknown_subject_is_403(pep_url):
-    code, _ = _post(pep_url + "/proxies/hq-link", "stranger", GOOD_BODY)
-    assert code == 403
+def test_no_session_is_401(tier_url):
+    assert _get(tier_url + "/proxies/uplink", None)[0] == 401
+    assert _post(tier_url + "/proxies/uplink", None, GOOD_BODY)[0] == 401
+    assert _get(tier_url + "/proxies/", None)[0] == 401
     assert state["wan_calls"] == []
 
 
-# --- 6-7: supervisor is admitted and forwarded ------------------------------
-
-def test_supervisor_post_forwards_exactly_one_call(pep_url, caplog):
-    state["wan_status"] = 207  # distinguishable from a hardcoded 200
-    with caplog.at_level("INFO"):
-        code, _ = _post(pep_url + "/proxies/hq-link", "supervisor.1", GOOD_BODY)
-    assert code == 207  # the upstream's own status, relayed verbatim
-    assert len(state["wan_calls"]) == 1
-    call = state["wan_calls"][0]
-    assert call["method"] == "POST"
-    assert call["path"] == "/proxies/hq-link"
-    assert json.loads(call["body"]) == {"enabled": False}
-    assert call["user_agent"] == "openddil-pep"
-    assert any("WAN CONTROL" in r.getMessage() for r in caplog.records)
-
-
-def test_supervisor_get_passes_through_upstream_body(pep_url):
-    state["wan_body"] = b'{"enabled": true}'
-    code, body = _get(pep_url + "/proxies/hq-link", "supervisor.1")
-    assert code == 200
-    assert json.loads(body) == {"enabled": True}
-    assert len(state["wan_calls"]) == 1
-    assert state["wan_calls"][0]["method"] == "GET"
-
-
-# --- 8: malformed bodies -----------------------------------------------------
-
-def test_string_enabled_is_400(pep_url):
-    code, _ = _post(pep_url + "/proxies/hq-link", "supervisor.1", {"enabled": "false"})
-    assert code == 400
-    assert state["wan_calls"] == []
-
-
-def test_extra_key_is_400(pep_url):
-    code, _ = _post(pep_url + "/proxies/hq-link", "supervisor.1",
-                     {"enabled": False, "x": 1})
-    assert code == 400
-    assert state["wan_calls"] == []
-
-
-# --- 9: anything else under /proxies/ is 404, pre-PDP -----------------------
-
-def test_sub_path_is_404(pep_url):
-    code, _ = _get(pep_url + "/proxies/hq-link/toxics", "supervisor.1")
-    assert code == 404
-    assert state["wan_calls"] == []
-
-
-def test_other_proxies_path_is_404(pep_url):
-    code, _ = _get(pep_url + "/proxies/other", "supervisor.1")
-    assert code == 404
-    assert state["wan_calls"] == []
-
-
-# --- 10: not configured at this tier ----------------------------------------
-
-def test_wan_control_url_unset_is_404(pep_factory, monkeypatch):
-    import pep  # noqa: PLC0415
-    monkeypatch.setattr(pep, "WAN_CONTROL_URL", "")
-    url = pep_factory()
-    code, _ = _get(url + "/proxies/hq-link", "supervisor.1")
-    assert code == 404
-
-
-# --- 11: PDP unavailable ----------------------------------------------------
-
-def test_topaz_down_is_503(pep_url):
-    code, _ = _post(pep_url + "/proxies/hq-link", "pdp-down", GOOD_BODY)
+def test_topaz_down_is_503(tier_url):
+    code, _ = _post(tier_url + "/proxies/uplink", "pdp-down", GOOD_BODY)
     assert code == 503
     assert state["wan_calls"] == []
 
 
-# --- 12: the roles-parsing helper, in isolation -----------------------------
+def test_wrong_content_type_is_415(tier_url):
+    code, _ = _post(tier_url + "/proxies/uplink", "supervisor.1", GOOD_BODY,
+                    content_type="text/plain")
+    assert code == 415
+    assert state["wan_calls"] == []
 
-def test_parse_roles_csv_helper(pep_url):
+
+def test_cross_site_origin_is_403(tier_url):
+    code, _ = _post(tier_url + "/proxies/uplink", "supervisor.1", GOOD_BODY,
+                    origin="http://evil.example")
+    assert code == 403
+    assert state["wan_calls"] == []
+
+
+def test_oversized_body_is_413(tier_url):
+    import pep  # noqa: PLC0415
+    big = b'{"enabled": false, "pad": "' + b"x" * (pep.MAX_WAN_CONTROL_BODY_BYTES + 1) + b'"}'
+    code, _ = _post(tier_url + "/proxies/uplink", "supervisor.1", big)
+    assert code == 413
+    assert state["wan_calls"] == []
+
+
+def test_malformed_json_is_400(tier_url):
+    code, _ = _post(tier_url + "/proxies/uplink", "supervisor.1", b"{not json")
+    assert code == 400
+    assert state["wan_calls"] == []
+
+
+def test_non_bool_enabled_is_400(tier_url):
+    code, _ = _post(tier_url + "/proxies/uplink", "supervisor.1", {"enabled": "false"})
+    assert code == 400
+    assert state["wan_calls"] == []
+
+
+def test_extra_key_is_400(tier_url):
+    code, _ = _post(tier_url + "/proxies/uplink", "supervisor.1",
+                    {"enabled": False, "x": 1})
+    assert code == 400
+    assert state["wan_calls"] == []
+
+
+def test_child_sub_path_is_404(tier_url):
+    code, _ = _get(tier_url + "/proxies/edge-01/toxics", "supervisor.1")
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
+def test_uplink_sub_path_is_404(tier_url):
+    code, _ = _get(tier_url + "/proxies/uplink/toxics", "supervisor.1")
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
+def test_wan_control_url_unset_is_404(tier_url, monkeypatch):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "WAN_CONTROL_URL", "")
+    assert _get(tier_url + "/proxies/uplink", "supervisor.1")[0] == 404
+    assert _get(tier_url + "/proxies/", "supervisor.1")[0] == 404
+
+
+# --- the roles-parsing helper (still used by the exercise route) ------------
+
+def test_parse_roles_csv_helper(tier_url):
     import pep  # noqa: PLC0415
     assert pep._parse_roles_csv("supervisor, auditor") == frozenset(
         {"supervisor", "auditor"})
 
 
-# --- 14: /proxies/uplink resolves through OPENDDIL_WAN_UPLINK --------------
+# --- a transport failure, not a policy deny ---------------------------------
 
-def test_uplink_resolves_to_configured_wan_uplink(pep_factory, monkeypatch):
-    import pep  # noqa: PLC0415
-    monkeypatch.setattr(pep, "WAN_UPLINK", "uplink-edge-01")
-    url = pep_factory()
-    state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": true}')
-    code, body = _get(url + "/proxies/uplink", "supervisor.1")
-    assert code == 200
-    assert json.loads(body) == {"enabled": True}
-    assert len(state["wan_calls"]) == 1
-    assert state["wan_calls"][0]["path"] == "/proxies/uplink-edge-01"
-
-
-# --- 15: an exact name in OPENDDIL_WAN_LINKS forwards -----------------------
-
-def test_name_in_wan_links_forwards(pep_factory, monkeypatch):
-    import pep  # noqa: PLC0415
-    monkeypatch.setattr(pep, "WAN_LINKS", frozenset({"hq-link", "uplink-edge-01"}))
-    url = pep_factory()
-    state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": true}')
-    code, _ = _get(url + "/proxies/uplink-edge-01", "supervisor.1")
-    assert code == 200
-    assert len(state["wan_calls"]) == 1
-    assert state["wan_calls"][0]["path"] == "/proxies/uplink-edge-01"
-
-
-# --- 16: a name NOT in OPENDDIL_WAN_LINKS is 404 ----------------------------
-
-def test_name_not_in_wan_links_is_404(pep_factory, monkeypatch):
-    import pep  # noqa: PLC0415
-    monkeypatch.setattr(pep, "WAN_LINKS", frozenset({"hq-link"}))
-    url = pep_factory()
-    state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": true}')
-    code, _ = _get(url + "/proxies/uplink-edge-01", "supervisor.1")
-    assert code == 404
-    assert state["wan_calls"] == []
-
-
-# --- 17: /proxies/uplink/toxics is a sub-path, 404 pre-PDP ------------------
-
-def test_uplink_sub_path_is_404(pep_url):
-    code, _ = _get(pep_url + "/proxies/uplink/toxics", "supervisor.1")
-    assert code == 404
-    assert state["wan_calls"] == []
-
-
-# --- 13: a transport failure, not a policy deny -----------------------------
-
-def test_upstream_connection_failure_is_502(pep_factory, monkeypatch):
+def test_upstream_connection_failure_is_502(tier_url, monkeypatch):
     import pep  # noqa: PLC0415
     # A loopback port nothing listens on -- urlopen raises URLError
     # (connection refused), not HTTPError.
@@ -344,6 +412,15 @@ def test_upstream_connection_failure_is_502(pep_factory, monkeypatch):
     port = dead.server_port
     dead.shutdown()
     monkeypatch.setattr(pep, "WAN_CONTROL_URL", f"http://127.0.0.1:{port}")
-    url = pep_factory()
-    code, _ = _post(url + "/proxies/hq-link", "supervisor.1", GOOD_BODY)
+    code, _ = _post(tier_url + "/proxies/uplink", "supervisor.1", GOOD_BODY)
     assert code == 502
+    code, body = _get(tier_url + "/proxies/", "supervisor.1")
+    assert code == 502
+    assert "error" in json.loads(body)
+
+
+def test_upstream_non_2xx_listing_is_502(tier_url):
+    state["wan_status"] = 500
+    code, body = _get(tier_url + "/proxies/", "supervisor.1")
+    assert code == 502
+    assert "error" in json.loads(body)
