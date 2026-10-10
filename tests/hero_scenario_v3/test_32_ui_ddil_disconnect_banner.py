@@ -3,13 +3,16 @@ Test 32 — DDIL disconnect raises the staleness banner.
 
 This test runs against the REAL DDIL mechanic (ADR-0021), not a UI
 simulation: it disables the toxiproxy hq-link proxy — a genuine WAN sever —
-and asserts the HQ view raises its "SYSTEM FREEZE / WAN UPLINK SEVERED"
-overlay within 30s. The path under test is end-to-end:
+and asserts the HQ view raises its "SYSTEM FREEZE / ALL LINKS DOWN"
+overlay within 30s. In compose every link into HQ crosses the one hq-link
+proxy, so this one cut takes down every link HQ monitors -- the only
+condition under which HQ, which has no uplink, freezes. The path under
+test is end-to-end:
 
     sever toxiproxy hq-link
-      -> edge-hq-bridge can't reach redpanda-hq
-      -> projector edge-buffer monitor flips edge_buffer_status.hq_link_severed
-      -> ElectricSQL syncs the row
+      -> no child tier's heartbeat reaches redpanda-hq
+      -> every link_status row HQ watches reads down
+      -> ElectricSQL syncs the rows
       -> HqApp renders the freeze overlay
 
 The hq-link is always restored afterwards (severed_hq_link context manager
@@ -45,8 +48,8 @@ def body(page) -> str:
             state="visible", timeout=BANNER_TIMEOUT_MS
         )
         # The overlay's subtitle names the cause — assert it too so a
-        # generic freeze can't pass for the WAN-sever banner specifically.
-        page.get_by_text("WAN UPLINK SEVERED", exact=False).first.wait_for(
+        # generic freeze can't pass for the all-links-down banner specifically.
+        page.get_by_text("ALL LINKS DOWN", exact=False).first.wait_for(
             state="visible"
         )
 

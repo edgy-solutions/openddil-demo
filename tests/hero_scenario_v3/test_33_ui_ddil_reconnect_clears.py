@@ -8,9 +8,9 @@ clears within 30s — proving the buffer drains and live updates resume,
 not just that the sever is detectable.
 
     restore toxiproxy hq-link
-      -> edge-hq-bridge reaches redpanda-hq again, drains bridge-group lag
-      -> projector edge-buffer monitor flips hq_link_severed back to false
-      -> ElectricSQL syncs the row
+      -> child tiers' heartbeats reach redpanda-hq again
+      -> the link_status rows read up again
+      -> ElectricSQL syncs the rows
       -> HqApp removes the freeze overlay
 
 Playwright/browser optional — SKIPs if unavailable (see _ui_helpers).
