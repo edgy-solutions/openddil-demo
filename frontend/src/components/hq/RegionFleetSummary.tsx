@@ -21,7 +21,8 @@
 // ElectricSQL hasn't even returned a Shape response yet.
 
 import { useMemo } from 'react';
-import { useRegionFleetSummary, useAllTelemetryWindows } from '../../hooks';
+import { useRegionFleetSummary, useAllTelemetryWindows, useFleetAssets, type FleetAsset } from '../../hooks';
+import { POSTURE_ORDER, countPosture, postureLabel, type PostureStatus } from '../../lib/posture';
 import { elementCountsByRegion } from '../../hooks/useTelemetryWindows';
 
 function relativeAge(iso: string | null): string {
@@ -38,8 +39,33 @@ function relativeAge(iso: string | null): string {
 const ELEM_TITLE =
   "elements in the critical / degraded band, summed over the region's latest window rollups";
 
+// Counted from the asset rows this viewer can see, not the aggregator rollup,
+// so the count never includes an asset the viewer is not shown.
+const POSTURE_TITLE =
+  "assets in each posture, counted from the asset rows this viewer can see (not the aggregator rollup)";
+const POSTURE_COLOR: Record<PostureStatus, string> = {
+  unspecified: 'text-slate-400',
+  emplaced: 'text-emerald-400',
+  march_ordered: 'text-amber-400',
+  moving: 'text-cyan-400',
+  emplacing: 'text-violet-400',
+};
+
 export default function RegionFleetSummary() {
   const rollup = useRegionFleetSummary();
+  const fleet = useFleetAssets();
+  const postureByRegion = useMemo(() => {
+    const byRegion = new Map<string, FleetAsset[]>();
+    for (const a of fleet.data) {
+      if (!a.region_id) continue;
+      const list = byRegion.get(a.region_id);
+      if (list) list.push(a);
+      else byRegion.set(a.region_id, [a]);
+    }
+    return new Map(
+      Array.from(byRegion, ([region, rows]) => [region, countPosture(rows)] as const),
+    );
+  }, [fleet.data]);
   const windows = useAllTelemetryWindows();
   const elementCounts = useMemo(
     () => elementCountsByRegion(windows.data),
@@ -100,6 +126,13 @@ export default function RegionFleetSummary() {
                   <span className="text-slate-400">removed</span>
                 </th>
                 <th className="text-right pb-1 pl-3 whitespace-nowrap">assets</th>
+                {POSTURE_ORDER.map((s) => (
+                  <th key={s} className="text-right pb-1 pl-3 whitespace-nowrap" title={POSTURE_TITLE}>
+                    <span className={POSTURE_COLOR[s]}>
+                      {s === 'march_ordered' ? 'march ord.' : postureLabel(s).toLowerCase()}
+                    </span>
+                  </th>
+                ))}
                 <th className="text-right pb-1 pl-3 whitespace-nowrap">observed</th>
               </tr>
             </thead>
@@ -130,6 +163,15 @@ export default function RegionFleetSummary() {
                   <td className="py-1 pl-3 text-right text-slate-300">{r.deactivated}</td>
                   <td className="py-1 pl-3 text-right text-slate-300">{r.removed}</td>
                   <td className="py-1 pl-3 text-right">{r.asset_count}</td>
+                  {POSTURE_ORDER.map((s) => (
+                    <td
+                      key={s}
+                      className="py-1 pl-3 text-right text-slate-300"
+                      data-testid={`region-posture-${s}-${r.region_id}`}
+                    >
+                      {postureByRegion.get(r.region_id)?.[s] ?? '—'}
+                    </td>
+                  ))}
                   <td className="py-1 pl-3 text-right text-slate-400">
                     {relativeAge(r.observed_at)}
                   </td>

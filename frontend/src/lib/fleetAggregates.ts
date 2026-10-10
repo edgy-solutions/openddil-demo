@@ -29,6 +29,7 @@
 // "NOT MISSION CAPABLE") was removed — it was unused and a divergence
 // trap. Use cmStatusBadge() for any CM-status rendering.
 import type { CmState, LogisticsStatus, FleetAsset } from '../hooks';
+import type { PostureStatus } from './posture';
 
 // --- severity / status ordering ---------------------------------------------
 
@@ -70,6 +71,8 @@ export interface AorRow {
   callsign: string | null;
   platform_variant: string | null;
   severity: string;
+  posture_status: PostureStatus;
+  posture_since: string | null;
 }
 
 /** Join the fleet roster with logistics severity; worst severity first. */
@@ -83,6 +86,8 @@ export function aorAssetList(
       asset_id: a.asset_id,
       callsign: a.callsign,
       platform_variant: a.platform_variant,
+      posture_status: a.posture_status,
+      posture_since: a.posture_since,
       severity: sevByAsset.get(a.asset_id) ?? 'LOGISTICS_SEVERITY_UNSPECIFIED',
     }))
     .sort((x, y) => severityRank(y.severity) - severityRank(x.severity));

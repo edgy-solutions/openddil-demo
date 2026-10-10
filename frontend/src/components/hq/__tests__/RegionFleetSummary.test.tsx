@@ -7,6 +7,7 @@ import { vi } from 'vitest';
 import type { TelemetryWindows } from '../../../hooks/useTelemetryWindows';
 
 let WINDOWS: TelemetryWindows[] = [];
+let FLEET: { region_id: string | null; posture_status: string }[] = [];
 const region = (id: string) => ({
   region_id: id, nominal: 1, degraded: 0, critical: 0, non_operational: 0,
   destroyed: 0, deactivated: 0, removed: 0, asset_count: 1,
@@ -19,6 +20,7 @@ vi.mock('../../../hooks', () => ({
     isLoading: false,
   }),
   useAllTelemetryWindows: () => ({ data: WINDOWS, isLoading: false }),
+  useFleetAssets: () => ({ data: FLEET, isLoading: false }),
 }));
 
 import RegionFleetSummary from '../RegionFleetSummary';
@@ -68,5 +70,19 @@ describe('RegionFleetSummary element columns', () => {
     const html = renderToStaticMarkup(<RegionFleetSummary />);
     expect(html).toContain('region-elements-unattributed');
     expect(html).toContain('2 element rollup(s) without a region');
+  });
+
+  it('counts posture per region from the asset rows and shows a dash for a region with none', () => {
+    FLEET = [
+      { region_id: 'region-east', posture_status: 'emplaced' },
+      { region_id: 'region-east', posture_status: 'emplaced' },
+      { region_id: 'region-east', posture_status: 'moving' },
+    ];
+    const html = renderToStaticMarkup(<RegionFleetSummary />);
+    expect(cell(html, 'region-posture-emplaced-region-east')).toBe('2');
+    expect(cell(html, 'region-posture-moving-region-east')).toBe('1');
+    expect(cell(html, 'region-posture-emplacing-region-east')).toBe('0');
+    expect(cell(html, 'region-posture-emplaced-region-west')).toBe('—');
+    expect(cell(html, 'region-posture-march_ordered-region-west')).toBe('—');
   });
 });

@@ -3,6 +3,7 @@
 import { num, sqlLiteral, useTableShape, type ShapeResult } from './electric';
 import type { OperationalState } from './useTelemetryLatest';
 import { ecefToWgs84 } from '../lib/geoProjection';
+import { normalizePosture, type PostureStatus } from '../lib/posture';
 
 export interface FleetAsset {
   asset_id: string;
@@ -48,6 +49,12 @@ export interface FleetAsset {
    *  obviously unlabelled one. */
   originator_nation: string | null;
   releasable_to: string[];
+  /** Movement / emplacement state from the co-located simulator's schedule.
+   *  Distinct from the 3-axis `operational_state`: that says how the asset is
+   *  working, this says where it is in its move-and-emplace cycle. */
+  posture_status: PostureStatus;
+  /** When the current posture began; null when unknown. */
+  posture_since: string | null;
 }
 
 export function extractPosition(kinematics: any): { lat: number; lon: number } | null {
@@ -99,6 +106,8 @@ function mapFleetAsset(row: Record<string, any>): FleetAsset {
     region_id: row.region_id ?? null,
     position: extractPosition(row.kinematics),
     originator_nation: row.originator_nation ?? null,
+    posture_status: normalizePosture(row.posture_status),
+    posture_since: row.posture_since ?? null,
     // Electric returns a Postgres text[] as an array; tolerate the
     // brace-string form some drivers produce rather than assuming one.
     releasable_to: Array.isArray(row.releasable_to)

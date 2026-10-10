@@ -6,6 +6,7 @@
 // { value, unit } objects (ADR-0013) — consumers read `.value` for the
 // number and `.unit` for the label.
 import { num, useTableShape, sqlLiteral, type ShapeResult } from './electric';
+import { normalizePosture, type PostureStatus } from '../lib/posture';
 
 /** A Quantity proto leaf: { value, unit }. */
 export interface Quantity {
@@ -56,6 +57,11 @@ export interface TelemetryLatest {
    *  returned object — fields default to null when the producer didn't
    *  fill operational_state. */
   operational_state: OperationalState;
+  /** Movement / emplacement state from the co-located simulator's schedule,
+   *  distinct from the 3-axis operational_state. */
+  posture_status: PostureStatus;
+  /** When the current posture began; null when unknown. */
+  posture_since: string | null;
 }
 
 function mapTelemetry(row: Record<string, any>): TelemetryLatest {
@@ -70,6 +76,8 @@ function mapTelemetry(row: Record<string, any>): TelemetryLatest {
     provenance: row.provenance ?? {},
     last_sample_at: row.last_sample_at ?? null,
     schema_revision: num(row.schema_revision),
+    posture_status: normalizePosture(row.posture_status),
+    posture_since: row.posture_since ?? null,
     operational_state: {
       power_state:           row.power_state ?? null,
       functional_mode:       row.functional_mode ?? null,

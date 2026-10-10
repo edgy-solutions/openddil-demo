@@ -54,6 +54,9 @@ import {
   shortSeverity,
 } from './lib/fleetAggregates';
 import { assetCallsign } from './lib/assetLabel';
+import {
+  POSTURE_ORDER, countPosture, postureClass, postureLabel, postureText, usePostureClock,
+} from './lib/posture';
 import { deployment } from './deployment';
 import { acceptRegionParam, healRegion } from './lib/regionScope';
 import { SubtreeScopeLabel } from './components/SubtreeScopeLabel';
@@ -128,6 +131,7 @@ function AorAssetList({
   onSelect: (id: string) => void;
 }) {
   const rows = useMemo(() => aorAssetList(fleet, logistics), [fleet, logistics]);
+  const nowMs = usePostureClock();
   return (
     <div className="panel shrink-0 p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">
@@ -152,7 +156,15 @@ function AorAssetList({
                 <span className="block truncate">{r.asset_id}</span>
                 {callsign && <span className="block truncate opacity-60">{callsign}</span>}
               </span>
-              <span className="text-[9px] font-bold shrink-0">{shortSeverity(r.severity)}</span>
+              <span className="flex items-center gap-1 shrink-0">
+                <span
+                  className={`text-[9px] px-1 py-px rounded-sm border ${postureClass(r.posture_status)}`}
+                  data-testid={`posture-${r.asset_id}`}
+                >
+                  {postureText(r.posture_status, r.posture_since, nowMs)}
+                </span>
+                <span className="text-[9px] font-bold">{shortSeverity(r.severity)}</span>
+              </span>
             </button>
           );
         })}
@@ -161,13 +173,21 @@ function AorAssetList({
   );
 }
 
-function RegionFleetBuckets({ row }: { row: RegionFleetSummary | undefined }) {
+function RegionFleetBuckets({
+  row, fleet,
+}: {
+  row: RegionFleetSummary | undefined;
+  fleet: ReturnType<typeof useFleetAssetsForRegion>['data'];
+}) {
   // Replaces the old CmComplianceSummary panel. Severity buckets here are
   // the WORST-of(logistics, cm) combined buckets the aggregator computes
   // — semantic shift from the pre-§C.1 cm-only buckets, but matches the
   // regional commander's "how many assets in what condition" question
   // rather than "how many in each cm discrepancy level" (CM-specialist's
   // question; not the regional officer's).
+  // Posture counts come from the asset rows, not the aggregator rollup, so
+  // they render even before the first rollup arrives.
+  const posture = useMemo(() => countPosture(fleet), [fleet]);
   return (
     <div className="panel shrink-0 p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">
@@ -201,6 +221,19 @@ function RegionFleetBuckets({ row }: { row: RegionFleetSummary | undefined }) {
           </div>
         </div>
       )}
+      <div className="space-y-1 text-xs border-t border-slate-800 mt-2 pt-2">
+        {POSTURE_ORDER.map((s) => (
+          <div key={s} className="flex justify-between">
+            <span className="text-slate-400">{postureLabel(s).toLowerCase()}</span>
+            <span
+              className="text-slate-200 font-bold"
+              data-testid={`posture-count-${s}`}
+            >
+              {posture[s]}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -490,7 +523,7 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
                 title={`Munitions Inventory (${(selectedRegion ?? '—').toUpperCase()})`}
                 launcherIdFilter={regionLauncherIds}
               />
-              <RegionFleetBuckets row={scopedFleetSummary} />
+              <RegionFleetBuckets row={scopedFleetSummary} fleet={fleet.data} />
               <EngagementWatchlist regionId={selectedRegion} />
               <TopFactors row={scopedTopFactors} />
               <WearTrends row={scopedWearTrends} />

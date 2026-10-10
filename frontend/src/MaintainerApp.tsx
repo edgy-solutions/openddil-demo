@@ -24,6 +24,7 @@ import CmStateCard from './components/CmStateCard';
 import { WeaponsCapabilityCard } from './components/WeaponsCapabilityCard';
 import MunitionsLoadoutCard from './components/MunitionsLoadoutCard';
 import GroundDiagnosticsCard from './components/GroundDiagnosticsCard';
+import PostureCard from './components/PostureCard';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
   useFleetAssets,
@@ -572,6 +573,10 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               Sits between CmStateCard (config-management compliance) and
               LogisticsStatusCard (rolled-up severity from fusion) — the
               3-axis posture is orthogonal to both. */}
+          <PostureCard
+            posture={tel ? { status: tel.posture_status, since: tel.posture_since } : null}
+            isLoading={telemetry.isLoading}
+          />
           <GroundDiagnosticsCard
             opState={tel?.operational_state ?? null}
             isLoading={telemetry.isLoading}

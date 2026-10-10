@@ -21,9 +21,11 @@ import { platformFamily, shortSeverity, severityHeatClass } from '../../lib/flee
 import { assetCallsign } from '../../lib/assetLabel';
 import { cmStatusBadge } from '../CmStateCard';
 import { dedupFirings } from '../../lib/munitionAsset';
+import { postureClass, postureText, usePostureClock } from '../../lib/posture';
 
 export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
   const fleet = useClassifiedFleet();
+  const nowMs = usePostureClock();
   const cm = useAllCmState();
   const logistics = useAllLogisticsStatus();
 
@@ -105,6 +107,12 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
                       {callsign && <span className="opacity-60"> · {callsign}</span>}
                     </span>
                     <span className="flex items-center gap-1 shrink-0">
+                      <span
+                        className={`px-1 py-px rounded-sm border ${postureClass(a.posture_status)}`}
+                        data-testid={`posture-${a.asset_id}`}
+                      >
+                        {postureText(a.posture_status, a.posture_since, nowMs)}
+                      </span>
                       <span className={`px-1 py-px rounded-sm border ${cmBadge.cls}`}>{cmBadge.label}</span>
                       <span className={`px-1 py-px rounded-sm border ${severityHeatClass(sev)}`}>{shortSeverity(sev)}</span>
                     </span>
