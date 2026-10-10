@@ -26,8 +26,6 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { EffectComposer, Bloom } from '@react-three/postprocessing';
-import { ChildLinkRow, LinkControlCaption } from '../LinkToggle';
-import { useLinkControl } from '../../hooks/useLinkControl';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
@@ -382,7 +380,6 @@ export function FobLabel({
 export default function TheaterReadinessPosture() {
   const { fobs } = deployment();
   const linkRows = useLinkStatus();
-  const linkControl = useLinkControl();
   // Re-evaluated on a timer so a monitor that stops writing ages out to
   // UNKNOWN without waiting for another row to arrive.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -472,31 +469,6 @@ export default function TheaterReadinessPosture() {
               </div>
             )}
           </div>
-          {/* DIRECT LINKS — HQ's direct children, each with its own cut/restore
-              toggle (commanded) beside the observed reachability from
-              link_status. The overlay container is pointer-events-none, so
-              this card opts back in or the toggles could not be clicked. */}
-          {linkControl.status !== 'off' && linkControl.children.length > 0 && (
-            <div className="bg-slate-900/80 p-2 border border-slate-700 pointer-events-auto">
-              <div className="text-[10px] text-slate-500 mb-1">DIRECT LINKS</div>
-              <div className="flex flex-col gap-1">
-                {linkControl.children.map((c) => (
-                  <ChildLinkRow
-                    key={c.id}
-                    id={c.id}
-                    row={linkRows.links.get(c.id)}
-                    status={linkControl.status}
-                    enabled={c.enabled}
-                    parent="HQ"
-                    onChange={(v) => linkControl.set(c.id, v)}
-                    toxics={c.toxics}
-                    onToxics={(t) => linkControl.setToxics(c.id, t)}
-                  />
-                ))}
-              </div>
-              <LinkControlCaption status={linkControl.status} />
-            </div>
-          )}
           {/* FORCE POSTURE — split by asset_class so the commander sees
               hardware readiness cleanly instead of one merged bucket
               polluted by in-flight munition telemetry rows. Only the

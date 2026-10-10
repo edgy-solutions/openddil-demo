@@ -25,15 +25,15 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 describe('link control wiring', () => {
-  it('MaintainerApp, RegionalApp and TheaterReadinessPosture call useLinkControl()', () => {
-    for (const file of ['MaintainerApp.tsx', 'RegionalApp.tsx', 'components/hq/TheaterReadinessPosture.tsx']) {
+  it('MaintainerApp, RegionalApp and HqApp call useLinkControl()', () => {
+    for (const file of ['MaintainerApp.tsx', 'RegionalApp.tsx', 'HqApp.tsx']) {
       expect(readSrc(file), file).toMatch(/useLinkControl\(\)/);
     }
   });
 
-  it('HqApp and HqHeader do not', () => {
-    for (const file of ['HqApp.tsx', 'components/hq/HqHeader.tsx']) {
-      expect(readSrc(file), file).not.toMatch(/useLinkControl/);
+  it('HqHeader and TheaterReadinessPosture receive it or do not need it; neither calls the hook', () => {
+    for (const file of ['components/hq/HqHeader.tsx', 'components/hq/TheaterReadinessPosture.tsx']) {
+      expect(readSrc(file), file).not.toMatch(/useLinkControl\(\)/);
     }
   });
 

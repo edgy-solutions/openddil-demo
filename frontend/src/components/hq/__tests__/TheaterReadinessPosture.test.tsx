@@ -21,6 +21,7 @@ import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+const mockFobs: any[] = [];
 const mockLinkStatus = vi.fn(() => ({ links: new Map(), isLoading: false, isError: false }));
 const mockLinkControl = vi.fn();
 vi.mock('../../../hooks/useLinkControl', () => ({
@@ -32,7 +33,7 @@ vi.mock('../../../hooks', () => ({
   useLinkStatus: () => mockLinkStatus(),
 }));
 vi.mock('../../../deployment', () => ({
-  deployment: () => ({ fobs: [] }),
+  deployment: () => ({ fobs: mockFobs }),
   edgeAttachment: () => undefined,
 }));
 vi.mock('@react-three/drei', () => ({
@@ -102,58 +103,15 @@ describe('FobLabel — link state word', () => {
   });
 });
 
-describe('TheaterReadinessPosture — DIRECT LINKS', () => {
-  const fresh = (id: string, state: string) => ({
-    id, link_state: state, traffic: 'none', declared_idle: false,
-    heartbeat_age_s: 1, last_heartbeat_at: null, bridge_lag: 0,
-    updated_at: new Date().toISOString(),
-  });
-
-  it('ready: a row per direct child with its own toggle and observed word', () => {
+describe('TheaterReadinessPosture — link card', () => {
+  it('keeps the GLOBAL LINK STATUS summary and renders no per-link rows', () => {
+    mockFobs.splice(0, mockFobs.length, { edge_id: 'edge-03', region_id: 'r1', lat: 1, lon: 1, name: 'f' });
     mockLinkStatus.mockReturnValue({
-      links: new Map([['edge-03', fresh('edge-03', 'up')]]),
-      isLoading: false, isError: false,
-    });
-    mockLinkControl.mockReturnValue({
-      status: 'ready',
-      uplink: null,
-      children: [
-        { id: 'edge-03', enabled: true, toxics: { latency_ms: 0, jitter_ms: 0, bandwidth_kb_s: 0 } },
-        { id: 'region-east', enabled: false, toxics: null },
-      ],
-      set: () => {},
-      setToxics: () => {},
-    });
-    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
-    expect(html).toContain('DIRECT LINKS');
-    expect(html).toContain('id="link-toggle-edge-03"');
-    expect(html).toContain('id="link-toggle-region-east"');
-    expect(html).toContain('>UP<');
-    expect(html).toContain('>UNKNOWN<');
-    expect(html).toContain('pointer-events-auto');
-  });
-
-  it('ready: each row carries a toxics group; off renders none', () => {
-    mockLinkStatus.mockReturnValue({ links: new Map(), isLoading: false, isError: false });
-    mockLinkControl.mockReturnValue({
-      status: 'ready',
-      uplink: null,
-      children: [{ id: 'edge-03', enabled: true, toxics: { latency_ms: 2000, jitter_ms: 0, bandwidth_kb_s: 0 } }],
-      set: () => {},
-      setToxics: () => {},
-    });
-    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
-    expect(html).toContain('id="link-toxics-edge-03-latency"');
-    expect(html).toContain('value="2000"');
-    mockLinkControl.mockReturnValue({ status: 'off', uplink: null, children: [], set: () => {}, setToxics: () => {} });
-    expect(renderToStaticMarkup(<TheaterReadinessPosture />)).not.toContain('link-toxics-');
-  });
-
-  it('a row shows the data age from the link_status stamps', () => {
-    const beat = new Date(Date.now() - 2500).toISOString();
-    mockLinkStatus.mockReturnValue({
-      links: new Map([['edge-03', { ...fresh('edge-03', 'up'), last_heartbeat_at: beat,
-        updated_at: new Date(Date.parse(beat) + 2500).toISOString() }]]),
+      links: new Map([['edge-03', {
+        id: 'edge-03', link_state: 'up', traffic: 'none', declared_idle: false,
+        heartbeat_age_s: 1, last_heartbeat_at: null, bridge_lag: 0,
+        updated_at: new Date().toISOString(),
+      }]]),
       isLoading: false, isError: false,
     });
     mockLinkControl.mockReturnValue({
@@ -162,13 +120,10 @@ describe('TheaterReadinessPosture — DIRECT LINKS', () => {
       set: () => {}, setToxics: () => {},
     });
     const html = renderToStaticMarkup(<TheaterReadinessPosture />);
-    expect(html).toContain('>2.5s<');
-  });
-
-  it('off: no DIRECT LINKS card', () => {
-    mockLinkStatus.mockReturnValue({ links: new Map(), isLoading: false, isError: false });
-    mockLinkControl.mockReturnValue({ status: 'off', uplink: null, children: [], set: () => {}, setToxics: () => {} });
-    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
+    mockFobs.splice(0, mockFobs.length);
+    expect(html).toContain('GLOBAL LINK STATUS');
+    expect(html).toContain('1 UP · 0 IDLE · 0 DOWN');
     expect(html).not.toContain('DIRECT LINKS');
+    expect(html).not.toContain('link-toggle-');
   });
 });

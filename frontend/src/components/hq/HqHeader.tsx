@@ -3,16 +3,30 @@
 // =============================================================================
 // Phase 4c.5: the global buffer backlog is REAL — read from useEdgeBuffer()
 // (the edge_buffer_status shape). HQ is the root of the tree and has no
-// uplink, so there is no link toggle here: each tier's link is cut from its
-// own child's screen, and HQ's per-link controls and reachability live in
-// TheaterReadinessPosture (DIRECT LINKS / GLOBAL LINK STATUS).
+// uplink, so there is no uplink toggle. HQ's direct-link rows (one per direct
+// child: toggle, toxics, observed reachability) live in the left segment of
+// this strip, laid out like RegionalHeader's. The aggregate count stays in
+// TheaterReadinessPosture (GLOBAL LINK STATUS).
 import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
 import { ThisNodeBadge } from '../../lib/thisNode';
-import { useEdgeBuffer } from '../../hooks';
+import { useEdgeBuffer, useLinkStatus } from '../../hooks';
+import type { UseLinkControlResult } from '../../hooks/useLinkControl';
+import { ChildLinkRow, LinkControlCaption } from '../LinkToggle';
 import ExercisePopup from './ExercisePopup';
 
-export default function HqHeader() {
+interface HqHeaderProps {
+  /** Link control for HQ's direct children (one hook instance per page). */
+  linkControl: UseLinkControlResult;
+}
+
+export default function HqHeader({ linkControl }: HqHeaderProps) {
   const { status } = useEdgeBuffer();
+  const linkRows = useLinkStatus();
+  // Control listing when available, else whatever link_status rows this store
+  // holds, so reachability stays visible with control off.
+  const childIds = linkControl.status === 'off'
+    ? Array.from(linkRows.links.keys()).sort()
+    : linkControl.children.map((c) => c.id);
   const lag = status?.bridge_group_lag ?? 0;
   const probeDown = status != null && !status.probe_healthy;
 
@@ -23,17 +37,32 @@ export default function HqHeader() {
           <Laptop className="w-6 h-6 mb-1 text-slate-600" />
           <span className="text-[10px] font-bold tracking-wider">TACTICAL EDGE</span>
         </div>
+        {/* HQ <-> its direct children: one row per child link */}
         <div className="flex-1 flex flex-col items-center relative">
           <div className="absolute w-full h-[2px] bg-slate-700 top-3 -z-10"></div>
-          <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981] mt-1.5"></div>
+          <div className="flex flex-col gap-1 mt-1">
+            {childIds.map((id) => {
+              const child = linkControl.children.find((c) => c.id === id);
+              return (
+                <ChildLinkRow
+                  key={id}
+                  id={id}
+                  row={linkRows.links.get(id)}
+                  status={linkControl.status}
+                  enabled={child?.enabled ?? null}
+                  parent="HQ"
+                  onChange={(v) => linkControl.set(id, v)}
+                  toxics={child?.toxics ?? null}
+                  onToxics={(t) => linkControl.setToxics(id, t)}
+                />
+              );
+            })}
+          </div>
+          <LinkControlCaption status={linkControl.status} />
         </div>
         <div className="flex flex-col items-center text-slate-400">
           <Server className="w-6 h-6 mb-1 text-slate-300" />
           <span className="text-[10px] font-bold tracking-wider">REGIONAL HUBS</span>
-        </div>
-        <div className="flex-1 flex flex-col items-center relative">
-          <div className="absolute w-full h-[2px] bg-slate-700 top-3 -z-10"></div>
-          <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981] mt-1.5"></div>
         </div>
         {/* Exercise control -- a separate capability from link control
             (controls the DIS simulator/adapter via its own service, never a

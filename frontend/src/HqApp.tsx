@@ -22,6 +22,7 @@
 // Phase 4c.5: the WAN-cut demo is REAL (one proxy per link, edge-buffer
 // monitor, freeze overlay — unchanged in §C.1).
 import { useEffect, useMemo, useState } from 'react';
+import { useLinkControl } from './hooks/useLinkControl';
 import HqHeader from './components/hq/HqHeader';
 import HqFreezeOverlay from './components/hq/HqFreezeOverlay';
 import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
@@ -310,6 +311,7 @@ export default function HqApp() {
   const cm = useAllCmState();
   const classifiedFleet = useClassifiedFleet();
   const linkRows = useLinkStatus();
+  const linkControl = useLinkControl();
   const [nowMs, setNowMs] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNowMs(Date.now()), 5000);
@@ -331,7 +333,7 @@ export default function HqApp() {
 
   return (
     <div className={`font-mono h-full flex flex-col overflow-hidden transition-colors duration-500 ${severed ? 'freeze-active' : ''}`}>
-      <HqHeader />
+      <HqHeader linkControl={linkControl} />
 
       {severed && <HqFreezeOverlay />}
 

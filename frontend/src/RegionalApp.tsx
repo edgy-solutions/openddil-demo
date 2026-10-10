@@ -490,6 +490,8 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
       <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden min-h-0">
         <RegionalSustainmentPosture
           regionId={selectedRegion}
+          linkControl={linkControl}
+          aorAssetCount={fleet.data.length}
           selectedAssetId={selectedAssetId}
           onAssetSelect={(id) => setSelectedAssetId(id)}
         />

@@ -28,7 +28,7 @@
 //
 // Phase B remaining: per-edge labels, honesty badges, color/style tuning.
 // =============================================================================
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -45,6 +45,7 @@ import {
   useMunitionsStockpile,
   stockpileForLauncher,
   useEdgeBuffer,
+  useLinkStatus,
   type FleetAsset,
   type FleetTierMap,
   type LogisticsStatus,
@@ -121,6 +122,15 @@ import {
 } from '../../lib/coLocationLayout';
 import { resolveRingRadius } from '../../lib/assetGeometry';
 import { assetCallsign } from '../../lib/assetLabel';
+import { useLinkIndicator } from '../../hooks/useLinkIndicator';
+import type { UseLinkControlResult } from '../../hooks/useLinkControl';
+import {
+  allLinksDown,
+  classifyLink,
+  summarizeLinks,
+  summaryText,
+  type LinkReading,
+} from '../../lib/linkStatus';
 
 function buildRenderables(
   fleet: FleetAsset[],
@@ -670,12 +680,19 @@ function FogController({ isZoomed }: { isZoomed: boolean }) {
 
 export default function RegionalSustainmentPosture({
   regionId,
+  linkControl,
+  aorAssetCount,
   selectedAssetId,
   onAssetSelect,
 }: {
   /** Active region pulldown selection; assets and projection are scoped to
    *  this region. Null = no region picked yet (cold start). */
   regionId: string | null;
+  /** This hub's link control (one hook instance per page): the child ids
+   *  whose links the status card counts. */
+  linkControl: UseLinkControlResult;
+  /** Row count of the AOR asset list, so the title and the list agree. */
+  aorAssetCount: number;
   selectedAssetId: string | null;
   onAssetSelect: (id: string | null, type: string | null) => void;
 }) {
@@ -747,9 +764,32 @@ export default function RegionalSustainmentPosture({
   // edge_buffer_status; today it's a single global boolean. Uses
   // the hardware-only fleet so in-flight munitions don't distort
   // the STALE/LOST tiering.
-  const { status: edgeBufferStatus } = useEdgeBuffer();
+  const { status: edgeBufferStatus, isError: isEdgeBufferError } = useEdgeBuffer();
   // Observed own-uplink reachability, shared by the topology visuals below.
   const uplinkUp = edgeBufferStatus?.hq_link_severed !== true;
+  const uplinkIndicator = useLinkIndicator(edgeBufferStatus, isEdgeBufferError);
+  const linkRows = useLinkStatus();
+  const [linkNowMs, setLinkNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setLinkNowMs(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
+  // Every link this region monitors: the uplink plus each child's. Child ids
+  // follow the control listing, or the link_status keys with control off. The
+  // uplink counts as up only when observed up; anything unrecognised is the
+  // unknown bucket.
+  const linkReadings = useMemo<LinkReading[]>(() => {
+    const childIds = linkControl.status === 'off'
+      ? Array.from(linkRows.links.keys())
+      : linkControl.children.map((c) => c.id);
+    const uplink: LinkReading = {
+      state: uplinkIndicator === 'up' ? 'up' : uplinkIndicator === 'severed' ? 'down' : 'unknown',
+      declaredIdle: false,
+    };
+    return [uplink, ...childIds.map((id) => classifyLink(linkRows.links.get(id), linkNowMs))];
+  }, [linkControl.status, linkControl.children, linkRows.links, uplinkIndicator, linkNowMs]);
+  const linkCounts = summarizeLinks(linkReadings);
+  const linksSevered = allLinksDown(linkReadings);
   const tiers = useFleetTiers(hardwareFleet, edgeBufferStatus?.hq_link_severed === true);
 
   // Project around the active region's FOBs so the camera bbox is the
@@ -800,7 +840,8 @@ export default function RegionalSustainmentPosture({
           <h1 className="glitch-text text-2xl font-bold text-emerald-400">REGIONAL SUSTAINMENT POSTURE</h1>
           <p className="text-[10px] font-mono tracking-widest text-slate-400">
             AREA OF RESPONSIBILITY: {(regionId ?? '—').toUpperCase()}
-            <span className="ml-3 opacity-60">{renderables.length} ASSET{renderables.length === 1 ? '' : 'S'}</span>
+            <span className="ml-3 opacity-60">{aorAssetCount} ASSET{aorAssetCount === 1 ? '' : 'S'}</span>
+            <span className="ml-3 opacity-60">{renderables.length} ON MAP</span>
             {inflightCount > 0 && (
               <span className="ml-3 text-amber-400">
                 · {inflightCount} IN FLIGHT
@@ -810,13 +851,11 @@ export default function RegionalSustainmentPosture({
         </div>
         <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
           <div className="text-[10px] text-slate-500 mb-1">THEATER LINK STATUS</div>
-          {/* One edge->HQ DDIL link in this topology — count kept
-              consistent with TheaterReadinessPosture's 1/0. */}
+          {/* Counts the uplink and every child link this region monitors,
+              with the same helpers and colour rule as TheaterReadinessPosture's
+              GLOBAL LINK STATUS. */}
           <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-            <span className="text-emerald-400">{uplinkUp ? 1 : 0} UP</span>
-            {!uplinkUp && (
-              <span className="text-rose-400 ml-4">1 DOWN</span>
-            )}
+            <span className={linksSevered ? 'text-rose-400' : 'text-emerald-400'}>{summaryText(linkCounts)}</span>
           </div>
         </div>
       </div>
