@@ -85,7 +85,7 @@
 #
 # Found by swapping corpora during a demo rehearsal and watching the
 # recorded policy_version correctly NOT change.
-version: users-2026-10-05
+version: users-2026-10-10
 
 users:
   # ---------------------------------------------------------------------------
