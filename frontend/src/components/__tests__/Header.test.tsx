@@ -38,9 +38,10 @@ const SEVERED_STATUS: EdgeBufferStatus = {
 function control(over: Partial<UseLinkControlResult>): UseLinkControlResult {
   return {
     status: 'ready',
-    uplink: { parent: 'region-east', enabled: true },
+    uplink: { parent: 'region-east', enabled: true, toxics: { latency_ms: 0, jitter_ms: 0, bandwidth_kb_s: 0 } },
     children: [],
     set: () => {},
+    setToxics: () => {},
     ...over,
   };
 }
@@ -78,7 +79,7 @@ describe('Header', () => {
 
   it('forbidden: disabled checkbox, caption, and the severed label both render', () => {
     setStatus(SEVERED_STATUS);
-    const html = render(control({ status: 'forbidden', uplink: { parent: 'region-east', enabled: null } }));
+    const html = render(control({ status: 'forbidden', uplink: { parent: 'region-east', enabled: null, toxics: null } }));
     expect(html).toMatch(/<input[^>]*id="toggle1"[^>]*disabled=""/);
     expect(html).toContain('Link control: not authorised');
     expect(html).toContain('DDIL: LINK SEVERED');
@@ -86,9 +87,25 @@ describe('Header', () => {
 
   it('ready but state unknown: disabled with the unknown title', () => {
     setStatus(SEVERED_STATUS);
-    const html = render(control({ uplink: { parent: null, enabled: null } }));
+    const html = render(control({ uplink: { parent: null, enabled: null, toxics: null } }));
     expect(html).toMatch(/<input[^>]*id="toggle1"[^>]*disabled=""/);
     expect(html).toContain('Link state unknown');
     expect(html).toContain('>UPLINK<');
+  });
+});
+
+describe('Header — uplink toxics', () => {
+  it('ready: the uplink toxics group renders beside the toggle', () => {
+    setStatus(SEVERED_STATUS);
+    const html = render(control({}));
+    expect(html).toContain('id="uplink-toxics-latency"');
+    expect(html).toContain('id="uplink-toxics-jitter"');
+    expect(html).toContain('id="uplink-toxics-bandwidth"');
+  });
+
+  it('off: absent', () => {
+    setStatus(SEVERED_STATUS);
+    const html = render(control({ status: 'off', uplink: null }));
+    expect(html).not.toContain('uplink-toxics');
   });
 });

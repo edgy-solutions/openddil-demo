@@ -24,6 +24,7 @@ import { useSession } from '../hooks/useSession';
 import { useLinkIndicator } from '../hooks/useLinkIndicator';
 import type { UseLinkControlResult } from '../hooks/useLinkControl';
 import { LinkControlCaption, LinkToggle } from './LinkToggle';
+import { LinkToxicsControl } from './LinkToxics';
 import { linkToggleAvailability } from '../lib/linkControl';
 
 // Label text/tone per observed LinkIndicatorKind. UNKNOWN/STALE are
@@ -100,7 +101,7 @@ interface HeaderProps {
   /** This tier's own uplink control (lib/linkControl). The toggle renders
    *  only when control is available; unknown or refused states render it
    *  disabled and explained, never as a guessed commanded state. */
-  linkControl: Pick<UseLinkControlResult, 'status' | 'uplink' | 'set'>;
+  linkControl: Pick<UseLinkControlResult, 'status' | 'uplink' | 'set' | 'setToxics'>;
   fleet: FleetAsset[];
   /** Per-asset tier map (Phase 4 liveness). Drives the picker option
    *  suffix + dim styling. Optional so existing callers (tests, future
@@ -263,13 +264,19 @@ export default function Header({
             {linkControl.uplink?.parent ? `UPLINK TO ${linkControl.uplink.parent.toUpperCase()}` : 'UPLINK'}
           </span>
           {uplinkToggle.show && (
-            <div className="mt-1 mr-2">
+            <div className="mt-1 mr-2 flex items-center gap-2">
               <LinkToggle
                 id="toggle1"
                 enabled={linkControl.uplink?.enabled ?? null}
                 disabled={uplinkToggle.disabled}
                 title={uplinkToggle.title}
                 onChange={(v) => linkControl.set('uplink', v)}
+              />
+              <LinkToxicsControl
+                id="uplink-toxics"
+                toxics={linkControl.uplink?.toxics ?? null}
+                status={linkControl.status}
+                onApply={(t) => linkControl.setToxics('uplink', t)}
               />
             </div>
           )}

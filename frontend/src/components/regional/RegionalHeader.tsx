@@ -20,6 +20,7 @@ import {
   LinkControlCaption,
   LinkToggle,
 } from '../LinkToggle';
+import { LinkToxicsControl } from '../LinkToxics';
 import { linkToggleAvailability } from '../../lib/linkControl';
 
 // Same tones as Header.tsx -- see lib/linkIndicator.ts for why
@@ -99,6 +100,8 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
                 enabled={linkControl.children.find((c) => c.id === id)?.enabled ?? null}
                 parent="this hub"
                 onChange={(v) => linkControl.set(id, v)}
+                toxics={linkControl.children.find((c) => c.id === id)?.toxics ?? null}
+                onToxics={(t) => linkControl.setToxics(id, t)}
               />
             ))}
           </div>
@@ -119,13 +122,19 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
             {parentName ? `UPLINK TO ${parentName.toUpperCase()}` : 'UPLINK'}
           </span>
           {uplinkToggle.show ? (
-            <div className="mt-1 mr-2">
+            <div className="mt-1 mr-2 flex items-center gap-2">
               <LinkToggle
                 id="rtoggle1"
                 enabled={linkControl.uplink?.enabled ?? null}
                 disabled={uplinkToggle.disabled}
                 title={uplinkToggle.title}
                 onChange={(v) => linkControl.set('uplink', v)}
+              />
+              <LinkToxicsControl
+                id="uplink-toxics"
+                toxics={linkControl.uplink?.toxics ?? null}
+                status={linkControl.status}
+                onApply={(t) => linkControl.setToxics('uplink', t)}
               />
             </div>
           ) : (

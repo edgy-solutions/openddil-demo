@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifyLink,
+  formatDataAge,
+  linkDataAgeS,
   linkForFob,
   linkStateWord,
   summarizeLinks,
@@ -94,5 +96,31 @@ describe('labels, counts, tint', () => {
     const l = linkForFob(rows, 'edge-99', NOW);
     expect(l.state).toBe('unknown');
     expect(linkStateWord(l)).toBe('UNKNOWN');
+  });
+});
+
+describe('linkDataAgeS', () => {
+  it('is updated_at minus last_heartbeat_at, in seconds', () => {
+    const r = row({ last_heartbeat_at: '2026-10-08T12:00:25.500Z', updated_at: '2026-10-08T12:00:28Z' });
+    expect(linkDataAgeS(r)).toBeCloseTo(2.5, 6);
+  });
+
+  it('is null for a missing row, a missing last_heartbeat_at, or unparseable stamps', () => {
+    expect(linkDataAgeS(undefined)).toBeNull();
+    expect(linkDataAgeS(row({ last_heartbeat_at: null }))).toBeNull();
+    expect(linkDataAgeS(row({ updated_at: null }))).toBeNull();
+    expect(linkDataAgeS(row({ last_heartbeat_at: 'garbage' }))).toBeNull();
+  });
+
+  it('is null when the result is negative', () => {
+    expect(linkDataAgeS(row({ last_heartbeat_at: '2026-10-08T12:00:29Z', updated_at: '2026-10-08T12:00:28Z' }))).toBeNull();
+  });
+});
+
+describe('formatDataAge', () => {
+  it('formats seconds to one decimal, and null as a dash', () => {
+    expect(formatDataAge(2.5)).toBe('2.5s');
+    expect(formatDataAge(0)).toBe('0.0s');
+    expect(formatDataAge(null)).toBe('—');
   });
 });

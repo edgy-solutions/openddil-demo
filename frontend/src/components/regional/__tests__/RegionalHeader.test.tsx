@@ -34,6 +34,8 @@ const SEVERED_STATUS: EdgeBufferStatus = {
   updated_at: new Date().toISOString(),
 };
 
+const NO_TOXICS = { latency_ms: 0, jitter_ms: 0, bandwidth_kb_s: 0 };
+
 function row(id: string, state: string): LinkStatusRow {
   return {
     id, link_state: state, traffic: 'none', declared_idle: false,
@@ -52,9 +54,13 @@ function setup(rows: LinkStatusRow[]): void {
 function control(over: Partial<UseLinkControlResult>): UseLinkControlResult {
   return {
     status: 'ready',
-    uplink: { parent: 'hq', enabled: true },
-    children: [{ id: 'edge-01', enabled: true }, { id: 'edge-02', enabled: false }],
+    uplink: { parent: 'hq', enabled: true, toxics: NO_TOXICS },
+    children: [
+      { id: 'edge-01', enabled: true, toxics: NO_TOXICS },
+      { id: 'edge-02', enabled: false, toxics: NO_TOXICS },
+    ],
     set: () => {},
+    setToxics: () => {},
     ...over,
   };
 }
@@ -102,12 +108,39 @@ describe('RegionalHeader', () => {
     setup([row('edge-01', 'up')]);
     const html = render(control({
       status: 'forbidden',
-      uplink: { parent: 'hq', enabled: null },
-      children: [{ id: 'edge-01', enabled: null }],
+      uplink: { parent: 'hq', enabled: null, toxics: null },
+      children: [{ id: 'edge-01', enabled: null, toxics: null }],
     }));
     expect(html).toMatch(/<input[^>]*disabled=""/);
     expect(html).toContain('Link control: not authorised');
     expect(html).toContain('>UP<');
     expect(html).toContain('REGIONAL↔HQ: SEVERED');
+  });
+});
+
+describe('RegionalHeader — link toxics and data age', () => {
+  it('ready: each child row and the uplink carry a toxics group', () => {
+    setup([]);
+    const html = render(control({}));
+    expect(html).toContain('id="link-toxics-edge-01-latency"');
+    expect(html).toContain('id="link-toxics-edge-02-bandwidth"');
+    expect(html).toContain('id="uplink-toxics-latency"');
+  });
+
+  it('off: no toxics group anywhere', () => {
+    setup([row('edge-01', 'up')]);
+    const html = render(control({ status: 'off', uplink: null, children: [] }));
+    expect(html).not.toContain('link-toxics-');
+    expect(html).not.toContain('uplink-toxics');
+  });
+
+  it('a child row shows the data age, even when control is off', () => {
+    const beat = new Date(Date.now() - 2500).toISOString();
+    const r: LinkStatusRow = { ...row('edge-01', 'up'), last_heartbeat_at: beat,
+      updated_at: new Date(Date.parse(beat) + 2500).toISOString() };
+    setup([r]);
+    expect(render(control({}))).toContain('>2.5s<');
+    expect(render(control({ status: 'off', uplink: null, children: [] }))).toContain('>2.5s<');
+    expect(render(control({}))).toContain('Age of the freshest heartbeat');
   });
 });

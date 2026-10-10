@@ -117,8 +117,12 @@ describe('TheaterReadinessPosture — DIRECT LINKS', () => {
     mockLinkControl.mockReturnValue({
       status: 'ready',
       uplink: null,
-      children: [{ id: 'edge-03', enabled: true }, { id: 'region-east', enabled: false }],
+      children: [
+        { id: 'edge-03', enabled: true, toxics: { latency_ms: 0, jitter_ms: 0, bandwidth_kb_s: 0 } },
+        { id: 'region-east', enabled: false, toxics: null },
+      ],
       set: () => {},
+      setToxics: () => {},
     });
     const html = renderToStaticMarkup(<TheaterReadinessPosture />);
     expect(html).toContain('DIRECT LINKS');
@@ -129,9 +133,41 @@ describe('TheaterReadinessPosture — DIRECT LINKS', () => {
     expect(html).toContain('pointer-events-auto');
   });
 
+  it('ready: each row carries a toxics group; off renders none', () => {
+    mockLinkStatus.mockReturnValue({ links: new Map(), isLoading: false, isError: false });
+    mockLinkControl.mockReturnValue({
+      status: 'ready',
+      uplink: null,
+      children: [{ id: 'edge-03', enabled: true, toxics: { latency_ms: 2000, jitter_ms: 0, bandwidth_kb_s: 0 } }],
+      set: () => {},
+      setToxics: () => {},
+    });
+    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
+    expect(html).toContain('id="link-toxics-edge-03-latency"');
+    expect(html).toContain('value="2000"');
+    mockLinkControl.mockReturnValue({ status: 'off', uplink: null, children: [], set: () => {}, setToxics: () => {} });
+    expect(renderToStaticMarkup(<TheaterReadinessPosture />)).not.toContain('link-toxics-');
+  });
+
+  it('a row shows the data age from the link_status stamps', () => {
+    const beat = new Date(Date.now() - 2500).toISOString();
+    mockLinkStatus.mockReturnValue({
+      links: new Map([['edge-03', { ...fresh('edge-03', 'up'), last_heartbeat_at: beat,
+        updated_at: new Date(Date.parse(beat) + 2500).toISOString() }]]),
+      isLoading: false, isError: false,
+    });
+    mockLinkControl.mockReturnValue({
+      status: 'ready', uplink: null,
+      children: [{ id: 'edge-03', enabled: true, toxics: null }],
+      set: () => {}, setToxics: () => {},
+    });
+    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
+    expect(html).toContain('>2.5s<');
+  });
+
   it('off: no DIRECT LINKS card', () => {
     mockLinkStatus.mockReturnValue({ links: new Map(), isLoading: false, isError: false });
-    mockLinkControl.mockReturnValue({ status: 'off', uplink: null, children: [], set: () => {} });
+    mockLinkControl.mockReturnValue({ status: 'off', uplink: null, children: [], set: () => {}, setToxics: () => {} });
     const html = renderToStaticMarkup(<TheaterReadinessPosture />);
     expect(html).not.toContain('DIRECT LINKS');
   });

@@ -22,8 +22,19 @@ const UPLINK_KEY = 'uplink';
 
 export type LinkControlStatus = 'loading' | 'ready' | 'off' | 'forbidden' | 'error';
 
-export interface UplinkControl { parent: string | null; enabled: boolean | null }
-export interface ChildLinkControl { id: string; enabled: boolean | null }
+/** A link's latency, jitter and bandwidth; 0 means no such toxic. */
+export interface LinkToxics { latency_ms: number; jitter_ms: number; bandwidth_kb_s: number }
+
+export interface UplinkControl {
+  parent: string | null;
+  enabled: boolean | null;
+  toxics: LinkToxics | null;
+}
+export interface ChildLinkControl {
+  id: string;
+  enabled: boolean | null;
+  toxics: LinkToxics | null;
+}
 
 export interface LinkControlState {
   status: LinkControlStatus;
@@ -40,6 +51,9 @@ export interface LinkControlController {
   /** POST the desired state for 'uplink' or a direct child's id. Call only
    *  from the user's own change handler. */
   set(target: 'uplink' | string, value: boolean): Promise<void>;
+  /** POST the complete toxics state for 'uplink' or a direct child's id.
+   *  Not optimistic: the next listing is the truth. */
+  setToxics(target: 'uplink' | string, toxics: LinkToxics): Promise<void>;
   subscribe(fn: () => void): () => void;
 }
 
@@ -62,9 +76,21 @@ export function createLinkControlController(
   function unknownState(status: LinkControlStatus): LinkControlState {
     return {
       status,
-      uplink: state.uplink ? { ...state.uplink, enabled: null } : null,
-      children: state.children.map((c) => ({ id: c.id, enabled: null })),
+      uplink: state.uplink ? { ...state.uplink, enabled: null, toxics: null } : null,
+      children: state.children.map((c) => ({ id: c.id, enabled: null, toxics: null })),
     };
+  }
+
+  function parseToxics(listed: unknown): LinkToxics | null {
+    if (typeof listed !== 'object' || listed === null) return null;
+    const t = listed as Record<string, unknown>;
+    const { latency_ms, jitter_ms, bandwidth_kb_s } = t;
+    if (
+      typeof latency_ms !== 'number' || !Number.isFinite(latency_ms) ||
+      typeof jitter_ms !== 'number' || !Number.isFinite(jitter_ms) ||
+      typeof bandwidth_kb_s !== 'number' || !Number.isFinite(bandwidth_kb_s)
+    ) return null;
+    return { latency_ms, jitter_ms, bandwidth_kb_s };
   }
 
   function withEntry(
@@ -75,7 +101,7 @@ export function createLinkControlController(
     return {
       status: status ?? state.status,
       uplink: target === UPLINK_KEY && state.uplink ? { ...state.uplink, enabled } : state.uplink,
-      children: state.children.map((c) => (c.id === target ? { id: c.id, enabled } : c)),
+      children: state.children.map((c) => (c.id === target ? { ...c, enabled } : c)),
     };
   }
 
@@ -114,7 +140,7 @@ export function createLinkControlController(
         if (!res.ok) throw new Error(`GET ${LISTING_URL} -> ${res.status}`);
         const body = await res.json();
         const up = body?.uplink;
-        const kids: Array<{ id: string; enabled?: unknown }> =
+        const kids: Array<{ id: string; enabled?: unknown; toxics?: unknown }> =
           Array.isArray(body?.children) ? body.children : [];
         setState({
           status: 'ready',
@@ -122,9 +148,14 @@ export function createLinkControlController(
             ? {
                 parent: typeof up.parent === 'string' ? up.parent : null,
                 enabled: adopt(UPLINK_KEY, up.enabled),
+                toxics: parseToxics(up.toxics),
               }
             : null,
-          children: kids.map((c) => ({ id: c.id, enabled: adopt(c.id, c.enabled) })),
+          children: kids.map((c) => ({
+            id: c.id,
+            enabled: adopt(c.id, c.enabled),
+            toxics: parseToxics(c.toxics),
+          })),
         });
       } catch (err) {
         console.error('Link control error (GET /proxies/)', err);
@@ -163,6 +194,30 @@ export function createLinkControlController(
       }
     },
 
+    async setToxics(target: string, toxics: LinkToxics) {
+      if (!known(target)) return;
+      const url = target === UPLINK_KEY
+        ? '/proxies/uplink'
+        : `/proxies/${encodeURIComponent(target)}`;
+      try {
+        const res = await fetchImpl(url, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ toxics }),
+        });
+        if (res.status === 401 || res.status === 403) {
+          setState({ ...state, status: 'forbidden' });
+        } else if (!res.ok) {
+          throw new Error(`POST ${url} -> ${res.status}`);
+        }
+      } catch (err) {
+        console.error(`Link control error (POST ${url})`, err);
+      } finally {
+        await controller.refresh();
+      }
+    },
+
     subscribe(fn: () => void) {
       listeners.add(fn);
       return () => { listeners.delete(fn); };
@@ -173,6 +228,19 @@ export function createLinkControlController(
 
 const UNAVAILABLE_TITLE = 'Link state unknown — failed to read proxy status';
 const FORBIDDEN_TITLE = 'Link control: not authorised';
+
+/** Whether to render the toxics group for this link, and how. */
+export function linkToxicsAvailability(
+  status: LinkControlStatus,
+  toxics: LinkToxics | null,
+): { show: boolean; disabled: boolean; title: string } {
+  if (status === 'off') return { show: false, disabled: true, title: '' };
+  if (status === 'forbidden') return { show: true, disabled: true, title: FORBIDDEN_TITLE };
+  if (status !== 'ready' || toxics === null) {
+    return { show: true, disabled: true, title: UNAVAILABLE_TITLE };
+  }
+  return { show: true, disabled: false, title: 'Latency, jitter and bandwidth on this link' };
+}
 
 /** Whether to render a toggle for this link, and how. `off` = no toggle at all. */
 export function linkToggleAvailability(

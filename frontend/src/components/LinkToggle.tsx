@@ -6,10 +6,13 @@
 // buffer for this tier's own uplink). They are deliberately separate: a
 // restored link reads DOWN until heartbeats actually cross it again.
 import { useEffect, useState } from 'react';
-import type { LinkControlStatus } from '../lib/linkControl';
+import type { LinkControlStatus, LinkToxics } from '../lib/linkControl';
 import { linkToggleAvailability } from '../lib/linkControl';
+import { LinkToxicsControl } from './LinkToxics';
 import {
   classifyLink,
+  formatDataAge,
+  linkDataAgeS,
   linkStateWord,
   type LinkState,
   type LinkStatusRow,
@@ -70,9 +73,12 @@ export interface ChildLinkRowProps {
   /** This tier's own id/name for the toggle title (the parent end). */
   parent: string;
   onChange: (v: boolean) => void;
+  /** The child link's applied latency/jitter/bandwidth; null when not listed. */
+  toxics: LinkToxics | null;
+  onToxics: (t: LinkToxics) => void;
 }
 
-export function ChildLinkRow({ id, row, status, enabled, parent, onChange }: ChildLinkRowProps) {
+export function ChildLinkRow({ id, row, status, enabled, parent, onChange, toxics, onToxics }: ChildLinkRowProps) {
   // Re-classify on a timer so a row that stops refreshing ages to UNKNOWN
   // without a new row arriving.
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -94,7 +100,11 @@ export function ChildLinkRow({ id, row, status, enabled, parent, onChange }: Chi
           onChange={onChange}
         />
       )}
+      <LinkToxicsControl id={`link-toxics-${id}`} toxics={toxics} status={status} onApply={onToxics} />
       <span className={STATE_CLASS[reading.state]}>{linkStateWord(reading)}</span>
+      <span className="text-slate-400" title="Age of the freshest heartbeat">
+        {formatDataAge(linkDataAgeS(row))}
+      </span>
     </div>
   );
 }

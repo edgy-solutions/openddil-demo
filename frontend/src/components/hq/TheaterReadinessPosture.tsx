@@ -489,6 +489,8 @@ export default function TheaterReadinessPosture() {
                     enabled={c.enabled}
                     parent="HQ"
                     onChange={(v) => linkControl.set(c.id, v)}
+                    toxics={c.toxics}
+                    onToxics={(t) => linkControl.setToxics(c.id, t)}
                   />
                 ))}
               </div>

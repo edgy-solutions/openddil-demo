@@ -11,6 +11,7 @@ import {
   createLinkControlController,
   type ChildLinkControl,
   type LinkControlStatus,
+  type LinkToxics,
   type UplinkControl,
 } from '../lib/linkControl';
 
@@ -20,6 +21,8 @@ export interface UseLinkControlResult {
   children: ChildLinkControl[];
   /** 'uplink' or a direct child's id. */
   set(target: 'uplink' | string, value: boolean): void;
+  /** The complete latency/jitter/bandwidth state for the same targets. */
+  setToxics(target: 'uplink' | string, toxics: LinkToxics): void;
 }
 
 export function useLinkControl(): UseLinkControlResult {
@@ -41,5 +44,6 @@ export function useLinkControl(): UseLinkControlResult {
     uplink: state.uplink,
     children: state.children,
     set: (target: string, value: boolean) => { void controller.set(target, value); },
+    setToxics: (target: string, toxics: LinkToxics) => { void controller.setToxics(target, toxics); },
   };
 }

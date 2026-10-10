@@ -43,6 +43,19 @@ export function classifyLink(row: LinkStatusRow | undefined, nowMs: number): Lin
   return { state, declaredIdle: row.declared_idle === true };
 }
 
+/** Age in seconds of the link's freshest heartbeat, or null when unreadable.
+ *  Both timestamps are server-side (updated_at is the projector's tick,
+ *  last_heartbeat_at the sender's emitted_at), so no browser clock enters it. */
+export function linkDataAgeS(row: LinkStatusRow | undefined): number | null {
+  if (!row || !row.updated_at || !row.last_heartbeat_at) return null;
+  const age = (Date.parse(row.updated_at) - Date.parse(row.last_heartbeat_at)) / 1000;
+  return Number.isFinite(age) && age >= 0 ? age : null;
+}
+
+export function formatDataAge(s: number | null): string {
+  return s === null ? '—' : `${s.toFixed(1)}s`;
+}
+
 /** The reading for one FOB: the row whose id is the FOB's edge id. */
 export function linkForFob(
   rows: ReadonlyMap<string, LinkStatusRow>,
