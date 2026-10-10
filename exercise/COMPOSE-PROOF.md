@@ -31,7 +31,8 @@ port mapping.
 
 Subjects (from `policy/users.yaml`, already seeded for the demo):
 - supervisor: `33333333-3333-4333-8333-333333333333`
-- viewer (edge-operator, not exercise-control): `11111111-1111-4111-8111-111111111111`
+- viewer (edge-operator; any known subject may use exercise control): `11111111-1111-4111-8111-111111111111`
+- unknown: `99999999-9999-4999-8999-999999999999` (not in users.yaml)
 
 ## Predictions
 
@@ -40,7 +41,8 @@ Subjects (from `policy/users.yaml`, already seeded for the demo):
 | 1 | supervisor POST run | within 35 s, activity running; last command "run -> 200" | filled in by the script |
 | 2 | supervisor POST pause | within 35 s, activity paused; last command "pause -> 200" | filled in by the script |
 | 3 | supervisor POST resume | running within 35 s | filled in by the script |
-| 4 | viewer POST pause | 403; stub `/requests` count unchanged | filled in by the script |
+| 4 | viewer POST pause | 200; stub `/requests` count +1 | filled in by the script |
+| 4b | unknown subject POST pause | 403; stub count unchanged | filled in by the script |
 | 5 | GET `/proxies/<stub-like>` and `/exercise/../...` | 404; no route to the stub | filled in by the script |
 | 6 | stub container stopped, then supervisor POST pause | last command carries the transport error; activity stays rate-derived (paused once the simulator stops sending — never "running" from the record) | filled in by the script |
 

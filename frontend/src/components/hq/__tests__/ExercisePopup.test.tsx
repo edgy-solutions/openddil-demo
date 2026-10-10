@@ -58,9 +58,10 @@ describe('ExercisePopupView', () => {
     expect(html).toBe('');
   });
 
-  it('kind forbidden renders a disabled button titled "Exercise control: supervisor only"', () => {
+  it('kind forbidden renders a disabled button titled "Exercise control: not authorised"', () => {
     const html = renderToStaticMarkup(<ExercisePopupView {...BASE} kind="forbidden" open={true} />);
-    expect(html).toContain('Exercise control: supervisor only');
+    expect(html).toContain('Exercise control: not authorised');
+    expect(html).not.toContain('supervisor');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>/);
     // Forbidden must never open the popup body, even if open=true is passed.
     expect(html).not.toContain('Last command sent');

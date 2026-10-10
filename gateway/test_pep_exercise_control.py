@@ -2,9 +2,10 @@
 PEP handler.
 
 This checks that both routes go through the gateway's subject-then-Topaz
-sequence like /proxies/uplink (ADR-0029's WAN control route), that a role
-other than the configured exercise-control role is refused with ZERO
-requests reaching the fake exercise/control.py stand-in, that a
+sequence like /proxies/uplink (ADR-0029's WAN control route), that any
+subject the PDP knows is forwarded regardless of role, and an unknown
+subject is refused with ZERO requests reaching the fake
+exercise/control.py stand-in, that a
 client-sent X-OpenDDIL-Subject is overwritten with the session's own
 subject before forwarding, and that nothing under /exercise/ ever reaches
 the fake service unless it is exactly one of the two routes.
@@ -112,7 +113,6 @@ def pep_factory():
     os.environ["OPENDDIL_ELECTRIC_URL"] = "http://127.0.0.1:1"
     os.environ["OPENDDIL_TOPAZ_URL"] = f"http://127.0.0.1:{topaz.server_port}"
     os.environ["OPENDDIL_EXERCISE_CONTROL_URL"] = f"http://127.0.0.1:{exercise.server_port}"
-    os.environ.pop("OPENDDIL_EXERCISE_CONTROL_ROLES", None)  # default: supervisor
     os.environ.pop("OPENDDIL_WAN_CONTROL_URL", None)
     os.environ.pop("OPENDDIL_OIDC_ISSUER", None)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -131,8 +131,7 @@ def pep_factory():
     yield start
     for s in servers + [topaz, exercise]:
         s.shutdown()
-    for var in ("OPENDDIL_EXERCISE_CONTROL_URL", "OPENDDIL_EXERCISE_CONTROL_ROLES"):
-        os.environ.pop(var, None)
+    os.environ.pop("OPENDDIL_EXERCISE_CONTROL_URL", None)
 
 
 def _get(url: str, subject: str | None):
@@ -177,24 +176,39 @@ def test_no_session_post_op_is_401(pep_url):
     assert state["calls"] == []
 
 
-# --- a non-exercise-control role is refused, nothing reaches the service ---
+# --- any known subject is forwarded, whatever its role ----------------------
 
-def test_operator_role_post_is_403_and_logged_through_deny(pep_url, caplog):
-    with caplog.at_level("WARNING"):
+def test_operator_role_post_is_forwarded(pep_url, caplog):
+    state["status"] = 207  # distinguishable from a hardcoded 200
+    with caplog.at_level("INFO"):
         code, _ = _post(pep_url + "/exercise/op/pause", "operator.1")
+    assert code == 207  # the upstream's own status, relayed verbatim
+    assert len(state["calls"]) == 1
+    assert state["calls"][0]["method"] == "POST"
+    assert state["calls"][0]["path"] == "/exercise/op/pause"
+    msgs = [r.getMessage() for r in caplog.records if "EXERCISE CONTROL" in r.getMessage()]
+    assert msgs and "operator.1" in msgs[0] and "op=pause" in msgs[0]
+    assert "role=" not in msgs[0]
+
+
+def test_operator_role_get_is_forwarded(pep_url):
+    code, _ = _get(pep_url + "/exercise/status", "operator.1")
+    assert code == 200
+    assert len(state["calls"]) == 1
+    assert state["calls"][0]["method"] == "GET"
+    assert state["calls"][0]["path"] == "/exercise/status"
+
+
+def test_unknown_subject_is_403(pep_url, caplog):
+    with caplog.at_level("WARNING"):
+        code, _ = _post(pep_url + "/exercise/op/pause", "stranger")
     assert code == 403
     assert state["calls"] == []
     assert any("TOPAZ AUTHZ DENIED" in r.getMessage() for r in caplog.records)
 
 
-def test_operator_role_get_is_403(pep_url):
-    code, _ = _get(pep_url + "/exercise/status", "operator.1")
-    assert code == 403
-    assert state["calls"] == []
-
-
-def test_unknown_subject_is_403(pep_url):
-    code, _ = _post(pep_url + "/exercise/op/pause", "stranger")
+def test_unknown_subject_get_is_403(pep_url):
+    code, _ = _get(pep_url + "/exercise/status", "stranger")
     assert code == 403
     assert state["calls"] == []
 
@@ -205,7 +219,7 @@ def test_topaz_down_is_503_zero_calls(pep_url):
     assert state["calls"] == []
 
 
-# --- supervisor is admitted and forwarded -----------------------------------
+# --- a known subject's call reaches the service -----------------------------------
 
 def test_supervisor_get_status_forwards(pep_url):
     code, body = _get(pep_url + "/exercise/status", "supervisor.1")
@@ -294,20 +308,4 @@ def test_exercise_op_with_no_op_is_404(pep_url):
 def test_get_on_op_path_is_404(pep_url):
     code, _ = _get(pep_url + "/exercise/op/pause", "supervisor.1")
     assert code == 404
-    assert state["calls"] == []
-
-
-# --- the role guard, flipped once, output recorded --------------------------
-#
-# Flipping EXERCISE_CONTROL_ROLES to a role the fake PDP never returns
-# ("auditor" -- SUBJECT_ROLES only ever answers edge-operator/supervisor)
-# makes the previously-admitted supervisor subject refused too: proof the
-# check is live, not a tautology that always passes.
-def test_role_guard_flip_supervisor_now_refused(pep_factory, monkeypatch):
-    import pep  # noqa: PLC0415
-    monkeypatch.setattr(pep, "EXERCISE_CONTROL_ROLES", frozenset({"auditor"}))
-    url = pep_factory()
-    state.update(calls=[], status=200)
-    code, body = _post(url + "/exercise/op/pause", "supervisor.1")
-    assert code == 403, f"role guard flip did not refuse: got {code} {body!r}"
     assert state["calls"] == []

@@ -32,6 +32,7 @@ COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.exercise.yml)
 
 SUPERVISOR_SUBJECT="33333333-3333-4333-8333-333333333333"
 VIEWER_SUBJECT="11111111-1111-4111-8111-111111111111"
+UNKNOWN_SUBJECT="99999999-9999-4999-8999-999999999999"
 
 RATE_WINDOW_PLUS_SCRAPE=35
 
@@ -141,12 +142,17 @@ sleep "$RATE_WINDOW_PLUS_SCRAPE"
 status3="$(call "$SUPERVISOR_SUBJECT" GET /exercise/status)"
 record "3 activity after resume" "running" "$(activity_state "$status3")"
 
-note "== prediction 4: viewer POST pause -> 403, stub call count unchanged =="
+note "== prediction 4: viewer POST pause -> forwarded, stub call count +1; unknown subject -> 403, unchanged =="
 count_before="$(stub_requests_count)"
 viewer_resp="$(call "$VIEWER_SUBJECT" POST /exercise/op/pause)"
 count_after="$(stub_requests_count)"
-record "4a viewer pause status" "403" "$(printf '%s' "$viewer_resp" | cut -f1)"
-record "4b stub call count unchanged" "$count_before" "$count_after"
+record "4a viewer pause status" "200" "$(printf '%s' "$viewer_resp" | cut -f1)"
+record "4b stub call count +1" "$((count_before + 1))" "$count_after"
+count_before="$(stub_requests_count)"
+unknown_resp="$(call "$UNKNOWN_SUBJECT" POST /exercise/op/pause)"
+count_after="$(stub_requests_count)"
+record "4c unknown-subject pause status" "403" "$(printf '%s' "$unknown_resp" | cut -f1)"
+record "4d stub call count unchanged" "$count_before" "$count_after"
 
 note "== prediction 5: no route to the stub through /proxies or path tricks =="
 p5a="$(call "$SUPERVISOR_SUBJECT" GET /proxies/exercise-stub-adapter)"

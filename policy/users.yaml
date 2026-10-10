@@ -129,9 +129,9 @@ users:
   #
   # One store, filtered reads, and the liaison is a subject with two
   # entitlements rather than an architectural special case.
-  # The supervisor role holds the WAN simulator control (sever/restore the
-  # uplink) in addition to whatever this subject's nations already read.
-  # Role selects AFFORDANCES, not rows -- nations are unchanged above.
+  # The role is carried for future affordances. The link and exercise
+  # controls admit any known subject and do not read it. Role selects
+  # AFFORDANCES, not rows -- nations are unchanged above.
   "33333333-3333-4333-8333-333333333333":
     username: liaison.coalition
     display_name: Coalition Liaison (ATL/BDR)

@@ -45,11 +45,12 @@ GET and POST are gated -- a read of a link's state is no less a capability
 than flipping it.
 
 THE EXERCISE CONTROL ROUTE (GET /exercise/status, POST /exercise/op/<op>)
-is the same shape of affordance -- role-gated, not nation-gated. This
-gateway forwards ONLY to exercise/control.py's own HTTP surface; no route
-here ever reaches the adapter endpoint or the simulator -- control.py is
-the only thing that calls the adapter, and this file never learns its
-address. The subject header sent upstream is always this session's own
+is demo apparatus gated exactly like the WAN control route: no session is
+a 401; a subject the PDP does not know is a 403; any known subject is
+forwarded. This gateway forwards ONLY to exercise/control.py's own HTTP
+surface; no route here ever reaches the adapter endpoint or the
+simulator -- control.py is the only thing that calls the adapter, and
+this file never learns its address. The subject header sent upstream is always this session's own
 subject, never a client-supplied one.
 """
 from __future__ import annotations
@@ -594,15 +595,6 @@ OVERSIGHT_ROLES = {
 WAN_CONTROL_URL = os.getenv("OPENDDIL_WAN_CONTROL_URL", "").strip().rstrip("/")
 
 
-def _parse_roles_csv(value: str) -> frozenset[str]:
-    """Comma-separated roles -> a frozenset, stripped, empties dropped.
-
-    A standalone function (rather than an inline comprehension like
-    OVERSIGHT_ROLES above) so the parsing rule can be exercised directly,
-    without re-importing this module under a different environment."""
-    return frozenset(r.strip() for r in value.split(",") if r.strip())
-
-
 def _parse_csv_ordered(value: str) -> tuple[str, ...]:
     """Comma-separated values -> a tuple in the given order, stripped,
     empties dropped (the listing keeps the chart's child order)."""
@@ -659,10 +651,6 @@ def _resolve_wan_route(path: str, method: str) -> tuple[str, str | None] | None:
 # meaning WAN_CONTROL_URL/CM_INTAKE_URL/EGRESS_PANE being unset already
 # carry: the routes do not exist, 404, exactly like today.
 EXERCISE_CONTROL_URL = os.getenv("OPENDDIL_EXERCISE_CONTROL_URL", "").strip().rstrip("/")
-
-# A role-gated affordance, checked against `role` directly, not folded
-# into ask_topaz's allow/deny.
-EXERCISE_CONTROL_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_EXERCISE_CONTROL_ROLES", "supervisor"))
 
 
 def table_class(table: str) -> str:
@@ -1643,8 +1631,8 @@ class Pep(BaseHTTPRequestHandler):
         /exercise/ (either method) is 404.
 
         Order mirrors _handle_wan_control: route existence, then the
-        subject (401), then Topaz, then the role check (403, and nothing
-        is forwarded until an exercise-control role is confirmed).
+        subject (401), then Topaz, then subject known (403; nothing is
+        forwarded for an unknown subject).
         """
         path = parsed.path
         op: str | None = None
@@ -1688,8 +1676,7 @@ class Pep(BaseHTTPRequestHandler):
             return
 
         # Step: Topaz, applied verbatim -- this file contains no
-        # authorization logic. Role, not allowed_nations, is what this
-        # route's decision turns on.
+        # authorization logic. Only subject_known is read here.
         try:
             decision = ask_topaz(subject)
         except AuthzUnavailable as exc:
@@ -1697,9 +1684,9 @@ class Pep(BaseHTTPRequestHandler):
                        status=503)
             return
 
-        if not decision.get("subject_known") or decision.get("role") not in EXERCISE_CONTROL_ROLES:
-            reason = "exercise control requires role: " + ",".join(sorted(EXERCISE_CONTROL_ROLES))
-            self._deny(reason, subject=subject, resource=path, status=403)
+        if not decision.get("subject_known"):
+            self._deny("subject unknown to the PDP", subject=subject,
+                       resource=path, status=403)
             return
 
         # Step: forward, to exercise/control.py's own HTTP surface alone.
@@ -1729,8 +1716,8 @@ class Pep(BaseHTTPRequestHandler):
             return
 
         if method == "POST":
-            log.info("EXERCISE CONTROL subject=%s role=%s op=%s upstream_status=%s",
-                     subject, decision.get("role"), op, upstream_status)
+            log.info("EXERCISE CONTROL subject=%s op=%s upstream_status=%s",
+                     subject, op, upstream_status)
         self._send(upstream_status, upstream_body, [("Content-Type", "application/json")])
 
     def do_POST(self) -> None:  # noqa: N802

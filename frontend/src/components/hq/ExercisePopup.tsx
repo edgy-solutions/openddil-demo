@@ -79,7 +79,7 @@ export function ExercisePopupView({
       <button
         type="button"
         disabled={forbidden}
-        title={forbidden ? 'Exercise control: supervisor only' : undefined}
+        title={forbidden ? 'Exercise control: not authorised' : undefined}
         onClick={forbidden ? undefined : onToggleOpen}
         className="text-[10px] font-bold tracking-widest px-2 py-1 border border-slate-600 rounded disabled:cursor-not-allowed disabled:opacity-50"
       >
@@ -87,7 +87,7 @@ export function ExercisePopupView({
       </button>
       {forbidden && (
         <span className="text-[9px] mt-0.5 text-slate-500 tracking-widest">
-          Exercise control: supervisor only
+          Exercise control: not authorised
         </span>
       )}
 

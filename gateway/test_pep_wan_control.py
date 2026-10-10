@@ -394,14 +394,6 @@ def test_wan_control_url_unset_is_404(tier_url, monkeypatch):
     assert _get(tier_url + "/proxies/", "supervisor.1")[0] == 404
 
 
-# --- the roles-parsing helper (still used by the exercise route) ------------
-
-def test_parse_roles_csv_helper(tier_url):
-    import pep  # noqa: PLC0415
-    assert pep._parse_roles_csv("supervisor, auditor") == frozenset(
-        {"supervisor", "auditor"})
-
-
 # --- a transport failure, not a policy deny ---------------------------------
 
 def test_upstream_connection_failure_is_502(tier_url, monkeypatch):
