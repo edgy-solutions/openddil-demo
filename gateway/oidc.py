@@ -84,9 +84,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -105,6 +107,20 @@ class AuthError(Exception):
     caller distinguishes them by `cause`, which reaches the decision record;
     it must never distinguish them by CONTROL FLOW, because that is how a
     branch that returns something other than a deny gets added later."""
+
+
+class LoginStateError(AuthError):
+    """The sign-in's own state was unusable: not an authorization decision.
+
+    `cause` is one of missing | expired | bad_signature | state_mismatch |
+    replayed. The caller shows a sign-in-again page for these rather than a
+    refusal, because nothing was refused — the login simply cannot be
+    continued. It is still an AuthError so that nothing treats it as success."""
+
+    def __init__(self, cause: str, next_path: str | None = None):
+        super().__init__(f"login state unusable: {cause}")
+        self.cause = cause
+        self.next_path = next_path
 
 
 # --- configuration ----------------------------------------------------------
@@ -410,9 +426,77 @@ def verify_service_token(token: str, *, audience: str) -> dict:
 
 
 # --- login flow --------------------------------------------------------------
-_pending: dict[str, dict] = {}
-_pending_lock = threading.Lock()
-_PENDING_TTL = 600
+# The per-login state (verifier, nonce, return path) rides in a signed cookie
+# on the browser, not in this process: a restart or a different replica must
+# not strand a login that began before it. Only the set of states already
+# consumed stays in memory, to refuse a replay on the same pod.
+LOGIN_STATE_TTL_S = int(os.getenv("OPENDDIL_LOGIN_STATE_TTL_SECONDS", "600"))
+LOGIN_COOKIE_PREFIX = "openddil_login_"
+_LOGIN_STATE_LABEL = b"openddil login-state v1"
+_consumed: dict[str, float] = {}
+_consumed_lock = threading.Lock()
+_clock = time.time
+
+
+def _login_cookie_path() -> str:
+    return urllib.parse.urlsplit(REDIRECT_URI).path or "/"
+
+
+_STATE_SHAPE = re.compile(r"[A-Za-z0-9_-]{16,128}")
+
+
+def _login_cookie_name(state: str) -> str:
+    # The callback's state is caller-supplied and lands in a Set-Cookie
+    # header name; only the url-safe alphabet begin_login emits gets there.
+    return LOGIN_COOKIE_PREFIX + re.sub(r"[^A-Za-z0-9_-]", "", state or "")[:16]
+
+
+def _login_key() -> bytes:
+    return hmac.new(CLIENT_SECRET.encode(), _LOGIN_STATE_LABEL,
+                    hashlib.sha256).digest()
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _unb64(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _sign_login_state(payload: dict) -> str:
+    body = _b64(json.dumps(payload, separators=(",", ":")).encode())
+    mac = hmac.new(_login_key(), body.encode(), hashlib.sha256).digest()
+    return f"{body}.{_b64(mac)}"
+
+
+def _login_cookie_attrs(max_age: int) -> list[str]:
+    # The provider returns by a cross-site top-level redirect, which a Strict
+    # cookie would not accompany; Lax carries it.
+    samesite = "None" if COOKIE_SAMESITE.lower() == "none" else "Lax"
+    parts = ["Path=" + _login_cookie_path(), "HttpOnly",
+             f"SameSite={samesite}", f"Max-Age={max_age}"]
+    if COOKIE_SECURE or samesite == "None":
+        parts.append("Secure")
+    return parts
+
+
+def login_state_cookie_header(state: str, value: str) -> str:
+    return "; ".join([f"{_login_cookie_name(state)}={value}"]
+                     + _login_cookie_attrs(LOGIN_STATE_TTL_S))
+
+
+def clear_login_cookie_header(state: str) -> str:
+    return "; ".join([f"{_login_cookie_name(state)}="]
+                     + _login_cookie_attrs(0))
+
+
+def _read_cookie(cookie_header_value: str | None, name: str) -> str | None:
+    for part in (cookie_header_value or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == name:
+            return v or None
+    return None
 
 
 def _sweep(store: dict, lock: threading.Lock, key: str = "expires") -> None:
@@ -420,6 +504,13 @@ def _sweep(store: dict, lock: threading.Lock, key: str = "expires") -> None:
     with lock:
         for k in [k for k, v in store.items() if v.get(key, 0) < now]:
             store.pop(k, None)
+
+
+def _sweep_consumed() -> None:
+    now = _clock()
+    with _consumed_lock:
+        for k in [k for k, exp in _consumed.items() if exp < now]:
+            _consumed.pop(k, None)
 
 
 def safe_next(raw: str | None) -> str:
@@ -458,8 +549,9 @@ def safe_next(raw: str | None) -> str:
 
 
 def begin_login(next_path: str = POST_LOGIN_PATH, *,
-                force_login: bool = False) -> str:
-    """Return the URL to send the browser to, and remember the state.
+                force_login: bool = False) -> tuple[str, str]:
+    """Return (authorize URL, Set-Cookie value) for the browser, with the
+    login's state sealed into that cookie (see LOGIN_STATE_TTL_S).
 
     PKCE IS USED EVEN THOUGH THIS IS A CONFIDENTIAL CLIENT. It is not
     required for one, and it costs a hash — but it closes the
@@ -476,16 +568,14 @@ def begin_login(next_path: str = POST_LOGIN_PATH, *,
     session does not end the identity provider's own session, so without it
     a sign-in after expiry can return through that live session without
     asking for credentials."""
-    _sweep(_pending, _pending_lock)
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(16)
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    with _pending_lock:
-        _pending[state] = {"verifier": verifier, "nonce": nonce,
-                           "next": next_path,
-                           "expires": time.time() + _PENDING_TTL}
+    cookie = login_state_cookie_header(state, _sign_login_state({
+        "state": state, "verifier": verifier, "nonce": nonce,
+        "next": next_path, "expires": _clock() + LOGIN_STATE_TTL_S}))
     params = {
         "response_type": "code",
         "client_id": CLIENT_ID,
@@ -502,7 +592,7 @@ def begin_login(next_path: str = POST_LOGIN_PATH, *,
     # NOT internalized: this URL is handed to the BROWSER, which can only
     # reach the external address. Internalizing it here would produce a
     # redirect to a hostname that resolves only inside the cluster.
-    return f"{metadata()['authorization_endpoint']}?{q}"
+    return f"{metadata()['authorization_endpoint']}?{q}", cookie
 
 
 @dataclass(frozen=True)
@@ -527,21 +617,46 @@ class LoginResult:
     next_path: str = POST_LOGIN_PATH
 
 
-def complete_login(code: str, state: str) -> LoginResult:
+def _open_login_state(state: str, cookie_header_value: str | None) -> dict:
+    """Find, verify and consume this state's cookie. Raises LoginStateError."""
+    if not state or not _STATE_SHAPE.fullmatch(state):
+        raise LoginStateError("missing")
+    raw = _read_cookie(cookie_header_value, _login_cookie_name(state))
+    if not raw:
+        raise LoginStateError("missing")
+    body, _, mac = raw.partition(".")
+    try:
+        want = hmac.new(_login_key(), body.encode(), hashlib.sha256).digest()
+        ok = secrets.compare_digest(want, _unb64(mac))
+        entry = json.loads(_unb64(body)) if ok else None
+    except (ValueError, TypeError):
+        ok, entry = False, None
+    if not ok or not isinstance(entry, dict):
+        raise LoginStateError("bad_signature")
+    nxt = entry.get("next") if isinstance(entry.get("next"), str) else None
+    if not secrets.compare_digest(str(entry.get("state", "")), state):
+        raise LoginStateError("state_mismatch", nxt)
+    if (not isinstance(entry.get("expires"), (int, float))
+            or entry["expires"] < _clock()):
+        raise LoginStateError("expired", nxt)
+    _sweep_consumed()
+    with _consumed_lock:
+        if state in _consumed:
+            raise LoginStateError("replayed", nxt)
+        _consumed[state] = entry["expires"]
+    return entry
+
+
+def complete_login(code: str, state: str,
+                   cookie_header: str | None = None) -> LoginResult:
     """Exchange the code for tokens. Return the verified claims, the raw ID
     token (which sign-out hands back to the provider as `id_token_hint`),
     and the refresh token/lifetime so the session can outlive the ID token
     — see `LoginResult`.
 
-    The state entry is consumed WHETHER OR NOT the exchange succeeds, so a
-    replayed callback cannot retry against the same verifier."""
-    with _pending_lock:
-        entry = _pending.pop(state, None)
-    if entry is None:
-        raise AuthError("unknown or expired login state — possible CSRF, "
-                        "a replayed callback, or a login that took too long")
-    if entry["expires"] < time.time():
-        raise AuthError("login state expired before the callback arrived")
+    The state is marked consumed WHETHER OR NOT the exchange succeeds, so a
+    replayed callback cannot retry against the same verifier on this pod."""
+    entry = _open_login_state(state, cookie_header)
 
     basic = base64.b64encode(
         f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()

@@ -56,6 +56,7 @@ subject, never a client-supplied one.
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -1943,7 +1944,8 @@ class Pep(BaseHTTPRequestHandler):
                           or [""])[0]
             force_login = (prompt_raw == "login")
             try:
-                url = oidc.begin_login(next_path, force_login=force_login)
+                url, login_cookie = oidc.begin_login(
+                    next_path, force_login=force_login)
             except oidc.AuthError as exc:
                 # The IdP is unreachable. That is a failure to AUTHENTICATE,
                 # not a denial of anything — but it still ends in a refusal,
@@ -1952,6 +1954,7 @@ class Pep(BaseHTTPRequestHandler):
                            subject="", resource="login", status=503)
                 return True
             self._send(302, b"", [("Location", url),
+                                  ("Set-Cookie", login_cookie),
                                   ("Cache-Control", "no-store")])
             return True
 
@@ -1981,7 +1984,28 @@ class Pep(BaseHTTPRequestHandler):
                                       ("Cache-Control", "no-store")])
                 return True
             try:
-                login = oidc.complete_login(code, state)
+                login = oidc.complete_login(code, state,
+                                            self.headers.get("Cookie"))
+            except oidc.LoginStateError as exc:
+                # The sign-in could not be continued (cookie missing, aged
+                # out, altered or already used). Nothing was refused, so this
+                # is a sign-in-again page, not the authorization refusal.
+                (log.warning if exc.cause == "bad_signature" else log.info)(
+                    "login state unusable: %s", exc.cause)
+                again = ("/auth/login?" + urllib.parse.urlencode(
+                    {"next": oidc.safe_next(exc.next_path)})
+                    if exc.next_path else "/")
+                page = (
+                    "<!doctype html><html><head><meta charset=\"utf-8\">"
+                    "<title>Login timed out</title></head><body>"
+                    "<h1>Login timed out</h1><p>Sign in again.</p>"
+                    f"<p><a href=\"{html.escape(again, quote=True)}\">"
+                    "Sign in</a></p></body></html>").encode()
+                self._send(400, page, [
+                    ("Content-Type", "text/html; charset=utf-8"),
+                    ("Set-Cookie", oidc.clear_login_cookie_header(state)),
+                    ("Cache-Control", "no-store")])
+                return True
             except oidc.AuthError as exc:
                 self._deny("login failed: " + str(exc), subject="",
                            resource="callback")
@@ -1995,6 +2019,8 @@ class Pep(BaseHTTPRequestHandler):
                             resource="session")
             self._send(302, b"", [("Location", login.next_path),
                                   ("Set-Cookie", oidc.cookie_header(sid)),
+                                  ("Set-Cookie",
+                                   oidc.clear_login_cookie_header(state)),
                                   ("Cache-Control", "no-store")])
             return True
 

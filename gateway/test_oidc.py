@@ -580,7 +580,7 @@ def test_login_route_validates_next_before_begin_login(monkeypatch):
     captured = {}
     def fake_begin_login(next_path, *, force_login=False):
         captured["next_path"] = next_path
-        return "https://idp.example/authorize?state=xxx"
+        return "https://idp.example/authorize?state=xxx", "openddil_login_x=v"
     monkeypatch.setattr(oidc, "begin_login", fake_begin_login)
     handler = object.__new__(_pep.Pep)
     handler.headers = {}
@@ -599,7 +599,7 @@ def test_login_route_passes_a_valid_next_through_unchanged(monkeypatch):
     captured = {}
     def fake_begin_login(next_path, *, force_login=False):
         captured["next_path"] = next_path
-        return "https://idp.example/authorize?state=xxx"
+        return "https://idp.example/authorize?state=xxx", "openddil_login_x=v"
     monkeypatch.setattr(oidc, "begin_login", fake_begin_login)
     handler = object.__new__(_pep.Pep)
     handler.headers = {}
@@ -621,7 +621,7 @@ def test_callback_redirects_to_the_next_path_from_begin_login(monkeypatch):
     fake_login = oidc.LoginResult(
         claims={"sub": "user-sub-123"}, id_token="idt", refresh_token="rt",
         refresh_expires_in=3600, next_path="/regional?role=hq")
-    monkeypatch.setattr(oidc, "complete_login", lambda code, state: fake_login)
+    monkeypatch.setattr(oidc, "complete_login", lambda code, state, cookie=None: fake_login)
     handler = object.__new__(_pep.Pep)
     handler.headers = {}
     captured = {}
@@ -647,7 +647,7 @@ def test_callback_with_an_invalid_next_redirects_to_post_login_path(monkeypatch)
     fake_login = oidc.LoginResult(
         claims={"sub": "user-sub-123"}, id_token="idt", refresh_token="rt",
         refresh_expires_in=3600, next_path=oidc.POST_LOGIN_PATH)
-    monkeypatch.setattr(oidc, "complete_login", lambda code, state: fake_login)
+    monkeypatch.setattr(oidc, "complete_login", lambda code, state, cookie=None: fake_login)
     handler = object.__new__(_pep.Pep)
     handler.headers = {}
     captured = {}
@@ -851,7 +851,7 @@ def _authorize_query(oidc, monkeypatch, **kwargs):
     monkeypatch.setattr(
         oidc, "metadata",
         lambda: {"authorization_endpoint": "https://idp.example/authorize"})
-    url = oidc.begin_login("/x", **kwargs)
+    url, _cookie = oidc.begin_login("/x", **kwargs)
     return urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
 
 
@@ -884,7 +884,7 @@ def test_login_route_forwards_force_login_only_for_exact_prompt_login(
     captured = {}
     def fake_begin_login(next_path, *, force_login=False):
         captured["force_login"] = force_login
-        return "https://idp.example/authorize?state=xxx"
+        return "https://idp.example/authorize?state=xxx", "openddil_login_x=v"
     monkeypatch.setattr(oidc, "begin_login", fake_begin_login)
     handler = object.__new__(_pep.Pep)
     handler.headers = {}
