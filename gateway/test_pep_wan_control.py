@@ -43,6 +43,8 @@ state = {
     "wan_body": b'{"enabled": false}',
     # What the fake toxiproxy answers to GET /proxies (name -> proxy).
     "proxy_map": {},
+    # Per-call overrides: (method, path) -> (status, body bytes).
+    "force": {},
 }
 
 
@@ -82,16 +84,27 @@ class FakeWanControl(BaseHTTPRequestHandler):
     def _handle(self, method: str) -> None:
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else b""
+        try:
+            parsed = json.loads(body) if body else None
+        except ValueError:
+            parsed = None
         state["wan_calls"].append({
             "method": method,
             "path": self.path,
             "body": body,
+            "json": parsed,
             "user_agent": self.headers.get("User-Agent", ""),
         })
+        status = state["wan_status"]
         out = state["wan_body"]
+        parts = self.path.strip("/").split("/")
         if method == "GET" and self.path == "/proxies":
             out = json.dumps(state["proxy_map"]).encode()
-        self.send_response(state["wan_status"])
+        elif method == "GET" and len(parts) == 2 and parts[1] in state["proxy_map"]:
+            out = json.dumps(state["proxy_map"][parts[1]]).encode()
+        # A per-call override: (method, path) -> (status, body).
+        status, out = state["force"].get((method, self.path), (status, out))
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
@@ -102,6 +115,9 @@ class FakeWanControl(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         self._handle("POST")
+
+    def do_DELETE(self):  # noqa: N802
+        self._handle("DELETE")
 
 
 def _serve(handler) -> ThreadingHTTPServer:
@@ -170,7 +186,7 @@ def _post(url: str, subject: str | None, body: dict | bytes | None,
 
 def _reset():
     state.update(wan_calls=[], wan_status=200, wan_body=b'{"enabled": false}',
-                 proxy_map={})
+                 proxy_map={}, force={})
 
 
 @pytest.fixture
@@ -196,6 +212,7 @@ def tier_url(pep_factory, monkeypatch):
 
 
 GOOD_BODY = {"enabled": False}
+NO_TOXICS = {"latency_ms": 0, "jitter_ms": 0, "bandwidth_kb_s": 0}
 
 
 # --- root configuration -----------------------------------------------------
@@ -234,8 +251,9 @@ def test_root_listing(root_url):
     assert json.loads(body) == {
         "uplink": None,
         "children": [
-            {"id": "edge-03", "proxy": "uplink-edge-03", "enabled": None},
-            {"id": "region-east", "proxy": "uplink-region-east", "enabled": False},
+            {"id": "edge-03", "proxy": "uplink-edge-03", "enabled": None, "toxics": None},
+            {"id": "region-east", "proxy": "uplink-region-east", "enabled": False,
+             "toxics": NO_TOXICS},
         ],
     }
     assert [c["path"] for c in state["wan_calls"]] == ["/proxies"]
@@ -280,10 +298,13 @@ def test_tier_listing_has_uplink_parent_and_children(tier_url):
     code, body = _get(tier_url + "/proxies/", "operator.1")
     assert code == 200
     assert json.loads(body) == {
-        "uplink": {"proxy": "uplink-region-east", "parent": "hq", "enabled": True},
+        "uplink": {"proxy": "uplink-region-east", "parent": "hq", "enabled": True,
+                   "toxics": NO_TOXICS},
         "children": [
-            {"id": "edge-01", "proxy": "uplink-edge-01", "enabled": False},
-            {"id": "edge-02", "proxy": "uplink-edge-02", "enabled": True},
+            {"id": "edge-01", "proxy": "uplink-edge-01", "enabled": False,
+             "toxics": NO_TOXICS},
+            {"id": "edge-02", "proxy": "uplink-edge-02", "enabled": True,
+             "toxics": NO_TOXICS},
         ],
     }
 
@@ -416,3 +437,205 @@ def test_upstream_non_2xx_listing_is_502(tier_url):
     code, body = _get(tier_url + "/proxies/", "supervisor.1")
     assert code == 502
     assert "error" in json.loads(body)
+
+
+# --- per-link toxics --------------------------------------------------------
+
+EDGE_PROXY = "uplink-edge-01"
+LAT = {"name": "link_latency", "type": "latency", "stream": "upstream",
+       "toxicity": 1.0, "attributes": {"latency": 900, "jitter": 50}}
+BW = {"name": "link_bandwidth", "type": "bandwidth", "stream": "upstream",
+      "toxicity": 1.0, "attributes": {"rate": 64}}
+
+
+def _proxy(name: str, *toxics):
+    return {"name": name, "enabled": True, "toxics": list(toxics)}
+
+
+def _toxics_post(url: str, toxics, subject: str = "supervisor.1", path: str = "/proxies/edge-01"):
+    return _post(url + path, subject, {"toxics": toxics})
+
+
+def _calls():
+    return [(c["method"], c["path"]) for c in state["wan_calls"]]
+
+
+def test_toxics_create_latency_only(tier_url):
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY)}
+    code, body = _toxics_post(tier_url, {"latency_ms": 2000})
+    assert code == 200
+    assert _calls() == [("GET", "/proxies/" + EDGE_PROXY),
+                        ("POST", "/proxies/" + EDGE_PROXY + "/toxics")]
+    create = state["wan_calls"][1]
+    assert create["json"] == {"name": "link_latency", "type": "latency",
+                              "stream": "upstream", "toxicity": 1.0,
+                              "attributes": {"latency": 2000, "jitter": 0}}
+    assert create["user_agent"] == "openddil-pep"
+    assert json.loads(body) == {"toxics": {"latency_ms": 2000, "jitter_ms": 0,
+                                           "bandwidth_kb_s": 0}}
+
+
+def test_toxics_update_existing_latency(tier_url):
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY, LAT)}
+    code, _ = _toxics_post(tier_url, {"latency_ms": 500, "jitter_ms": 100})
+    assert code == 200
+    assert _calls() == [("GET", "/proxies/" + EDGE_PROXY),
+                        ("POST", "/proxies/" + EDGE_PROXY + "/toxics/link_latency")]
+    assert state["wan_calls"][1]["json"] == {"attributes": {"latency": 500, "jitter": 100}}
+
+
+def test_empty_toxics_clears_both(tier_url):
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY, LAT, BW)}
+    code, body = _toxics_post(tier_url, {})
+    assert code == 200
+    assert _calls() == [("GET", "/proxies/" + EDGE_PROXY),
+                        ("DELETE", "/proxies/" + EDGE_PROXY + "/toxics/link_latency"),
+                        ("DELETE", "/proxies/" + EDGE_PROXY + "/toxics/link_bandwidth")]
+    assert json.loads(body) == {"toxics": NO_TOXICS}
+
+
+def test_toxics_body_is_complete_state(tier_url):
+    # Bandwidth only: the bandwidth toxic is created and the existing
+    # latency toxic goes, because a missing key means 0.
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY, LAT)}
+    code, _ = _toxics_post(tier_url, {"bandwidth_kb_s": 32})
+    assert code == 200
+    assert _calls() == [("GET", "/proxies/" + EDGE_PROXY),
+                        ("DELETE", "/proxies/" + EDGE_PROXY + "/toxics/link_latency"),
+                        ("POST", "/proxies/" + EDGE_PROXY + "/toxics")]
+    assert state["wan_calls"][2]["json"] == {
+        "name": "link_bandwidth", "type": "bandwidth", "stream": "upstream",
+        "toxicity": 1.0, "attributes": {"rate": 32}}
+
+
+def test_null_toxic_means_zero(tier_url):
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY, LAT)}
+    code, body = _toxics_post(tier_url, {"latency_ms": None, "jitter_ms": None})
+    assert code == 200
+    assert _calls()[-1] == ("DELETE", "/proxies/" + EDGE_PROXY + "/toxics/link_latency")
+    assert json.loads(body) == {"toxics": NO_TOXICS}
+
+
+@pytest.mark.parametrize("payload", [
+    {"toxics": {"loss_pct": 5}},
+    {"toxics": {"latency_ms": True}},
+    {"toxics": {"latency_ms": 1.5}},
+    {"toxics": {"latency_ms": "2000"}},
+    {"toxics": {"latency_ms": 60001}},
+    {"toxics": {"jitter_ms": 60001}},
+    {"toxics": {"bandwidth_kb_s": 1000001}},
+    {"toxics": {"latency_ms": -1}},
+    {"toxics": {"bandwidth_kb_s": -5}},
+    {"enabled": True, "toxics": {"latency_ms": 5}},
+    {"toxics": [1, 2]},
+    {"toxics": None},
+    {},
+], ids=["unknown-key", "bool", "float", "string", "latency-high", "jitter-high",
+        "bandwidth-high", "negative", "negative-bw", "both-keys", "not-object",
+        "null-toxics", "empty-body"])
+def test_toxics_bad_body_is_400(tier_url, payload):
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY)}
+    code, body = _post(tier_url + "/proxies/edge-01", "supervisor.1", payload)
+    assert code == 400
+    assert "error" in json.loads(body)
+    assert state["wan_calls"] == []
+
+
+def test_toxics_bool_is_400_specifically(tier_url):
+    code, body = _toxics_post(tier_url, {"bandwidth_kb_s": True})
+    assert code == 400
+    assert "bandwidth_kb_s" in json.loads(body)["error"]
+    assert state["wan_calls"] == []
+
+
+def test_toxics_bounds_are_inclusive(tier_url):
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY)}
+    code, _ = _toxics_post(tier_url, {"latency_ms": 60000, "jitter_ms": 60000,
+                                      "bandwidth_kb_s": 1000000})
+    assert code == 200
+
+
+def test_toxics_unknown_proxy_relays_404(tier_url):
+    state["force"] = {("GET", "/proxies/" + EDGE_PROXY): (404, b'{"error":"proxy not found"}')}
+    code, body = _toxics_post(tier_url, {"latency_ms": 100})
+    assert code == 404
+    assert json.loads(body) == {"error": "proxy not found"}
+    assert _calls() == [("GET", "/proxies/" + EDGE_PROXY)]
+
+
+def test_toxics_unknown_subject_is_403(tier_url):
+    code, _ = _toxics_post(tier_url, {"latency_ms": 100}, subject="stranger")
+    assert code == 403
+    assert state["wan_calls"] == []
+
+
+def test_toxics_no_session_is_401(tier_url):
+    code, _ = _post(tier_url + "/proxies/edge-01", None, {"toxics": {"latency_ms": 100}})
+    assert code == 401
+    assert state["wan_calls"] == []
+
+
+def test_toxics_non_child_is_404(tier_url):
+    code, _ = _toxics_post(tier_url, {"latency_ms": 100}, path="/proxies/edge-03")
+    assert code == 404
+    assert state["wan_calls"] == []
+
+
+def test_toxic_post_failure_stops_the_sequence(tier_url):
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY)}
+    state["force"] = {("POST", "/proxies/" + EDGE_PROXY + "/toxics"):
+                      (500, b'{"error":"boom"}')}
+    code, body = _toxics_post(tier_url, {"latency_ms": 100, "bandwidth_kb_s": 10})
+    assert code == 500
+    assert json.loads(body) == {"error": "boom"}
+    # The latency create failed, so the bandwidth create was never sent.
+    assert _calls() == [("GET", "/proxies/" + EDGE_PROXY),
+                        ("POST", "/proxies/" + EDGE_PROXY + "/toxics")]
+
+
+def test_toxics_transport_failure_is_502(tier_url, monkeypatch):
+    import pep  # noqa: PLC0415
+    dead = _serve(FakeWanControl)
+    port = dead.server_port
+    dead.shutdown()
+    monkeypatch.setattr(pep, "WAN_CONTROL_URL", f"http://127.0.0.1:{port}")
+    code, body = _toxics_post(tier_url, {"latency_ms": 100})
+    assert code == 502
+    assert json.loads(body) == {"error": "wan control upstream unavailable"}
+
+
+def test_listing_carries_toxics(tier_url):
+    state["proxy_map"] = {
+        "uplink-region-east": _proxy("uplink-region-east", BW),
+        EDGE_PROXY: _proxy(EDGE_PROXY, LAT, {"name": "other", "type": "timeout",
+                                             "attributes": {"latency": 7}}),
+        # edge-02 is deliberately absent.
+    }
+    code, body = _get(tier_url + "/proxies/", "supervisor.1")
+    assert code == 200
+    listing = json.loads(body)
+    assert listing["uplink"]["toxics"] == {"latency_ms": 0, "jitter_ms": 0,
+                                           "bandwidth_kb_s": 64}
+    assert listing["children"][0]["toxics"] == {"latency_ms": 900, "jitter_ms": 50,
+                                                "bandwidth_kb_s": 0}
+    assert listing["children"][1]["toxics"] is None
+    assert [c["path"] for c in state["wan_calls"]] == ["/proxies"]
+
+
+def test_toxics_log_line(tier_url, caplog):
+    state["proxy_map"] = {EDGE_PROXY: _proxy(EDGE_PROXY)}
+    with caplog.at_level("INFO"):
+        code, _ = _toxics_post(tier_url, {"latency_ms": 2000}, subject="operator.1")
+    assert code == 200
+    msgs = [r.getMessage() for r in caplog.records if "WAN TOXICS" in r.getMessage()]
+    assert len(msgs) == 1
+    assert "operator.1" in msgs[0] and EDGE_PROXY in msgs[0]
+    assert "latency_ms=2000" in msgs[0] and "upstream_status=200" in msgs[0]
+
+
+def test_tier_uplink_toxics_target_own_proxy(tier_url):
+    state["proxy_map"] = {"uplink-region-east": _proxy("uplink-region-east")}
+    code, _ = _toxics_post(tier_url, {"latency_ms": 300}, path="/proxies/uplink")
+    assert code == 200
+    assert _calls() == [("GET", "/proxies/uplink-region-east"),
+                        ("POST", "/proxies/uplink-region-east/toxics")]

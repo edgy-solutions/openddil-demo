@@ -42,7 +42,8 @@ addresses only its own uplink and the uplinks of its direct children; any
 other path is a 404. No session is a 401; a subject the PDP does not know
 is a 403; any known subject is forwarded to the DDIL sever mechanism. Both
 GET and POST are gated -- a read of a link's state is no less a capability
-than flipping it.
+than flipping it. The same route also sets a link's latency, jitter and
+bandwidth, and the listing shows them.
 
 THE EXERCISE CONTROL ROUTE (GET /exercise/status, POST /exercise/op/<op>)
 is demo apparatus gated exactly like the WAN control route: no session is
@@ -955,25 +956,110 @@ def _cm_record(*, allowed: bool, subject: str, asset_id: str | None,
     return decision_id
 
 
-# 1024 bytes, fixed rather than configurable -- the body is one key and one
-# bool, and a route that only ever sends {"enabled": true|false} does not
-# need a sizing knob.
+# 1024 bytes, fixed rather than configurable -- the body is one key (a bool,
+# or three small ints), and a route that only ever sends that does not need
+# a sizing knob.
 MAX_WAN_CONTROL_BODY_BYTES = 1024
 
+# The per-link toxics a body may set, and each one's inclusive upper bound.
+WAN_TOXIC_BOUNDS = {"latency_ms": 60000, "jitter_ms": 60000, "bandwidth_kb_s": 1000000}
 
-def _parse_wan_control_body(payload) -> bool:
-    """The validated `enabled` flag, or raise ValueError(reason).
 
-    EXACTLY one key, `enabled`, a bool -- not "truthy", not coercible from a
-    string. A stray extra key or a string "false" is refused rather than
+def _parse_wan_control_body(payload) -> tuple[str, object]:
+    """("enabled", bool) or ("toxics", {latency_ms, jitter_ms, bandwidth_kb_s}),
+    or raise ValueError(reason).
+
+    EXACTLY one key: `enabled`, a bool -- not "truthy", not coercible from a
+    string -- or `toxics`, an object whose keys are a subset of
+    WAN_TOXIC_BOUNDS. Each toxic is null or an int within its bound (a bool,
+    float or string is refused). The toxics object is the COMPLETE desired
+    state for the link: a missing key or null is 0, and 0 means no such
+    toxic. A stray extra key or a string "false" is refused rather than
     guessed at, the same discipline _parse_discrepancy_body applies to the
     CM write path."""
-    if not isinstance(payload, dict) or set(payload) != {"enabled"}:
-        raise ValueError("body must be a JSON object with exactly one key: enabled")
-    enabled = payload["enabled"]
-    if not isinstance(enabled, bool):
-        raise ValueError("enabled must be a bool")
-    return enabled
+    if not isinstance(payload, dict) or len(payload) != 1 or set(payload) - {"enabled", "toxics"}:
+        raise ValueError("body must be a JSON object with exactly one key: enabled or toxics")
+    if "enabled" in payload:
+        enabled = payload["enabled"]
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a bool")
+        return ("enabled", enabled)
+    toxics = payload["toxics"]
+    if not isinstance(toxics, dict):
+        raise ValueError("toxics must be an object")
+    unknown = set(toxics) - set(WAN_TOXIC_BOUNDS)
+    if unknown:
+        raise ValueError("unknown toxic: " + ", ".join(sorted(unknown)))
+    out = {}
+    for key, bound in WAN_TOXIC_BOUNDS.items():
+        value = toxics.get(key)
+        if value is None:
+            value = 0
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{key} must be an integer or null")
+        if not 0 <= value <= bound:
+            raise ValueError(f"{key} must be between 0 and {bound}")
+        out[key] = value
+    return ("toxics", out)
+
+
+def _wan_upstream(method: str, path: str, body: dict | None = None) -> tuple[int, bytes]:
+    """One request to the sever mechanism. A non-2xx answer is returned like
+    a 2xx; only a connection-level failure raises."""
+    headers = {"User-Agent": "openddil-pep"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(WAN_CONTROL_URL + path, data=data,
+                                 headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+
+
+def _apply_link_toxics(proxy_name: str, toxics: dict, subject: str = "") -> tuple[int, bytes]:
+    """Make the proxy's two fixed toxics match `toxics` (the complete desired
+    state): read the proxy, then create, update or delete each toxic. The
+    first non-2xx answer stops the sequence and is relayed verbatim; a
+    transport failure is a 502."""
+    # Upstream is the client-to-server direction: the child's bridge is the
+    # client and produces to the parent, so that is the data direction.
+    desired = (
+        ("link_latency", "latency",
+         {"latency": toxics["latency_ms"], "jitter": toxics["jitter_ms"]},
+         toxics["latency_ms"] > 0 or toxics["jitter_ms"] > 0),
+        ("link_bandwidth", "bandwidth",
+         {"rate": toxics["bandwidth_kb_s"]},
+         toxics["bandwidth_kb_s"] > 0),
+    )
+    base = "/proxies/" + proxy_name
+    try:
+        status, body = _wan_upstream("GET", base)
+        if not 200 <= status < 300:
+            return status, body
+        present = {t.get("name") for t in (json.loads(body).get("toxics") or [])
+                   if isinstance(t, dict)}
+        for name, kind, attributes, want in desired:
+            if name in present and want:
+                call = ("POST", f"{base}/toxics/{name}", {"attributes": attributes})
+            elif want:
+                call = ("POST", f"{base}/toxics",
+                        {"name": name, "type": kind, "stream": "upstream",
+                         "toxicity": 1.0, "attributes": attributes})
+            elif name in present:
+                call = ("DELETE", f"{base}/toxics/{name}", None)
+            else:
+                continue
+            status, body = _wan_upstream(*call)
+            if not 200 <= status < 300:
+                return status, body
+    except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+        log.error("wan control upstream error subject=%s: %s", subject, exc)
+        return 502, json.dumps({"error": "wan control upstream unavailable"}).encode()
+    return 200, json.dumps({"toxics": toxics}).encode()
 
 
 # --- the proxy --------------------------------------------------------------
@@ -1495,6 +1581,7 @@ class Pep(BaseHTTPRequestHandler):
 
         kind, proxy_name = route
         enabled: bool | None = None
+        toxics: dict | None = None
         if method == "POST":
             # --- request-shape checks, pre-PDP, same discipline as the CM
             # write path's own CSRF defence in depth.
@@ -1525,7 +1612,11 @@ class Pep(BaseHTTPRequestHandler):
                            [("Content-Type", "application/json")])
                 return
             try:
-                enabled = _parse_wan_control_body(payload)
+                body_kind, body_value = _parse_wan_control_body(payload)
+                if body_kind == "enabled":
+                    enabled = body_value
+                else:
+                    toxics = body_value
             except ValueError as exc:
                 self._send(400, json.dumps({"error": str(exc)}).encode(),
                            [("Content-Type", "application/json")])
@@ -1555,6 +1646,15 @@ class Pep(BaseHTTPRequestHandler):
 
         if kind == "list":
             self._send_wan_listing(subject)
+            return
+
+        if toxics is not None:
+            status, body_bytes = _apply_link_toxics(proxy_name, toxics, subject)
+            log.info("WAN TOXICS subject=%s proxy=%s latency_ms=%s jitter_ms=%s "
+                     "bandwidth_kb_s=%s upstream_status=%s", subject, proxy_name,
+                     toxics["latency_ms"], toxics["jitter_ms"], toxics["bandwidth_kb_s"],
+                     status)
+            self._send(status, body_bytes, [("Content-Type", "application/json")])
             return
 
         # Step: forward. `User-Agent: openddil-pep` because the sever
@@ -1615,11 +1715,29 @@ class Pep(BaseHTTPRequestHandler):
             entry = proxies.get(name)
             return entry.get("enabled") if isinstance(entry, dict) else None
 
+        def toxics_of(name: str):
+            entry = proxies.get(name)
+            if not isinstance(entry, dict):
+                return None
+            by_name = {t.get("name"): t.get("attributes") for t in (entry.get("toxics") or [])
+                       if isinstance(t, dict)}
+
+            def attr(toxic: str, key: str) -> int:
+                attrs = by_name.get(toxic)
+                value = attrs.get(key) if isinstance(attrs, dict) else None
+                return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+            return {"latency_ms": attr("link_latency", "latency"),
+                    "jitter_ms": attr("link_latency", "jitter"),
+                    "bandwidth_kb_s": attr("link_bandwidth", "rate")}
+
         body = {
             "uplink": ({"proxy": WAN_UPLINK, "parent": WAN_UPLINK_PARENT or None,
-                        "enabled": enabled_of(WAN_UPLINK)} if WAN_UPLINK else None),
+                        "enabled": enabled_of(WAN_UPLINK),
+                        "toxics": toxics_of(WAN_UPLINK)} if WAN_UPLINK else None),
             "children": [{"id": c, "proxy": "uplink-" + c,
-                          "enabled": enabled_of("uplink-" + c)} for c in WAN_CHILDREN],
+                          "enabled": enabled_of("uplink-" + c),
+                          "toxics": toxics_of("uplink-" + c)} for c in WAN_CHILDREN],
         }
         self._send(200, json.dumps(body).encode(), [("Content-Type", "application/json")])
 
