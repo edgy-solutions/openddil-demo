@@ -3,9 +3,10 @@
 // =============================================================================
 // Phase 4c.5: the buffer counter and link status are now REAL — read from
 // useEdgeBuffer() (the edge_buffer_status shape the projector's monitor
-// writes), not a client-side simulation. The link toggle severs/restores
-// the real toxiproxy hq-link proxy. The vestigial second link toggle
-// (link2 — never backed by anything) was removed.
+// writes), not a client-side simulation. The link toggle cuts/restores this
+// tier's own uplink to its parent (one proxy per link); the label beside it
+// is the observed reachability, never the commanded state. The vestigial
+// second link toggle (link2 — never backed by anything) was removed.
 import { Laptop, Building2, TrendingUp } from 'lucide-react';
 import { ThisNodeBadge } from '../lib/thisNode';
 import type { FleetAsset, FleetTierMap } from '../hooks';
@@ -21,6 +22,9 @@ import EdgePulldown from './EdgePulldown';
 import NationLegend from './releasability/NationLegend';
 import { useSession } from '../hooks/useSession';
 import { useLinkIndicator } from '../hooks/useLinkIndicator';
+import type { UseLinkControlResult } from '../hooks/useLinkControl';
+import { LinkControlCaption, LinkToggle } from './LinkToggle';
+import { linkToggleAvailability } from '../lib/linkControl';
 
 // Label text/tone per observed LinkIndicatorKind. UNKNOWN/STALE are
 // deliberately neutral (grey) -- they are "no confirmed answer", not good
@@ -93,14 +97,10 @@ function TierCountChips({ fleet, tiers }: {
 }
 
 interface HeaderProps {
-  /** Null while useWanLink's GET is in flight or failed -- the slider
-   *  renders disabled rather than guessing a commanded state. */
-  link1: boolean | null;
-  setLink1: (v: boolean) => void;
-  /** True when the PEP answered 401/403 to the GET or POST: this subject
-   *  does not hold the WAN-control role. Disabled and explained, same as
-   *  link1 === null, but never styled as an error. */
-  forbidden: boolean;
+  /** This tier's own uplink control (lib/linkControl). The toggle renders
+   *  only when control is available; unknown or refused states render it
+   *  disabled and explained, never as a guessed commanded state. */
+  linkControl: Pick<UseLinkControlResult, 'status' | 'uplink' | 'set'>;
   fleet: FleetAsset[];
   /** Per-asset tier map (Phase 4 liveness). Drives the picker option
    *  suffix + dim styling. Optional so existing callers (tests, future
@@ -132,7 +132,7 @@ function pickerLabel(a: FleetAsset, tier: AssetTier | undefined): string {
 }
 
 export default function Header({
-  link1, setLink1, forbidden,
+  linkControl,
   fleet, fleetTiers, selectedAsset, setSelectedAsset,
   availableEdges, selectedEdge, onSelectEdge,
 }: HeaderProps) {
@@ -144,17 +144,23 @@ export default function Header({
   // decision that nobody reviewed.
   const session = useSession();
   // The label is a pure function of the OBSERVED edge_buffer_status row
-  // (+ isError + wall clock) -- it never reads link1 (the commanded
-  // slider state) and never falls back to it. See lib/linkIndicator.ts.
+  // (+ isError + wall clock) -- it never reads the commanded
+  // toggle state and never falls back to it. See lib/linkIndicator.ts.
   const linkIndicator = useLinkIndicator(status, isError);
   const lag = status?.bridge_group_lag ?? 0;
   // Unrelated to the link label above: this still backs the separate
   // "EDGE→HQ BUFFER" MSGS-count row's dash-vs-number display.
   const probeDown = status != null && !status.probe_healthy;
   // `severed` still drives the rose/slate divider line + MSGS-row glow
-  // below; kept as an observed-only derivation (no link1 fallback) so it
+  // below; kept as an observed-only derivation so it
   // stays consistent with the indicator it sits next to.
   const severed = linkIndicator === 'severed';
+  const uplinkToggle = linkToggleAvailability(
+    linkControl.status,
+    linkControl.uplink?.enabled ?? null,
+    'this tier',
+    linkControl.uplink?.parent ?? null,
+  );
 
   return (
     <header className="panel flex flex-col p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
@@ -250,31 +256,28 @@ export default function Header({
           <span className="text-xs font-bold tracking-wider text-emerald-300">TACTICAL EDGE <ThisNodeBadge /></span>
         </div>
 
-        {/* DDIL link — the toggle severs/restores the real toxiproxy hq-link */}
+        {/* DDIL link — the toggle cuts/restores this tier's own uplink */}
         <div className="flex-1 flex flex-col items-center relative">
           <div className={`absolute w-full h-[2px] top-3 -z-10 ${severed ? 'bg-rose-900' : 'bg-slate-700'}`}></div>
-          <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in mt-1">
-            <input
-              type="checkbox"
-              id="toggle1"
-              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
-              checked={link1 ?? false}
-              disabled={link1 === null || forbidden}
-              title={forbidden ? 'WAN control: supervisor only' : link1 === null ? 'Link state unknown — failed to read proxy status' : undefined}
-              onChange={(e) => setLink1(e.target.checked)}
-            />
-            <label htmlFor="toggle1" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${link1 === null ? 'bg-slate-600' : link1 ? 'bg-emerald-500' : 'bg-rose-500'}`}>
-              <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${link1 ? 'translate-x-full' : ''}`}></span>
-            </label>
-          </div>
+          <span className="text-[9px] tracking-widest text-slate-500">
+            {linkControl.uplink?.parent ? `UPLINK TO ${linkControl.uplink.parent.toUpperCase()}` : 'UPLINK'}
+          </span>
+          {uplinkToggle.show && (
+            <div className="mt-1 mr-2">
+              <LinkToggle
+                id="toggle1"
+                enabled={linkControl.uplink?.enabled ?? null}
+                disabled={uplinkToggle.disabled}
+                title={uplinkToggle.title}
+                onChange={(v) => linkControl.set('uplink', v)}
+              />
+            </div>
+          )}
           <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
             {LINK_INDICATOR_LABEL[linkIndicator]}
           </span>
-          {forbidden && (
-            <span className="text-[9px] mt-0.5 text-slate-500 tracking-widest">WAN control: supervisor only</span>
-          )}
+          <LinkControlCaption status={linkControl.status} />
         </div>
-
         {/* CENTRAL HQ is NOT this node on the Maintainer tab -- dim it
             so the THIS-NODE highlight on TACTICAL EDGE reads clearly.
             Same dim-state styling HqHeader uses for TACTICAL EDGE. */}

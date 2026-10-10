@@ -8,13 +8,9 @@
 // for that reason alone, same as TheaterReadinessPosture.test.tsx,
 // independent of anything under test.
 //
-// forbidden means the PEP answered 401/403 to the WAN-control GET/POST:
-// this subject does not hold the WAN-control role. The toggle must render
-// disabled and explained ("WAN control: supervisor only"), and must NOT
-// borrow the severed/error styling — being refused a capability is not
-// the link being down. The status label itself is a separate claim (it
-// comes from edge_buffer_status via useEdgeBuffer, not from the proxy),
-// so forbidden must never replace it -- only add a caption alongside it.
+// HQ is the root of the tree: it has no uplink, so the header carries no
+// link toggle and no uplink label. Each link is cut from its child's screen
+// (and from the DIRECT LINKS card for HQ's direct children).
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { EdgeBufferStatus } from '../../../hooks';
@@ -30,52 +26,24 @@ function setStatus(status: EdgeBufferStatus | null): void {
   mockUseEdgeBuffer.mockReturnValue({ status, isError: false });
 }
 
-const ACTIVE_STATUS: EdgeBufferStatus = {
-  bridge_group_lag: 0,
-  hq_link_severed: false,
+const SEVERED_STATUS: EdgeBufferStatus = {
+  bridge_group_lag: 5,
+  hq_link_severed: true,
   probe_healthy: true,
   updated_at: new Date().toISOString(),
 };
 
-const SEVERED_STATUS: EdgeBufferStatus = {
-  ...ACTIVE_STATUS,
-  hq_link_severed: true,
-};
-
 describe('HqHeader', () => {
-  it('forbidden renders the WAN toggle disabled with "WAN control: supervisor only"', () => {
-    setStatus(null);
-    const html = renderToStaticMarkup(
-      <HqHeader wanActive={null} setWanActive={() => {}} forbidden={true} />,
-    );
-    expect(html).toContain('WAN control: supervisor only');
-    expect(html).toMatch(/<input[^>]*disabled=""[^>]*>/);
-  });
-
-  it('not forbidden, link active -> no forbidden text, toggle not disabled', () => {
-    setStatus(ACTIVE_STATUS);
-    const html = renderToStaticMarkup(
-      <HqHeader wanActive={true} setWanActive={() => {}} forbidden={false} />,
-    );
-    expect(html).not.toContain('WAN control: supervisor only');
-    expect(html).not.toMatch(/<input[^>]*disabled=""[^>]*>/);
-  });
-
-  it('forbidden + not-severed status: the status label AND the caption both render', () => {
-    setStatus(ACTIVE_STATUS);
-    const html = renderToStaticMarkup(
-      <HqHeader wanActive={null} setWanActive={() => {}} forbidden={true} />,
-    );
-    expect(html).toContain('HQ UPLINK: ACTIVE');
-    expect(html).toContain('WAN control: supervisor only');
-  });
-
-  it('forbidden + severed status: "HQ UPLINK: SEVERED" AND the caption both render', () => {
+  it('renders no link toggle and no HQ UPLINK label', () => {
     setStatus(SEVERED_STATUS);
-    const html = renderToStaticMarkup(
-      <HqHeader wanActive={null} setWanActive={() => {}} forbidden={true} />,
-    );
-    expect(html).toContain('HQ UPLINK: SEVERED');
-    expect(html).toContain('WAN control: supervisor only');
+    const html = renderToStaticMarkup(<HqHeader />);
+    expect(html).not.toContain('type="checkbox"');
+    expect(html).not.toContain('HQ UPLINK');
+  });
+
+  it('keeps the global buffer backlog', () => {
+    setStatus(SEVERED_STATUS);
+    const html = renderToStaticMarkup(<HqHeader />);
+    expect(html).toContain('GLOBAL BUFFER BACKLOG');
   });
 });

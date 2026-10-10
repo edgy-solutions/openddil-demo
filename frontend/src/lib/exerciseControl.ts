@@ -1,7 +1,7 @@
 // =============================================================================
 // exerciseControl — the exercise-control popup's commanded/observed state
 // =============================================================================
-// Pattern: lib/wanLink.ts. A framework-free controller (tested directly
+// Pattern: lib/linkControl.ts. A framework-free controller (tested directly
 // against a mocked `fetch`, no React) plus a thin hook wrapper
 // (hooks/useExerciseControl.ts) — same split, same reason: this project's
 // vitest runs with no jsdom (vitest.config.ts), so a mounted component's
@@ -75,7 +75,7 @@ export interface ExerciseStatusBody {
 
 export interface ExerciseControlState {
   /** 'absent' = not wired at this tier (404 from the gateway): render
-   *  nothing, same meaning as wanLink's equivalent cases.
+   *  nothing, same meaning as linkControl's equivalent cases.
    *  'forbidden' = 401/403: this subject does not hold the exercise-control
    *  role.
    *  'loading' = no successful poll yet (and not forbidden/absent).

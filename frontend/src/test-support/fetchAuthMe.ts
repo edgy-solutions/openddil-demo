@@ -34,7 +34,7 @@ export interface AuthMeFetchControl {
 
 /** Installs `globalThis.fetch`. Every test that uses this must mount
  *  through the real Root (whose useSession() calls are the only fetch
- *  callers in the mounted tree — useWanLink's internal fetch is mocked
+ *  callers in the mounted tree — useLinkControl's internal fetch is mocked
  *  away separately) so there is nothing else for this to need to answer. */
 export function installAuthMeFetch(initial: { mode?: AuthMeMode; deltaSeconds?: number } = {}): AuthMeFetchControl {
   const state: AuthMeState = {

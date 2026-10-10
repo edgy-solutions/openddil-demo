@@ -16,9 +16,9 @@
 // delivers a real work-orders topic — at that point this component (or a
 // successor) reads from that topic and the title becomes accurate again.
 //
-// The "system freeze" overlay is driven by the REAL hq-link state
-// (useEdgeBuffer().hq_link_severed) as of Phase 4c.5 — when the edge->HQ
-// link is genuinely severed, the panel shows the freeze.
+// The "system freeze" overlay is driven by the REAL state of this
+// tier's own uplink (useEdgeBuffer().hq_link_severed) as of Phase 4c.5 — when
+// that link is genuinely severed, the panel shows the freeze.
 import { ClipboardList, Lock } from 'lucide-react';
 import { useAllCmState, useEdgeBuffer } from '../../hooks';
 import { cmStatusBadge } from '../CmStateCard';
@@ -83,7 +83,7 @@ export default function WorkOrders() {
         </span>
       </h2>
 
-      {/* System Freeze Overlay — driven by the REAL hq-link sever state. */}
+      {/* System Freeze Overlay — driven by the REAL sever state of this tier's own uplink. */}
       {severed && (
         <div className="absolute inset-0 bg-rose-950/80 backdrop-blur-sm z-20 flex flex-col items-center justify-center border-2 border-rose-500 mt-12 mx-3 mb-3">
           <Lock className="w-8 h-8 text-rose-500 mb-2" />

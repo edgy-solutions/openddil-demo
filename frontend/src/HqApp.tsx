@@ -19,10 +19,9 @@
 // views still live in ConfigurationPosture (CM) and EdgeAttribution
 // (per-edge); we lost no information, we re-framed the headline.
 //
-// Phase 4c.5: the WAN-cut demo is REAL (toxiproxy hq-link, edge-buffer
+// Phase 4c.5: the WAN-cut demo is REAL (one proxy per link, edge-buffer
 // monitor, freeze overlay — unchanged in §C.1).
-import { useMemo } from 'react';
-import { useWanLink } from './hooks/useWanLink';
+import { useEffect, useMemo, useState } from 'react';
 import HqHeader from './components/hq/HqHeader';
 import TheaterReadinessPosture from './components/hq/TheaterReadinessPosture';
 import HqDigitalTwin from './components/hq/HqDigitalTwin';
@@ -38,7 +37,7 @@ import {
   useAllCmState,
   useFleetAssets,
   useClassifiedFleet,
-  useEdgeBuffer,
+  useLinkStatus,
   useRegionFleetSummary,
   useRegionTopFactors,
   useRegionWearTrends,
@@ -49,6 +48,7 @@ import {
   mwoComplianceByFamily,
   baselineDistribution,
 } from './lib/fleetAggregates';
+import { allLinksDown, classifyLink } from './lib/linkStatus';
 
 // Top-N HQ size matches per-region size (locked: tightening D). A theater
 // commander wants fewer summarized items, not more; configurable later if
@@ -298,10 +298,6 @@ function WearTrendsTheater({
 }
 
 export default function HqApp() {
-  // Sourced from the proxy's own state (hooks/useWanLink), not a
-  // hardcoded `true` that never reflected what toxiproxy actually had.
-  const { enabled: wanActive, set: setWanActive, forbidden: wanForbidden } = useWanLink();
-
   // Pipeline data — ElectricSQL Shapes. cm + fleet used by
   // ConfigurationPosture (MWO compliance by family, baseline distribution)
   // — the per-platform-family slice is NOT in the rolled-up topics.
@@ -313,23 +309,29 @@ export default function HqApp() {
   // concerns and would pollute the family-percent-compliance math.
   const cm = useAllCmState();
   const classifiedFleet = useClassifiedFleet();
-  const edge = useEdgeBuffer();
+  const linkRows = useLinkStatus();
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
 
   // Phase 6c.1: theater-level rollup sources.
   const regionFleet = useRegionFleetSummary();
   const regionTopFactors = useRegionTopFactors();
   const regionWearTrends = useRegionWearTrends();
 
-  // `false` when wanActive is still unknown (null, cold start or a
-  // failed GET) rather than `!wanActive` -- the old fallback treated
-  // "don't know" as "severed", which would show the SYSTEM FREEZE overlay
-  // below on every cold load until the first edge_buffer_status row or
-  // useWanLink's GET resolved.
-  const severed = edge.status ? edge.status.hq_link_severed : false;
+  // HQ has no uplink, so it must not freeze on edge_buffer_status.hq_link_severed:
+  // at HQ that row belongs to an attached edge's link. HQ is cut off only when
+  // every link it monitors reads down; an empty map (nothing observed yet) is
+  // not severed, so a cold load never shows the freeze overlay.
+  const severed = allLinksDown(
+    Array.from(linkRows.links.values(), (row) => classifyLink(row, nowMs)),
+  );
 
   return (
     <div className={`font-mono h-full flex flex-col overflow-hidden transition-colors duration-500 ${severed ? 'freeze-active' : ''}`}>
-      <HqHeader wanActive={wanActive} setWanActive={setWanActive} forbidden={wanForbidden} />
+      <HqHeader />
 
       {severed && (
         <div className="absolute inset-0 z-40 pointer-events-none flex flex-col items-center justify-center pt-20">

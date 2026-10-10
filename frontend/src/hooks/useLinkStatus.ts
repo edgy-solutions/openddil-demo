@@ -1,6 +1,7 @@
-// useLinkStatus — per-tier reachability of the link to HQ.
-// Source: link_status (one row per tier id: edge-01, region-east, ...),
-// written by the projector's HQ link monitor from heartbeats that travel
+// useLinkStatus — reachability of each child tier's uplink, measured at the
+// tier whose store holds the row.
+// Source: link_status (one row per child tier id: edge-01, region-east, ...),
+// written by the projector's link monitor from heartbeats that travel
 // the same path as the data. Read the rows through classifyLink
 // (lib/linkStatus.ts): a stale or missing row is 'unknown', never 'up'.
 import { num, useTableShape, type ShapeResult } from './electric';

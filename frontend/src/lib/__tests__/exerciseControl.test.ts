@@ -1,5 +1,5 @@
 // Tests the framework-free controller directly (see lib/exerciseControl.ts's
-// header) with a mocked fetch -- no React, no DOM. Mirrors wanLink.test.ts.
+// header) with a mocked fetch -- no React, no DOM. Mirrors linkControl.test.ts.
 //
 // THE RULE THESE TESTS GUARD: `status.activity` and `last_command` are two
 // separate facts carried through untouched from the service's own JSON --

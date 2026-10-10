@@ -3,7 +3,7 @@
 // openddil-projector's edge-buffer monitor.
 //
 // bridge_group_lag is the genuine edge-buffer depth — the `bridge-group`
-// consumer-group lag on redpanda-edge. It climbs when the hq-link is
+// consumer-group lag on redpanda-edge. It climbs when this tier's uplink is
 // severed (the edge-hq-bridge can't drain) and falls when it's restored.
 // Replaces the client-side setBuffer simulations that presented synthetic
 // numbers as real.

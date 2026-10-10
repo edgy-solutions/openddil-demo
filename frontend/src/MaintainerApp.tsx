@@ -9,8 +9,8 @@
 // DiagnosticCanvas, VehicleClassSchematic otherwise).
 //
 // All pipeline data comes from ElectricSQL Shapes (./hooks). Phase 4c.5:
-// the link toggle now severs/restores the REAL toxiproxy hq-link proxy,
-// and the edge-buffer counter (in Header) reads real bridge-group lag via
+// the link toggle now cuts/restores this tier's own uplink (one proxy per
+// link), and the edge-buffer counter (in Header) reads real bridge-group lag via
 // useEdgeBuffer — no more client-side simulation.
 import { useState, useEffect, useMemo } from 'react';
 import Header from './components/Header';
@@ -37,7 +37,7 @@ import {
   useTacticalEvents,
   useAssetElementTelemetry,
 } from './hooks';
-import { useWanLink } from './hooks/useWanLink';
+import { useLinkControl } from './hooks/useLinkControl';
 import { makeAssetClassifier } from './lib/assetClass';
 import { useMunitionLaunches } from './hooks/useEffectorLaunches';
 import { platformClass } from './config/platformChartConfig';
@@ -137,12 +137,12 @@ function formatSeen(iso: string | null): string {
 interface TierScopedProps { tierScopeValue?: string | null }
 
 function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
-  // link1 = the DDIL link toggle, sourced from the proxy's own state
-  // (see hooks/useWanLink) rather than invented client-side. `degraded` no
+  // linkControl = the DDIL uplink toggle, sourced from the proxy's own state
+  // (see hooks/useLinkControl) rather than invented client-side. `degraded` no
   // longer exists here: this view shows the EDGE's own asset status, and
   // an edge asset's status never depends on the uplink -- a cut WAN link
   // must not turn an asset amber with no data behind it.
-  const { enabled: link1, set: setLink1, forbidden: link1Forbidden } = useWanLink();
+  const linkControl = useLinkControl();
   const [clock, setClock] = useState('');
   const [selectedAssetId, setSelectedAssetId] = useState('');
   // Phase 6c.2: edge scope. Initial value comes from ?edge= URL param if
@@ -212,7 +212,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   //
   // No link-state argument here. This is the EDGE's own fleet --
   // classified from its own data only. A severed WAN uplink does not
-  // change what the edge can see of itself; feeding `!link1` in here
+  // change what the edge can see of itself; feeding a commanded link state in here
   // (as before) turned a silent/stale asset into a fabricated COMM_LOST
   // the moment the operator flipped the toggle, with no data behind it.
   // (RegionalSustainmentPosture's call, by contrast, legitimately feeds
@@ -381,14 +381,13 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   };
 
   // DDIL uplink sever/restore. Phase 4c.5: the link toggle DISABLES /
-  // ENABLES the real toxiproxy hq-link proxy — toxiproxy then closes all
-  // connections and refuses new ones, so the edge-hq-bridge genuinely
-  // cannot reach redpanda-hq, stops committing `bridge-group` offsets,
-  // and the real edge buffer climbs. (A timeout toxic would only delay
+  // ENABLES this tier's uplink proxy — it then closes all connections and
+  // refuses new ones, so the edge-hq-bridge genuinely cannot reach its parent,
+  // stops committing `bridge-group` offsets, and the real edge buffer climbs. (A timeout toxic would only delay
   // the ack and still let the produce through — it would not buffer.)
   // The POST now only happens from the user's own toggle, inside
-  // useWanLink's set() — see hooks/useWanLink.ts. There is no effect here
-  // any more; mounting this component no longer re-POSTs a commanded
+  // useLinkControl's set() — see hooks/useLinkControl.ts. There is no
+  // effect here any more; mounting this component no longer re-POSTs a commanded
   // state at all, let alone one it invented.
 
   // Wall clock. The edge buffer is no longer simulated here — Header reads
@@ -474,7 +473,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   return (
     <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <Header
-        link1={link1} setLink1={setLink1} forbidden={link1Forbidden}
+        linkControl={linkControl}
         fleet={fleetForPicker}
         fleetTiers={tiers}
         selectedAsset={selectedAssetId}
@@ -534,7 +533,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               subsystem={selectedAsset?.subsystem ?? null}
               /* The canvas takes no link-derived signal: DiagnosticCanvas.tsx
                  keeps its `degraded` prop, so this always passes `false`
-                 rather than a value derived from link1/hq_link_severed. */
+                 rather than a value derived from the link state. */
               degraded={false}
               coreTemp={coreTemp}
               uptimeHours={uptimeHours}

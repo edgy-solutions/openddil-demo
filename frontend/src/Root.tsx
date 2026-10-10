@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
-import ControllerApp from './ControllerApp';
 import TierApp from './TierApp';
 import type { TierConfig } from './deployment';
-import { Wrench, Server, Building2, SlidersHorizontal } from 'lucide-react';
+import { Wrench, Server, Building2 } from 'lucide-react';
 import { deployment } from './deployment';
 import { useSession } from './hooks/useSession';
 import { SignedOut, CheckingSession } from './components/SignedOut';
@@ -39,8 +38,8 @@ import ShapeErrorBanner from './components/ShapeErrorBanner';
 // stops shipping it.
 // =============================================================================
 
-type View = 'maintainer' | 'regional' | 'hq' | 'controller';
-const VALID_VIEWS: View[] = ['maintainer', 'regional', 'hq', 'controller'];
+type View = 'maintainer' | 'regional' | 'hq';
+const VALID_VIEWS: View[] = ['maintainer', 'regional', 'hq'];
 
 function initialView(): View {
   const param = new URLSearchParams(window.location.search).get('role');
@@ -78,7 +77,6 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
     { id: 'maintainer', label: 'MAINTAINER', icon: Wrench },
     { id: 'regional', label: 'REGIONAL', icon: Server },
     { id: 'hq', label: 'HQ', icon: Building2 },
-    { id: 'controller', label: 'DDIL CONTROLLER', icon: SlidersHorizontal },
   ];
 
   return (
@@ -140,11 +138,6 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
         {view === 'maintainer' && <TierApp tier={SHELL_LEAF} />}
         {view === 'regional' && <TierApp tier={SHELL_INTERMEDIATE} />}
         {view === 'hq' && <TierApp tier={SHELL_ROOT} />}
-        {/* The DDIL controller is NOT a tier instance. It is an operator
-            tool that acts on the deployment, and whether it belongs to a
-            tier at all is explicitly undecided (opening package §7). Left
-            as itself rather than forced into a shape it may not have. */}
-        {view === 'controller' && <ControllerApp />}
       </div>
     </div>
   );

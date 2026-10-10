@@ -24,7 +24,7 @@
 // positions — real geo projection deferred per ADR-0017). Not in §C.1
 // scope.
 import { useState, useEffect, useMemo } from 'react';
-import { useWanLink } from './hooks/useWanLink';
+import { useLinkControl } from './hooks/useLinkControl';
 import RegionalHeader from './components/regional/RegionalHeader';
 import RegionalSustainmentPosture from './components/regional/RegionalSustainmentPosture';
 import WorkOrders from './components/regional/WorkOrders';
@@ -272,9 +272,10 @@ function WearTrends({ row }: { row: RegionWearTrends | undefined }) {
 interface TierScopedProps { tierScopeValue?: string | null }
 
 export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) {
-  // Sourced from the proxy's own state (hooks/useWanLink), not
-  // invented client-side -- see MaintainerApp for the same change.
-  const { enabled: link1, set: setLink1, forbidden: link1Forbidden } = useWanLink();
+  // Sourced from the proxy's own state (hooks/useLinkControl), not
+  // invented client-side -- see MaintainerApp for the same change. One
+  // listing covers this hub's own uplink and its direct children's.
+  const linkControl = useLinkControl();
   const [isRuleEditorOpen, setIsRuleEditorOpen] = useState(false);
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState<string>('ALL');
@@ -349,8 +350,8 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
     window.history.replaceState(null, '', url);
   }, [selectedRegion]);
 
-  // DDIL hq-link sever/restore now happens only from the user's own
-  // toggle, inside useWanLink's set() — see hooks/useWanLink.ts. No
+  // DDIL link sever/restore now happens only from the user's own
+  // toggle, inside useLinkControl's set() — see hooks/useLinkControl.ts. No
   // effect here re-POSTs a commanded state on mount.
 
   const filteredEvents = useMemo(() => {
@@ -430,9 +431,8 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
   return (
     <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-200">
       <RegionalHeader
-        link1={link1} setLink1={setLink1}
+        linkControl={linkControl}
         setIsRuleEditorOpen={setIsRuleEditorOpen}
-        forbidden={link1Forbidden}
       />
 
       {/* Pulldown — dev/demo mechanism. Visually unobtrusive per the
@@ -456,12 +456,6 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
 
       <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden min-h-0">
         <RegionalSustainmentPosture
-          // link1 is boolean|null while the proxy's real state is
-          // still loading/unknown. This component's topology visuals
-          // (DdlNetworkLink/HqMarker/"THEATER LINK STATUS") expect a
-          // boolean; null coerces to the optimistic default rather than
-          // a false "DOWN" flash during that brief window.
-          link1={link1 ?? true}
           regionId={selectedRegion}
           selectedAssetId={selectedAssetId}
           onAssetSelect={(id) => setSelectedAssetId(id)}

@@ -5,7 +5,7 @@
 // Mounts the REAL Root (not a copy of its gate), with only the data hooks
 // mocked: @electric-sql/react's useShape (every ElectricSQL-backed hook in
 // the tree funnels through it — see test-support/mockElectric.ts) and
-// useWanLink (the one hook that fetches on its own via a real network
+// useLinkControl (the one hook that fetches on its own via a real network
 // call). /auth/me is answered by test-support/fetchAuthMe.ts.
 //
 // vi.mock(...) calls are written directly in this file, not imported from a
@@ -25,8 +25,8 @@ import {
 } from '../test-support/sessionDom';
 
 vi.mock('@electric-sql/react', () => import('../test-support/mockElectric'));
-vi.mock('../hooks/useWanLink', () => ({
-  useWanLink: () => ({ enabled: true, set: () => {}, forbidden: false, error: false }),
+vi.mock('../hooks/useLinkControl', () => ({
+  useLinkControl: () => ({ status: 'off', uplink: null, children: [], set: () => {} }),
 }));
 // The 3D fleet-array view needs a real WebGL/ResizeObserver environment
 // jsdom doesn't provide; it has no bearing on the session-expiry gate, so

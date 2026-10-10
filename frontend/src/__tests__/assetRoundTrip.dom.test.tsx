@@ -20,8 +20,8 @@ import {
 } from '../test-support/sessionDom';
 
 vi.mock('@electric-sql/react', () => import('../test-support/mockElectric'));
-vi.mock('../hooks/useWanLink', () => ({
-  useWanLink: () => ({ enabled: true, set: () => {}, forbidden: false, error: false }),
+vi.mock('../hooks/useLinkControl', () => ({
+  useLinkControl: () => ({ status: 'off', uplink: null, children: [], set: () => {} }),
 }));
 // The 3D fleet-array view needs a real WebGL/ResizeObserver environment
 // jsdom doesn't provide; it has no bearing on the session-expiry gate, so

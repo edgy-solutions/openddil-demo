@@ -54,7 +54,7 @@ function emit() {
  * unlabelable, and returns the kind to report, or null when there is
  * nothing to report. Framework-free so it is directly testable against
  * the real `FetchError` class with no React/mount needed (same reasoning
- * as lib/wanLink.ts and lib/linkIndicator.ts).
+ * as lib/linkControl.ts and lib/linkIndicator.ts).
  *
  * `isUnlabelableTable` wins regardless of the underlying error: the
  * gateway's refusal is the authoritative reason, not whatever status code

@@ -53,7 +53,7 @@
 // than presented as if it were current.
 //
 // Framework-free: see hooks/useLinkIndicator.ts for why (same reasoning as
-// lib/wanLink.ts).
+// lib/linkControl.ts).
 export const STALE_ENTER_S = 30;
 export const STALE_EXIT_S = 10;
 

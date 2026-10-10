@@ -7,7 +7,7 @@
 // reason ManualQuestionPanel and FaultReportForm are split: the view is
 // testable with react-dom/server's renderToStaticMarkup (no DOM dependency
 // in this project -- see vitest.config.ts); the container's polling is not
-// unit-tested directly, same as useWanLink's.
+// unit-tested directly, same as useLinkControl's.
 //
 // THE RULE THIS COMPONENT MUST NEVER BREAK: nothing
 // here ever renders a claim about the simulator's running/paused state

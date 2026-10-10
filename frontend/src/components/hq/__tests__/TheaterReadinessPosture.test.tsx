@@ -21,9 +21,15 @@ import type { ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
+const mockLinkStatus = vi.fn(() => ({ links: new Map(), isLoading: false, isError: false }));
+const mockLinkControl = vi.fn();
+vi.mock('../../../hooks/useLinkControl', () => ({
+  useLinkControl: () => mockLinkControl(),
+}));
 vi.mock('../../../hooks', () => ({
   useClassifiedFleet: () => ({ data: [], isLoading: false, isError: false }),
   useAllLogisticsStatus: () => ({ data: [], isLoading: false }),
+  useLinkStatus: () => mockLinkStatus(),
 }));
 vi.mock('../../../deployment', () => ({
   deployment: () => ({ fobs: [] }),
@@ -35,7 +41,7 @@ vi.mock('@react-three/drei', () => ({
   Grid: () => null,
 }));
 
-import { FobLabel } from '../TheaterReadinessPosture';
+import TheaterReadinessPosture, { FobLabel } from '../TheaterReadinessPosture';
 
 const composition = { sensors: 1, launchers: 0, facilities: 0, inflight: 0, other: 0 };
 
@@ -93,5 +99,40 @@ describe('FobLabel — link state word', () => {
       <FobLabel position={[0, 0, 0]} label="edge-01" total={1} composition={composition} link={link} />
     );
     expect(html).toContain(`data-link-state="${word}"`);
+  });
+});
+
+describe('TheaterReadinessPosture — DIRECT LINKS', () => {
+  const fresh = (id: string, state: string) => ({
+    id, link_state: state, traffic: 'none', declared_idle: false,
+    heartbeat_age_s: 1, last_heartbeat_at: null, bridge_lag: 0,
+    updated_at: new Date().toISOString(),
+  });
+
+  it('ready: a row per direct child with its own toggle and observed word', () => {
+    mockLinkStatus.mockReturnValue({
+      links: new Map([['edge-03', fresh('edge-03', 'up')]]),
+      isLoading: false, isError: false,
+    });
+    mockLinkControl.mockReturnValue({
+      status: 'ready',
+      uplink: null,
+      children: [{ id: 'edge-03', enabled: true }, { id: 'region-east', enabled: false }],
+      set: () => {},
+    });
+    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
+    expect(html).toContain('DIRECT LINKS');
+    expect(html).toContain('id="link-toggle-edge-03"');
+    expect(html).toContain('id="link-toggle-region-east"');
+    expect(html).toContain('>UP<');
+    expect(html).toContain('>UNKNOWN<');
+    expect(html).toContain('pointer-events-auto');
+  });
+
+  it('off: no DIRECT LINKS card', () => {
+    mockLinkStatus.mockReturnValue({ links: new Map(), isLoading: false, isError: false });
+    mockLinkControl.mockReturnValue({ status: 'off', uplink: null, children: [], set: () => {} });
+    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
+    expect(html).not.toContain('DIRECT LINKS');
   });
 });

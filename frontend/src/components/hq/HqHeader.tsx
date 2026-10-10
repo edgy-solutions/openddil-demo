@@ -1,35 +1,18 @@
 // =============================================================================
 // HqHeader — HQ-view toolbar
 // =============================================================================
-// Phase 4c.5: the global buffer backlog and WAN link status are now REAL
-// — read from useEdgeBuffer() (the edge_buffer_status shape). The WAN
-// toggle severs/restores HQ's OWN uplink (the real toxiproxy hq-link
-// proxy, HQ's own broker listener address) — not a region->HQ or
-// edge->HQ bridge, which each ride their own uplink-<id> and are severed
-// from their own tier's screen, not from here.
+// Phase 4c.5: the global buffer backlog is REAL — read from useEdgeBuffer()
+// (the edge_buffer_status shape). HQ is the root of the tree and has no
+// uplink, so there is no link toggle here: each tier's link is cut from its
+// own child's screen, and HQ's per-link controls and reachability live in
+// TheaterReadinessPosture (DIRECT LINKS / GLOBAL LINK STATUS).
 import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
 import { ThisNodeBadge } from '../../lib/thisNode';
 import { useEdgeBuffer } from '../../hooks';
 import ExercisePopup from './ExercisePopup';
 
-interface HqHeaderProps {
-  /** Null while useWanLink's GET is in flight or failed -- render the
-   *  control disabled rather than guessing true/false. */
-  wanActive: boolean | null;
-  setWanActive: (v: boolean) => void;
-  /** True when the PEP answered 401/403 to the GET or POST: this subject
-   *  does not hold the WAN-control role. Disabled and explained, same as
-   *  wanActive === null, but never styled as an error -- being refused a
-   *  capability is not the page being broken. */
-  forbidden: boolean;
-}
-
-export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeaderProps) {
+export default function HqHeader() {
   const { status } = useEdgeBuffer();
-  // `false`, not `!wanActive` -- wanActive is boolean|null while
-  // useWanLink's GET is still in flight or failed, and treating "don't
-  // know" as "severed" would manufacture an answer nothing has confirmed.
-  const severed = status ? status.hq_link_severed : false;
   const lag = status?.bridge_group_lag ?? 0;
   const probeDown = status != null && !status.probe_healthy;
 
@@ -48,39 +31,15 @@ export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeade
           <Server className="w-6 h-6 mb-1 text-slate-300" />
           <span className="text-[10px] font-bold tracking-wider">REGIONAL HUBS</span>
         </div>
-        {/* HQ's own uplink — the toggle severs/restores the real toxiproxy
-            hq-link proxy, HQ's own broker listener address. Tier bridges
-            (region->HQ, edge->HQ) ride their own uplink-<id> and are
-            severed from their own tier's screen, not this one. */}
         <div className="flex-1 flex flex-col items-center relative">
-          <div className={`absolute w-full h-[2px] top-3 -z-10 ${severed ? 'bg-rose-900' : 'bg-slate-700'}`}></div>
-          <div className="relative inline-block w-12 mr-2 align-middle select-none transition duration-200 ease-in mt-1">
-            <input
-              type="checkbox"
-              id="toggle2"
-              className="toggle-checkbox absolute block w-6 h-6 rounded-none bg-white border-4 appearance-none cursor-pointer z-10 opacity-0 disabled:cursor-not-allowed"
-              checked={wanActive ?? false}
-              disabled={wanActive === null || forbidden}
-              title={forbidden ? 'WAN control: supervisor only' : wanActive === null ? 'Link state unknown — failed to read proxy status' : "Severs HQ's own uplink (hq-link). Each edge and region severs its own uplink from its own screen."}
-              onChange={(e) => setWanActive(e.target.checked)}
-            />
-            <label htmlFor="toggle2" className={`toggle-label block overflow-hidden h-6 rounded-none cursor-pointer transition-colors duration-200 ease-in-out ${wanActive === null ? 'bg-slate-600' : wanActive ? 'bg-emerald-500' : 'bg-rose-500'}`}>
-              <span className={`toggle-dot absolute left-0 block w-6 h-6 bg-white border-2 border-slate-900 transition-transform duration-200 ease-in-out ${wanActive ? 'translate-x-full' : ''}`}></span>
-            </label>
-          </div>
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${probeDown ? 'text-amber-400' : severed ? 'text-rose-500 glow-rose' : 'text-emerald-400'}`}>
-            {probeDown ? 'HQ UPLINK: PROBE DOWN' : severed ? 'HQ UPLINK: SEVERED' : 'HQ UPLINK: ACTIVE'}
-          </span>
-          {forbidden && (
-            <span className="text-[9px] mt-0.5 text-slate-500 tracking-widest">WAN control: supervisor only</span>
-          )}
+          <div className="absolute w-full h-[2px] bg-slate-700 top-3 -z-10"></div>
+          <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_10px_#10b981] mt-1.5"></div>
         </div>
-        {/* Exercise control -- role-gated like the WAN toggle above, but a
-            distinct capability (controls the DIS simulator/adapter via its
-            own service, never this uplink). Self-contained: polls its own
-            status, so it takes no props from this header. */}
+        {/* Exercise control -- a separate capability from link control
+            (controls the DIS simulator/adapter via its own service, never a
+            link). Self-contained: polls its own status, so it takes no props
+            from this header. */}
         <ExercisePopup />
-
         <div className="flex flex-col items-center text-emerald-400 mr-8">
           <Building2 className="w-6 h-6 mb-1 glow-emerald" />
           <span className="text-xs font-bold tracking-wider text-emerald-300">CENTRAL HQ <ThisNodeBadge /></span>
@@ -94,7 +53,7 @@ export default function HqHeader({ wanActive, setWanActive, forbidden }: HqHeade
               {probeDown ? '—' : lag > 1000 ? (lag / 1000).toFixed(1) + 'K' : lag}
             </span>
             <span className="text-xs text-slate-500">MSGS</span>
-            <TrendingUp className={`w-4 h-4 transition-all ${lag === 0 ? 'opacity-0' : 'opacity-100'} ${severed ? 'text-rose-500' : 'text-emerald-500 rotate-180'}`} />
+            <TrendingUp className={`w-4 h-4 transition-all ${lag === 0 ? 'opacity-0' : 'opacity-100'} text-emerald-500 rotate-180`} />
           </div>
         </div>
       </div>

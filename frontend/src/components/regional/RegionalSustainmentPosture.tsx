@@ -557,8 +557,8 @@ function AssetCallout({
 // see ADR-0023 + the project's strategy-resolver discipline for the
 // architectural family.
 //
-// Severance state is read from the same `link1` boolean the rest of the
-// view uses (which comes from edge_buffer_status.hq_link_severed). When
+// Severance state is the observed own-uplink state the rest of the view
+// uses (edge_buffer_status.hq_link_severed). When
 // severed, line styling + node coloring shift to red/dashed — matches the
 // DdilNetworkLink convention.
 
@@ -669,12 +669,10 @@ function FogController({ isZoomed }: { isZoomed: boolean }) {
 }
 
 export default function RegionalSustainmentPosture({
-  link1,
   regionId,
   selectedAssetId,
   onAssetSelect,
 }: {
-  link1: boolean;
   /** Active region pulldown selection; assets and projection are scoped to
    *  this region. Null = no region picked yet (cold start). */
   regionId: string | null;
@@ -742,14 +740,16 @@ export default function RegionalSustainmentPosture({
   // 5-tier liveness map. This is a REMOTE view of the edge, so
   // COMM_LOST (stale AND severed) is a legitimate reading here -- but
   // only from the OBSERVED edge_buffer_status row, never from the
-  // commanded `link1` slider state (which is what this used to read,
-  // via `!link1`: the regional view would show COMM_LOST the instant
+  // commanded toggle state (which is what this used to read:
+  // the regional view would show COMM_LOST the instant
   // someone flipped the toggle, before anything was actually observed
   // to be severed). In production this becomes a per-edge map from
   // edge_buffer_status; today it's a single global boolean. Uses
   // the hardware-only fleet so in-flight munitions don't distort
   // the STALE/LOST tiering.
   const { status: edgeBufferStatus } = useEdgeBuffer();
+  // Observed own-uplink reachability, shared by the topology visuals below.
+  const uplinkUp = edgeBufferStatus?.hq_link_severed !== true;
   const tiers = useFleetTiers(hardwareFleet, edgeBufferStatus?.hq_link_severed === true);
 
   // Project around the active region's FOBs so the camera bbox is the
@@ -813,8 +813,8 @@ export default function RegionalSustainmentPosture({
           {/* One edge->HQ DDIL link in this topology — count kept
               consistent with TheaterReadinessPosture's 1/0. */}
           <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-            <span className="text-emerald-400">{link1 ? 1 : 0} UP</span>
-            {!link1 && (
+            <span className="text-emerald-400">{uplinkUp ? 1 : 0} UP</span>
+            {!uplinkUp && (
               <span className="text-rose-400 ml-4">1 DOWN</span>
             )}
           </div>
@@ -946,23 +946,23 @@ export default function RegionalSustainmentPosture({
                     key={`fob-link-${fob.edge_id}`}
                     start={new THREE.Vector3(fx, 0, fz)}
                     end={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
-                    status={link1 ? 'NOMINAL' : 'SEVERED'}
+                    status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
                   />
                 );
               })}
               <DdilNetworkLink
                 start={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
                 end={new THREE.Vector3(regionalCentroid.x, HQ_MARKER_Y, regionalCentroid.z)}
-                status={link1 ? 'NOMINAL' : 'SEVERED'}
+                status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
               />
               <RegionalAggregatorNode
                 position={[regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z]}
                 label={(regionId ?? '').toUpperCase()}
-                severed={!link1}
+                severed={!uplinkUp}
               />
               <HqMarker
                 position={[regionalCentroid.x, HQ_MARKER_Y, regionalCentroid.z]}
-                severed={!link1}
+                severed={!uplinkUp}
               />
             </>
           )}

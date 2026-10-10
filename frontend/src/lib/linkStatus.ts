@@ -1,7 +1,8 @@
 // Per-FOB link state, classified from a link_status row.
 //
-// link_status is written by the HQ-side link monitor, one row per tier id,
-// from heartbeats that travel the same path as the data. This module is the
+// link_status is written by the measuring tier's link monitor (HQ for every
+// link, each tier for its direct children), one row per tier id, from
+// heartbeats that travel the same path as the data. This module is the
 // pure reading of such a row: no hooks, no clock of its own (callers pass
 // `nowMs`), so every case is directly testable.
 //

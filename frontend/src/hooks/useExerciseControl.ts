@@ -1,7 +1,7 @@
 // =============================================================================
 // useExerciseControl — React wrapper over the exercise-control controller
 // =============================================================================
-// Thin on purpose, mirrors hooks/useWanLink.ts: all effectful logic lives
+// Thin on purpose, mirrors hooks/useLinkControl.ts: all effectful logic lives
 // in lib/exerciseControl.ts's framework-free controller, which is what the
 // unit tests exercise directly. This hook only adds the React plumbing
 // (one controller instance per mount, poll on mount, poll every 5s while
