@@ -16,7 +16,9 @@ accepted. A fixed list cannot follow events whose ids change on every replay
 (the event id is derived from the fault's detection time), so an optional
 responder builds one answer per recorded event from a configured template and
 serves it after the fixed list. Left unconfigured, the stand-in answers
-nothing and behaves exactly as before.
+nothing and behaves exactly as before. Optional variants are refusal cases
+built from the latest answer, so a fixed fixture never answers a record that
+no longer exists.
 """
 from __future__ import annotations
 
@@ -95,7 +97,10 @@ def _set_at(doc: dict, ptr: str, value: Any) -> bool:
 class Responder:
     """Builds one answer per event from a configured template. See the
     module docstring for why; the config shape is documented beside the
-    chart's `egress.stubSink.respond` value."""
+    chart's `egress.stubSink.respond` value. Optional `variants` is a list of
+    {"id": str, "set": {pointer: value}}; each is one extra answer rebuilt
+    from the latest base answer, and `summary()["answered"]` counts base
+    answers and variants."""
 
     def __init__(self, config: Any) -> None:
         if not isinstance(config, dict):
@@ -131,6 +136,24 @@ class Responder:
         if not isinstance(template, dict):
             raise ValueError("response config: template must be an object")
         self._template = template
+        variants = config.get("variants", [])
+        if not isinstance(variants, list):
+            raise ValueError("response config: variants must be a list")
+        seen: set[str] = set()
+        for variant in variants:
+            if not isinstance(variant, dict):
+                raise ValueError("response config: each variant must be an object")
+            vid, vset = variant.get("id"), variant.get("set")
+            if not isinstance(vid, str) or not vid:
+                raise ValueError("response config: variant id must be a non-empty string")
+            if vid in seen:
+                raise ValueError("response config: variant ids must be unique")
+            seen.add(vid)
+            if not isinstance(vset, dict) or not vset or not all(
+                    isinstance(k, str) for k in vset):
+                raise ValueError(
+                    "response config: variant set must be a non-empty object of pointers")
+        self._variants = [{"id": v["id"], "set": dict(v["set"])} for v in variants]
 
     def _event_of(self, body: Any) -> dict | None:
         if not isinstance(body, dict):
@@ -144,6 +167,24 @@ class Responder:
 
     def answer_id(self, answer: dict) -> Any:
         return pointer.get(answer, self._id_pointer)
+
+    def variants_of(self, answer: dict) -> list[dict]:
+        out: list[dict] = []
+        for variant in self._variants:
+            built = copy.deepcopy(answer)
+            ok = _set_at(built, self._id_pointer, variant["id"])
+            bad = self._id_pointer
+            if ok:
+                for ptr, value in variant["set"].items():
+                    if not _set_at(built, ptr, copy.deepcopy(value)):
+                        ok, bad = False, ptr
+                        break
+            if not ok:
+                # The variant id and pointer only -- never the body or values.
+                log.warning("variant skipped: %s cannot write %s", variant["id"], bad)
+                continue
+            out.append(built)
+        return out
 
     def answer(self, body: Any, received_at: str) -> dict | None:
         event = self._event_of(body)
@@ -261,6 +302,10 @@ class ReceivedStore:
                 # Keyed by answer id: a replayed event replaces its answer
                 # in place, so there is one answer per event, not per POST.
                 self._answers[self._responder.answer_id(answer)] = answer
+                # Variants follow the latest answer: their ids are fixed, so
+                # each later event replaces the earlier one in place.
+                for variant in self._responder.variants_of(answer):
+                    self._answers[self._responder.answer_id(variant)] = variant
         if isinstance(body, dict):
             if self._id_field in body:
                 self._ids.add(body[self._id_field])

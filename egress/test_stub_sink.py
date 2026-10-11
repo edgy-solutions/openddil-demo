@@ -298,12 +298,90 @@ def test_restart_regenerates_identical_answers(tmp_path):
     assert json.dumps(after, sort_keys=True) == json.dumps(before, sort_keys=True)
 
 
+_VARIANTS = [
+    {"id": "act-v1", "set": {"/label/originator_nation": "X"}},
+    {"id": "act-v2", "set": {"/approval_chain/0/approver_sub": "nobody"}},
+]
+
+
+def _by_action(items):
+    return {i.get("action_id"): i for i in items}
+
+
+def test_variants_follow_latest_event(tmp_path):
+    artifacts, resp = _config_files(tmp_path, {**_RESPONSE, "variants": _VARIANTS})
+    server, thread = _start(tmp_path / "data", artifacts_path=artifacts, response_path=resp)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        _post(base_url, _envelope("ev-1"))
+        _post(base_url, _envelope("ev-2"))
+        items = _get(base_url, "/artifacts")[1]["items"]
+    finally:
+        _stop(server, thread)
+    assert len(items) == 5
+    by = _by_action(items)
+    assert set(by) == {None, "act-ev-1", "act-v1", "act-v2", "act-ev-2"}
+    assert by["act-v1"]["event_id"] == "ev-2" and by["act-v2"]["event_id"] == "ev-2"
+    assert by["act-v1"]["label"]["originator_nation"] == "X"
+    assert by["act-v2"]["approval_chain"][0]["approver_sub"] == "nobody"
+    assert by["act-v2"]["approval_chain"][1] == by["act-ev-2"]["approval_chain"][1]
+    assert "label" not in by["act-ev-2"]
+    assert "approver_sub" not in by["act-ev-2"]["approval_chain"][0]
+
+
+def test_variant_bad_pointer_skips_that_variant(tmp_path, caplog):
+    variants = [
+        {"id": "act-bad", "set": {"/approval_chain/9/approver_sub": "secret-val"}},
+        {"id": "act-good", "set": {"/label/originator_nation": "X"}},
+    ]
+    artifacts, resp = _config_files(tmp_path, {**_RESPONSE, "variants": variants})
+    server, thread = _start(tmp_path / "data", artifacts_path=artifacts, response_path=resp)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with caplog.at_level(logging.WARNING, logger="egress.stub_sink"):
+            _post(base_url, _envelope("ev-1", secret_note="do-not-log-me"))
+        items = _get(base_url, "/artifacts")[1]["items"]
+    finally:
+        _stop(server, thread)
+    assert set(_by_action(items)) == {None, "act-ev-1", "act-good"}
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "act-bad" in message and "/approval_chain/9/approver_sub" in message
+    assert "do-not-log-me" not in message and "secret-val" not in message
+
+
+def test_restart_regenerates_identical_variants(tmp_path):
+    data = tmp_path / "data"
+    artifacts, resp = _config_files(tmp_path, {**_RESPONSE, "variants": _VARIANTS})
+    server, thread = _start(data, artifacts_path=artifacts, response_path=resp)
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        _post(base_url, _envelope("ev-1"))
+        _post(base_url, _envelope("ev-2"))
+        before = _get(base_url, "/artifacts")[1]
+    finally:
+        _stop(server, thread)
+    server, thread = _start(data, artifacts_path=artifacts, response_path=resp)
+    try:
+        after = _get(f"http://127.0.0.1:{server.server_address[1]}", "/artifacts")[1]
+    finally:
+        _stop(server, thread)
+    assert len(before["items"]) == 5
+    assert json.dumps(after, sort_keys=True) == json.dumps(before, sort_keys=True)
+
+
 @pytest.mark.parametrize("response", [
     "{not json",
     {**_RESPONSE, "template": ["not", "an", "object"]},
     {k: v for k, v in _RESPONSE.items() if k != "id"},
     {k: v for k, v in _RESPONSE.items() if k != "kind_field"},
-], ids=["invalid-json", "template-not-object", "id-missing", "kind-without-kind-field"])
+    {**_RESPONSE, "variants": {"id": "v", "set": {"/a": 1}}},
+    {**_RESPONSE, "variants": [{"set": {"/a": 1}}]},
+    {**_RESPONSE, "variants": [{"id": "v", "set": {}}]},
+    {**_RESPONSE, "variants": [{"id": "v", "set": {"/a": 1}}, {"id": "v", "set": {"/b": 2}}]},
+], ids=["invalid-json", "template-not-object", "id-missing", "kind-without-kind-field",
+        "variants-not-list", "variant-missing-id", "variant-empty-set", "variant-duplicate-id"])
 def test_broken_response_config_fails_startup(tmp_path, response):
     _, resp = _config_files(tmp_path, response)
     with pytest.raises(ValueError):
