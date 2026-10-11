@@ -150,7 +150,7 @@ def test_valid_adapter_loads(tmp_path):
         "operations": {"pause": {"method": "post", "path": "/pause", "body": {}}},
     }
     out = control.load_adapter_config(_write(tmp_path, cfg))
-    assert out["operations"]["pause"] == {"method": "POST", "path": "/pause", "body": {}}
+    assert out["operations"]["pause"] == [{"method": "POST", "path": "/pause", "body": {}}]
 
 
 def test_unknown_op_key_refuses(tmp_path):
@@ -189,7 +189,7 @@ def test_malformed_json_refuses(tmp_path):
 # Integration: the real HTTP handler against fake sources + a fake adapter
 # =============================================================================
 
-state = {"adapter_calls": [], "adapter_status": 200, "adapter_delay": 0.0, "metrics_text": ""}
+state = {"adapter_calls": [], "adapter_status": 200, "status_by_path": {}, "adapter_delay": 0.0, "metrics_text": ""}
 
 
 class FakeAdapter(BaseHTTPRequestHandler):
@@ -204,7 +204,7 @@ class FakeAdapter(BaseHTTPRequestHandler):
             time.sleep(state["adapter_delay"])
         out = json.dumps({"state": "running"}).encode()  # the stub's own
         # lie about state -- control.py must never read this field.
-        self.send_response(state["adapter_status"])
+        self.send_response(state["status_by_path"].get(self.path, state["adapter_status"]))
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
         self.wfile.write(out)
@@ -232,7 +232,7 @@ def _serve(handler):
 def app(tmp_path):
     adapter_srv = _serve(FakeAdapter)
     metrics_srv = _serve(FakeMetrics)
-    state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0,
+    state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0, status_by_path={},
                  metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
 
     cfg = {
@@ -333,7 +333,7 @@ def test_adapter_unreachable_records_transport_error(app, monkeypatch):
 def gate(tmp_path):
     adapter_srv = _serve(FakeAdapter)
     metrics_srv = _serve(FakeMetrics)
-    state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0,
+    state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0, status_by_path={},
                  metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
     ops = {op: {"method": "POST", "path": "/" + op, "body": {}}
            for op in ("pause", "resume", "stop", "restart", "run")}
@@ -543,7 +543,8 @@ class FakeKube(BaseHTTPRequestHandler):
         if kube["post_status"] != 201:
             self._reply(kube["post_status"], {"message": "failed"})
             return
-        kube["posts"].append({"path": self.path, "body": body})
+        kube["posts"].append({"path": self.path, "body": body,
+                              "adapter_calls_before": len(state["adapter_calls"])})
         name = f"rel-exercise-reset-{len(kube['posts'])}"
         kube["jobs"].append(_job(name, f"2026-01-01T00:00:{len(kube['posts']):02d}Z", active=1))
         self._reply(201, {"metadata": {"name": name}})
@@ -552,7 +553,7 @@ class FakeKube(BaseHTTPRequestHandler):
 @pytest.fixture
 def kapp(tmp_path):
     kube.update(jobs=[], posts=[], gets=[], list_status=200, post_status=201, post_delay=0.0)
-    state.update(adapter_calls=[])
+    state.update(adapter_calls=[], adapter_status=200, status_by_path={})
     kube_srv = _serve(FakeKube)
     sa = tmp_path / "sa"
     sa.mkdir()
@@ -582,6 +583,7 @@ def test_r1_reset_creates_job_with_subject_env_and_annotation(kapp):
     assert body["job"] == "rel-exercise-reset-1"
     assert len(kube["posts"]) == 1
     posted = kube["posts"][0]
+    assert posted["adapter_calls_before"] == 1  # the pause landed before the Job POST
     assert posted["path"] == "/apis/batch/v1/namespaces/ns1/jobs"
     env = posted["body"]["spec"]["template"]["spec"]["containers"][0]["env"]
     assert {"name": "RESTART_SUBJECT", "value": "reset-job:sup@x"} in env
@@ -589,7 +591,11 @@ def test_r1_reset_creates_job_with_subject_env_and_annotation(kapp):
     last = app_state.get_last_command()
     assert last["op"] == "reset" and last["status"] == 201 and last["error"] is None
     assert last["job"] == body["job"] and last["subject"] == "sup@x"
-    assert state["adapter_calls"] == []  # reset never reaches the adapter
+    # kapp configures pause: exactly one pause call, sent before the Job POST.
+    assert [c["path"] for c in state["adapter_calls"]] == ["/pause"]
+    assert body["pause"]["status"] == 200 and body["pause"]["error"] is None
+    assert [st["path"] for st in body["pause"]["steps"]] == ["/pause"]
+    assert last["pause"] == body["pause"]
     # the template itself is not mutated by a launch
     tpl_env = app_state.reset_launcher.template["spec"]["template"]["spec"]["containers"][0]["env"]
     assert tpl_env[0]["value"] == ""
@@ -616,16 +622,23 @@ def test_r3_running_job_is_409_and_creates_nothing(kapp):
 
 
 @pytest.mark.parametrize("api_status", [403, 500])
-def test_r4_api_error_is_502_and_last_command_untouched(kapp, api_status):
+def test_r4_api_error_is_502_and_last_command_is_the_pause_or_untouched(kapp, api_status):
     url, app_state = kapp
     kube["post_status"] = api_status
     code, body = _post(url + "/exercise/op/reset", subject="s")
     assert code == 502
-    assert body == {"error": "reset job not created", "status": api_status}
-    assert app_state.get_last_command() is None
+    assert body == {"error": "reset job not created", "status": api_status,
+                    "simulator_paused": True}
+    last = app_state.get_last_command()
+    assert last["op"] == "pause" and last["via"] == "reset"
+    # a list failure never gets as far as the adapter
+    app_state.set_last_command(None)
+    state["adapter_calls"].clear()
     kube.update(post_status=201, list_status=api_status)
     code, body = _post(url + "/exercise/op/reset", subject="s")
     assert (code, body["status"]) == (502, api_status)
+    assert "simulator_paused" not in body
+    assert state["adapter_calls"] == []
     assert app_state.get_last_command() is None
 
 
@@ -690,6 +703,7 @@ def test_r10_concurrent_resets_create_exactly_one_job(kapp):
         t.join()
     assert len(kube["posts"]) == 1
     assert sorted(c for c, _ in out) == [202, 409]
+    assert [c["path"] for c in state["adapter_calls"]] == ["/pause"]
 
 
 def test_r11_reset_is_never_an_adapter_op(tmp_path):
@@ -734,3 +748,158 @@ def test_r13_main_refuses_on_bad_template(monkeypatch, tmp_path):
     monkeypatch.setenv("EXERCISE_ADAPTER_FILE", str(a))
     monkeypatch.setenv("EXERCISE_RESET_JOB_FILE", str(f))
     assert control.main() == 1
+
+
+# =============================================================================
+# Op step lists
+# =============================================================================
+
+def _cfg(ops):
+    return {"name": "x", "endpoint": "http://e", "operations": ops}
+
+
+def test_list_op_loads_as_ordered_steps(tmp_path):
+    ops = {"restart": [{"method": "post", "path": "/a"},
+                       {"method": "put", "path": "/b", "body": {"k": 1}}]}
+    out = control.load_adapter_config(_write(tmp_path, _cfg(ops)))
+    assert out["operations"]["restart"] == [
+        {"method": "POST", "path": "/a", "body": {}},
+        {"method": "PUT", "path": "/b", "body": {"k": 1}},
+    ]
+
+
+def test_empty_list_op_refuses(tmp_path):
+    with pytest.raises(control.AdapterConfigError, match="restart"):
+        control.load_adapter_config(_write(tmp_path, _cfg({"restart": []})))
+
+
+def test_non_object_list_element_refuses(tmp_path):
+    ops = {"restart": [{"method": "POST", "path": "/a"}, "nope"]}
+    with pytest.raises(control.AdapterConfigError, match=r"restart\[1\]"):
+        control.load_adapter_config(_write(tmp_path, _cfg(ops)))
+
+
+def test_list_element_missing_path_names_the_step(tmp_path):
+    ops = {"restart": [{"method": "POST", "path": "/a"}, {"method": "POST"}]}
+    with pytest.raises(control.AdapterConfigError, match=r"operations\.restart\[1\] is missing 'path'"):
+        control.load_adapter_config(_write(tmp_path, _cfg(ops)))
+
+
+def _list_app(tmp_path, ops):
+    adapter_srv = _serve(FakeAdapter)
+    metrics_srv = _serve(FakeMetrics)
+    state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0, status_by_path={},
+                 metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
+    cfg = {"name": "stand-in", "endpoint": f"http://127.0.0.1:{adapter_srv.server_port}",
+           "operations": ops}
+    adapter = control.load_adapter_config(_write(tmp_path, cfg))
+    store = control.RateStore(sources=[f"http://127.0.0.1:{metrics_srv.server_port}/metrics"],
+                               window=30.0, min_rate=0.1)
+    record = tmp_path / "record.json"
+    app_state = control.AppState(adapter=adapter, store=store, reset_record_file=str(record))
+    handler_srv = _serve(control.make_handler(app_state))
+    return f"http://127.0.0.1:{handler_srv.server_port}", record, app_state, \
+        (adapter_srv, metrics_srv, handler_srv)
+
+
+def test_list_op_runs_in_order(tmp_path):
+    url, _record, _app, srvs = _list_app(tmp_path, {"pause": [
+        {"method": "POST", "path": "/a"}, {"method": "POST", "path": "/b"},
+        {"method": "POST", "path": "/c"}]})
+    try:
+        code, body = _post(url + "/exercise/op/pause", subject="s")
+    finally:
+        for sv in srvs:
+            sv.shutdown()
+    assert code == 200 and body["status"] == 200 and body["error"] is None
+    assert [c["path"] for c in state["adapter_calls"]] == ["/a", "/b", "/c"]
+    assert [(st["path"], st["status"]) for st in body["steps"]] == [
+        ("/a", 200), ("/b", 200), ("/c", 200)]
+
+
+def test_list_op_halts_at_first_failing_step(tmp_path):
+    url, _record, app_state, srvs = _list_app(tmp_path, {"pause": [
+        {"method": "POST", "path": "/a"}, {"method": "POST", "path": "/b"}]})
+    try:
+        state["status_by_path"] = {"/a": 404}
+        code, body = _post(url + "/exercise/op/pause", subject="s")
+    finally:
+        for sv in srvs:
+            sv.shutdown()
+    assert code == 200 and body["status"] == 404
+    assert [c["path"] for c in state["adapter_calls"]] == ["/a"]
+    assert len(body["steps"]) == 1 and body["steps"][0]["status"] == 404
+    assert app_state.get_last_command()["status"] == 404
+
+
+def test_restart_list_uses_the_zero_only_when_every_step_succeeds(tmp_path):
+    url, record, app_state, srvs = _list_app(tmp_path, {"restart": [
+        {"method": "POST", "path": "/r1"}, {"method": "POST", "path": "/r2"}]})
+    try:
+        _zero(record)
+        state["status_by_path"] = {"/r2": 503}
+        code, body = _post(url + "/exercise/op/restart", subject="s")
+        assert code == 200 and body["status"] == 503 and len(body["steps"]) == 2
+        assert app_state.restart_refusal()[0] is None  # zero still unused
+        state["status_by_path"] = {}
+        code, body = _post(url + "/exercise/op/restart", subject="s")
+        assert code == 200 and body["status"] == 200
+        assert app_state.restart_refusal()[0] is not None  # now used
+    finally:
+        for sv in srvs:
+            sv.shutdown()
+
+
+# =============================================================================
+# Pause-first reset
+# =============================================================================
+
+def test_reset_pause_503_refuses_and_creates_no_job(kapp):
+    url, app_state = kapp
+    state["status_by_path"] = {"/pause": 503}
+    code, body = _post(url + "/exercise/op/reset", subject="s")
+    assert code == 502 and body["reason"] == "pause_failed"
+    assert body["pause"]["status"] == 503
+    assert kube["posts"] == []
+    last = app_state.get_last_command()
+    assert last["op"] == "pause" and last["via"] == "reset" and last["status"] == 503
+
+
+def test_reset_pause_unreachable_refuses_and_creates_no_job(kapp):
+    url, app_state = kapp
+    dead = _serve(FakeAdapter)
+    port = dead.server_port
+    dead.shutdown()
+    app_state.adapter["endpoint"] = f"http://127.0.0.1:{port}"
+    code, body = _post(url + "/exercise/op/reset", subject="s", timeout=15)
+    assert code == 502 and body["reason"] == "pause_failed"
+    assert body["pause"]["status"] is None and body["pause"]["error"]
+    assert kube["posts"] == []
+
+
+def test_reset_while_running_sends_no_adapter_call(kapp):
+    url, _ = kapp
+    kube["jobs"].append(_job("rel-exercise-reset-old", "2026-01-01T00:00:00Z", active=1))
+    code, body = _post(url + "/exercise/op/reset", subject="s")
+    assert code == 409 and body["reason"] == "reset_running"
+    assert state["adapter_calls"] == []
+    assert kube["posts"] == []
+
+
+def test_reset_invalid_subject_sends_no_adapter_call(kapp):
+    url, _ = kapp
+    code, body = _post(url + "/exercise/op/reset", subject="has space")
+    assert code == 400 and body == {"error": "invalid subject"}
+    assert state["adapter_calls"] == []
+    assert kube["gets"] == [] and kube["posts"] == []
+
+
+def test_reset_without_a_pause_op_still_runs(kapp):
+    url, app_state = kapp
+    app_state.adapter["operations"] = {
+        "resume": [{"method": "POST", "path": "/resume", "body": {}}]}
+    code, body = _post(url + "/exercise/op/reset", subject="s")
+    assert code == 202 and body["pause"] is None
+    assert state["adapter_calls"] == []
+    assert len(kube["posts"]) == 1
+    assert app_state.get_last_command()["pause"] is None

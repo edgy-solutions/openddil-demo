@@ -37,6 +37,11 @@ export interface ExerciseLastCommand {
   status: number | null;
   error: string | null;
   subject: string;
+  /** One entry per adapter call the op made (halts at the first failure). */
+  steps?: { method: string; path: string; status: number | null; error: string | null }[];
+  /** Set when the op was sent on behalf of another (the reset's pause). */
+  via?: string;
+  job?: string;
 }
 
 export interface ExerciseAdapter {

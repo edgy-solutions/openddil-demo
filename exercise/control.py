@@ -63,13 +63,15 @@ class AdapterConfigError(ValueError):
 
 
 def load_adapter_config(path: str | os.PathLike) -> dict[str, Any]:
-    """`{name, endpoint, operations: {op: {method, path, body}}}` ->
+    """`{name, endpoint, operations: {op: {method, path, body} | [{method, path, body}, ...]}}` ->
     a normalized dict, or raises AdapterConfigError naming the bad entry.
 
     `name` is read and carried through to GET /exercise/status as a
     display label only — it is never matched against anything in this
     file. Unknown op key, a missing method/path, or a non-object body each
-    refuse startup; there is no partial/best-effort adapter.
+    refuse startup; there is no partial/best-effort adapter. An op is one
+    call or a non-empty list of calls; every op is normalized to a list of
+    steps.
     """
     try:
         raw = Path(path).read_text(encoding="utf-8")
@@ -91,24 +93,33 @@ def load_adapter_config(path: str | os.PathLike) -> dict[str, Any]:
     if not isinstance(operations, dict) or not operations:
         raise AdapterConfigError(f"adapter file {path}: 'operations' must be a non-empty object")
 
-    ops_out: dict[str, dict[str, Any]] = {}
+    ops_out: dict[str, list[dict[str, Any]]] = {}
     for op, entry in operations.items():
         if op not in ALLOWED_OPS:
             raise AdapterConfigError(
                 f"adapter file {path}: operations entry {op!r} is not one of {sorted(ALLOWED_OPS)}"
             )
-        if not isinstance(entry, dict):
-            raise AdapterConfigError(f"adapter file {path}: operations.{op} must be an object")
-        method = entry.get("method")
-        op_path = entry.get("path")
-        body = entry.get("body", {})
-        if not isinstance(method, str) or not method.strip():
-            raise AdapterConfigError(f"adapter file {path}: operations.{op} is missing 'method'")
-        if not isinstance(op_path, str) or not op_path:
-            raise AdapterConfigError(f"adapter file {path}: operations.{op} is missing 'path'")
-        if not isinstance(body, dict):
-            raise AdapterConfigError(f"adapter file {path}: operations.{op}.body must be an object")
-        ops_out[op] = {"method": method.strip().upper(), "path": op_path, "body": body}
+        if isinstance(entry, list):
+            if not entry:
+                raise AdapterConfigError(f"adapter file {path}: operations.{op} must not be an empty list")
+            raw_steps = [(f"operations.{op}[{i}]", step) for i, step in enumerate(entry)]
+        else:
+            raw_steps = [(f"operations.{op}", entry)]
+        steps_out = []
+        for label, step in raw_steps:
+            if not isinstance(step, dict):
+                raise AdapterConfigError(f"adapter file {path}: {label} must be an object")
+            method = step.get("method")
+            op_path = step.get("path")
+            body = step.get("body", {})
+            if not isinstance(method, str) or not method.strip():
+                raise AdapterConfigError(f"adapter file {path}: {label} is missing 'method'")
+            if not isinstance(op_path, str) or not op_path:
+                raise AdapterConfigError(f"adapter file {path}: {label} is missing 'path'")
+            if not isinstance(body, dict):
+                raise AdapterConfigError(f"adapter file {path}: {label}.body must be an object")
+            steps_out.append({"method": method.strip().upper(), "path": op_path, "body": body})
+        ops_out[op] = steps_out
 
     return {"name": name if isinstance(name, str) else "", "endpoint": endpoint.rstrip("/"),
             "operations": ops_out}
@@ -481,6 +492,10 @@ class AppState:
         # call and the "used" mark, so two concurrent restarts cannot both
         # pass the gate on one zero. Never held by GET /exercise/status.
         self.restart_lock = threading.Lock()
+        # Serialises reset presses from the running-check through the pause
+        # and the Job create, so concurrent presses send one pause and
+        # create one Job.
+        self.reset_lock = threading.Lock()
         self.last_command: dict[str, Any] | None = None
 
     def set_last_command(self, record: dict[str, Any]) -> None:
@@ -546,18 +561,11 @@ class AppState:
         with self._lock:
             self.restart_zero_used = measured_zero_at
 
-    def call_adapter(self, op: str) -> tuple[int | None, str | None]:
-        """(status, error) -- the adapter's response BODY is read (to drain
-        the connection) but never interpreted or returned; only the HTTP
-        status (or a transport error string) crosses back out of this
-        function. That is the whole of what "last command sent" may ever
-        carry about the adapter's own answer."""
-        entry = self.adapter["operations"][op]
-        url = self.adapter["endpoint"] + entry["path"]
-        body = entry["body"]
-        data = json.dumps(body).encode("utf-8")
+    def _call_step(self, step: dict[str, Any]) -> tuple[int | None, str | None]:
+        url = self.adapter["endpoint"] + step["path"]
+        data = json.dumps(step["body"]).encode("utf-8")
         headers = {"Content-Type": "application/json"}
-        req = urllib.request.Request(url, data=data, method=entry["method"], headers=headers)
+        req = urllib.request.Request(url, data=data, method=step["method"], headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 resp.read()
@@ -567,6 +575,26 @@ class AppState:
             return exc.code, None
         except Exception as exc:  # noqa: BLE001 -- a transport fault, not a crash
             return None, str(exc)
+
+    def call_adapter(self, op: str) -> tuple[int | None, str | None, list[dict[str, Any]]]:
+        """(status, error, steps) -- runs the op's steps in order and halts
+        at the first one that is not 2xx or hit a transport error; later
+        steps are never sent. status/error are the last executed step's.
+        Each response BODY is read (to drain the connection) but never
+        interpreted or returned; only the HTTP status (or a transport error
+        string) per step crosses back out of this function. That is the
+        whole of what "last command sent" may ever carry about the
+        adapter's own answer."""
+        steps: list[dict[str, Any]] = []
+        status: int | None = None
+        error: str | None = None
+        for step in self.adapter["operations"][op]:
+            status, error = self._call_step(step)
+            steps.append({"method": step["method"], "path": step["path"],
+                          "status": status, "error": error})
+            if status is None or not 200 <= status < 300:
+                break
+        return status, error, steps
 
 
 # --- HTTP ----------------------------------------------------------------------
@@ -667,46 +695,88 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                                               "measured_zero_at": rec["measured_zero_at"],
                                               "verdict": rec["verdict"]})
                         return
-                    status, error = app.call_adapter(op)
-                    if status is not None and 200 <= status < 300:
-                        # Only a 2xx uses the zero up; a transport error or
-                        # non-2xx leaves it available.
+                    status, error, steps = app.call_adapter(op)
+                    if len(steps) == len(app.adapter["operations"][op]) and all(
+                            st["status"] is not None and 200 <= st["status"] < 300
+                            for st in steps):
+                        # Only a fully 2xx sequence uses the zero up; a
+                        # transport error or any non-2xx step leaves it
+                        # available.
                         app.mark_restart_zero_used(rec["measured_zero_at"])
             else:
-                status, error = app.call_adapter(op)
+                status, error, steps = app.call_adapter(op)
             record = {"op": op, "at": _now_iso(), "status": status, "error": error,
-                      "subject": subject}
+                      "subject": subject, "steps": steps}
             app.set_last_command(record)
             log.info(json.dumps({"exercise_op": op, "status": status, "error": error,
                                   "subject": subject}))
             self._send_json(200, record)
 
         def _handle_reset(self) -> None:
+            # The simulator is quieted through the adapter (pause) before the
+            # reset Job is created; a failed pause refuses the reset rather
+            # than resetting under a running simulator. No adapter call is
+            # made for a refused press (bad subject, reset already running).
             subject = self.headers.get(SUBJECT_HEADER, "").strip()
             if not subject:
                 self._send_json(400, {"error": "missing subject header"})
                 return
-            try:
-                outcome, job = app.reset_launcher.launch(subject)
-            except InvalidSubject:
+            if not SUBJECT_RE.fullmatch(subject):
                 self._send_json(400, {"error": "invalid subject"})
                 return
-            except KubeApiError as exc:
-                log.warning(json.dumps({"exercise_reset_job": "not_created", "status": exc.status,
-                                         "subject": subject}))
-                self._send_json(502, {"error": "reset job not created", "status": exc.status})
-                return
-            if outcome == "running":
-                log.info(json.dumps({"exercise_op_refused": "reset", "reason": "reset_running",
-                                      "job": job, "subject": subject}))
-                self._send_json(409, {"error": "reset already running",
-                                      "reason": "reset_running", "job": job})
-                return
-            at = _now_iso()
-            app.set_last_command({"op": "reset", "at": at, "status": 201, "error": None,
-                                  "subject": subject, "job": job})
-            log.info(json.dumps({"exercise_reset_job": job, "subject": subject}))
-            self._send_json(202, {"op": "reset", "at": at, "job": job, "subject": subject})
+            with app.reset_lock:
+                try:
+                    current = app.reset_launcher.latest()
+                except KubeApiError as exc:
+                    log.warning(json.dumps({"exercise_reset_job": "not_created",
+                                             "status": exc.status, "subject": subject}))
+                    self._send_json(502, {"error": "reset job not created", "status": exc.status})
+                    return
+                if current is not None and current["state"] == "running":
+                    self._reset_running(subject, current["name"])
+                    return
+                pause: dict[str, Any] | None = None
+                if "pause" in app.adapter["operations"]:
+                    status, error, steps = app.call_adapter("pause")
+                    pause = {"status": status, "error": error, "steps": steps}
+                    app.set_last_command({"op": "pause", "at": _now_iso(), "status": status,
+                                          "error": error, "subject": subject, "steps": steps,
+                                          "via": "reset"})
+                    log.info(json.dumps({"exercise_op": "pause", "status": status,
+                                          "error": error, "subject": subject, "via": "reset"}))
+                    if status is None or not 200 <= status < 300:
+                        log.info(json.dumps({"exercise_op_refused": "reset",
+                                              "reason": "pause_failed", "subject": subject}))
+                        self._send_json(502, {
+                            "error": "reset refused: the simulator pause failed",
+                            "reason": "pause_failed", "pause": pause})
+                        return
+                try:
+                    outcome, job = app.reset_launcher.launch(subject)
+                except InvalidSubject:
+                    self._send_json(400, {"error": "invalid subject"})
+                    return
+                except KubeApiError as exc:
+                    log.warning(json.dumps({"exercise_reset_job": "not_created",
+                                             "status": exc.status, "subject": subject}))
+                    self._send_json(502, {"error": "reset job not created", "status": exc.status,
+                                          "simulator_paused": pause is not None})
+                    return
+                if outcome == "running":
+                    self._reset_running(subject, job)
+                    return
+                at = _now_iso()
+                app.set_last_command({"op": "reset", "at": at, "status": 201, "error": None,
+                                      "subject": subject, "job": job, "pause": pause})
+                log.info(json.dumps({"exercise_reset_job": job, "subject": subject}))
+                self._send_json(202, {"op": "reset", "at": at, "job": job, "subject": subject,
+                                      "pause": pause})
+
+        def _reset_running(self, subject: str, job: str | None) -> None:
+            log.info(json.dumps({"exercise_op_refused": "reset", "reason": "reset_running",
+                                  "job": job, "subject": subject}))
+            self._send_json(409, {"error": "reset already running",
+                                  "reason": "reset_running", "job": job})
 
     return Handler
 
