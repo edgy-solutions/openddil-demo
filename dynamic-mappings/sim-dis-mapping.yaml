@@ -16,6 +16,7 @@ processor_resources:
       #   linear_velocity_ecef: {x, y, z}  — m/s
       #   orientation_euler:    {psi, theta, phi}  — radians
       #   condition:       {level, moved_by[], claims[]}  — optional, resolved by the sidecar
+      #   emission:        {emitting}  — optional; the sidecar's last EE within its silence window
       #
       # SUSTAINMENT NOTE: DIS Entity State PDUs carry NO sustainment data.
       # Do not map thermal/fuel/power fields from DIS input — they are
@@ -311,7 +312,25 @@ processor_resources:
       # domain), means $ax.launcher_raised is simply missing, and the field
       # must stay absent here too rather than defaulting to a guessed
       # true/false.
-      root.operational_state.launcher_raised = $ax.launcher_raised.or(deleted())
+      #
+      # The deployment signal is per variant (ADR-0044 amendment, "the
+      # deployment signal is per variant"): the ontology row's
+      # deployment_signal names the ONE input the state machine reads for
+      # this variant, and only that one is passed. A land vehicle decodes a
+      # launcher bit whether or not it carries a launcher, so passing it for
+      # every variant would read a damaged, stopped tank as emplacing. No
+      # declared signal means neither field is passed: stopped reads
+      # unspecified.
+      let deployment_signal = $ont.deployment_signal.or("")
+      root.operational_state.launcher_raised = if $deployment_signal == "launcher_bit" {
+        $ax.launcher_raised.or(deleted())
+      } else { deleted() }
+      # emitting comes from the sidecar's emission decoding (its own EE within
+      # the baseline's silence window); the key is absent when there is no
+      # claim, and silence is never turned into false here either.
+      root.operational_state.emitting = if $deployment_signal == "emission" {
+        $src.emission.emitting.or(deleted())
+      } else { deleted() }
 
       # --- lifecycle axis (ADR-0044 slice A) --------------------------------
       # operational_status is the two-column lifecycle model's own axis, not
