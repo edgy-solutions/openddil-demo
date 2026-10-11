@@ -653,6 +653,12 @@ def _resolve_wan_route(path: str, method: str) -> tuple[str, str | None] | None:
 # meaning WAN_CONTROL_URL/CM_INTAKE_URL/EGRESS_PANE being unset already
 # carry: the routes do not exist, 404, exactly like today.
 EXERCISE_CONTROL_URL = os.getenv("OPENDDIL_EXERCISE_CONTROL_URL", "").strip().rstrip("/")
+# A POSTed op waits longer than the status read: the reset press chains the
+# running-check, the simulator pause and the Job create, and an adapter op
+# may be a list of calls (each up to 5 s at control). A shorter wait here
+# would answer "unavailable" for a press control goes on to carry out.
+EXERCISE_STATUS_TIMEOUT_S = 5.0
+EXERCISE_OP_TIMEOUT_S = 30.0
 
 
 def _parse_roles_csv(raw: str) -> frozenset:
@@ -1842,8 +1848,9 @@ class Pep(BaseHTTPRequestHandler):
             url, data=(b"" if method == "POST" else None),
             headers={SUBJECT_HEADER: subject}, method=method,
         )
+        timeout = EXERCISE_OP_TIMEOUT_S if method == "POST" else EXERCISE_STATUS_TIMEOUT_S
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 upstream_status = resp.status
                 upstream_body = resp.read()
         except urllib.error.HTTPError as exc:

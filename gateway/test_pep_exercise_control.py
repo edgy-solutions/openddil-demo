@@ -22,6 +22,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -88,6 +89,8 @@ class FakeExerciseControl(BaseHTTPRequestHandler):
             "body": body,
             "subject_header": self.headers.get("X-OpenDDIL-Subject", ""),
         })
+        if state.get("delay"):
+            time.sleep(state["delay"])
         out = state["body"]
         self.send_response(state["status"])
         self.send_header("Content-Type", "application/json")
@@ -161,7 +164,7 @@ def _post(url: str, subject: str | None, body: bytes | None = b""):
 
 @pytest.fixture
 def pep_url(pep_factory):
-    state.update(calls=[], status=200)
+    state.update(calls=[], status=200, delay=0.0)
     return pep_factory()
 
 
@@ -376,3 +379,16 @@ def test_reset_roles_override_admits_operator(pep_url, monkeypatch):
     code, _ = _post(pep_url + "/exercise/op/reset", "operator.1")
     assert code == 200
     assert len(state["calls"]) == 1
+
+
+# --- a POSTed op outwaits the status read ------------------------------------
+
+def test_slow_reset_is_relayed_not_502_but_slow_status_is_502(pep_url, monkeypatch):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "EXERCISE_STATUS_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(pep, "EXERCISE_OP_TIMEOUT_S", 3.0)
+    state.update(status=202, delay=1.0)
+    code, _ = _post(pep_url + "/exercise/op/reset", "supervisor.1")
+    assert code == 202
+    code, body = _get(pep_url + "/exercise/status", "supervisor.1")
+    assert code == 502 and b"upstream unavailable" in body
