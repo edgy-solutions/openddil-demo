@@ -216,6 +216,14 @@ export interface EdgeAttachmentEntry {
   attachment: EdgeAttachment;
 }
 
+/** One entry of `deployment.json`'s `childLinks` list — see `parseChildLinks`. */
+export interface ChildLinkEntry {
+  id: string;
+  /** True when the child rolls up its own subtree (a hub); false for a leaf
+   *  attached directly to this node. */
+  hasChildren: boolean;
+}
+
 export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
@@ -266,6 +274,12 @@ export interface Deployment {
    *  not declare one. Parsed by `parseEdgeAttachments`. DECLARED ONLY —
    *  never inferred here; the chart is the only source of this list. */
   edges?: EdgeAttachmentEntry[];
+  /** Declared shape of each direct child of this node (one entry per child
+   *  link). ABSENT means nothing was declared (no children, or an older
+   *  chart); `childLinkShape(id)` returns undefined for every child in that
+   *  case. Parsed by `parseChildLinks`. DECLARED ONLY — never inferred from
+   *  an id; the chart is the only source of this list. */
+  childLinks?: ChildLinkEntry[];
 }
 
 /** THE TIER A DEPLOYMENT GETS WHEN IT DECLARES NONE.
@@ -515,6 +529,50 @@ export function edgeAttachment(edgeId: string): EdgeAttachment | undefined {
   return active.edges?.find((e) => e.id === edgeId)?.attachment;
 }
 
+/** Parses `deployment.json`'s `childLinks` list, defensively, like
+ *  `parseEdgeAttachments`. Not an array => undefined. Within an array, an
+ *  entry that is not an object, has a missing/blank `id`, or a
+ *  `hasChildren` that is not exactly a boolean is DROPPED with a
+ *  console.warn -- never coerced (a guessed shape would put a link control
+ *  on the wrong line). EXPORTED FOR TESTS. */
+export function parseChildLinks(raw: unknown): ChildLinkEntry[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ChildLinkEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') {
+      console.warn('[deployment] childLinks entry dropped (not an object):', entry);
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.id !== 'string' || !e.id.trim()) {
+      console.warn('[deployment] childLinks entry dropped (missing/invalid id):', entry);
+      continue;
+    }
+    if (typeof e.hasChildren !== 'boolean') {
+      console.warn(
+        `[deployment] childLinks entry for "${e.id}" dropped (hasChildren must be a boolean):`,
+        entry,
+      );
+      continue;
+    }
+    out.push({ id: e.id.trim(), hasChildren: e.hasChildren });
+  }
+  return out;
+}
+
+/** A direct child's declared shape: `rollup` (has its own children) or
+ *  `leaf`. Undefined when nothing was declared for this child. */
+export function childLinkShape(id: string): 'rollup' | 'leaf' | undefined {
+  const c = active.childLinks?.find((x) => x.id === id);
+  if (!c) return undefined;
+  return c.hasChildren ? 'rollup' : 'leaf';
+}
+
+/** TEST SEAM. Sets the declared child links without a fetch. */
+export function __setChildLinksForTest(links: ChildLinkEntry[] | undefined): void {
+  active = { ...active, childLinks: links };
+}
+
 export function parseManualQa(raw: unknown): ManualQaConfig | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const stub = (raw as Record<string, unknown>).stub;
@@ -620,6 +678,7 @@ export async function loadDeployment(): Promise<void> {
         egressPane: parseEgressPane((j as { egressPane?: unknown }).egressPane),
         manualQa: parseManualQa((j as { manualQa?: unknown }).manualQa),
         edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
+        childLinks: parseChildLinks((j as { childLinks?: unknown }).childLinks),
       };
     }
   } catch {
