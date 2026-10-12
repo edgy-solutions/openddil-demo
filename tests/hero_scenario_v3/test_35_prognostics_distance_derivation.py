@@ -3,7 +3,7 @@ Test 35 — Prognostics: distance-driven track wear (scripted OpenDIS scenario).
 
 The scripted-OpenDIS testing model from ADR-0020: known input, known answer,
 assert the arithmetic. Tests the *mechanism*, NOT coefficient correctness
-(coefficient validation is the deferred AFSIM / VR-Forces phase).
+(coefficient validation is the deferred AFSIM or co-located-simulator phase).
 
 Scenario:
   Inject 6 DIS Entity State PDUs for a fresh entity, stepping the ECEF

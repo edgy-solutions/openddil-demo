@@ -77,11 +77,11 @@ detailed source of truth for tracked follow-ups and named future phases):
   enterprise work order. The HQ "Enterprise CM Recommendations" panel currently
   surfaces CM-derived recommendations as a placeholder; real egress wiring is
   ADR-0022-constrained future work.
-- **DIS Fire/Detonation PDU ingestion** — deferred to a VRForces / AFSim
+- **DIS Fire/Detonation PDU ingestion** — deferred to an AFSim or co-located-simulator
   integration phase (the customer's existing feed does not include DIS Fire/
   Detonation events; this path activates when a real DIS fire-event source
   arrives).
-- **VR-Forces / AFSim integration** — the contractual milestone.
+- **AFSim or co-located-simulator integration** — the contractual milestone.
 - **Dead Reckoning** — DR algorithms in faust-edge for sparse (~5 Hz) DIS updates.
 - **Egress (OpenDDIL → DIS)** — bidirectional simulation feedback.
 - **CI tracking / cm-items topic** — serialized component instances + bill-of-

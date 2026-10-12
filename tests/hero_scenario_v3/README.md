@@ -729,7 +729,7 @@ item: add it here, even if it isn't a test-runner item.
     test-generated. `position.quality.source` is honestly stamped
     `POS_SRC_SIMULATED`, and the simulator service was removed in Phase
     4b — no live feed (newest non-test row is 2026-05-18). The only real
-    DIS position source would be a VRForces / AFSim integration — the
+    DIS position source would be an AFSim or co-located-simulator integration — the
     SAME dependency as #4b (fire-event ingestion). Also absent: any
     ECEF→WGS84 conversion utility (`wgs84` is null on every row). Net: a
     future reader must NOT read "we have asset positions" off the schema
@@ -809,7 +809,7 @@ fire-event stream.
    the OSS DIS path. `dis_ingestor.py:312-318` already *counts* both
    via Prometheus but drops them before Kafka (observability exists,
    extraction does not). Needs a real DIS fire-event source, i.e. a
-   VRForces or AFSim integration.
+   AFSim or co-located-simulator integration.
 2. **Customer `shot_msg`** — a per-shot event message from the same
    producer that emits `StrikeCapabilityMessage`, on routing key
    `customer_overlay_shot_msg` / queue `shot_q`. Schema LLM-reconstructed at
@@ -819,7 +819,7 @@ fire-event stream.
    directly. If a wire sample arrives, this is the lower-effort source.
 
 **Activation trigger**: a fire-event source becomes available — a
-VRForces/AFSim integration, or a wire-confirmed `shot_msg` feed.
+AFSim or co-located-simulator integration, or a wire-confirmed `shot_msg` feed.
 
 **A dropped non-answer, recorded so it isn't re-attempted:**
 deriving barrel-life from `StrikeCapabilityMessage` Ammo *deltas*

@@ -31,7 +31,7 @@
 # -----------------------------------------------------------------------------
 # A wear COEFFICIENT is an unvalidated number in a physical unit — how many
 # kilometres a track lasts — and inventing one would be authored fiction
-# (GD-14, ADR-0020: real calibration is the AFSim/VR-Forces phase).
+# (GD-14, ADR-0020: real calibration is the AFSim or co-located-simulator phase).
 #
 # A component MANIFEST is a checkable statement of existence about a public
 # platform class. A UH-60M has no tracks; an M1A2 has them. Anyone can verify

@@ -93,9 +93,9 @@ describe('tier config validation — absence beats a confident wrong answer', ()
 
   it('accepts a complete scoped tier', () => {
     expect(parseTier({
-      id: 'edge-northpoint', has_children: false, parent: 'region-east',
-      scope: { column: 'edge_id', value: 'edge-northpoint' },
-    })).toMatchObject({ scope: { column: 'edge_id', value: 'edge-northpoint' } });
+      id: 'edge-north', has_children: false, parent: 'region-east',
+      scope: { column: 'edge_id', value: 'edge-north' },
+    })).toMatchObject({ scope: { column: 'edge_id', value: 'edge-north' } });
   });
 
   it('REJECTS a missing has_children rather than guessing it', () => {

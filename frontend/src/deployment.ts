@@ -131,7 +131,7 @@ export const DEFAULT_LIVENESS: LivenessThresholds = {
  *  tier still cannot be scoped (GD-01). This type makes the dependency
  *  explicit and confines it; it does not remove it. */
 export interface TierConfig {
-  /** This tier's identifier, e.g. "edge-northpoint", "region-east", "hq".
+  /** This tier's identifier, e.g. "edge-north", "region-east", "hq".
    *  DISPLAY AND CORRELATION ONLY — no panel selection reads it. */
   id: string;
   /** Human label for the header. Falls back to `id`. */
