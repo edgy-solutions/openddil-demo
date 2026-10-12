@@ -98,14 +98,17 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
             {/* Row 2: the link that goes AROUND the hub. The line spans the
                 edge column's centre to the HQ column's centre; the rows sit
                 under the hub because this block shares row 1's column
-                tracks. Only drawn when a leaf child exists. */}
+                tracks. The rows name both column lines: an absolutely
+                positioned grid child with an auto end line spans to the
+                container's edge, not one track. Only drawn when a leaf child
+                exists. */}
             {leafIds.length > 0 && (
               <div
                 data-testid="link-direct-edge-hq"
                 className="col-span-5 grid grid-cols-subgrid relative h-6 mb-8"
               >
                 <div className="absolute inset-y-0 left-[3.5rem] right-[3.5rem] border-l-2 border-r-2 border-b-2 border-slate-700 rounded-b" />
-                <div className="col-start-3 row-start-1 absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 w-max flex flex-col gap-1">
+                <div className="col-start-3 col-end-4 row-start-1 absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 w-max flex flex-col gap-1">
                   {leafIds.map((id) => row(id))}
                 </div>
               </div>
