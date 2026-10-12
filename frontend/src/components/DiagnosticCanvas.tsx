@@ -35,6 +35,9 @@ import { OrbitControls } from '@react-three/drei';
 import { Wrench } from 'lucide-react';
 import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG, type LiveElementTelemetry } from './SensorArrayView';
 import HudFrame from './HudFrame';
+import { RenderModeScene } from '../render/RenderModeScene';
+import { RenderModeMenu } from '../render/RenderModeMenu';
+import { useRenderModePreference } from '../render/renderMode';
 import { useTransitPhase, transitClass } from './EdgeTransit';
 import {
     SCHEMATIC_REGISTRY,
@@ -220,6 +223,10 @@ export default function DiagnosticCanvas({
     // entry at all and the card disappears outright.
     const [recordedKey, setRecordedKey] = useState<string | null>(null);
 
+    // 3D render mode (MATTE default / METALLIC / HOLOGRAPHIC), persisted.
+    const [renderMode, setRenderMode] = useRenderModePreference();
+    const renderModeMenu = <RenderModeMenu mode={renderMode} onChange={setRenderMode} />;
+
     const bitEntry = bitOnlyDiscrepancy(cm.data[0]?.manual_discrepancies);
     const bitEntryKey = bitEntry ? `${bitEntry.component}|${bitEntry.fault_code}` : null;
 
@@ -310,7 +317,8 @@ export default function DiagnosticCanvas({
     if (platformVariant && MRAD_VARIANTS.has(platformVariant) && isDeclaredSensor(subsystem)) {
         return (
             <>
-                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} />
+                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} renderMode={renderMode} />
+                {renderModeMenu}
                 {faultReportOverlay}
                 {manualQuestionOverlay}
             </>
@@ -325,7 +333,8 @@ export default function DiagnosticCanvas({
         // through the registry path below.
         return (
             <>
-                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} isPoweredOff={isPoweredOff} />
+                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} isPoweredOff={isPoweredOff} renderMode={renderMode} />
+                {renderModeMenu}
                 {faultReportOverlay}
                 {manualQuestionOverlay}
             </>
@@ -357,9 +366,11 @@ export default function DiagnosticCanvas({
                 //   * alpha/stencil off — saves swap-chain channels
                 //   * powerPreference high-performance — wakes dGPU
                 //   * frameloop demand — only renders when scene state
-                //     changes (not 60fps), HUGE win for an idle picker
+                //     changes (not 60fps), HUGE win for an idle picker.
+                //     Holographic animates continuously, so only that mode
+                //     switches to "always".
                 dpr={[1, 1.5]}
-                frameloop="demand"
+                frameloop={renderMode === 'holographic' ? 'always' : 'demand'}
                 gl={{
                     antialias: false,
                     powerPreference: 'high-performance',
@@ -368,17 +379,15 @@ export default function DiagnosticCanvas({
                     depth: true,
                 }}
             >
-                <color attach="background" args={[0x020617]} />
-                <fogExp2 attach="fog" args={[0x020617, 0.05]} />
-                <ambientLight intensity={0.4} />
-                <spotLight position={[20, 40, 20]} intensity={1.5} color={0x22d3ee} />
+                <RenderModeScene mode={renderMode}>
+                    <OrbitControls enableDamping dampingFactor={0.05} />
 
-                <OrbitControls enableDamping dampingFactor={0.05} />
-
-                {SchematicComp
-                    ? <SchematicComp degraded={degraded} operationalState={operationalState} />
-                    : <UnknownPlatformBadge degraded={degraded} variant={platformVariant ?? 'UNKNOWN'} />}
+                    {SchematicComp
+                        ? <SchematicComp degraded={degraded} operationalState={operationalState} />
+                        : <UnknownPlatformBadge degraded={degraded} variant={platformVariant ?? 'UNKNOWN'} />}
+                </RenderModeScene>
             </Canvas>
+            {renderModeMenu}
             {faultReportOverlay}
             {manualQuestionOverlay}
         </HudFrame>

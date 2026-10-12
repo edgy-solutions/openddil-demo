@@ -16,6 +16,7 @@ import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { SchematicProps } from './types';
+import { SchematicMaterial } from '../../render/SchematicMaterial';
 
 export function LaserShoradSchematic({ degraded }: SchematicProps) {
     const coreRef = useRef<THREE.Group>(null);
@@ -43,13 +44,13 @@ export function LaserShoradSchematic({ degraded }: SchematicProps) {
             {/* Substantive Solid Cylinder */}
             <mesh position={[0, 0, 0]}>
                 <cylinderGeometry args={[1.4, 1.4, 8, 32]} />
-                <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
+                <SchematicMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
             </mesh>
 
             {/* Subtle Schematic Overlay */}
             <mesh position={[0, 0, 0]}>
                 <cylinderGeometry args={[1.41, 1.41, 8, 16]} />
-                <meshBasicMaterial color={0x22d3ee} wireframe transparent opacity={0.15} />
+                <SchematicMaterial kind="indicator" color={0x22d3ee} wireframe transparent opacity={0.15} />
             </mesh>
 
             {/* Circular Facade Grid */}
@@ -68,7 +69,7 @@ export function LaserShoradSchematic({ degraded }: SchematicProps) {
                                 ref={(el) => { if (el) indicatorRefs.current.push(el); }}
                             >
                                 <boxGeometry args={[0.4, 0.4, 0.05]} />
-                                <meshBasicMaterial color={0x10b981} transparent opacity={0.8} />
+                                <SchematicMaterial kind="indicator" color={0x10b981} transparent opacity={0.8} />
                             </mesh>
                         );
                     })

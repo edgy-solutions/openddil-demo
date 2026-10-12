@@ -26,6 +26,9 @@ import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import * as TWEEN from '@tweenjs/tween.js';
 import HudFrame from './HudFrame';
+import { SchematicMaterial } from '../render/SchematicMaterial';
+import { RenderModeScene } from '../render/RenderModeScene';
+import { useRenderMode, type RenderMode } from '../render/renderMode';
 import { sourceWords } from '../lib/condition';
 
 const COLORS = { nominal: 0x22d3ee, warning: 0xfacc15, critical: 0xef4444, bg: 0x020617, housing: 0x0f172a, card: 0x1e293b };
@@ -699,6 +702,7 @@ function SceneController({ currentDepth, parentId, onDrillDown, onInterrogate, i
 // rebuilt the GPU buffer on every render, leaking memory until the
 // WebGL context died.
 function HousingMesh({ size }: { size: [number, number, number] }) {
+    const holo = useRenderMode() === 'holographic';
     const edges = useMemo(() => {
         const box = new THREE.BoxGeometry(...size);
         const eg = new THREE.EdgesGeometry(box);
@@ -708,9 +712,9 @@ function HousingMesh({ size }: { size: [number, number, number] }) {
     return (
         <mesh>
             <boxGeometry args={size} />
-            <meshPhongMaterial color={COLORS.housing} transparent opacity={0.9} />
+            <SchematicMaterial shading="phong" color={COLORS.housing} transparent opacity={0.9} />
             <lineSegments geometry={edges}>
-                <lineBasicMaterial color={0x334155} transparent opacity={0.5} />
+                <lineBasicMaterial color={holo ? 0x67e8f9 : 0x334155} transparent opacity={0.5} />
             </lineSegments>
         </mesh>
     );
@@ -739,7 +743,11 @@ function ElementMesh({ data, onSelect, onDrillDown }: { data: ElementData, onSel
         if (meshRef.current && data.healthValue > 0.9) {
             const time = state.clock.getElapsedTime();
             const pulse = 0.5 + Math.sin(time * 5) * 0.5;
-            (meshRef.current.material as THREE.MeshPhongMaterial).emissiveIntensity = 0.4 + pulse * 1.5;
+            const mat = meshRef.current.material as THREE.MeshPhongMaterial | THREE.MeshBasicMaterial;
+            // Holographic renders the tile as additive basic in its status
+            // colour: pulse its opacity instead of its (absent) emissive.
+            if (mat instanceof THREE.MeshBasicMaterial) mat.opacity = 0.55 + pulse * 0.4;
+            else mat.emissiveIntensity = 0.4 + pulse * 1.5;
         }
     });
 
@@ -752,10 +760,12 @@ function ElementMesh({ data, onSelect, onDrillDown }: { data: ElementData, onSel
             onDoubleClick={(e) => { e.stopPropagation(); onDrillDown(data, meshRef.current); }}
         >
             <boxGeometry args={data.size} />
-            <meshPhongMaterial
+            <SchematicMaterial
+                shading="phong"
                 color={data.color}
                 emissive={data.status.color}
                 emissiveIntensity={data.healthValue > 0.9 ? 0.6 : 0.1}
+                holoColor={data.status.color}
             />
             {data.wireframe && (
                 <lineSegments geometry={edgesGeom}>
@@ -788,9 +798,11 @@ interface SensorArrayViewProps {
      *  for the rationale (element-level health alone can't disambiguate
      *  nominal-idle from asset-off). */
     isPoweredOff?: boolean;
+    /** 3D render mode (owned by DiagnosticCanvas). Defaults to matte. */
+    renderMode?: RenderMode;
 }
 
-export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS_CONFIG, liveTelemetry, isPoweredOff = false }: SensorArrayViewProps) {
+export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS_CONFIG, liveTelemetry, isPoweredOff = false, renderMode = 'matte' }: SensorArrayViewProps) {
     const [currentDepth, setCurrentDepth] = useState(0);
     const [selectedElement, setSelectedElement] = useState<ElementData | null>(null);
     const [isTransitioning, setIsTransitioning] = useState(false);
@@ -909,12 +921,15 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                 // context loss recurs, restore those knobs (commit
                 // b8c1c83 + 3bf93d9 in git history).
                 dpr={[1, 1.5]}
+                // Always-on loop already (pulse animation); holographic
+                // needs it too, so no frameloop switch is required here.
             >
-                <color attach="background" args={[COLORS.bg]} />
-                <fogExp2 attach="fog" args={[COLORS.bg, 0.05]} />
-                <ambientLight intensity={0.4} />
-                <spotLight position={[20, 40, 20]} intensity={1.5} color={0x22d3ee} />
-
+                <RenderModeScene
+                    mode={renderMode}
+                    floorY={-config.housingSize[1] / 2 - 0.5}
+                    floorScale={Math.max(1, config.housingSize[1] / 6)}
+                    sweep={[-config.housingSize[1] / 2 - 0.3, config.housingSize[1] + 1]}
+                >
                 <SceneController
                     currentDepth={currentDepth}
                     parentId={parentId}
@@ -928,6 +943,7 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                     housingSize={config.housingSize}
                     isPoweredOff={isPoweredOff}
                 />
+                </RenderModeScene>
             </Canvas>
 
             {/* Depth indicator — one tick per configured layer. Sits in the

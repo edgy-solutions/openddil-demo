@@ -17,6 +17,7 @@ import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { SchematicProps, SensorTier } from './types';
+import { SchematicMaterial } from '../../render/SchematicMaterial';
 
 interface SensorRadarSchematicProps extends SchematicProps {
   tier?: SensorTier;
@@ -83,25 +84,25 @@ export function SensorRadarSchematic({ degraded, tier = 'SHORAD', operationalSta
                 visual lineage. */}
             <mesh position={[0, -0.8, 0]}>
                 <boxGeometry args={[2.4, 0.6, 2.4]} />
-                <meshStandardMaterial color={0x1e293b} metalness={0.7} roughness={0.3} />
+                <SchematicMaterial color={0x1e293b} metalness={0.7} roughness={0.3} />
             </mesh>
 
             {/* Subtle base-cyan accent ring at the base/tower seam */}
             <mesh position={[0, -0.45, 0]} rotation={[Math.PI / 2, 0, 0]}>
                 <ringGeometry args={[1.0, 1.18, 32]} />
-                <meshBasicMaterial color={0x22d3ee} transparent opacity={0.55} side={THREE.DoubleSide} />
+                <SchematicMaterial kind="indicator" color={0x22d3ee} transparent opacity={0.55} side={THREE.DoubleSide} />
             </mesh>
 
             {/* Central tower — slate-700, lighter than base */}
             <mesh position={[0, 0.2, 0]}>
                 <cylinderGeometry args={[0.35, 0.45, 1.6, 16]} />
-                <meshStandardMaterial color={0x334155} metalness={0.6} roughness={0.4} />
+                <SchematicMaterial color={0x334155} metalness={0.6} roughness={0.4} />
             </mesh>
 
             {/* Tower-top indicator pad — health-aware */}
             <mesh ref={indicatorRef} position={[0, 1.05, 0]}>
                 <cylinderGeometry args={[0.18, 0.18, 0.08, 16]} />
-                <meshBasicMaterial color={0x10b981} transparent opacity={0.8} />
+                <SchematicMaterial kind="indicator" color={0x10b981} transparent opacity={0.8} />
             </mesh>
 
             {/* Yaw platform with the dish — rotates when nominal */}
@@ -110,7 +111,7 @@ export function SensorRadarSchematic({ degraded, tier = 'SHORAD', operationalSta
                     tilted to face skyward. Tier-scaled radius. */}
                 <mesh rotation={[-Math.PI / 4, 0, 0]} position={[0, 0.2, dishRadius * 0.4]}>
                     <coneGeometry args={[dishRadius, 0.25, 24, 1, true]} />
-                    <meshStandardMaterial
+                    <SchematicMaterial
                         color={0x0f172a}
                         metalness={0.8}
                         roughness={0.2}
@@ -121,13 +122,13 @@ export function SensorRadarSchematic({ degraded, tier = 'SHORAD', operationalSta
                 {/* Dish rim — emissive cyan ring traces the leading edge */}
                 <mesh rotation={[-Math.PI / 4, 0, 0]} position={[0, 0.32, dishRadius * 0.4]}>
                     <ringGeometry args={[dishRadius * 0.95, dishRadius, 32]} />
-                    <meshBasicMaterial color={0x22d3ee} transparent opacity={0.7} side={THREE.DoubleSide} />
+                    <SchematicMaterial kind="indicator" color={0x22d3ee} transparent opacity={0.7} side={THREE.DoubleSide} />
                 </mesh>
 
                 {/* Dish backbone — thin bar across the back of the dish */}
                 <mesh rotation={[-Math.PI / 4, 0, 0]} position={[0, 0.2, dishRadius * 0.4]}>
                     <boxGeometry args={[dishRadius * 1.9, 0.05, 0.05]} />
-                    <meshBasicMaterial color={0x475569} />
+                    <SchematicMaterial kind="indicator" color={0x475569} />
                 </mesh>
             </group>
         </group>
