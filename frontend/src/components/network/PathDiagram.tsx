@@ -68,21 +68,31 @@ export function DirectArc({ tone, testId }: { tone: Tone; testId?: string }) {
   );
 }
 
-/** Buffer depth: big number, its label and a trend arrow. `severed` only
- *  recolours the arrow; callers pass the OBSERVED indicator's verdict. */
-export function BufferBlock({
-  label, value, lag, severed,
-}: { label: string; value: string; lag: number; severed: boolean }) {
+/** The link summary shown in the top-bar pill: the observed word (when the
+ *  tier has one), the buffer depth, a trend arrow and the buffer's label, on
+ *  one line. `severed` only recolours the arrow; callers pass the OBSERVED
+ *  indicator's verdict. */
+export function LinkSummary({
+  word, wordClass, value, lag, severed, bufferLabel,
+}: {
+  word?: string; wordClass?: string; value: string; lag: number; severed: boolean; bufferLabel: string;
+}) {
   return (
-    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pb-2.5 pt-1.5">
-      <span className="text-3xl font-bold tabular-nums text-slate-100" data-testid="buffer-value">{value}</span>
-      <span className="text-xs text-slate-500">MSGS</span>
+    <span className="flex items-center gap-2 whitespace-nowrap">
+      {word && (
+        <>
+          <span data-testid="link-indicator" className={`text-[10px] font-bold tracking-widest whitespace-nowrap ${wordClass}`}>{word}</span>
+          <span className="h-3 w-px bg-slate-700" />
+        </>
+      )}
+      <span data-testid="buffer-value" className="text-[13px] font-bold tabular-nums text-slate-100">{value}</span>
+      <span className="text-[9px] text-slate-500">MSGS</span>
       <TrendingUp
-        className={`h-4 w-4 self-center transition-all ${lag === 0 ? 'opacity-0' : 'opacity-100'} ${severed ? 'text-rose-500' : 'rotate-180 text-emerald-500'}`}
+        className={`h-3 w-3 transition-all ${lag === 0 ? 'opacity-0' : 'opacity-100'} ${severed ? 'text-rose-500' : 'rotate-180 text-emerald-500'}`}
         aria-hidden="true"
       />
-      <span className="basis-full text-[10px] tracking-wider text-slate-400">{label}</span>
-    </div>
+      <span className="whitespace-nowrap text-[9px] tracking-wider text-slate-400">{bufferLabel}</span>
+    </span>
   );
 }
 

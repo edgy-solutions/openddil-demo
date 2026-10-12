@@ -10,7 +10,7 @@ function ui() {
   return (
     <div>
       <button data-testid="outside">outside</button>
-      <NetworkPopover tone="ok" count="12" unit="MSGS">
+      <NetworkPopover tone="ok" summary={<span>12 MSGS</span>}>
         <LinkRow
           linkKey="a" toxicsId="a-tox" toggleId="a-toggle" from="a" to="b"
           status="ready" enabled toggleFrom="a" toggleTo="b" onToggle={() => {}}

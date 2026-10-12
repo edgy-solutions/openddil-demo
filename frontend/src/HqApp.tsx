@@ -337,7 +337,7 @@ export default function HqApp() {
 
       {severed && <HqFreezeOverlay />}
 
-      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden relative z-0 min-h-0">
+      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 overflow-hidden relative z-0 min-h-0">
         <TheaterReadinessPosture />
 
         {/* Explicit viewport-bounded max-h: the grid-rows + min-h-0 chain

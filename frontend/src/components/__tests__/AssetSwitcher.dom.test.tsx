@@ -43,23 +43,54 @@ describe('AssetSwitcher', () => {
     expect(screen.getByTestId('asset-identity').textContent).toContain('LOST');
   });
 
-  it('opens from the button and from "/" but not while typing in an input', () => {
+  it('opens from the button', () => {
     setup();
     fireEvent.click(screen.getByRole('button', { name: 'Switch asset' }));
     expect(screen.getByRole('listbox')).toBeTruthy();
     expect(screen.getAllByRole('option')).toHaveLength(3);
     fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' });
     expect(screen.queryByRole('listbox')).toBeNull();
+  });
 
-    fireEvent.keyDown(document.body, { key: '/' });
-    expect(screen.getByRole('listbox')).toBeTruthy();
-    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' });
+  describe('"/" shortcut', () => {
+    it('pressed on document.body while closed: prevented, opens, focuses an empty filter', () => {
+      setup();
+      expect(screen.queryByRole('listbox')).toBeNull();
+      const notPrevented = fireEvent.keyDown(document.body, { key: '/' });
+      expect(notPrevented).toBe(false);
+      expect(screen.getByRole('listbox')).toBeTruthy();
+      const filter = screen.getByRole('combobox', { name: 'Filter assets' });
+      expect(document.activeElement).toBe(filter);
+      expect((filter as HTMLInputElement).value).toBe('');
+    });
 
-    const other = document.createElement('input');
-    document.body.appendChild(other);
-    fireEvent.keyDown(other, { key: '/' });
-    expect(screen.queryByRole('listbox')).toBeNull();
-    other.remove();
+    it('pressed while a non-text control has focus: opens', () => {
+      setup();
+      const btn = document.createElement('button');
+      document.body.appendChild(btn);
+      btn.focus();
+      fireEvent.keyDown(btn, { key: '/' });
+      expect(screen.getByRole('listbox')).toBeTruthy();
+      btn.remove();
+    });
+
+    it.each(['input', 'textarea'] as const)('pressed in a %s: not prevented, does not open', (tag) => {
+      setup();
+      const el = document.createElement(tag);
+      document.body.appendChild(el);
+      el.focus();
+      const notPrevented = fireEvent.keyDown(el, { key: '/' });
+      expect(notPrevented).toBe(true);
+      expect(screen.queryByRole('listbox')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Switch asset' }).getAttribute('aria-expanded')).toBe('false');
+      el.remove();
+    });
+
+    it.each([['Ctrl', { ctrlKey: true }], ['Meta', { metaKey: true }]])('%s+/ does not open', (_n, mod) => {
+      setup();
+      fireEvent.keyDown(document.body, { key: '/', ...mod });
+      expect(screen.queryByRole('listbox')).toBeNull();
+    });
   });
 
   it('marks the current asset selected and suffixes non-live ones', () => {

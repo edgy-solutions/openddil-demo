@@ -14,6 +14,9 @@
 // useEdgeBuffer — no more client-side simulation.
 import { useState, useEffect, useMemo } from 'react';
 import Header from './components/Header';
+import EdgePulldown from './components/EdgePulldown';
+import NationLegend from './components/releasability/NationLegend';
+import { useSession } from './hooks/useSession';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
 import AssetSwitcher from './components/AssetSwitcher';
 import LocalFleetRadar from './components/LocalFleetRadar';
@@ -139,6 +142,7 @@ function formatSeen(iso: string | null): string {
 interface TierScopedProps { tierScopeValue?: string | null }
 
 function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
+  const session = useSession();
   // linkControl = the DDIL uplink toggle, sourced from the proxy's own state
   // (see hooks/useLinkControl) rather than invented client-side. `degraded` no
   // longer exists here: this view shows the EDGE's own asset status, and
@@ -474,13 +478,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
 
   return (
     <div className="font-mono h-full flex flex-col overflow-hidden bg-slate-950 text-slate-200">
-      <Header
-        linkControl={linkControl}
-        fleet={fleetForPicker}
-        availableEdges={availableEdges}
-        selectedEdge={selectedEdge}
-        onSelectEdge={onSelectEdge}
-      />
+      <Header linkControl={linkControl} />
 
       {/* Phase 6c.3 corrected scope (per the recipe revision): the
           edge-change transit animation is contained to the GROUND
@@ -489,26 +487,47 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
           transitTriggerKey; the schematic animates in place; everything
           else snaps. See EdgeTransit.tsx + DiagnosticCanvas's
           contentClassName seam through HudFrame. */}
-      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden min-h-0">
+      <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 overflow-hidden min-h-0">
         {/* Left + center: identity strip + 3D schematic */}
         <div className="col-span-2 flex flex-col gap-4 overflow-hidden">
           <div className="panel flex items-center justify-between shrink-0 p-3">
-            <div>
-              <h2 className="text-sm text-slate-200 tracking-wider uppercase mb-1">
-                {selectedAsset
-                  ? selectedAsset.callsign || selectedAsset.asset_id
-                  : 'No asset selected'}
-              </h2>
-              <div className="flex gap-4 text-[11px] text-slate-500">
-                <span>variant: <span className="text-slate-300">{variant ?? 'unknown'}</span></span>
-                <span>id: <span className="text-slate-300">{selectedAsset?.asset_id ?? '—'}</span></span>
-                <span>force: <span className="text-slate-300">{selectedAsset?.force_id ?? '—'}</span></span>
-                <span>last seen: <span className="text-slate-300">{formatSeen(selectedAsset?.last_sample_at ?? null)}</span></span>
+            <div className="flex items-center gap-4 min-w-0">
+              {/* Phase 6c.2: two-level scope chrome — EDGE: [edge-N] › ASSET:
+                  [...]. EdgePulldown is visually prominent (cyan-tinted border,
+                  bold label) because the maintainer pulldown is the
+                  demo-narrative payoff per ADR-0023 (FOB transport). The asset
+                  picker is the FINE selection within the edge's scope. */}
+              <EdgePulldown
+                available={availableEdges}
+                selected={selectedEdge}
+                onSelect={onSelectEdge}
+              />
+              <div className="h-10 w-px shrink-0 bg-slate-700" aria-hidden="true" />
+              <div className="min-w-0">
+                <h2 className="text-sm text-slate-200 tracking-wider uppercase mb-1">
+                  {selectedAsset
+                    ? selectedAsset.callsign || selectedAsset.asset_id
+                    : 'No asset selected'}
+                </h2>
+                <div className="flex gap-4 text-[11px] text-slate-500">
+                  <span>variant: <span className="text-slate-300">{variant ?? 'unknown'}</span></span>
+                  <span>id: <span className="text-slate-300">{selectedAsset?.asset_id ?? '—'}</span></span>
+                  <span>force: <span className="text-slate-300">{selectedAsset?.force_id ?? '—'}</span></span>
+                  <span>last seen: <span className="text-slate-300">{formatSeen(selectedAsset?.last_sample_at ?? null)}</span></span>
+                </div>
               </div>
             </div>
-            <div className="text-right">
-              <div className="text-xs text-slate-500 mb-1">LOCAL TIME</div>
-              <div className="text-xl font-bold text-slate-200">{clock}</div>
+            <div className="flex items-center gap-4">
+              {/* PRESENTATION ONLY. `session.nations` decides which legend keys
+                  are worth showing and whether an asset is marked "released to
+                  you"; it filters nothing. The rows have already been filtered
+                  by the gateway (ADR-0029 §1), and a second filter here would
+                  be a second authorization decision that nobody reviewed. */}
+              <NationLegend assets={fleetForPicker} viewerNations={session.nations} />
+              <div className="text-right">
+                <div className="text-xs text-slate-500 mb-1">LOCAL TIME</div>
+                <div className="text-xl font-bold text-slate-200">{clock}</div>
+              </div>
             </div>
           </div>
 

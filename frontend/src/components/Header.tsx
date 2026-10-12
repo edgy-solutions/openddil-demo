@@ -14,17 +14,14 @@
 // OBSERVED link indicator, never the commanded toggle.
 import { Laptop, Building2, Server } from 'lucide-react';
 import { ThisNodeBadge } from '../lib/thisNode';
-import type { FleetAsset } from '../hooks';
 import { useEdgeBuffer } from '../hooks';
-import EdgePulldown from './EdgePulldown';
-import NationLegend from './releasability/NationLegend';
-import { useSession } from '../hooks/useSession';
 import { useLinkIndicator } from '../hooks/useLinkIndicator';
 import type { UseLinkControlResult } from '../hooks/useLinkControl';
 import { LinkControlCaption } from './LinkToggle';
 import { deployment, isRootTier, parentDisplay, parentTierName } from '../deployment';
 import NetworkPopover from './network/NetworkPopover';
-import { BufferBlock, PathNode, PathRow, Section, StatusStrip, Wire } from './network/PathDiagram';
+import { LinkSummary, PathNode, PathRow, Section, StatusStrip, Wire } from './network/PathDiagram';
+import { TopBarPortal } from './TopBarSlot';
 import { LinkRow, type LinkObserved } from './network/LinkRow';
 import { formatLag } from './network/linkShaping';
 import { toneFromIndicator } from './network/tone';
@@ -64,31 +61,10 @@ interface HeaderProps {
    *  only when control is available; unknown or refused states render it
    *  disabled and explained, never as a guessed commanded state. */
   linkControl: Pick<UseLinkControlResult, 'status' | 'uplink' | 'set' | 'setToxics'>;
-  fleet: FleetAsset[];
-  /** Per-asset tier map (Phase 4 liveness). Drives the picker option
-   *  suffix + dim styling. Optional so existing callers (tests, future
-   *  alt-mounts) don't have to plumb it through; absence = no suffix
-   *  + no dimming. */
-  // Phase 6c.2 — per-edge scope. The Maintainer view owns this state
-  // (URL-param-synced + reset-on-switch behavior); Header just renders
-  // the pulldown and proxies changes back up.
-  availableEdges: string[];
-  selectedEdge: string | null;
-  onSelectEdge: (edgeId: string) => void;
 }
 
-export default function Header({
-  linkControl,
-  fleet,
-  availableEdges, selectedEdge, onSelectEdge,
-}: HeaderProps) {
+export default function Header({ linkControl }: HeaderProps) {
   const { status, isError } = useEdgeBuffer();
-  // PRESENTATION ONLY. `session.nations` decides which legend keys are worth
-  // showing and whether an asset is marked "released to you"; it filters
-  // nothing. The rows below have already been filtered by the gateway
-  // (ADR-0029 §1), and a second filter here would be a second authorization
-  // decision that nobody reviewed.
-  const session = useSession();
   // The label is a pure function of the OBSERVED edge_buffer_status row
   // (+ isError + wall clock) -- it never reads the commanded
   // toggle state and never falls back to it. See lib/linkIndicator.ts.
@@ -117,42 +93,23 @@ export default function Header({
   };
 
   return (
-    <header className="panel flex flex-col p-3 m-2 shrink-0 z-40 border-b-2 border-b-slate-700">
-      {/* WHOSE SCREEN IS THIS. Placed above everything else, because the
-          answer changes what every number below it means — and in a
-          side-by-side demo it is the only thing distinguishing two windows
-          that are otherwise identical. */}
-      <div className="mb-2 flex w-full max-w-6xl mx-auto items-center justify-between gap-4">
-        <NationLegend assets={fleet} viewerNations={session.nations} />
-        {/* MOVED TO THE SHARED SHELL CHROME (Root.tsx).
-            It lived here, in the edge-shaped header only, so the HQ and
-            REGIONAL shapes rendered a subject-scoped partition while
-            naming no subject — ADR-0035 class 5, and the first concrete
-            instance of the "three components are still three components"
-            debt: a feature landed in one sibling and never reached the
-            others. Chrome that must appear for EVERY shape belongs above
-            the shape selection, not inside one of its branches. */}
-      </div>
-      <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
-        {/* Phase 6c.2: two-level scope chrome — EDGE: [edge-N] › ASSET: [...]
-            EdgePulldown is visually prominent (cyan-tinted border, bold label)
-            because the maintainer pulldown is the demo-narrative payoff per
-            ADR-0023 (FOB transport). The asset picker that follows is the
-            FINE selection within the edge's scope. */}
-        <EdgePulldown
-          available={availableEdges}
-          selected={selectedEdge}
-          onSelect={onSelectEdge}
-        />
-
+    <TopBarPortal>
         {/* The network lives behind this pill. The dot is the OBSERVED link
             indicator (never the commanded toggle); the count is the uplink
             buffer. Real edge-buffer depth: bridge-group consumer lag on
             redpanda-edge. */}
         <NetworkPopover
           tone={toneFromIndicator(linkIndicator)}
-          count={formatLag(probeDown, lag)}
-          unit={parentName ? `MSGS → ${parentName.toUpperCase()}` : 'MSGS'}
+          summary={
+            <LinkSummary
+              word={LINK_INDICATOR_LABEL[linkIndicator]}
+              wordClass={LINK_INDICATOR_CLASS[linkIndicator]}
+              value={formatLag(probeDown, lag)}
+              lag={lag}
+              severed={severed}
+              bufferLabel={parentName ? `UPLINK BUFFER → ${parentName}` : 'UPLINK BUFFER'}
+            />
+          }
         >
           {/* THIS NODE is now a CLAIM THAT MUST BE TRUE, not decoration.
               The reasoning this comment used to carry -- "Maintainer view IS
@@ -185,17 +142,8 @@ export default function Header({
             />
           </PathRow>
           <StatusStrip>
-            <span className={`text-[10px] font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
-              {LINK_INDICATOR_LABEL[linkIndicator]}
-            </span>
             <LinkControlCaption status={linkControl.status} />
           </StatusStrip>
-          <BufferBlock
-            label={parentName ? `UPLINK BUFFER → ${parentName}` : 'UPLINK BUFFER'}
-            value={formatLag(probeDown, lag)}
-            lag={lag}
-            severed={severed}
-          />
           <Section title="UPLINK">
             <LinkRow
               linkKey="uplink"
@@ -214,7 +162,6 @@ export default function Header({
             />
           </Section>
         </NetworkPopover>
-      </div>
-    </header>
+    </TopBarPortal>
   );
 }

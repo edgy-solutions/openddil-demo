@@ -18,7 +18,8 @@ import { classifyLink } from '../../lib/linkStatus';
 import { LinkControlCaption } from '../LinkToggle';
 import { deployment, isRootTier, parentDisplay, parentTierName } from '../../deployment';
 import NetworkPopover from '../network/NetworkPopover';
-import { BufferBlock, PathNode, PathRow, Section, StatusStrip, Wire } from '../network/PathDiagram';
+import { LinkSummary, PathNode, PathRow, Section, StatusStrip, Wire } from '../network/PathDiagram';
+import { TopBarPortal } from '../TopBarSlot';
 import { LinkRow, type LinkObserved } from '../network/LinkRow';
 import { formatLag } from '../network/linkShaping';
 import { toneFromIndicator, toneFromReadings, worstTone } from '../network/tone';
@@ -94,23 +95,28 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
   };
 
   return (
-    <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-40 border-b-2 border-b-slate-700">
-      <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
-        <div className="flex flex-col items-center justify-center mr-4">
-          <button
-            onClick={() => setIsRuleEditorOpen(true)}
-            className="flex items-center gap-2 bg-cyan-900/40 hover:bg-cyan-800/60 border border-cyan-700/50 text-cyan-400 px-3 py-2 rounded-sm transition-colors"
-          >
-            <Settings className="w-4 h-4" />
-            <span className="text-[10px] font-bold tracking-widest">CONFIGURE HEURISTICS</span>
-          </button>
-        </div>
+    <TopBarPortal>
+        <button
+          onClick={() => setIsRuleEditorOpen(true)}
+          className="flex h-7 shrink-0 items-center whitespace-nowrap gap-2 bg-cyan-900/40 hover:bg-cyan-800/60 border border-cyan-700/50 text-cyan-400 px-2 rounded-sm transition-colors"
+        >
+          <Settings className="w-4 h-4" />
+          <span className="text-[10px] font-bold tracking-widest">CONFIGURE HEURISTICS</span>
+        </button>
 
         {/* Real edge-buffer depth: bridge-group consumer lag on redpanda-edge */}
         <NetworkPopover
           tone={worstTone(uplinkTone, childrenTone)}
-          count={formatLag(probeDown, lag)}
-          unit={parentName ? `MSGS → ${parentName.toUpperCase()}` : 'MSGS'}
+          summary={
+            <LinkSummary
+              word={REGIONAL_HQ_INDICATOR_LABEL[linkIndicator]}
+              wordClass={LINK_INDICATOR_CLASS[linkIndicator]}
+              value={formatLag(probeDown, lag)}
+              lag={lag}
+              severed={severed}
+              bufferLabel={parentName ? `UPLINK BUFFER → ${parentName}` : 'UPLINK BUFFER'}
+            />
+          }
         >
           <PathRow>
             <PathNode icon={Laptop} label="TACTICAL EDGE" />
@@ -128,17 +134,8 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
             <PathNode icon={Building2} label="CENTRAL HQ" />
           </PathRow>
           <StatusStrip>
-            <span className={`text-[10px] font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
-              {REGIONAL_HQ_INDICATOR_LABEL[linkIndicator]}
-            </span>
             <LinkControlCaption status={linkControl.status} />
           </StatusStrip>
-          <BufferBlock
-            label={parentName ? `UPLINK BUFFER → ${parentName}` : 'UPLINK BUFFER'}
-            value={formatLag(probeDown, lag)}
-            lag={lag}
-            severed={severed}
-          />
           {/* One row per child edge's own link (toggle = commanded, word =
               observed link_status). */}
           {childIds.length > 0 && (
@@ -184,7 +181,6 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
             />
           </Section>
         </NetworkPopover>
-      </div>
-    </header>
+    </TopBarPortal>
   );
 }

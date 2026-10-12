@@ -14,6 +14,7 @@
 // -- otherwise a viewer who may not cut the link loses the honest SEVERED
 // signal.
 import { renderOpen as renderToStaticMarkup } from '../network/__tests__/openPopover';
+import { cleanup, render as rtlRender } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { EdgeBufferStatus } from '../../hooks';
 import type { UseLinkControlResult } from '../../hooks/useLinkControl';
@@ -50,13 +51,7 @@ function control(over: Partial<UseLinkControlResult>): UseLinkControlResult {
 
 function render(linkControl: UseLinkControlResult, expandRows = false): string {
   return renderToStaticMarkup(
-    <Header
-      linkControl={linkControl}
-      fleet={[]}
-      availableEdges={[]}
-      selectedEdge={null}
-      onSelectEdge={() => {}}
-    />,
+    <Header linkControl={linkControl} />,
     { expandRows },
   );
 }
@@ -156,14 +151,14 @@ describe('Header — network pill and popover', () => {
     expect(dotTone(render(control({})))).toBe('neutral');
   });
 
-  it('the pill carries the count, the unit and the dialog semantics', () => {
+  it('the pill carries the count, the buffer label and the dialog semantics', () => {
     setStatus({ ...HEALTHY, bridge_group_lag: 1500 });
     __setDeploymentForTest({ id: 'edge-a', scope: null, has_children: false, parent: 'region-east' });
     try {
       const html = render(control({}));
       expect(html).toContain('aria-haspopup="dialog"');
       expect(html).toContain('1.5K');
-      expect(html).toContain('MSGS → REGION-EAST');
+      expect(html).toContain('UPLINK BUFFER → region-east');
     } finally {
       __setDeploymentForTest(undefined);
     }
@@ -181,5 +176,45 @@ describe('Header — network pill and popover', () => {
     } finally {
       __setDeploymentForTest(undefined);
     }
+  });
+});
+
+describe('Header — top-bar summary (popover closed)', () => {
+  function closed(): string {
+    cleanup();
+    return rtlRender(<Header linkControl={control({})} />).container.innerHTML;
+  }
+
+  it('shows the link word, buffer value, MSGS and the parent-named label without opening', () => {
+    setStatus(SEVERED_STATUS);
+    __setDeploymentForTest({ id: 'edge-a', scope: null, has_children: false, parent: 'region-east' });
+    try {
+      const html = closed();
+      expect(html).toContain('DDIL: LINK SEVERED');
+      expect(html).toContain('buffer-value');
+      expect(html).toContain('MSGS');
+      expect(html).toContain('UPLINK BUFFER → region-east');
+    } finally {
+      __setDeploymentForTest(undefined);
+    }
+  });
+
+  it('a healthy link says UPLINK: LINK UP', () => {
+    setStatus({ ...SEVERED_STATUS, hq_link_severed: false });
+    expect(closed()).toContain('UPLINK: LINK UP');
+  });
+
+  it('renders no banner of its own', () => {
+    setStatus(SEVERED_STATUS);
+    const html = closed();
+    expect(html).not.toContain('<header');
+    expect(html).not.toContain('class="panel');
+  });
+
+  it('the word and the buffer value each appear once with the popover open', () => {
+    setStatus(SEVERED_STATUS);
+    const html = render(control({}));
+    expect(html.match(/data-testid="buffer-value"/g)).toHaveLength(1);
+    expect(html.match(/data-testid="link-indicator"/g)).toHaveLength(1);
   });
 });

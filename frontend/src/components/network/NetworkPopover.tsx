@@ -1,8 +1,8 @@
 // =============================================================================
 // NetworkPopover — the header's network pill and the panel it opens
 // =============================================================================
-// The persistent header carries only the pill: a status dot, the buffer count
-// and its unit. Everything else about the network (path diagram, observed
+// The persistent header carries only the pill: a status dot and the link
+// summary. Everything else about the network (path diagram, observed
 // link label, buffer, link rows, shaping) lives in the popover.
 //
 // The dot's tone is computed by the caller from OBSERVED state only (see
@@ -26,14 +26,12 @@ const DOT: Record<Tone, string> = {
 export interface NetworkPopoverProps {
   /** Dot tone, from observed state. */
   tone: Tone;
-  /** Buffer count as formatted by formatLag. */
-  count: string;
-  /** Small unit label beside the count, e.g. `MSGS → REGION-EAST`. */
-  unit: string;
+  /** What the pill shows beside the dot (see LinkSummary). */
+  summary: ReactNode;
   children: ReactNode;
 }
 
-export default function NetworkPopover({ tone, count, unit, children }: NetworkPopoverProps) {
+export default function NetworkPopover({ tone, summary, children }: NetworkPopoverProps) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -73,7 +71,7 @@ export default function NetworkPopover({ tone, count, unit, children }: NetworkP
   );
 
   return (
-    <div ref={rootRef} className="relative ml-auto flex-none">
+    <div ref={rootRef} className="relative flex-none">
       <button
         ref={pillRef}
         type="button"
@@ -82,15 +80,14 @@ export default function NetworkPopover({ tone, count, unit, children }: NetworkP
         aria-expanded={open}
         aria-controls={open ? popId : undefined}
         onClick={() => (open ? close() : setOpen(true))}
-        className={`flex items-center gap-2.5 rounded-full border py-[3px] pl-3 pr-[5px] transition-colors ${
+        className={`flex items-center h-7 gap-2.5 rounded-full border py-0.5 pl-3 pr-[3px] transition-colors ${
           open
             ? 'border-cyan-700 bg-cyan-950/40'
             : 'border-slate-700 bg-transparent hover:border-cyan-700 hover:bg-cyan-950/30'
         }`}
       >
         <span data-testid="network-pill-dot" data-tone={tone} className={`h-[7px] w-[7px] rounded-full ${DOT[tone]}`} />
-        <span className="text-[15px] font-bold tabular-nums text-slate-100">{count}</span>
-        <span className="hidden whitespace-nowrap text-[9px] tracking-[0.14em] text-slate-500 min-[480px]:inline">{unit}</span>
+        {summary}
         <span className={`grid h-5 w-5 place-items-center rounded-full bg-slate-800 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}>
           <ChevronDown className="h-3 w-3 text-slate-300" aria-hidden="true" />
         </span>

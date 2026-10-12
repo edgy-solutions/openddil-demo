@@ -32,12 +32,13 @@ import { classifyLink } from '../../lib/linkStatus';
 import { LinkControlCaption } from '../LinkToggle';
 import NetworkPopover from '../network/NetworkPopover';
 import {
-  BufferBlock, DirectArc, PathNode, PathRow, Section, StatusStrip, Wire,
+  DirectArc, LinkSummary, PathNode, PathRow, Section, StatusStrip, Wire,
 } from '../network/PathDiagram';
 import { LinkRow } from '../network/LinkRow';
 import { formatLag } from '../network/linkShaping';
 import { toneFromReadings } from '../network/tone';
 import ExercisePopup from './ExercisePopup';
+import { TopBarPortal } from '../TopBarSlot';
 
 interface HqHeaderProps {
   /** Link control for HQ's direct children (one hook instance per page). */
@@ -94,8 +95,7 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
   };
 
   return (
-    <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-40 border-b-2 border-b-slate-700 transition-colors duration-500">
-      <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
+    <TopBarPortal>
         {/* Exercise control -- a separate capability from link control
             (controls the DIS simulator/adapter via its own service, never a
             link). Self-contained: polls its own status, so it takes no props
@@ -105,8 +105,14 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
         {/* Real edge-buffer backlog: bridge-group consumer lag on redpanda-edge */}
         <NetworkPopover
           tone={tone(childIds) ?? 'neutral'}
-          count={formatLag(probeDown, lag)}
-          unit="MSGS BACKLOG"
+          summary={
+            <LinkSummary
+              value={formatLag(probeDown, lag)}
+              lag={lag}
+              severed={false}
+              bufferLabel="GLOBAL BUFFER BACKLOG"
+            />
+          }
         >
           <PathRow>
             <PathNode icon={Laptop} label="TACTICAL EDGE" />
@@ -122,7 +128,6 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
             <span />
             <LinkControlCaption status={linkControl.status} />
           </StatusStrip>
-          <BufferBlock label="GLOBAL BUFFER BACKLOG" value={formatLag(probeDown, lag)} lag={lag} severed={false} />
           {undeclaredIds.length > 0 && (
             <Section title="EDGE → HUB · SHAPE NOT DECLARED" testId="link-seg-edge-hub">
               {undeclaredIds.map((id) => row(id, UNDECLARED_TITLE))}
@@ -139,7 +144,6 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
             </Section>
           )}
         </NetworkPopover>
-      </div>
-    </header>
+    </TopBarPortal>
   );
 }

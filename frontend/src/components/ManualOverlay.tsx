@@ -17,6 +17,16 @@ interface ManualOverlayProps extends ManualQuestionPanelProps {
 
 export default function ManualOverlay({ bottomLeftSlot, ...panelProps }: ManualOverlayProps) {
   const [open, setOpen] = useState(false);
+  // The ask came back 404: the manual service is not configured at this tier.
+  // The panel hides itself, so say so in its place rather than showing an empty
+  // frame; the button stays so the message can be read.
+  const [unavailable, setUnavailable] = useState(false);
+  // Reset when the asset changes (adjusted during render, not in an effect).
+  const [seenAsset, setSeenAsset] = useState(panelProps.assetId);
+  if (seenAsset !== panelProps.assetId) {
+    setSeenAsset(panelProps.assetId);
+    setUnavailable(false);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -35,16 +45,21 @@ export default function ManualOverlay({ bottomLeftSlot, ...panelProps }: ManualO
         hidden={!open}
         className="pointer-events-auto w-full min-h-0 overflow-auto rounded-sm border border-cyan-500/20 bg-slate-950/60 backdrop-blur p-3 [&_.panel]:bg-transparent! [&_.panel]:border-0! [&_.panel]:shadow-none! [&_.panel]:rounded-none! [&_.panel]:p-0!"
       >
-        <ManualQuestionPanel {...panelProps} />
+        {unavailable && (
+          <div className="text-[11px] text-slate-400">Manual service unavailable</div>
+        )}
+        <ManualQuestionPanel {...panelProps} onUnavailable={() => setUnavailable(true)} />
       </div>
       <button
         type="button"
-        title="Ask the manual"
-        aria-label="Ask the manual"
+        title={unavailable ? 'Manual service unavailable' : 'Ask the manual'}
+        aria-label={unavailable ? 'Manual service unavailable' : 'Ask the manual'}
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
         className={`pointer-events-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-full border backdrop-blur focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 ${
-          open
+          unavailable
+            ? 'border-slate-700 bg-slate-950/55 text-slate-500 hover:border-slate-600'
+            : open
             ? 'border-cyan-400 bg-cyan-900/40 text-cyan-200'
             : 'border-cyan-500/25 bg-slate-950/55 text-cyan-300 hover:border-cyan-400'
         }`}

@@ -13,6 +13,7 @@
 // uplink toggle or label. Its direct-link rows (one per direct child) live in
 // the header strip.
 import { renderOpen as renderToStaticMarkup } from '../../network/__tests__/openPopover';
+import { cleanup, render as rtlRender } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { __setChildLinksForTest } from '../../../deployment';
 import type { EdgeBufferStatus } from '../../../hooks';
@@ -139,5 +140,18 @@ describe('HqHeader row placement (by declared shape)', () => {
     );
     expect(html).not.toContain('link-direct-edge-hq');
     expect(section(html, 'link-seg-hub-hq')).toContain(TOGGLE_R);
+  });
+});
+
+describe('HqHeader — top-bar summary (popover closed)', () => {
+  it('shows the global backlog label without opening, and no banner', () => {
+    setStatus(SEVERED_STATUS);
+    cleanup();
+    const html = rtlRender(<HqHeader linkControl={control()} />).container.innerHTML;
+    expect(html).toContain('GLOBAL BUFFER BACKLOG');
+    expect(html).toContain('buffer-value');
+    expect(html).not.toContain('link-indicator');
+    expect(html).not.toContain('<header');
+    expect(html).not.toContain('class="panel');
   });
 });

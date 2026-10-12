@@ -12,6 +12,7 @@
 // edge's own link (toggle = commanded, word = observed link_status row); the
 // right segment is this hub's own uplink (observed via edge_buffer_status).
 import { renderOpen as renderToStaticMarkup } from '../../network/__tests__/openPopover';
+import { cleanup, render as rtlRender } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { EdgeBufferStatus } from '../../../hooks';
 import type { UseLinkControlResult } from '../../../hooks/useLinkControl';
@@ -158,5 +159,23 @@ describe('RegionalHeader — link toxics and data age', () => {
     expect(render(control({}))).toContain('>2.5s<');
     expect(render(control({ status: 'off', uplink: null, children: [] }))).toContain('>2.5s<');
     expect(render(control({}))).toContain('Age of the freshest heartbeat');
+  });
+});
+
+describe('RegionalHeader — top-bar summary (popover closed)', () => {
+  it('shows the word, buffer value and parent-named label without opening, and no banner', () => {
+    setup([]);
+    cleanup();
+    __setDeploymentForTest({ id: 'region-a', scope: null, has_children: true, parent: 'root' });
+    const html = rtlRender(
+      <RegionalHeader linkControl={control({})} setIsRuleEditorOpen={() => {}} />,
+    ).container.innerHTML;
+    __setDeploymentForTest(undefined);
+    expect(html).toContain('REGIONAL↔HQ: SEVERED');
+    expect(html).toContain('buffer-value');
+    expect(html).toContain('UPLINK BUFFER → HQ');
+    expect(html).toContain('CONFIGURE HEURISTICS');
+    expect(html).not.toContain('<header');
+    expect(html).not.toContain('class="panel');
   });
 });

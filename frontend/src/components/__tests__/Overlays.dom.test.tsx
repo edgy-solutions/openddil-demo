@@ -12,14 +12,20 @@ vi.mock('../FaultReportForm', () => ({
     </div>
   ),
 }));
-vi.mock('../ManualQuestionPanel', () => ({
-  default: () => <div data-testid="manual-panel">manual panel</div>,
-}));
+// A stub by default; the 404 test switches to the real panel.
+const useReal = vi.hoisted(() => ({ on: false }));
+vi.mock('../ManualQuestionPanel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../ManualQuestionPanel')>();
+  return {
+    default: (p: React.ComponentProps<typeof actual.default>) =>
+      useReal.on ? <actual.default {...p} /> : <div data-testid="manual-panel">manual panel</div>,
+  };
+});
 
 import FaultReportOverlay from '../FaultReportOverlay';
 import ManualOverlay from '../ManualOverlay';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); useReal.on = false; vi.unstubAllGlobals(); });
 
 describe('FaultReportOverlay', () => {
   it('opens the form from the FAB and closes it with the close button or Escape', () => {
@@ -69,5 +75,18 @@ describe('ManualOverlay', () => {
     expect(region.hidden).toBe(false);
     fireEvent.click(btn);
     expect(region.hidden).toBe(true);
+  });
+
+  it('a 404 on ask shows "Manual service unavailable" and relabels the button', async () => {
+    useReal.on = true;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })));
+    render(<ManualOverlay assetId="a1" platformVariant="M1A2" scope={['dmc1']} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Ask the manual' }));
+    fireEvent.change(screen.getByPlaceholderText(/fault isolation/), { target: { value: 'why?' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Ask$/ }));
+    const btn = await screen.findByRole('button', { name: 'Manual service unavailable' });
+    const region = screen.getByRole('region', { name: 'Ask the manual' });
+    expect(region.textContent).toContain('Manual service unavailable');
+    expect(btn.getAttribute('title')).toBe('Manual service unavailable');
   });
 });
