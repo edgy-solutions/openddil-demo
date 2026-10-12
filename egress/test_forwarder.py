@@ -1048,3 +1048,212 @@ def test_f4_stored_failed_row_does_not_block_a_later_send():
     assert counts.get("duplicate") is None
     assert counts["delivered"] == 1
     assert store._rows[("to-a", "E9")]["outcome"] == "delivered"
+
+
+# --- operator re-send ---------------------------------------------------------
+
+class _ResendRig:
+    """The fakes `resend_once` takes, sharing one call-order list."""
+
+    def __init__(self, *, status=200, body=None, post_exc=None, row="default",
+                 record_exc=None, audit_fail_on=()):
+        self.events: list[tuple] = []
+        self.status = status
+        self.body = json.dumps({"case_id": "c-9"}).encode() if body is None else body
+        self.post_exc = post_exc
+        self.record_exc = record_exc
+        self.audit_fail_on = set(audit_fail_on)
+        self.audits: list[dict] = []
+        self.posts: list[tuple] = []
+        self.records: list[tuple] = []
+        self.row = {"outcome": "delivered", "case_id": "c-1"} if row == "default" else row
+        rig = self
+
+        class Store:
+            def lookup(self, route, event_id):
+                return rig.row
+
+            def record_resend(self, route, event_id, http_status, case_id):
+                rig.events.append(("record_resend",))
+                rig.records.append((route, event_id, http_status, case_id))
+                if rig.record_exc:
+                    raise rig.record_exc
+
+        self.store = Store()
+
+    def post(self, url, data, headers):
+        self.events.append(("post",))
+        self.posts.append((url, data, dict(headers)))
+        if self.post_exc:
+            raise self.post_exc
+        return self.status, self.body
+
+    def audit(self, payload):
+        n = len(self.audits) + 1
+        self.audits.append(dict(payload))
+        self.events.append(("audit", payload["outcome"]))
+        if n in self.audit_fail_on:
+            raise OSError("log not writable")
+
+    def run(self, routes=None, **over):
+        assert hasattr(forwarder_mod, "resend_once"), "resend_once is not defined"
+        kw = dict(route_name="to-a", event_id="ev-1", reason="destination lost it", key="k1",
+                  record={"event_id": "ev-1", "a": 1}, post=self.post, store=self.store,
+                  read_token=lambda _p: "tok", audit=self.audit)
+        kw.update(over)
+        routes = routes if routes is not None else {"to-a": _route(dedupe_field="event_id")}
+        return forwarder_mod.resend_once(routes, **kw)
+
+    def assert_refused(self, code, refusal):
+        assert code == 2
+        assert self.posts == [] and self.records == []
+        assert self.audits[-1]["outcome"] == "operator_resend_refused"
+        assert self.audits[-1]["refusal"] == refusal
+
+
+def test_resend_2xx_posts_once_records_and_logs_before_sending():
+    rig = _ResendRig()
+    route = _route(dedupe_field="event_id", token_file="/tok")
+    code = rig.run({"to-a": route})
+    assert code == 0
+    assert len(rig.posts) == 1
+    url, data, headers = rig.posts[0]
+    assert url == route.url
+    assert json.loads(data) == build_envelope(route, "k1", {"event_id": "ev-1", "a": 1})
+    assert headers["Authorization"] == "Bearer tok"
+    assert rig.records == [("to-a", "ev-1", 200, "c-9")]
+    assert [a["outcome"] for a in rig.audits] == ["operator_resend_requested", "operator_resend"]
+    assert rig.audits[1]["case_id"] == "c-9"
+    assert rig.audits[1]["prior_outcome"] == "delivered" and rig.audits[1]["prior_case_id"] == "c-1"
+    assert rig.audits[1]["case_id_mismatch"] is True
+    assert rig.events == [("audit", "operator_resend_requested"), ("post",),
+                          ("record_resend",), ("audit", "operator_resend")]
+    assert "tok" not in json.dumps(rig.audits)
+
+
+def test_resend_refusal_1_route_not_in_config():
+    rig = _ResendRig()
+    rig.assert_refused(rig.run(route_name="nope"), "route_not_in_config")
+
+
+def test_resend_refusal_2_route_has_no_dedupe_field():
+    rig = _ResendRig()
+    rig.assert_refused(rig.run({"to-a": _route()}), "route_has_no_dedupe_field")
+
+
+def test_resend_refusal_3_route_is_held():
+    rig = _ResendRig()
+    rig.assert_refused(rig.run({"to-a": _route(dedupe_field="event_id", held=True)}), "route_is_held")
+
+
+@pytest.mark.parametrize("record", [[1, 2], "text", None, {"event_id": "other"}, {"a": 1}])
+def test_resend_refusal_4_record_not_object_or_event_id_mismatch(record):
+    rig = _ResendRig()
+    rig.assert_refused(rig.run(record=record), "record_not_an_object_or_event_id_mismatch")
+
+
+@pytest.mark.parametrize("reason", ["", "   \n"])
+def test_resend_refusal_5_reason_empty(reason):
+    rig = _ResendRig()
+    rig.assert_refused(rig.run(reason=reason), "reason_empty")
+
+
+def test_resend_refusal_6_no_ledger_row():
+    rig = _ResendRig(row=None)
+    rig.assert_refused(rig.run(), "no_ledger_row")
+
+
+def test_resend_refusal_7_requested_line_unwritable_means_no_send():
+    rig = _ResendRig(audit_fail_on=(1,))
+    code = rig.run()
+    assert code == 2
+    assert rig.posts == [] and rig.records == []
+    assert rig.audits[-1]["outcome"] == "operator_resend_refused"
+    assert rig.audits[-1]["refusal"] == "audit_unwritable"
+
+
+def test_resend_refusal_line_unwritable_prints_to_stderr(capsys):
+    rig = _ResendRig(row=None, audit_fail_on=(1,))
+    assert rig.run() == 2
+    assert "no_ledger_row" in capsys.readouterr().err
+
+
+def test_resend_5xx_one_post_no_ledger_write():
+    rig = _ResendRig(status=503, body=b"")
+    assert rig.run() == 1
+    assert len(rig.posts) == 1 and rig.records == []
+    assert rig.audits[-1]["outcome"] == "operator_resend_failed"
+    assert rig.audits[-1]["status"] == 503
+
+
+def test_resend_oserror_one_post_status_null():
+    rig = _ResendRig(post_exc=OSError("refused"))
+    assert rig.run() == 1
+    assert len(rig.posts) == 1 and rig.records == []
+    assert rig.audits[-1]["outcome"] == "operator_resend_failed"
+    assert rig.audits[-1]["status"] is None
+
+
+def test_resend_2xx_store_raises_is_unrecorded_exit_3():
+    rig = _ResendRig(record_exc=RuntimeError("db down"))
+    assert rig.run() == 3
+    assert len(rig.posts) == 1
+    assert rig.audits[-1]["outcome"] == "operator_resend_unrecorded"
+    assert rig.audits[-1]["status"] == 200
+
+
+def test_resend_result_line_unwritable_keeps_send_exit_code(capsys):
+    rig = _ResendRig(audit_fail_on=(2,))
+    assert rig.run() == 0
+    assert "ERROR" in capsys.readouterr().err
+
+
+def test_resend_held_row_is_resent_too():
+    rig = _ResendRig(row={"outcome": "held", "case_id": None})
+    assert rig.run() == 0
+    assert rig.audits[-1]["prior_outcome"] == "held"
+
+
+def test_resend_does_not_change_the_consumer_duplicate_short_circuit():
+    route = _route(dedupe_field="event_id")
+    store = _FakeStore()
+    store._rows[("to-a", "ev-1")] = {"outcome": "delivered", "case_id": "c-1"}
+    consumer = _FakeConsumer([_FakeMessage("sink-a", b"k1", json.dumps({"event_id": "ev-1"}).encode())])
+    counts: dict[str, int] = {}
+    run_once(
+        consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
+        post=lambda *a: pytest.fail("no POST expected"), sleep=lambda d: pytest.fail("no retry"),
+        poll_timeout=1.0, counts=counts, store=store,
+    )
+    assert counts.get("duplicate") == 1
+
+
+class _StubConn:
+    def __init__(self, result):
+        self.result = result
+        self.calls: list[tuple] = []
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args))
+        return self.result
+
+
+def _store_with(conn):
+    store = forwarder_mod.DeliveredStore("postgres://unused")
+    store._conn = conn
+    return store
+
+
+def test_record_resend_is_an_update_never_an_insert():
+    conn = _StubConn("UPDATE 1")
+    _store_with(conn).record_resend("to-a", "ev-1", 200, "c-9")
+    [(sql, args)] = conn.calls
+    assert sql.lstrip().upper().startswith("UPDATE")
+    assert "INSERT" not in sql.upper()
+    assert "first_recorded_at" not in sql and "kafka_offset" not in sql
+    assert args == ("to-a", "ev-1", 200, "c-9")
+
+
+def test_record_resend_zero_rows_raises():
+    with pytest.raises(RuntimeError):
+        _store_with(_StubConn("UPDATE 0")).record_resend("to-a", "ev-1", 200, None)

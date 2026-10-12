@@ -59,6 +59,19 @@ idempotency to avoid a double send. The one window this does not close: a
 crash after the destination returns 2xx and before the row recording it is
 written can still re-send that one event after a restart — the POST and
 the row write are not one transaction.
+
+THE OPERATOR RE-SEND IS A LOGGED ACTION, NOT A HAND EDIT
+A `delivered` row short-circuits as `duplicate` forever, which is right for
+a replay and wrong when the destination itself lost an event and an operator
+needs that one event sent again. That is `forwarder.py resend`: one named
+event to one named route, carried by this module's own code so it is
+recorded, never a hand edit of `egress_delivered_events`. The ledger holds
+no bodies and the sink topic is not retained, so the operator supplies the
+record. It re-sends only what the ledger already holds a row for (a new
+event goes through the topic), makes exactly one attempt (the operator
+re-runs it if it fails), writes its audit line BEFORE it sends (the action
+is logged first or it does not happen), and on a 2xx updates the existing
+row in place.
 """
 from __future__ import annotations
 
@@ -356,6 +369,22 @@ class DeliveredStore:
             topic=topic, partition=partition, offset=offset,
         )
 
+    def record_resend(self, route: str, event_id: str, http_status: int, case_id: str | None) -> None:
+        """An operator re-send reached the destination: update the row this
+        side already holds. `first_recorded_at`, topic, partition and
+        offset are left as they were. Never an INSERT -- a re-send only
+        re-sends what was recorded -- so no matching row raises."""
+        async def _exec(conn):
+            result = await conn.execute(
+                'UPDATE "egress_delivered_events" SET "outcome" = \'delivered\','
+                ' "http_status" = $3, "case_id" = $4, "recorded_at" = now()'
+                ' WHERE "route" = $1 AND "event_id" = $2',
+                route, event_id, http_status, case_id,
+            )
+            if str(result).rsplit(" ", 1)[-1] == "0":
+                raise RuntimeError(f"no ledger row for route={route} event_id={event_id}")
+        self._call(_exec)
+
     def _upsert(
         self, *, route: str, event_id: str, outcome: str, http_status: int | None, case_id: str | None,
         topic: str | None, partition: int | None, offset: int | None,
@@ -385,6 +414,27 @@ class DeliveredStore:
                 route, event_id, outcome, http_status, case_id, topic, partition, offset,
             )
         self._call(_exec)
+
+
+def _case_id_from_body(resp_body: bytes) -> str | None:
+    """The case_id a 2xx response body carries, or `None`. The door's
+    documented rule: the case key is our event_id, carried at
+    workflow.case_id; a top-level case_id is the older shape. Nothing else
+    of the body is read."""
+    try:
+        parsed_body = json.loads(resp_body)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(parsed_body, Mapping):
+        return None
+    workflow = parsed_body.get("workflow")
+    for candidate in (
+        workflow.get("case_id") if isinstance(workflow, Mapping) else None,
+        parsed_body.get("case_id"),
+    ):
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
 
 
 def _log_outcome(
@@ -694,23 +744,7 @@ def _deliver_inner(
 
         if 200 <= status < 300:
             delivered_to_destination = True
-            case_id: str | None = None
-            try:
-                parsed_body = json.loads(resp_body)
-            except (ValueError, UnicodeDecodeError):
-                parsed_body = None
-            if isinstance(parsed_body, Mapping):
-                # The door's documented rule: the case key is our event_id,
-                # carried at workflow.case_id; a top-level case_id is the
-                # older shape.
-                workflow = parsed_body.get("workflow")
-                for candidate in (
-                    workflow.get("case_id") if isinstance(workflow, Mapping) else None,
-                    parsed_body.get("case_id"),
-                ):
-                    if isinstance(candidate, str) and candidate:
-                        case_id = candidate
-                        break
+            case_id = _case_id_from_body(resp_body)
             # Never log the rest of the body -- only the case_id it carried.
             case_id_mismatch = event_id is not None and case_id is not None and case_id != event_id
             if case_id_mismatch:
@@ -858,7 +892,165 @@ def _decode(payload: bytes) -> dict:
     return json.loads(payload.decode("utf-8"))
 
 
+AUDIT_PATH = os.getenv("OPENDDIL_FORWARD_AUDIT_PATH", "/proc/1/fd/1")
+_BAD_RECORD = object()  # the record file did not parse as JSON
+
+
+def _default_audit(payload: Mapping[str, Any]) -> None:
+    """One audit line to this process's stdout AND appended to the
+    container's main log, so it shows in `kubectl logs`. Raises `OSError`
+    if the container log cannot be written (the line still reaches stdout)."""
+    line = json.dumps(payload)
+    print(line, flush=True)
+    with open(AUDIT_PATH, "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+
+
+def resend_once(
+    routes: Mapping[str, ForwardRoute],
+    *,
+    route_name: str,
+    event_id: str,
+    reason: str,
+    key: str | None,
+    record: Any,
+    post: Callable[[str, bytes, Mapping[str, str]], tuple[int, bytes]],
+    store: DeliveredStore | None,
+    read_token: Callable[[str], str | None],
+    audit: Callable[[Mapping[str, Any]], None],
+) -> int:
+    """Send one recorded event to one route again, on an operator's say-so.
+    Returns the exit code: 0 sent and recorded, 1 the send failed, 2 refused
+    before sending, 3 the destination has it but the ledger update failed.
+    Exactly one POST attempt; no retry. See the module docstring."""
+    route = routes.get(route_name)
+    state: dict[str, Any] = {"prior_outcome": None, "prior_case_id": None}
+
+    def line(outcome: str, status: int | None = None, **extra: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "forward": route_name, "action": "operator_resend", "event_id": event_id, "key": key,
+            "kind": route.kind if route is not None else None, "status": status, "outcome": outcome,
+            "reason": reason, "prior_outcome": state["prior_outcome"], "prior_case_id": state["prior_case_id"],
+        }
+        payload.update(extra)
+        return payload
+
+    def refuse(name: str) -> int:
+        payload = line("operator_resend_refused", refusal=name)
+        try:
+            audit(payload)
+        except OSError:
+            print(json.dumps(payload), file=sys.stderr, flush=True)
+        return 2
+
+    def finish(code: int, payload: Mapping[str, Any]) -> int:
+        try:
+            audit(payload)
+        except OSError as exc:
+            print(f"ERROR: operator re-send audit line not written ({exc}): {json.dumps(payload)}",
+                  file=sys.stderr, flush=True)
+        return code
+
+    if route is None:
+        return refuse("route_not_in_config")
+    if route.dedupe_field is None:
+        return refuse("route_has_no_dedupe_field")
+    if route.held:
+        return refuse("route_is_held")
+    if not isinstance(record, Mapping) or record.get(route.dedupe_field) != event_id:
+        return refuse("record_not_an_object_or_event_id_mismatch")
+    if not isinstance(reason, str) or not reason.strip():
+        return refuse("reason_empty")
+    if store is None:
+        return refuse("ledger_unavailable")
+    try:
+        existing = store.lookup(route.name, event_id)
+    except Exception as exc:  # noqa: BLE001 — any store failure here
+        print(f"ERROR: ledger lookup failed: {exc}", file=sys.stderr, flush=True)
+        return refuse("ledger_unavailable")
+    if existing is None:
+        return refuse("no_ledger_row")
+    state["prior_outcome"] = existing.get("outcome")
+    state["prior_case_id"] = existing.get("case_id")
+
+    # Logged first or it does not happen.
+    try:
+        audit(line("operator_resend_requested"))
+    except OSError as exc:
+        print(f"ERROR: operator re-send audit line not written, nothing sent: {exc}",
+              file=sys.stderr, flush=True)
+        return refuse("audit_unwritable")
+
+    token: str | None = None
+    if route.token_file:
+        token = read_token(route.token_file)
+    elif route.auth is not None:
+        token = route.auth.token()
+    if (route.token_file or route.auth is not None) and token is None:
+        return finish(1, line("operator_resend_failed", None, detail="no_credential"))
+
+    body = json.dumps(build_envelope(route, key, record), separators=(",", ":")).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        status, resp_body = post(route.url, body, headers)
+    except OSError:
+        return finish(1, line("operator_resend_failed", None))
+    if not 200 <= status < 300:
+        return finish(1, line("operator_resend_failed", status))
+
+    case_id = _case_id_from_body(resp_body)
+    extra: dict[str, Any] = {"case_id": case_id}
+    if case_id is not None and case_id != event_id:
+        extra["case_id_mismatch"] = True
+    try:
+        store.record_resend(route.name, event_id, status, case_id)
+    except Exception:  # noqa: BLE001 — the destination HAS it; say so
+        return finish(3, line("operator_resend_unrecorded", status, **extra))
+    return finish(0, line("operator_resend", status, **extra))
+
+
+def resend_main(argv: list[str]) -> int:
+    import argparse  # noqa: PLC0415
+
+    ap = argparse.ArgumentParser(
+        prog="forwarder.py resend",
+        description="Send one already-recorded event to one route again, as a logged action.")
+    ap.add_argument("--route", required=True)
+    ap.add_argument("--event-id", required=True)
+    ap.add_argument("--reason", required=True)
+    ap.add_argument("--key")
+    ap.add_argument("--record-file", required=True, help="decoded record JSON; '-' reads stdin")
+    args = ap.parse_args(argv)
+
+    if not CONFIG_PATH:
+        print("FATAL: OPENDDIL_FORWARD_CONFIG is not set", file=sys.stderr)
+        return 2
+    try:
+        routes = {r.name: r for r in load_forward_config(CONFIG_PATH)}
+    except Exception as exc:  # noqa: BLE001
+        print(f"FATAL: forward config failed to load: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        raw = sys.stdin.read() if args.record_file == "-" else Path(args.record_file).read_text(encoding="utf-8")
+        record: Any = json.loads(raw)
+    except (OSError, ValueError):
+        record = _BAD_RECORD
+
+    return resend_once(
+        routes, route_name=args.route, event_id=args.event_id, reason=args.reason, key=args.key,
+        record=record, post=_default_post, store=DeliveredStore(POSTGRES_DSN),
+        read_token=_default_read_token, audit=_default_audit,
+    )
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["resend"]:
+        return resend_main(sys.argv[2:])
+
     from confluent_kafka import Consumer  # noqa: PLC0415
 
     if not CONFIG_PATH:
