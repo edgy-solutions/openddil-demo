@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Exercised with renderToStaticMarkup for the same reason as
 // EdgePulldown.test.tsx: no @testing-library/react / jsdom in this
 // project's dev deps.
@@ -10,7 +11,7 @@
 // Two separate links, two separate claims: the left segment lists each child
 // edge's own link (toggle = commanded, word = observed link_status row); the
 // right segment is this hub's own uplink (observed via edge_buffer_status).
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderOpen as renderToStaticMarkup } from '../../network/__tests__/openPopover';
 import { describe, expect, it, vi } from 'vitest';
 import type { EdgeBufferStatus } from '../../../hooks';
 import type { UseLinkControlResult } from '../../../hooks/useLinkControl';
@@ -66,9 +67,10 @@ function control(over: Partial<UseLinkControlResult>): UseLinkControlResult {
   };
 }
 
-function render(linkControl: UseLinkControlResult): string {
+function render(linkControl: UseLinkControlResult, expandRows = false): string {
   return renderToStaticMarkup(
     <RegionalHeader linkControl={linkControl} setIsRuleEditorOpen={() => {}} />,
+    { expandRows },
   );
 }
 
@@ -134,7 +136,8 @@ describe('RegionalHeader', () => {
 describe('RegionalHeader — link toxics and data age', () => {
   it('ready: each child row and the uplink carry a toxics group', () => {
     setup([]);
-    const html = render(control({}));
+    // Shaping groups live in the expanded rows (each expansion is snapshotted).
+    const html = render(control({}), true);
     expect(html).toContain('id="link-toxics-edge-01-latency"');
     expect(html).toContain('id="link-toxics-edge-02-bandwidth"');
     expect(html).toContain('id="uplink-toxics-latency"');

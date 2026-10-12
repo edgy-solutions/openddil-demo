@@ -7,7 +7,12 @@
 // tier's own uplink to its parent (one proxy per link); the label beside it
 // is the observed reachability, never the commanded state. The vestigial
 // second link toggle (link2 — never backed by anything) was removed.
-import { Laptop, Building2, Server, TrendingUp } from 'lucide-react';
+//
+// The network itself (path diagram, observed link label, buffer, the uplink
+// row with its toggle and shaping) lives in a popover opened from a pill in
+// this bar; the bar keeps only the scope chrome. The pill's dot is the
+// OBSERVED link indicator, never the commanded toggle.
+import { Laptop, Building2, Server } from 'lucide-react';
 import { ThisNodeBadge } from '../lib/thisNode';
 import type { FleetAsset, FleetTierMap } from '../hooks';
 import { useEdgeBuffer } from '../hooks';
@@ -23,10 +28,13 @@ import NationLegend from './releasability/NationLegend';
 import { useSession } from '../hooks/useSession';
 import { useLinkIndicator } from '../hooks/useLinkIndicator';
 import type { UseLinkControlResult } from '../hooks/useLinkControl';
-import { LinkControlCaption, LinkToggle } from './LinkToggle';
-import { LinkToxicsControl } from './LinkToxics';
-import { linkToggleAvailability } from '../lib/linkControl';
-import { isRootTier, parentDisplay, parentTierName } from '../deployment';
+import { LinkControlCaption } from './LinkToggle';
+import { deployment, isRootTier, parentDisplay, parentTierName } from '../deployment';
+import NetworkPopover from './network/NetworkPopover';
+import { BufferBlock, PathNode, PathRow, Section, StatusStrip, Wire } from './network/PathDiagram';
+import { LinkRow, type LinkObserved } from './network/LinkRow';
+import { formatLag } from './network/linkShaping';
+import { toneFromIndicator } from './network/tone';
 
 // Label text/tone per observed LinkIndicatorKind. UNKNOWN/STALE are
 // deliberately neutral (grey) -- they are "no confirmed answer", not good
@@ -47,6 +55,15 @@ const LINK_INDICATOR_CLASS: Record<string, string> = {
   probe_down: 'text-amber-400',
   severed: 'text-rose-500 glow-rose',
   up: 'text-emerald-400',
+};
+
+// The uplink row's own observed word: the same indicator, in one word.
+const UPLINK_WORD: Record<string, string> = {
+  unknown: 'UNKNOWN',
+  stale: 'STALE',
+  probe_down: 'PROBE DOWN',
+  severed: 'SEVERED',
+  up: 'UP',
 };
 
 // Per-tier styling for the inline count chips above the ASSET label.
@@ -153,21 +170,24 @@ export default function Header({
   // Unrelated to the link label above: this still backs the separate
   // "UPLINK BUFFER" MSGS-count row's dash-vs-number display.
   const probeDown = status != null && !status.probe_healthy;
-  // `severed` still drives the rose/slate divider line + MSGS-row glow
-  // below; kept as an observed-only derivation so it
-  // stays consistent with the indicator it sits next to.
+  // `severed` still drives the buffer trend arrow's colour; kept as an
+  // observed-only derivation so it stays consistent with the indicator.
   const severed = linkIndicator === 'severed';
   // The parent comes from this tier's configuration, so it is named whether
   // or not link control is on; the listing is only a fallback.
   const configParent = parentTierName();
   const parentName = configParent ? parentDisplay(configParent) : (linkControl.uplink?.parent ?? null);
   const parentIsRoot = configParent == null || isRootTier(configParent);
-  const uplinkToggle = linkToggleAvailability(
-    linkControl.status,
-    linkControl.uplink?.enabled ?? null,
-    'this tier',
-    parentName,
-  );
+  // Named by its own id when it has one, else generically.
+  const tierId = deployment().tier?.id;
+  const ownName = tierId && !isRootTier(tierId) ? tierId : 'this tier';
+  // The uplink row's word is the observed indicator in one word, never the
+  // commanded toggle.
+  const uplinkObserved: LinkObserved = {
+    word: UPLINK_WORD[linkIndicator],
+    className: LINK_INDICATOR_CLASS[linkIndicator],
+    tone: toneFromIndicator(linkIndicator),
+  };
 
   return (
     <header className="panel flex flex-col p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
@@ -203,7 +223,7 @@ export default function Header({
             update on edge change; MaintainerApp's re-home effect picks
             the first asset of the new edge unless a deep-link ?asset=
             URL param specifies one in the scoped edge. */}
-        <div className="flex flex-col pr-6 border-r border-slate-700">
+        <div className="flex flex-col">
           {/* Title row: ASSET label on the left, tier-count chips
               right-justified above the pulldown -- compact summary
               of fleet liveness without taking a separate header
@@ -247,73 +267,75 @@ export default function Header({
           </div>
         </div>
 
-        {/* THIS NODE is now a CLAIM THAT MUST BE TRUE, not decoration.
-            The reasoning this comment used to carry -- "Maintainer view IS
-            the tactical-edge tab" -- was sound while a tab and a node were
-            the same thing, and became false the moment tiers got their own
-            endpoints. It left `TACTICAL EDGE [THIS NODE]` rendering on the
-            HQ host inside the demo shell: a composed edge view asserting it
-            was the node you had connected to.
-            The badge now renders only when the tier being shown is the tier
-            this deployment serves, and renders NOTHING otherwise. In the
-            shell that is always nothing, because a shell is a viewer and
-            not a node. See lib/thisNode. */}
-        <div className="flex flex-col items-center text-emerald-400">
-          <Laptop className="w-6 h-6 mb-1 glow-emerald" />
-          <span className="text-xs font-bold tracking-wider text-emerald-300">TACTICAL EDGE <ThisNodeBadge /></span>
-        </div>
-
-        {/* DDIL link — the toggle cuts/restores this tier's own uplink */}
-        <div className="flex-1 flex flex-col items-center relative">
-          <div className={`absolute w-full h-[2px] top-3 -z-10 ${severed ? 'bg-rose-900' : 'bg-slate-700'}`}></div>
-          <span className="text-[9px] tracking-widest text-slate-500">
-            {parentName ? `UPLINK TO ${parentName.toUpperCase()}` : 'UPLINK'}
-          </span>
-          {uplinkToggle.show && (
-            <div className="mt-1 mr-2 flex items-center gap-2">
-              <LinkToggle
-                id="toggle1"
-                enabled={linkControl.uplink?.enabled ?? null}
-                disabled={uplinkToggle.disabled}
-                title={uplinkToggle.title}
-                onChange={(v) => linkControl.set('uplink', v)}
-              />
-              <LinkToxicsControl
-                id="uplink-toxics"
-                toxics={linkControl.uplink?.toxics ?? null}
-                status={linkControl.status}
-                onApply={(t) => linkControl.setToxics('uplink', t)}
-              />
-            </div>
-          )}
-          <span className={`text-[10px] mt-2 font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
-            {LINK_INDICATOR_LABEL[linkIndicator]}
-          </span>
-          <LinkControlCaption status={linkControl.status} />
-        </div>
-        {/* CENTRAL HQ is NOT this node on the Maintainer tab -- dim it
-            so the THIS-NODE highlight on TACTICAL EDGE reads clearly.
-            Same dim-state styling HqHeader uses for TACTICAL EDGE. */}
-        <div className="flex flex-col items-center text-slate-500 mr-8">
-          {parentIsRoot
-            ? <Building2 className="w-6 h-6 mb-1 text-slate-600" />
-            : <Server className="w-6 h-6 mb-1 text-slate-600" />}
-          <span className="text-[10px] font-bold tracking-wider">
-            {parentIsRoot ? 'CENTRAL HQ' : parentName!.toUpperCase()}
-          </span>
-        </div>
-
-        {/* Real edge-buffer depth: bridge-group consumer lag on redpanda-edge */}
-        <div className="pl-6 border-l border-slate-700 min-w-[160px]">
-          <div className="text-[10px] text-slate-400 tracking-wider">{parentName ? `UPLINK BUFFER → ${parentName}` : 'UPLINK BUFFER'}</div>
-          <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-bold text-slate-100">
-              {probeDown ? '—' : lag > 1000 ? (lag / 1000).toFixed(1) + 'K' : lag}
+        {/* The network lives behind this pill. The dot is the OBSERVED link
+            indicator (never the commanded toggle); the count is the uplink
+            buffer. Real edge-buffer depth: bridge-group consumer lag on
+            redpanda-edge. */}
+        <NetworkPopover
+          tone={toneFromIndicator(linkIndicator)}
+          count={formatLag(probeDown, lag)}
+          unit={parentName ? `MSGS → ${parentName.toUpperCase()}` : 'MSGS'}
+        >
+          {/* THIS NODE is now a CLAIM THAT MUST BE TRUE, not decoration.
+              The reasoning this comment used to carry -- "Maintainer view IS
+              the tactical-edge tab" -- was sound while a tab and a node were
+              the same thing, and became false the moment tiers got their own
+              endpoints. It left `TACTICAL EDGE [THIS NODE]` rendering on the
+              HQ host inside the demo shell: a composed edge view asserting it
+              was the node you had connected to.
+              The badge now renders only when the tier being shown is the tier
+              this deployment serves, and renders NOTHING otherwise. In the
+              shell that is always nothing, because a shell is a viewer and
+              not a node. See lib/thisNode.
+              The path is THIS NODE and its PARENT only. An edge has no
+              business showing what lies beyond its parent (a region may sit
+              between it and HQ), and it lists no upstream link: it neither
+              owns nor controls one. */}
+          <PathRow>
+            <PathNode icon={Laptop} me label="TACTICAL EDGE" badge={<ThisNodeBadge />} />
+            {/* DDIL link -- the wire follows the observed indicator. */}
+            <Wire
+              tone={toneFromIndicator(linkIndicator)}
+              label={parentName ? `UPLINK TO ${parentName.toUpperCase()}` : 'UPLINK'}
+            />
+            {/* The parent is NOT this node on the Maintainer tab -- dim it
+                so the THIS-NODE highlight on TACTICAL EDGE reads clearly.
+                Same dim-state styling HqHeader uses for TACTICAL EDGE. */}
+            <PathNode
+              icon={parentIsRoot ? Building2 : Server}
+              label={parentIsRoot ? 'CENTRAL HQ' : parentName!.toUpperCase()}
+            />
+          </PathRow>
+          <StatusStrip>
+            <span className={`text-[10px] font-bold tracking-widest ${LINK_INDICATOR_CLASS[linkIndicator]}`}>
+              {LINK_INDICATOR_LABEL[linkIndicator]}
             </span>
-            <span className="text-xs text-slate-500">MSGS</span>
-            <TrendingUp className={`w-4 h-4 transition-all ${lag === 0 ? 'opacity-0' : 'opacity-100'} ${severed ? 'text-rose-500' : 'text-emerald-500 rotate-180'}`} />
-          </div>
-        </div>
+            <LinkControlCaption status={linkControl.status} />
+          </StatusStrip>
+          <BufferBlock
+            label={parentName ? `UPLINK BUFFER → ${parentName}` : 'UPLINK BUFFER'}
+            value={formatLag(probeDown, lag)}
+            lag={lag}
+            severed={severed}
+          />
+          <Section title="UPLINK">
+            <LinkRow
+              linkKey="uplink"
+              toxicsId="uplink-toxics"
+              toggleId="toggle1"
+              from={ownName}
+              to={parentName ?? 'parent'}
+              status={linkControl.status}
+              enabled={linkControl.uplink?.enabled ?? null}
+              toggleFrom="this tier"
+              toggleTo={parentName}
+              onToggle={(v) => linkControl.set('uplink', v)}
+              toxics={linkControl.uplink?.toxics ?? null}
+              onToxics={(t) => linkControl.setToxics('uplink', t)}
+              observed={uplinkObserved}
+            />
+          </Section>
+        </NetworkPopover>
       </div>
     </header>
   );

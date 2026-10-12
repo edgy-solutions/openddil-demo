@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Exercised with renderToStaticMarkup for the same reason as
 // EdgePulldown.test.tsx: no @testing-library/react / jsdom in this
 // project's dev deps.
@@ -12,7 +13,7 @@
 // unavailable control must add a caption beside the label, never replace it
 // -- otherwise a viewer who may not cut the link loses the honest SEVERED
 // signal.
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderOpen as renderToStaticMarkup } from '../network/__tests__/openPopover';
 import { describe, expect, it, vi } from 'vitest';
 import type { EdgeBufferStatus } from '../../hooks';
 import type { UseLinkControlResult } from '../../hooks/useLinkControl';
@@ -47,7 +48,7 @@ function control(over: Partial<UseLinkControlResult>): UseLinkControlResult {
   };
 }
 
-function render(linkControl: UseLinkControlResult): string {
+function render(linkControl: UseLinkControlResult, expandRows = false): string {
   return renderToStaticMarkup(
     <Header
       linkControl={linkControl}
@@ -58,6 +59,7 @@ function render(linkControl: UseLinkControlResult): string {
       selectedEdge={null}
       onSelectEdge={() => {}}
     />,
+    { expandRows },
   );
 }
 
@@ -127,7 +129,8 @@ describe('Header — parent from tier configuration', () => {
 describe('Header — uplink toxics', () => {
   it('ready: the uplink toxics group renders beside the toggle', () => {
     setStatus(SEVERED_STATUS);
-    const html = render(control({}));
+    // The shaping group lives in the expanded uplink row.
+    const html = render(control({}), true);
     expect(html).toContain('id="uplink-toxics-latency"');
     expect(html).toContain('id="uplink-toxics-jitter"');
     expect(html).toContain('id="uplink-toxics-bandwidth"');
@@ -137,5 +140,48 @@ describe('Header — uplink toxics', () => {
     setStatus(SEVERED_STATUS);
     const html = render(control({ status: 'off', uplink: null }));
     expect(html).not.toContain('uplink-toxics');
+  });
+});
+
+describe('Header — network pill and popover', () => {
+  const HEALTHY: EdgeBufferStatus = { ...SEVERED_STATUS, hq_link_severed: false };
+  const dotTone = (html: string) => /data-testid="network-pill-dot" data-tone="(\w+)"/.exec(html)?.[1];
+
+  it('the pill dot follows the observed indicator', () => {
+    setStatus(SEVERED_STATUS);
+    expect(dotTone(render(control({})))).toBe('bad');
+    setStatus(HEALTHY);
+    expect(dotTone(render(control({})))).toBe('ok');
+    setStatus({ ...HEALTHY, probe_healthy: false });
+    expect(dotTone(render(control({})))).toBe('warn');
+    setStatus(null);
+    expect(dotTone(render(control({})))).toBe('neutral');
+  });
+
+  it('the pill carries the count, the unit and the dialog semantics', () => {
+    setStatus({ ...HEALTHY, bridge_group_lag: 1500 });
+    __setDeploymentForTest({ id: 'edge-a', scope: null, has_children: false, parent: 'region-east' });
+    try {
+      const html = render(control({}));
+      expect(html).toContain('aria-haspopup="dialog"');
+      expect(html).toContain('1.5K');
+      expect(html).toContain('MSGS → REGION-EAST');
+    } finally {
+      __setDeploymentForTest(undefined);
+    }
+  });
+
+  it('an edge under a region shows only itself and the parent: one link row, no HQ node', () => {
+    setStatus(SEVERED_STATUS);
+    __setDeploymentForTest({ id: 'edge-a', scope: null, has_children: false, parent: 'region-east' });
+    try {
+      const html = render(control({}));
+      expect(html).not.toContain('CENTRAL HQ');
+      expect(html).toContain('UPLINK');
+      expect(html.match(/type="checkbox"/g)).toHaveLength(1);
+      expect(html.match(/aria-label="[^"]* to [^"]*"/g)).toHaveLength(1);
+    } finally {
+      __setDeploymentForTest(undefined);
+    }
   });
 });
