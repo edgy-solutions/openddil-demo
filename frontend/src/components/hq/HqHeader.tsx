@@ -95,20 +95,22 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
               <Building2 className="w-6 h-6 mb-1 glow-emerald" />
               <span className="text-xs font-bold tracking-wider text-emerald-300">CENTRAL HQ <ThisNodeBadge /></span>
             </div>
-          </div>
-          {/* Row 2: the link that goes AROUND the hub. Leaves the edge column's
-              centre, runs under the hub icon, rises into the HQ column's
-              centre. Only drawn when a leaf child exists. */}
-          {leafIds.length > 0 && (
-            <div
-              data-testid="link-direct-edge-hq"
-              className="relative mx-[3.5rem] h-6 mb-8 border-l-2 border-r-2 border-b-2 border-slate-700 rounded-b"
-            >
-              <div className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 flex flex-col gap-1">
-                {leafIds.map((id) => row(id))}
+            {/* Row 2: the link that goes AROUND the hub. The line spans the
+                edge column's centre to the HQ column's centre; the rows sit
+                under the hub because this block shares row 1's column
+                tracks. Only drawn when a leaf child exists. */}
+            {leafIds.length > 0 && (
+              <div
+                data-testid="link-direct-edge-hq"
+                className="col-span-5 grid grid-cols-subgrid relative h-6 mb-8"
+              >
+                <div className="absolute inset-y-0 left-[3.5rem] right-[3.5rem] border-l-2 border-r-2 border-b-2 border-slate-700 rounded-b" />
+                <div className="col-start-3 row-start-1 absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 w-max flex flex-col gap-1">
+                  {leafIds.map((id) => row(id))}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
           <LinkControlCaption status={linkControl.status} />
         </div>
         {/* Exercise control -- a separate capability from link control

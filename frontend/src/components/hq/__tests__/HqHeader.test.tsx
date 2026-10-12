@@ -108,6 +108,10 @@ describe('HqHeader row placement (by declared shape)', () => {
     expect(section(html, 'link-seg-hub-hq')).not.toContain(TOGGLE_E);
     expect(section(html, 'link-direct-edge-hq')).toContain(TOGGLE_E);
     expect(section(html, 'link-direct-edge-hq')).not.toContain(TOGGLE_R);
+    // Structural guard: the wrapper shares row 1's tracks and the leaf rows
+    // sit in the hub column (layout itself is proven in a browser).
+    expect(section(html, 'link-direct-edge-hq')).toContain('grid-cols-subgrid');
+    expect(section(html, 'link-direct-edge-hq')).toContain('col-start-3');
     expect(section(html, 'link-seg-edge-hub')).not.toContain('link-toggle-');
     expect(html).not.toContain(TITLE);
   });
