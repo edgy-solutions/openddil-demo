@@ -6,8 +6,8 @@
 // scene exactly (background 0x020617, fogExp2 0.05, ambient 0.4, cyan spot).
 // METALLIC: procedural Lightformer environment (no network assets), neutral
 // key + cyan rim. HOLOGRAPHIC: dark-blue field, holo floor, bloom.
-import { useMemo, useRef, type ReactNode } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
 import { Environment, Lightformer } from '@react-three/drei';
 import { Bloom, EffectComposer } from '@react-three/postprocessing';
 import * as THREE from 'three';
@@ -34,9 +34,24 @@ export function RenderModeScene({ mode, children, floorY = -1, floorScale = 1, s
       {mode === 'matte' && <MatteLights />}
       {mode === 'metallic' && <MetallicLights />}
       {mode === 'holographic' && <HoloStage floorY={floorY} floorScale={floorScale} sweep={sweep} />}
+      <RedrawOnModeChange mode={mode} />
       {children}
     </RenderModeProvider>
   );
+}
+
+// The canvas runs frameloop="demand" outside holographic, so nothing redraws
+// after a mode switch settles. METALLIC's environment bakes on the first frame
+// and the scene stayed blank until the operator dragged the view; ask for a
+// few frames whenever the mode changes so the baked result is shown.
+function RedrawOnModeChange({ mode }: { mode: RenderMode }) {
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    invalidate(3);
+    const id = requestAnimationFrame(() => invalidate(3));
+    return () => cancelAnimationFrame(id);
+  }, [mode, invalidate]);
+  return null;
 }
 
 function MatteLights() {
@@ -118,7 +133,7 @@ function HoloStage({ floorY, floorScale, sweep }: { floorY: number; floorScale: 
         side: THREE.DoubleSide,
         blending: THREE.AdditiveBlending,
         vertexShader: 'varying float y;void main(){y=position.y;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-        fragmentShader: 'varying float y;void main(){float a=pow(1.-(y+3.)/6.,3.)*.18;gl_FragColor=vec4(.13,.83,.93,a);}',
+        fragmentShader: 'varying float y;void main(){float a=pow(1.-(y+3.)/6.,3.)*.07;gl_FragColor=vec4(.13,.83,.93,a);}',
       }),
     [],
   );
