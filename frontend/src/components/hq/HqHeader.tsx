@@ -15,13 +15,30 @@
 // Placement reads `childLinkShape(id)` (declared in deployment.json) and
 // nothing else -- SHAPE, never the id's spelling (see lib/tierShape.ts). The
 // aggregate count stays in TheaterReadinessPosture (GLOBAL LINK STATUS).
-import { Laptop, Server, Building2, TrendingUp } from 'lucide-react';
+//
+// The network (path diagram, observed link caption, backlog, the placed link
+// rows with their toggles and shaping) lives in a popover opened from a pill
+// in this bar; the bar keeps the exercise control. The pill's dot is OBSERVED
+// state only (the children's link_status readings), never a commanded toggle.
+// Row placement is unchanged: rollup rows on hub -> HQ, leaf rows on the
+// direct line, undeclared rows on edge -> hub with the title on each row.
+import { useEffect, useState } from 'react';
+import { Laptop, Server, Building2 } from 'lucide-react';
 import { ThisNodeBadge } from '../../lib/thisNode';
 import { childLinkShape } from '../../deployment';
 import { useEdgeBuffer, useLinkStatus } from '../../hooks';
 import type { UseLinkControlResult } from '../../hooks/useLinkControl';
-import { ChildLinkRow, LinkControlCaption } from '../LinkToggle';
+import { classifyLink } from '../../lib/linkStatus';
+import { LinkControlCaption } from '../LinkToggle';
+import NetworkPopover from '../network/NetworkPopover';
+import {
+  DirectArc, LinkSummary, PathNode, PathRow, Section, StatusStrip, Wire,
+} from '../network/PathDiagram';
+import { LinkRow } from '../network/LinkRow';
+import { formatLag } from '../network/linkShaping';
+import { toneFromReadings } from '../network/tone';
 import ExercisePopup from './ExercisePopup';
+import { TopBarPortal } from '../TopBarSlot';
 
 interface HqHeaderProps {
   /** Link control for HQ's direct children (one hook instance per page). */
@@ -33,6 +50,12 @@ const UNDECLARED_TITLE = 'link shape not declared in deployment.json';
 export default function HqHeader({ linkControl }: HqHeaderProps) {
   const { status } = useEdgeBuffer();
   const linkRows = useLinkStatus();
+  // Re-classify on a timer so a row that stops refreshing ages to UNKNOWN.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowMs(Date.now()), 5000);
+    return () => clearInterval(t);
+  }, []);
   // Control listing when available, else whatever link_status rows this store
   // holds, so reachability stays visible with control off.
   const childIds = linkControl.status === 'off'
@@ -45,77 +68,34 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
   const leafIds = childIds.filter((id) => childLinkShape(id) === 'leaf');
   const undeclaredIds = childIds.filter((id) => childLinkShape(id) === undefined);
 
+  const tone = (ids: string[]) =>
+    toneFromReadings(ids.map((id) => classifyLink(linkRows.links.get(id), nowMs)));
+
   const row = (id: string, title?: string) => {
     const child = linkControl.children.find((c) => c.id === id);
-    const el = (
-      <ChildLinkRow
-        id={id}
-        row={linkRows.links.get(id)}
-        status={linkControl.status}
-        enabled={child?.enabled ?? null}
-        parent="HQ"
-        onChange={(v) => linkControl.set(id, v)}
-        toxics={child?.toxics ?? null}
-        onToxics={(t) => linkControl.setToxics(id, t)}
-      />
+    return (
+      <div key={id} title={title}>
+        <LinkRow
+          linkKey={id}
+          toxicsId={`link-toxics-${id}`}
+          toggleId={`link-toggle-${id}`}
+          from={id}
+          to="HQ"
+          status={linkControl.status}
+          enabled={child?.enabled ?? null}
+          toggleFrom={id}
+          toggleTo="HQ"
+          onToggle={(v) => linkControl.set(id, v)}
+          toxics={child?.toxics ?? null}
+          onToxics={(t) => linkControl.setToxics(id, t)}
+          row={linkRows.links.get(id)}
+        />
+      </div>
     );
-    return title
-      ? <div key={id} title={title}>{el}</div>
-      : <div key={id}>{el}</div>;
   };
 
   return (
-    <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700 transition-colors duration-500">
-      <div className="flex items-start space-x-6 w-full max-w-6xl mx-auto">
-        <div className="flex-1 min-w-0 flex flex-col">
-          {/* Row 1: edge -> hub -> HQ. Icon columns share one width so the
-              second line can be inset by half of it. */}
-          <div className="grid grid-cols-[7rem_1fr_7rem_1fr_7rem] items-start">
-            <div className="flex flex-col items-center text-slate-500">
-              <Laptop className="w-6 h-6 mb-1 text-slate-600" />
-              <span className="text-[10px] font-bold tracking-wider">TACTICAL EDGE</span>
-            </div>
-            <div data-testid="link-seg-edge-hub" className="flex flex-col items-center relative">
-              <div className="absolute w-full h-[2px] bg-slate-700 top-3 -z-10"></div>
-              <div className="flex flex-col gap-1 mt-1">
-                {undeclaredIds.map((id) => row(id, UNDECLARED_TITLE))}
-              </div>
-            </div>
-            <div className="flex flex-col items-center text-slate-400">
-              <Server className="w-6 h-6 mb-1 text-slate-300" />
-              <span className="text-[10px] font-bold tracking-wider">REGIONAL HUBS</span>
-            </div>
-            <div data-testid="link-seg-hub-hq" className="flex flex-col items-center relative">
-              <div className="absolute w-full h-[2px] bg-slate-700 top-3 -z-10"></div>
-              <div className="flex flex-col gap-1 mt-1">
-                {rollupIds.map((id) => row(id))}
-              </div>
-            </div>
-            <div className="flex flex-col items-center text-emerald-400">
-              <Building2 className="w-6 h-6 mb-1 glow-emerald" />
-              <span className="text-xs font-bold tracking-wider text-emerald-300">CENTRAL HQ <ThisNodeBadge /></span>
-            </div>
-            {/* Row 2: the link that goes AROUND the hub. The line spans the
-                edge column's centre to the HQ column's centre; the rows sit
-                under the hub because this block shares row 1's column
-                tracks. The rows name both column lines: an absolutely
-                positioned grid child with an auto end line spans to the
-                container's edge, not one track. Only drawn when a leaf child
-                exists. */}
-            {leafIds.length > 0 && (
-              <div
-                data-testid="link-direct-edge-hq"
-                className="col-span-5 grid grid-cols-subgrid relative h-6 mb-8"
-              >
-                <div className="absolute inset-y-0 left-[3.5rem] right-[3.5rem] border-l-2 border-r-2 border-b-2 border-slate-700 rounded-b" />
-                <div className="col-start-3 col-end-4 row-start-1 absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 w-max flex flex-col gap-1">
-                  {leafIds.map((id) => row(id))}
-                </div>
-              </div>
-            )}
-          </div>
-          <LinkControlCaption status={linkControl.status} />
-        </div>
+    <TopBarPortal>
         {/* Exercise control -- a separate capability from link control
             (controls the DIS simulator/adapter via its own service, never a
             link). Self-contained: polls its own status, so it takes no props
@@ -123,17 +103,47 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
         <ExercisePopup />
 
         {/* Real edge-buffer backlog: bridge-group consumer lag on redpanda-edge */}
-        <div className="pl-6 border-l border-slate-700 min-w-[160px]">
-          <div className="text-[10px] text-slate-400 tracking-wider">GLOBAL BUFFER BACKLOG</div>
-          <div className="flex items-baseline space-x-2">
-            <span className="text-3xl font-bold text-slate-100">
-              {probeDown ? '—' : lag > 1000 ? (lag / 1000).toFixed(1) + 'K' : lag}
-            </span>
-            <span className="text-xs text-slate-500">MSGS</span>
-            <TrendingUp className={`w-4 h-4 transition-all ${lag === 0 ? 'opacity-0' : 'opacity-100'} text-emerald-500 rotate-180`} />
-          </div>
-        </div>
-      </div>
-    </header>
+        <NetworkPopover
+          tone={tone(childIds) ?? 'neutral'}
+          summary={
+            <LinkSummary
+              value={formatLag(probeDown, lag)}
+              lag={lag}
+              severed={false}
+              bufferLabel="GLOBAL BUFFER BACKLOG"
+            />
+          }
+        >
+          <PathRow>
+            <PathNode icon={Laptop} label="TACTICAL EDGE" />
+            <Wire tone={tone(undeclaredIds) ?? 'neutral'} testId="wire-edge-hub" />
+            <PathNode icon={Server} label="REGIONAL HUBS" />
+            <Wire tone={tone(rollupIds) ?? 'neutral'} testId="wire-hub-hq" />
+            <PathNode icon={Building2} me label="CENTRAL HQ" badge={<> <ThisNodeBadge /></>} />
+          </PathRow>
+          {/* The link that goes AROUND the hub; only drawn when a leaf child
+              exists. */}
+          {leafIds.length > 0 && <DirectArc tone={tone(leafIds) ?? 'neutral'} testId="wire-direct" />}
+          <StatusStrip>
+            <span />
+            <LinkControlCaption status={linkControl.status} />
+          </StatusStrip>
+          {undeclaredIds.length > 0 && (
+            <Section title="EDGE → HUB · SHAPE NOT DECLARED" testId="link-seg-edge-hub">
+              {undeclaredIds.map((id) => row(id, UNDECLARED_TITLE))}
+            </Section>
+          )}
+          {rollupIds.length > 0 && (
+            <Section title="REGIONAL HUBS → HQ" testId="link-seg-hub-hq">
+              {rollupIds.map((id) => row(id))}
+            </Section>
+          )}
+          {leafIds.length > 0 && (
+            <Section title="DIRECT · EDGE → HQ" testId="link-direct-edge-hq">
+              {leafIds.map((id) => row(id))}
+            </Section>
+          )}
+        </NetworkPopover>
+    </TopBarPortal>
   );
 }

@@ -48,13 +48,20 @@ describe('?asset= round-trip', () => {
 
     const { container } = render(<Root />);
 
-    const select = await waitFor(() => {
-      const el = container.querySelector('select');
-      if (!el || el.value !== ASSET_B) throw new Error('asset picker not yet resolved to the deep-linked asset');
+    const switchBtn = await waitFor(() => {
+      const el = container.querySelector('button[aria-label="Switch asset"]');
+      const ident = container.querySelector('[data-testid="asset-identity"]');
+      if (!el || !ident?.textContent?.includes(ASSET_B)) throw new Error('asset switcher not yet resolved to the deep-linked asset');
       return el;
     });
 
-    fireEvent.change(select, { target: { value: ASSET_A } });
+    fireEvent.click(switchBtn);
+    const option = await waitFor(() => {
+      const el = container.querySelector(`[role="option"][aria-label^="${ASSET_A}"]`);
+      if (!el) throw new Error('option for ASSET_A not listed');
+      return el;
+    });
+    fireEvent.click(option);
 
     await waitFor(() => {
       const url = new URL(window.location.href);

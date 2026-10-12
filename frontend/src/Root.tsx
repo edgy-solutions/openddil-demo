@@ -9,6 +9,7 @@ import { SessionExpired } from './components/SessionExpired';
 import { useSessionExpired } from './lib/sessionExpiry';
 import IdentityBadge from './components/releasability/IdentityBadge';
 import ShapeErrorBanner from './components/ShapeErrorBanner';
+import { TopBarSlotProvider } from './components/TopBarSlot';
 
 // =============================================================================
 // Root — two modes, and which one you get is a deployment fact
@@ -65,6 +66,7 @@ const SHELL_ROOT: TierConfig = {
 /** The demo shell — every tier in one pane, behind tabs. */
 function DemoShell({ title, logo }: { title: string; logo: string }) {
   const [view, setView] = useState<View>(initialView);
+  const [slotEl, setSlotEl] = useState<HTMLDivElement | null>(null);
 
   // Keep ?role= in sync so a reload / shared link lands on the same view.
   useEffect(() => {
@@ -81,7 +83,7 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
 
   return (
     <div className="h-screen flex flex-col bg-slate-950 text-slate-300 overflow-hidden font-mono">
-      <div className="h-10 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 shrink-0 z-50 relative">
+      <div className="min-h-10 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 py-1 px-4 shrink-0 z-50 relative">
         <div className="flex items-center gap-2 text-cyan-500 font-orbitron font-bold tracking-widest text-sm">
           {logo && <img src={logo} alt="" className="h-6 w-auto object-contain" />}
           {title}
@@ -100,7 +102,8 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
             <IdentityBadge />
           </div>
         </div>
-        <div className="flex gap-2">
+        <div ref={setSlotEl} data-testid="top-bar-slot" className="ml-auto flex min-w-0 items-center gap-3" />
+        <div className="flex gap-2 ml-4 shrink-0">
           {tabs.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -135,9 +138,9 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
             The synthetic tiers below have no `scope` — the shell reads the
             root's store, where scoping is the operator's job through the
             in-view pickers rather than a property of the instance. */}
-        {view === 'maintainer' && <TierApp tier={SHELL_LEAF} />}
-        {view === 'regional' && <TierApp tier={SHELL_INTERMEDIATE} />}
-        {view === 'hq' && <TierApp tier={SHELL_ROOT} />}
+        {view === 'maintainer' && <TopBarSlotProvider value={slotEl}><TierApp tier={SHELL_LEAF} /></TopBarSlotProvider>}
+        {view === 'regional' && <TopBarSlotProvider value={slotEl}><TierApp tier={SHELL_INTERMEDIATE} /></TopBarSlotProvider>}
+        {view === 'hq' && <TopBarSlotProvider value={slotEl}><TierApp tier={SHELL_ROOT} /></TopBarSlotProvider>}
       </div>
     </div>
   );
@@ -162,6 +165,7 @@ function Root() {
   const { title, logo, tier } = deployment();
   const session = useSession();
   const expired = useSessionExpired();
+  const [slotEl, setSlotEl] = useState<HTMLDivElement | null>(null);
 
   // ---------------------------------------------------------------------
   // SESSION GATE — before anything renders, including the header.
@@ -205,7 +209,7 @@ function Root() {
   if (tier) {
     return (
       <div className="h-screen flex flex-col bg-slate-950 text-slate-300 overflow-hidden font-mono">
-        <div className="h-10 bg-slate-900 border-b border-slate-800 flex items-center gap-3 px-4 shrink-0 z-50 relative">
+        <div className="min-h-10 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center gap-x-2 gap-y-1 py-1 px-4 shrink-0 z-50 relative">
           <div className="flex items-center gap-2 text-cyan-500 font-orbitron font-bold tracking-widest text-sm">
             {logo && <img src={logo} alt="" className="h-6 w-auto object-contain" />}
             {title}
@@ -216,12 +220,12 @@ function Root() {
               (UD-9). A claim the UI can only make if something told it is
               the difference between a rung that checks its own heading and
               one that infers it. */}
-          <span className="rounded border border-cyan-700/60 bg-cyan-500/10 px-2 py-0.5
+          <span className="shrink-0 whitespace-nowrap rounded border border-cyan-700/60 bg-cyan-500/10 px-2 py-0.5
                            text-[10px] tracking-widest text-cyan-300"
                 title={`tier ${tier.id}${tier.parent ? ` · parent ${tier.parent}` : ' · root'}`}>
             TIER {(tier.label ?? tier.id).toUpperCase()}
           </span>
-          <span className="text-[10px] text-slate-500"
+          <span className="min-w-0 truncate text-[10px] text-slate-500"
                 title="The scope this instance reads. Unscoped is correct at a tier node, whose store holds only its own subtree.">
             {tier.scope
               ? `${tier.scope.column} = ${tier.scope.value}`
@@ -234,13 +238,16 @@ function Root() {
               view that does not display its subject is indistinguishable
               from an unpartitioned one, which is exactly the claim an
               operator cannot afford to guess at. */}
-          <div className="ml-auto">
+          <div ref={setSlotEl} data-testid="top-bar-slot" className="flex min-w-0 items-center gap-3" />
+          <div className="ml-auto shrink-0">
             <IdentityBadge />
           </div>
         </div>
         <ShapeErrorBanner />
         <div className="flex-1 relative min-h-0 overflow-hidden">
-          <TierApp tier={tier} />
+          <TopBarSlotProvider value={slotEl}>
+            <TierApp tier={tier} />
+          </TopBarSlotProvider>
         </div>
       </div>
     );

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Exercised with renderToStaticMarkup for the same reason as
 // EdgePulldown.test.tsx: no @testing-library/react / jsdom in this
 // project's dev deps.
@@ -11,7 +12,8 @@
 // HQ is the root of the tree: it has no uplink, so the header carries no
 // uplink toggle or label. Its direct-link rows (one per direct child) live in
 // the header strip.
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderOpen as renderToStaticMarkup } from '../../network/__tests__/openPopover';
+import { cleanup, render as rtlRender } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { __setChildLinksForTest } from '../../../deployment';
 import type { EdgeBufferStatus } from '../../../hooks';
@@ -70,7 +72,10 @@ describe('HqHeader', () => {
     const html = renderToStaticMarkup(<HqHeader linkControl={control()} />);
     expect(html).toContain('id="link-toggle-edge-03"');
     expect(html).toContain('id="link-toggle-region-east"');
-    expect(html).toContain('id="link-toxics-edge-03-latency"');
+    // The shaping group lives in the expanded row.
+    expect(
+      renderToStaticMarkup(<HqHeader linkControl={control()} />, { expandRows: true }),
+    ).toContain('id="link-toxics-edge-03-latency"');
     expect(html.match(/id="link-toggle-/g)).toHaveLength(2);
   });
 
@@ -108,10 +113,10 @@ describe('HqHeader row placement (by declared shape)', () => {
     expect(section(html, 'link-seg-hub-hq')).not.toContain(TOGGLE_E);
     expect(section(html, 'link-direct-edge-hq')).toContain(TOGGLE_E);
     expect(section(html, 'link-direct-edge-hq')).not.toContain(TOGGLE_R);
-    // Structural guard: the wrapper shares row 1's tracks and the leaf rows
-    // sit in the hub column (layout itself is proven in a browser).
-    expect(section(html, 'link-direct-edge-hq')).toContain('grid-cols-subgrid');
-    expect(section(html, 'link-direct-edge-hq')).toContain('col-start-3 col-end-4');
+    // The direct line is drawn (its arc) when a leaf child exists. The old
+    // subgrid/col-start-3 structural guard no longer applies: leaf rows now
+    // sit in their own popover section rather than under the hub column.
+    expect(html).toContain('data-testid="wire-direct"');
     expect(section(html, 'link-seg-edge-hub')).not.toContain('link-toggle-');
     expect(html).not.toContain(TITLE);
   });
@@ -135,5 +140,18 @@ describe('HqHeader row placement (by declared shape)', () => {
     );
     expect(html).not.toContain('link-direct-edge-hq');
     expect(section(html, 'link-seg-hub-hq')).toContain(TOGGLE_R);
+  });
+});
+
+describe('HqHeader — top-bar summary (popover closed)', () => {
+  it('shows the global backlog label without opening, and no banner', () => {
+    setStatus(SEVERED_STATUS);
+    cleanup();
+    const html = rtlRender(<HqHeader linkControl={control()} />).container.innerHTML;
+    expect(html).toContain('GLOBAL BUFFER BACKLOG');
+    expect(html).toContain('buffer-value');
+    expect(html).not.toContain('link-indicator');
+    expect(html).not.toContain('<header');
+    expect(html).not.toContain('class="panel');
   });
 });

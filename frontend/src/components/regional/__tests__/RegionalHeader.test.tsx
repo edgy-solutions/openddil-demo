@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 // Exercised with renderToStaticMarkup for the same reason as
 // EdgePulldown.test.tsx: no @testing-library/react / jsdom in this
 // project's dev deps.
@@ -10,7 +11,8 @@
 // Two separate links, two separate claims: the left segment lists each child
 // edge's own link (toggle = commanded, word = observed link_status row); the
 // right segment is this hub's own uplink (observed via edge_buffer_status).
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderOpen as renderToStaticMarkup } from '../../network/__tests__/openPopover';
+import { cleanup, render as rtlRender } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { EdgeBufferStatus } from '../../../hooks';
 import type { UseLinkControlResult } from '../../../hooks/useLinkControl';
@@ -66,9 +68,10 @@ function control(over: Partial<UseLinkControlResult>): UseLinkControlResult {
   };
 }
 
-function render(linkControl: UseLinkControlResult): string {
+function render(linkControl: UseLinkControlResult, expandRows = false): string {
   return renderToStaticMarkup(
     <RegionalHeader linkControl={linkControl} setIsRuleEditorOpen={() => {}} />,
+    { expandRows },
   );
 }
 
@@ -134,7 +137,8 @@ describe('RegionalHeader', () => {
 describe('RegionalHeader — link toxics and data age', () => {
   it('ready: each child row and the uplink carry a toxics group', () => {
     setup([]);
-    const html = render(control({}));
+    // Shaping groups live in the expanded rows (each expansion is snapshotted).
+    const html = render(control({}), true);
     expect(html).toContain('id="link-toxics-edge-01-latency"');
     expect(html).toContain('id="link-toxics-edge-02-bandwidth"');
     expect(html).toContain('id="uplink-toxics-latency"');
@@ -155,5 +159,23 @@ describe('RegionalHeader — link toxics and data age', () => {
     expect(render(control({}))).toContain('>2.5s<');
     expect(render(control({ status: 'off', uplink: null, children: [] }))).toContain('>2.5s<');
     expect(render(control({}))).toContain('Age of the freshest heartbeat');
+  });
+});
+
+describe('RegionalHeader — top-bar summary (popover closed)', () => {
+  it('shows the word, buffer value and parent-named label without opening, and no banner', () => {
+    setup([]);
+    cleanup();
+    __setDeploymentForTest({ id: 'region-a', scope: null, has_children: true, parent: 'root' });
+    const html = rtlRender(
+      <RegionalHeader linkControl={control({})} setIsRuleEditorOpen={() => {}} />,
+    ).container.innerHTML;
+    __setDeploymentForTest(undefined);
+    expect(html).toContain('REGIONAL↔HQ: SEVERED');
+    expect(html).toContain('buffer-value');
+    expect(html).toContain('UPLINK BUFFER → HQ');
+    expect(html).toContain('CONFIGURE HEURISTICS');
+    expect(html).not.toContain('<header');
+    expect(html).not.toContain('class="panel');
   });
 });

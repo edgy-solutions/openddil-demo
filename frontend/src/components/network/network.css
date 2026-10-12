@@ -1,0 +1,57 @@
+/* Range sliders for the link-shaping panel. Written as plain CSS: styling the
+   thumb and track pseudo-elements through Tailwind variants is unreadable.
+   --p is the filled fraction, --fill the severity colour (both set inline). */
+.ddil-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  background: transparent;
+  margin: 8px 0 0;
+  cursor: pointer;
+}
+.ddil-range:disabled { cursor: not-allowed; }
+.ddil-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 1px;
+  background: linear-gradient(90deg, var(--fill, #22d3ee) var(--p, 0%), #1e293b var(--p, 0%));
+}
+.ddil-range::-moz-range-track { height: 4px; border-radius: 1px; background: #1e293b; }
+.ddil-range::-moz-range-progress { height: 4px; border-radius: 1px; background: var(--fill, #22d3ee); }
+.ddil-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  margin-top: -4.5px;
+  background: var(--fill, #22d3ee);
+  box-shadow: 0 0 0 3px rgba(2, 6, 23, 0.9), 0 0 10px var(--fill, #22d3ee);
+}
+.ddil-range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--fill, #22d3ee);
+  box-shadow: 0 0 0 3px rgba(2, 6, 23, 0.9), 0 0 10px var(--fill, #22d3ee);
+}
+.ddil-range.thin { height: 12px; margin: 0; }
+.ddil-range.thin::-webkit-slider-runnable-track { height: 2px; }
+.ddil-range.thin::-webkit-slider-thumb { width: 9px; height: 9px; margin-top: -3.5px; }
+
+/* The wire's packet: a short glow travelling along an up link. */
+@keyframes ddil-packet { from { left: 0; } to { left: calc(100% - 22px); } }
+.ddil-wire-up::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  width: 22px;
+  height: 6px;
+  border-radius: 1px;
+  background: #67e8f9;
+  filter: blur(3px);
+  animation: ddil-packet 1.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ddil-wire-up::after { animation: none; }
+}

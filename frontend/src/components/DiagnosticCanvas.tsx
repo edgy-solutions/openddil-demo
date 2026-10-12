@@ -32,18 +32,19 @@
 import { useEffect, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import { Wrench } from 'lucide-react';
 import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG, type LiveElementTelemetry } from './SensorArrayView';
 import HudFrame from './HudFrame';
+import { RenderModeScene } from '../render/RenderModeScene';
+import { RenderModeMenu } from '../render/RenderModeMenu';
+import { useRenderModePreference } from '../render/renderMode';
 import { useTransitPhase, transitClass } from './EdgeTransit';
 import {
     SCHEMATIC_REGISTRY,
     UnknownPlatformBadge,
     type SchematicProps,
 } from './platform-schematics';
-import FaultReportForm from './FaultReportForm';
-import BitDiscrepancyCard from './BitDiscrepancyCard';
-import ManualQuestionPanel from './ManualQuestionPanel';
+import FaultReportOverlay from './FaultReportOverlay';
+import ManualOverlay from './ManualOverlay';
 import { useCmState } from '../hooks';
 import {
     bitOnlyDiscrepancy,
@@ -210,15 +211,9 @@ export default function DiagnosticCanvas({
         };
     }, [assetId]);
 
-    const [formOpen, setFormOpen] = useState(false);
-    const [prefill, setPrefill] = useState<{ component: string; code: string } | null>(null);
-    // The key (component|fault_code) of the last BIT discrepancy this
-    // viewer successfully filed a report for, so the card can show
-    // "Recorded, awaiting confirmation" even though the CM state it reads
-    // from (bitOnlyDiscrepancy) hasn't caught up with an operator_report
-    // source yet. Once it does, bitOnlyDiscrepancy stops returning this
-    // entry at all and the card disappears outright.
-    const [recordedKey, setRecordedKey] = useState<string | null>(null);
+    // 3D render mode (MATTE default / METALLIC / HOLOGRAPHIC), persisted.
+    const [renderMode, setRenderMode] = useRenderModePreference();
+    const renderModeMenu = <RenderModeMenu mode={renderMode} onChange={setRenderMode} />;
 
     const bitEntry = bitOnlyDiscrepancy(cm.data[0]?.manual_discrepancies);
     const bitEntryKey = bitEntry ? `${bitEntry.component}|${bitEntry.fault_code}` : null;
@@ -239,63 +234,30 @@ export default function DiagnosticCanvas({
     }
 
     const manualQuestionOverlay = (
-        <div className="absolute bottom-4 left-4 w-[280px] z-20 flex flex-col gap-2 max-h-[calc(100%-2rem)]">
-            <div className="min-h-0 overflow-auto">
-                <ManualQuestionPanel
-                    assetId={assetId}
-                    platformVariant={platformVariant}
-                    scope={manualQuestionScope}
-                    scopeLabels={manualQaScopeLabels}
-                />
-            </div>
-            {bottomLeftSlot}
-        </div>
+        <ManualOverlay
+            assetId={assetId}
+            platformVariant={platformVariant}
+            scope={manualQuestionScope}
+            scopeLabels={manualQaScopeLabels}
+            bottomLeftSlot={bottomLeftSlot}
+        />
     );
 
-    const openReportForm = () => {
-        setPrefill(null);
-        setFormOpen(true);
-    };
-    const openReportFormFor = (component: string, code: string) => {
-        setPrefill({ component, code });
-        setFormOpen(true);
-    };
-    const closeReportForm = () => {
-        setFormOpen(false);
-        setPrefill(null);
-    };
-    const handleReportSuccess = () => {
-        if (bitEntryKey) setRecordedKey(bitEntryKey);
-    };
-
     const faultReportOverlay = (
-        <div className="absolute bottom-4 right-4 w-[280px] z-20 space-y-2">
-            {bitEntry && bitEntryKey && (
-                <BitDiscrepancyCard
-                    text={describeBitDiscrepancy(bitEntry, catalog?.codes ?? [])}
-                    recorded={recordedKey === bitEntryKey}
-                    onRecord={() => openReportFormFor(bitEntry.component, bitEntry.fault_code)}
-                />
-            )}
-            {formOpen ? (
-                <FaultReportForm
-                    assetId={assetId}
-                    components={componentOptions(cm.data[0])}
-                    prefillComponent={prefill?.component}
-                    prefillCode={prefill?.code}
-                    onSuccess={handleReportSuccess}
-                    onClose={closeReportForm}
-                />
-            ) : (
-                <button
-                    type="button"
-                    onClick={openReportForm}
-                    className="w-full flex items-center justify-center gap-1.5 text-xs font-bold uppercase tracking-wider py-1.5 rounded-sm border border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-900/60 transition-colors"
-                >
-                    <Wrench className="w-3.5 h-3.5" /> Report a fault
-                </button>
-            )}
-        </div>
+        <FaultReportOverlay
+            assetId={assetId}
+            components={componentOptions(cm.data[0])}
+            bit={
+                bitEntry && bitEntryKey
+                    ? {
+                        key: bitEntryKey,
+                        component: bitEntry.component,
+                        faultCode: bitEntry.fault_code,
+                        text: describeBitDiscrepancy(bitEntry, catalog?.codes ?? []),
+                    }
+                    : null
+            }
+        />
     );
 
     // MRAD-class variants get the dedicated multi-array detailed view --
@@ -310,7 +272,8 @@ export default function DiagnosticCanvas({
     if (platformVariant && MRAD_VARIANTS.has(platformVariant) && isDeclaredSensor(subsystem)) {
         return (
             <>
-                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} />
+                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} renderMode={renderMode} />
+                {renderModeMenu}
                 {faultReportOverlay}
                 {manualQuestionOverlay}
             </>
@@ -325,7 +288,8 @@ export default function DiagnosticCanvas({
         // through the registry path below.
         return (
             <>
-                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} isPoweredOff={isPoweredOff} />
+                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={LTAMDS_CONFIG} assetId={assetId ?? 'ltamds-dev'} isPoweredOff={isPoweredOff} renderMode={renderMode} />
+                {renderModeMenu}
                 {faultReportOverlay}
                 {manualQuestionOverlay}
             </>
@@ -357,9 +321,11 @@ export default function DiagnosticCanvas({
                 //   * alpha/stencil off — saves swap-chain channels
                 //   * powerPreference high-performance — wakes dGPU
                 //   * frameloop demand — only renders when scene state
-                //     changes (not 60fps), HUGE win for an idle picker
+                //     changes (not 60fps), HUGE win for an idle picker.
+                //     Holographic animates continuously, so only that mode
+                //     switches to "always".
                 dpr={[1, 1.5]}
-                frameloop="demand"
+                frameloop={renderMode === 'holographic' ? 'always' : 'demand'}
                 gl={{
                     antialias: false,
                     powerPreference: 'high-performance',
@@ -368,17 +334,15 @@ export default function DiagnosticCanvas({
                     depth: true,
                 }}
             >
-                <color attach="background" args={[0x020617]} />
-                <fogExp2 attach="fog" args={[0x020617, 0.05]} />
-                <ambientLight intensity={0.4} />
-                <spotLight position={[20, 40, 20]} intensity={1.5} color={0x22d3ee} />
+                <RenderModeScene mode={renderMode}>
+                    <OrbitControls enableDamping dampingFactor={0.05} />
 
-                <OrbitControls enableDamping dampingFactor={0.05} />
-
-                {SchematicComp
-                    ? <SchematicComp degraded={degraded} operationalState={operationalState} />
-                    : <UnknownPlatformBadge degraded={degraded} variant={platformVariant ?? 'UNKNOWN'} />}
+                    {SchematicComp
+                        ? <SchematicComp degraded={degraded} operationalState={operationalState} />
+                        : <UnknownPlatformBadge degraded={degraded} variant={platformVariant ?? 'UNKNOWN'} />}
+                </RenderModeScene>
             </Canvas>
+            {renderModeMenu}
             {faultReportOverlay}
             {manualQuestionOverlay}
         </HudFrame>

@@ -48,6 +48,9 @@ export interface ManualQuestionPanelProps {
    *  text for a code carrying that dmc). Entries not present here render
    *  with just the bare dmc as their chip label. */
   scopeLabels?: Record<string, string>;
+  /** Called when an ask comes back 404 (the service is not configured here),
+   *  at the moment the panel hides itself. */
+  onUnavailable?: () => void;
 }
 
 export default function ManualQuestionPanel({
@@ -55,6 +58,7 @@ export default function ManualQuestionPanel({
   platformVariant,
   scope,
   scopeLabels,
+  onUnavailable,
 }: ManualQuestionPanelProps) {
   const [question, setQuestion] = useState('');
   const [asking, setAsking] = useState(false);
@@ -72,6 +76,7 @@ export default function ManualQuestionPanel({
       const outcome = await askManualQuestion({ assetId, question, dmcs: scope });
       if (outcome.kind === 'hidden') {
         setHidden(true);
+        onUnavailable?.();
       } else {
         setResult(outcome);
       }

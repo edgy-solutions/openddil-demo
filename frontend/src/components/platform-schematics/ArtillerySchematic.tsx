@@ -20,6 +20,7 @@ import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { SchematicProps } from './types';
+import { SchematicMaterial } from '../../render/SchematicMaterial';
 
 export function ArtillerySchematic({ degraded, operationalState }: SchematicProps) {
     const hingeRef = useRef<THREE.Mesh>(null);
@@ -89,20 +90,20 @@ export function ArtillerySchematic({ degraded, operationalState }: SchematicProp
             {/* Hinge */}
             <mesh ref={hingeRef} position={[0, -2, 0]}>
                 <boxGeometry args={[4, 1, 4]} />
-                <meshStandardMaterial color={0x1e293b} metalness={0.7} roughness={0.3} />
+                <SchematicMaterial color={0x1e293b} metalness={0.7} roughness={0.3} />
             </mesh>
 
             <group ref={podRef} position={[0, -1.5, 0]}>
                 {/* Solid Pod Form */}
                 <mesh position={[0, 2, 0]}>
                     <boxGeometry args={[4.5, 3.5, 7]} />
-                    <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
+                    <SchematicMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
                 </mesh>
 
                 {/* Subtle Schematic Overlay */}
                 <mesh position={[0, 2, 0]}>
                     <boxGeometry args={[4.52, 3.52, 7.02]} />
-                    <meshBasicMaterial color={0x22d3ee} wireframe transparent opacity={0.15} />
+                    <SchematicMaterial kind="indicator" color={0x22d3ee} wireframe transparent opacity={0.15} />
                 </mesh>
 
                 {/* Facade Grid (Launch Status for 6 tubes) */}
@@ -112,7 +113,7 @@ export function ArtillerySchematic({ degraded, operationalState }: SchematicProp
                             {/* Outer tube ring */}
                             <mesh rotation={[Math.PI / 2, 0, 0]}>
                                 <cylinderGeometry args={[0.6, 0.6, 0.1, 16]} />
-                                <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
+                                <SchematicMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
                             </mesh>
                             {/* Indicator element */}
                             <mesh
@@ -120,7 +121,7 @@ export function ArtillerySchematic({ degraded, operationalState }: SchematicProp
                                 ref={(el) => { if (el) indicatorRefs.current.push(el); }}
                             >
                                 <boxGeometry args={[0.4, 0.4, 0.05]} />
-                                <meshBasicMaterial color={0x10b981} transparent opacity={0.8} />
+                                <SchematicMaterial kind="indicator" color={0x10b981} transparent opacity={0.8} />
                             </mesh>
                         </group>
                     ))}
@@ -132,7 +133,7 @@ export function ArtillerySchematic({ degraded, operationalState }: SchematicProp
                         Array.from({ length: 8 }).map((_, col) => (
                             <mesh key={`side-${row}-${col}`} position={[-2.5 + col * 0.7, -1 + row * 0.65, 0]}>
                                 <boxGeometry args={[0.4, 0.4, 0.05]} />
-                                <meshBasicMaterial color={0x0ea5e9} transparent opacity={0.3} />
+                                <SchematicMaterial kind="indicator" color={0x0ea5e9} transparent opacity={0.3} />
                             </mesh>
                         ))
                     ))}

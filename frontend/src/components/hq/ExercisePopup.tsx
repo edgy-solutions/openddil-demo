@@ -83,7 +83,7 @@ export function ExercisePopupView({
         disabled={forbidden}
         title={forbidden ? 'Exercise control: not authorised' : undefined}
         onClick={forbidden ? undefined : onToggleOpen}
-        className="text-[10px] font-bold tracking-widest px-2 py-1 border border-slate-600 rounded disabled:cursor-not-allowed disabled:opacity-50"
+        className="text-[10px] font-bold tracking-widest h-7 px-2 border border-slate-600 rounded disabled:cursor-not-allowed disabled:opacity-50"
       >
         EXERCISE
       </button>

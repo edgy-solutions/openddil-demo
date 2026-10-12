@@ -22,6 +22,7 @@ import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { SchematicProps } from './types';
+import { SchematicMaterial } from '../../render/SchematicMaterial';
 
 interface UnknownPlatformBadgeProps extends SchematicProps {
   /** The unrecognized variant string — currently rendered as a wireframe-only
@@ -53,14 +54,14 @@ export function UnknownPlatformBadge({ degraded: _degraded, variant: _variant }:
                 not the alarming red of severed or the green of nominal. */}
             <mesh ref={wireRef}>
                 <octahedronGeometry args={[1.6, 0]} />
-                <meshBasicMaterial color={0x94a3b8} wireframe transparent opacity={0.7} />
+                <SchematicMaterial kind="indicator" color={0x94a3b8} wireframe transparent opacity={0.7} />
             </mesh>
 
             {/* Subtle inner core — slate-500 solid, very dim. Gives the
                 wireframe a center of mass instead of feeling hollow. */}
             <mesh ref={coreRef}>
                 <octahedronGeometry args={[0.8, 0]} />
-                <meshBasicMaterial color={0x64748b} transparent opacity={0.3} />
+                <SchematicMaterial kind="indicator" color={0x64748b} transparent opacity={0.3} />
             </mesh>
         </group>
     );

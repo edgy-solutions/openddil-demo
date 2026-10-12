@@ -21,6 +21,7 @@ import { useFrame } from '@react-three/fiber';
 import { RoundedBox } from '@react-three/drei';
 import * as THREE from 'three';
 import type { SchematicProps } from './types';
+import { SchematicMaterial } from '../../render/SchematicMaterial';
 
 export function M1A2Schematic({ degraded }: SchematicProps) {
     const indicatorRefs = useRef<THREE.Mesh[]>([]);
@@ -67,45 +68,45 @@ export function M1A2Schematic({ degraded }: SchematicProps) {
                     bevelSize: 0.10,
                     bevelSegments: 2,
                 }]} />
-                <meshStandardMaterial color={0x0f172a} metalness={0.7} roughness={0.3} />
+                <SchematicMaterial color={0x0f172a} metalness={0.7} roughness={0.3} />
             </mesh>
 
             {/* Deck centerline accent */}
             <mesh position={[0, 0.97, -0.4]}>
                 <boxGeometry args={[0.12, 0.05, 6.5]} />
-                <meshBasicMaterial color={0x22d3ee} transparent opacity={0.7} />
+                <SchematicMaterial kind="indicator" color={0x22d3ee} transparent opacity={0.7} />
             </mesh>
 
             {/* Glacis-crest accent */}
             <mesh position={[0, 0.93, 2.4]}>
                 <boxGeometry args={[4.6, 0.06, 0.08]} />
-                <meshBasicMaterial color={0x22d3ee} transparent opacity={0.7} />
+                <SchematicMaterial kind="indicator" color={0x22d3ee} transparent opacity={0.7} />
             </mesh>
 
             {/* Track skirts */}
             <RoundedBox args={[0.4, 0.8, 7.4]} radius={0.15} smoothness={3} position={[2.85, -0.5, 0]}>
-                <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
+                <SchematicMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
             </RoundedBox>
             <RoundedBox args={[0.4, 0.8, 7.4]} radius={0.15} smoothness={3} position={[-2.85, -0.5, 0]}>
-                <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
+                <SchematicMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
             </RoundedBox>
 
             {/* Turret */}
             <mesh position={[0, 1.45, -0.5]}>
                 <cylinderGeometry args={[1.5, 1.7, 0.85, 32]} />
-                <meshStandardMaterial color={0x334155} metalness={0.6} roughness={0.4} />
+                <SchematicMaterial color={0x334155} metalness={0.6} roughness={0.4} />
             </mesh>
 
             {/* Turret-base accent ring */}
             <mesh position={[0, 1.03, -0.5]} rotation={[Math.PI / 2, 0, 0]}>
                 <ringGeometry args={[1.65, 1.85, 48]} />
-                <meshBasicMaterial color={0x22d3ee} transparent opacity={0.55} side={THREE.DoubleSide} />
+                <SchematicMaterial kind="indicator" color={0x22d3ee} transparent opacity={0.55} side={THREE.DoubleSide} />
             </mesh>
 
             {/* Main gun barrel */}
             <mesh position={[0, 1.45, 2.5]} rotation={[Math.PI / 2, 0, 0]}>
                 <cylinderGeometry args={[0.18, 0.18, 4.5, 12]} />
-                <meshStandardMaterial color={0x475569} metalness={0.9} roughness={0.2} />
+                <SchematicMaterial color={0x475569} metalness={0.9} roughness={0.2} />
             </mesh>
 
             {/* Indicator strip — 6 status pads on the side panel */}
@@ -117,7 +118,7 @@ export function M1A2Schematic({ degraded }: SchematicProps) {
                         ref={(el) => { if (el) indicatorRefs.current.push(el); }}
                     >
                         <boxGeometry args={[0.4, 0.4, 0.05]} />
-                        <meshBasicMaterial color={0x10b981} transparent opacity={0.8} />
+                        <SchematicMaterial kind="indicator" color={0x10b981} transparent opacity={0.8} />
                     </mesh>
                 ))}
             </group>
@@ -127,7 +128,7 @@ export function M1A2Schematic({ degraded }: SchematicProps) {
                 {Array.from({ length: 6 }).map((_, col) => (
                     <mesh key={`indicator-r-${col}`} position={[-2.5 + col * 1.0, 0, 0]}>
                         <boxGeometry args={[0.4, 0.4, 0.05]} />
-                        <meshBasicMaterial color={0x0ea5e9} transparent opacity={0.3} />
+                        <SchematicMaterial kind="indicator" color={0x0ea5e9} transparent opacity={0.3} />
                     </mesh>
                 ))}
             </group>

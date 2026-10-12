@@ -18,6 +18,7 @@ import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { SchematicProps } from './types';
+import { SchematicMaterial } from '../../render/SchematicMaterial';
 
 export function QuadrupedSchematic({ degraded }: SchematicProps) {
     const anomalyCoreRef = useRef<THREE.Mesh>(null);
@@ -61,12 +62,12 @@ export function QuadrupedSchematic({ degraded }: SchematicProps) {
             <group position={[0, 3.5, 0]} rotation={[0, 0, Math.PI / 2]}>
                 <mesh>
                     <capsuleGeometry args={[1.2, 3, 32, 32]} />
-                    <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
+                    <SchematicMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
                 </mesh>
                 {/* Subtle Schematic Overlay */}
                 <mesh>
                     <capsuleGeometry args={[1.22, 3, 16, 16]} />
-                    <meshBasicMaterial color={0x22d3ee} wireframe transparent opacity={0.15} />
+                    <SchematicMaterial kind="indicator" color={0x22d3ee} wireframe transparent opacity={0.15} />
                 </mesh>
             </group>
 
@@ -82,7 +83,7 @@ export function QuadrupedSchematic({ degraded }: SchematicProps) {
                                     ref={(el) => { if (el) indicatorRefs.current.push(el); }}
                                 >
                                     <boxGeometry args={[0.15, 0.15, 0.05]} />
-                                    <meshBasicMaterial color={0x10b981} transparent opacity={0.6} />
+                                    <SchematicMaterial kind="indicator" color={0x10b981} transparent opacity={0.6} />
                                 </mesh>
                             ))
                         ))}
@@ -97,12 +98,12 @@ export function QuadrupedSchematic({ degraded }: SchematicProps) {
                     {leg.isAnomaly ? (
                         <mesh ref={anomalyCoreRef} rotation={[Math.PI / 2, 0, 0]}>
                             <cylinderGeometry args={[0.4, 0.4, 0.6, 32]} />
-                            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} blending={THREE.AdditiveBlending} />
+                            <SchematicMaterial kind="indicator" color={0x22d3ee} transparent opacity={0.8} blending={THREE.AdditiveBlending} />
                         </mesh>
                     ) : (
                         <mesh rotation={[Math.PI / 2, 0, 0]}>
                             <cylinderGeometry args={[0.35, 0.35, 0.5, 32]} />
-                            <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
+                            <SchematicMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
                         </mesh>
                     )}
 
@@ -110,34 +111,34 @@ export function QuadrupedSchematic({ degraded }: SchematicProps) {
                     <group rotation={[0, 0, -Math.PI / 6]}>
                         <mesh position={[0, -0.8, 0]}>
                             <cylinderGeometry args={[0.2, 0.15, 1.6, 16]} />
-                            <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
+                            <SchematicMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
                         </mesh>
                         <mesh position={[0, -0.8, 0]}>
                             <cylinderGeometry args={[0.21, 0.16, 1.6, 8]} />
-                            <meshBasicMaterial color={0x22d3ee} wireframe transparent opacity={0.15} />
+                            <SchematicMaterial kind="indicator" color={0x22d3ee} wireframe transparent opacity={0.15} />
                         </mesh>
 
                         {/* Knee Motor */}
                         <mesh position={[0, -1.6, 0]} rotation={[Math.PI / 2, 0, 0]}>
                             <cylinderGeometry args={[0.25, 0.25, 0.4, 32]} />
-                            <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
+                            <SchematicMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
                         </mesh>
 
                         {/* Shin */}
                         <group position={[0, -1.6, 0]} rotation={[0, 0, Math.PI / 6]}>
                             <mesh position={[0, -0.8, 0]}>
                                 <cylinderGeometry args={[0.15, 0.1, 1.6, 16]} />
-                                <meshStandardMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
+                                <SchematicMaterial color={0x0f172a} metalness={0.8} roughness={0.2} />
                             </mesh>
                             <mesh position={[0, -0.8, 0]}>
                                 <cylinderGeometry args={[0.16, 0.11, 1.6, 8]} />
-                                <meshBasicMaterial color={0x22d3ee} wireframe transparent opacity={0.15} />
+                                <SchematicMaterial kind="indicator" color={0x22d3ee} wireframe transparent opacity={0.15} />
                             </mesh>
 
                             {/* Foot Pad */}
                             <mesh position={[0, -1.6, 0]}>
                                 <boxGeometry args={[0.4, 0.2, 0.4]} />
-                                <meshStandardMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
+                                <SchematicMaterial color={0x1e293b} metalness={0.9} roughness={0.1} />
                             </mesh>
                         </group>
                     </group>
