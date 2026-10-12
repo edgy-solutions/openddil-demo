@@ -15,6 +15,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import Header from './components/Header';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
+import AssetSwitcher from './components/AssetSwitcher';
 import LocalFleetRadar from './components/LocalFleetRadar';
 import LostContactBanner from './components/LostContactBanner';
 import TelemetryCharts from './components/TelemetryCharts';
@@ -476,9 +477,6 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
       <Header
         linkControl={linkControl}
         fleet={fleetForPicker}
-        fleetTiers={tiers}
-        selectedAsset={selectedAssetId}
-        setSelectedAsset={setSelectedAssetId}
         availableEdges={availableEdges}
         selectedEdge={selectedEdge}
         onSelectEdge={onSelectEdge}
@@ -550,6 +548,12 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
                   selectedAssetId={selectedAssetId}
                 />
               }
+            />
+            <AssetSwitcher
+              fleet={fleetForPicker}
+              fleetTiers={tiers}
+              selectedAsset={selectedAssetId}
+              setSelectedAsset={setSelectedAssetId}
             />
           </div>
         </div>

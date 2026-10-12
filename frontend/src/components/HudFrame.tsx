@@ -91,7 +91,7 @@ export default function HudFrame({
             </div>
 
             {/* Top Left Header Overlay */}
-            <div className="absolute top-6 left-6 z-10 pointer-events-none">
+            <div className="absolute top-20 left-6 z-10 pointer-events-none">
                 <h1 className="glitch-text text-2xl font-bold text-cyan-400">{title}</h1>
                 {subtitle && (
                     <p className="text-xs tracking-widest opacity-70">{subtitle}</p>

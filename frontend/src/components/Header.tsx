@@ -14,15 +14,8 @@
 // OBSERVED link indicator, never the commanded toggle.
 import { Laptop, Building2, Server } from 'lucide-react';
 import { ThisNodeBadge } from '../lib/thisNode';
-import type { FleetAsset, FleetTierMap } from '../hooks';
+import type { FleetAsset } from '../hooks';
 import { useEdgeBuffer } from '../hooks';
-import { assetLabel } from '../lib/assetLabel';
-import {
-  TIER_ORDER,
-  tierLabel,
-  tierShortCode,
-  type AssetTier,
-} from '../lib/assetTier';
 import EdgePulldown from './EdgePulldown';
 import NationLegend from './releasability/NationLegend';
 import { useSession } from '../hooks/useSession';
@@ -66,55 +59,6 @@ const UPLINK_WORD: Record<string, string> = {
   up: 'UP',
 };
 
-// Per-tier styling for the inline count chips above the ASSET label.
-// Live tiers (ACTIVE / DEGRADED) use the live-fleet palette; silent
-// tiers use the matching slate/amber/rose tone the operator sees on
-// the 3D scene's ring outlines, so the badge reads as a tiny
-// "what's outside the live fleet right now" summary.
-const TIER_CHIP_CLASS: Record<AssetTier, string> = {
-  ACTIVE:    'text-emerald-300',
-  DEGRADED:  'text-amber-300',
-  STALE:     'text-slate-400',
-  COMM_LOST: 'text-amber-500',
-  LOST:      'text-rose-400',
-};
-
-function TierCountChips({ fleet, tiers }: {
-  fleet: FleetAsset[];
-  tiers: FleetTierMap | undefined;
-}) {
-  // No tier data yet (cold start) -> render nothing rather than five
-  // zeros that will pop on first refresh.
-  if (!tiers || fleet.length === 0) return null;
-
-  const counts: Record<AssetTier, number> = {
-    ACTIVE: 0, DEGRADED: 0, STALE: 0, COMM_LOST: 0, LOST: 0,
-  };
-  for (const a of fleet) {
-    const t = tiers.get(a.asset_id) ?? 'ACTIVE';
-    counts[t]++;
-  }
-
-  // Best-to-worst left-to-right so the eye lands on the live count
-  // first. ACTIVE is always shown (even at 0 -- "no live assets" is
-  // a signal); other tiers only appear when non-zero so the strip
-  // stays narrow in the common case.
-  const visible = TIER_ORDER.slice().reverse().filter(
-    (t) => t === 'ACTIVE' || counts[t] > 0,
-  );
-
-  return (
-    <span className="flex items-center gap-2 font-mono text-[10px] tracking-wider">
-      {visible.map((t, i) => (
-        <span key={t} className={TIER_CHIP_CLASS[t]} title={tierLabel(t)}>
-          {i > 0 && <span className="text-slate-600 mr-2">·</span>}
-          {tierShortCode(t)} {counts[t]}
-        </span>
-      ))}
-    </span>
-  );
-}
-
 interface HeaderProps {
   /** This tier's own uplink control (lib/linkControl). The toggle renders
    *  only when control is available; unknown or refused states render it
@@ -125,9 +69,6 @@ interface HeaderProps {
    *  suffix + dim styling. Optional so existing callers (tests, future
    *  alt-mounts) don't have to plumb it through; absence = no suffix
    *  + no dimming. */
-  fleetTiers?: FleetTierMap;
-  selectedAsset: string;
-  setSelectedAsset: (v: string) => void;
   // Phase 6c.2 — per-edge scope. The Maintainer view owns this state
   // (URL-param-synced + reset-on-switch behavior); Header just renders
   // the pulldown and proxies changes back up.
@@ -136,23 +77,9 @@ interface HeaderProps {
   onSelectEdge: (edgeId: string) => void;
 }
 
-// asset_id-first label (assetLabel) so assets with a shared callsign stay
-// distinguishable in the picker; platform_variant appended for context.
-// Non-live tier (STALE / COMM_LOST / LOST) suffixed in brackets so the
-// operator sees at a glance which assets they're navigating into are
-// silent. ACTIVE / DEGRADED render bare; tier label only appears when
-// something noteworthy is wrong.
-function pickerLabel(a: FleetAsset, tier: AssetTier | undefined): string {
-  const base = a.platform_variant
-    ? `${assetLabel(a)} (${a.platform_variant})`
-    : assetLabel(a);
-  if (!tier || tier === 'ACTIVE' || tier === 'DEGRADED') return base;
-  return `${base} — ${tierLabel(tier).toUpperCase()}`;
-}
-
 export default function Header({
   linkControl,
-  fleet, fleetTiers, selectedAsset, setSelectedAsset,
+  fleet,
   availableEdges, selectedEdge, onSelectEdge,
 }: HeaderProps) {
   const { status, isError } = useEdgeBuffer();
@@ -190,7 +117,7 @@ export default function Header({
   };
 
   return (
-    <header className="panel flex flex-col p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
+    <header className="panel flex flex-col p-3 m-2 shrink-0 z-40 border-b-2 border-b-slate-700">
       {/* WHOSE SCREEN IS THIS. Placed above everything else, because the
           answer changes what every number below it means — and in a
           side-by-side demo it is the only thing distinguishing two windows
@@ -217,55 +144,6 @@ export default function Header({
           selected={selectedEdge}
           onSelect={onSelectEdge}
         />
-
-        {/* Asset Context Switcher — populated from the edge-scoped fleet
-            (useFleetAssetsForEdge in MaintainerApp). The picker contents
-            update on edge change; MaintainerApp's re-home effect picks
-            the first asset of the new edge unless a deep-link ?asset=
-            URL param specifies one in the scoped edge. */}
-        <div className="flex flex-col">
-          {/* Title row: ASSET label on the left, tier-count chips
-              right-justified above the pulldown -- compact summary
-              of fleet liveness without taking a separate header
-              strip. Hidden on cold start (no tier data yet) so the
-              user doesn't see five zeros pop in. */}
-          <div className="flex items-baseline justify-between mb-1 w-64">
-            <label className="text-[10px] text-slate-400 tracking-wider">ASSET</label>
-            <TierCountChips fleet={fleet} tiers={fleetTiers} />
-          </div>
-          <div className="relative">
-            <select
-              value={selectedAsset}
-              onChange={(e) => setSelectedAsset(e.target.value)}
-              className="appearance-none w-64 bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 cursor-pointer"
-            >
-              {fleet.length === 0 && <option value="">— no assets in scope —</option>}
-              {fleet.map((a) => {
-                const tier = fleetTiers?.get(a.asset_id);
-                // Non-live tiers dim the option text so the picker
-                // reads as "live fleet first, silent assets visibly
-                // demoted". Browser <option> styling is limited
-                // (color works in most chromium-derivative browsers
-                // even though spec-wise it's optional) -- the
-                // text-content suffix carries the same info either
-                // way for accessibility.
-                const dim = tier && tier !== 'ACTIVE' && tier !== 'DEGRADED';
-                return (
-                  <option
-                    key={a.asset_id}
-                    value={a.asset_id}
-                    style={dim ? { color: '#94a3b8' } : undefined}
-                  >
-                    {pickerLabel(a, tier)}
-                  </option>
-                );
-              })}
-            </select>
-            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
-              <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
-            </div>
-          </div>
-        </div>
 
         {/* The network lives behind this pill. The dot is the OBSERVED link
             indicator (never the commanded toggle); the count is the uplink

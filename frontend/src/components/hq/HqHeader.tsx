@@ -94,7 +94,7 @@ export default function HqHeader({ linkControl }: HqHeaderProps) {
   };
 
   return (
-    <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700 transition-colors duration-500">
+    <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-40 border-b-2 border-b-slate-700 transition-colors duration-500">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
         {/* Exercise control -- a separate capability from link control
             (controls the DIS simulator/adapter via its own service, never a

@@ -94,7 +94,7 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
   };
 
   return (
-    <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-10 border-b-2 border-b-slate-700">
+    <header className="panel flex items-center justify-between p-3 m-2 shrink-0 z-40 border-b-2 border-b-slate-700">
       <div className="flex items-center space-x-6 w-full max-w-6xl mx-auto">
         <div className="flex flex-col items-center justify-center mr-4">
           <button

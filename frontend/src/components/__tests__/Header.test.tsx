@@ -53,8 +53,6 @@ function render(linkControl: UseLinkControlResult, expandRows = false): string {
     <Header
       linkControl={linkControl}
       fleet={[]}
-      selectedAsset=""
-      setSelectedAsset={() => {}}
       availableEdges={[]}
       selectedEdge={null}
       onSelectEdge={() => {}}
