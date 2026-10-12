@@ -90,7 +90,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from client_credentials import ClientCredentials, parse_auth
-from startup import require_tables, require_topics
+from startup import require_tables, require_topics, store_dsn_from_env
 
 log = logging.getLogger("egress.forwarder")
 
@@ -108,8 +108,6 @@ SESSION_TIMEOUT_MS = os.getenv("OPENDDIL_FORWARD_SESSION_TIMEOUT_MS")
 WAIT_SLICE_S = 1.0
 COUNTER_LOG_INTERVAL_S = 60.0
 REJECTED_BODY_LOG_BYTES = 300
-POSTGRES_DSN = os.getenv(
-    "POSTGRES_DSN", "postgres://postgres:password@postgres-hq:5432/openddil")
 
 # No case_id was found on the delivered/duplicate outcome this log line
 # reports — distinct from `None`, which means a case_id was looked for and
@@ -308,7 +306,7 @@ class DeliveredStore:
     next call reconnects rather than retrying over one already dead;
     `_deliver`'s own backoff loop is what makes that retry happen."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str | None) -> None:
         self._dsn = dsn
         self._loop = asyncio.new_event_loop()
         self._conn = None
@@ -1042,7 +1040,7 @@ def resend_main(argv: list[str]) -> int:
 
     return resend_once(
         routes, route_name=args.route, event_id=args.event_id, reason=args.reason, key=args.key,
-        record=record, post=_default_post, store=DeliveredStore(POSTGRES_DSN),
+        record=record, post=_default_post, store=DeliveredStore(store_dsn_from_env()),
         read_token=_default_read_token, audit=_default_audit,
     )
 
@@ -1079,9 +1077,9 @@ def main() -> int:
         require_topics(
             AdminClient({"bootstrap.servers": BROKERS}), sorted(routes_by_topic))
         if any(route.dedupe_field is not None for route in routes):
-            asyncio.run(require_tables(POSTGRES_DSN, ["egress_delivered_events"]))
+            asyncio.run(require_tables(store_dsn_from_env(), ["egress_delivered_events"]))
 
-    store = DeliveredStore(POSTGRES_DSN) if any(route.dedupe_field is not None for route in routes) else None
+    store = DeliveredStore(store_dsn_from_env()) if any(route.dedupe_field is not None for route in routes) else None
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)

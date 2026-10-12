@@ -62,12 +62,10 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 import delivery
 import pointer
 from kinds import Declarations
-from startup import require_topics
+from startup import require_topics, store_dsn_from_env
 
 log = logging.getLogger("egress.assembler")
 
-POSTGRES_DSN = os.getenv(
-    "POSTGRES_DSN", "postgres://postgres:password@postgres-hq:5432/openddil")
 
 
 # --- episodes -----------------------------------------------------------
@@ -469,7 +467,7 @@ async def read_asset(asset_id: str) -> dict[str, Any] | None:
     section the assembler could not fill, not a guessed default)."""
     import asyncpg  # noqa: PLC0415 — only this function needs it
 
-    conn = await asyncpg.connect(POSTGRES_DSN)
+    conn = await asyncpg.connect(store_dsn_from_env())
     try:
         telemetry = await conn.fetchrow(
             "SELECT operational_status, reporting_status, last_sample_at "
@@ -972,6 +970,10 @@ async def _main_async() -> int:
     if not CONFIG_PATH:
         log.error("FATAL: OPENDDIL_ASSEMBLER_CONFIG is not set")
         return 2
+
+    # Refuse to start with no store connection source (read_asset connects
+    # per call, so without this the first record would be the first failure).
+    store_dsn_from_env()
 
     known = load_kinds(KINDS_DIR) if KINDS_DIR.is_dir() else {}
     declarations_map = load_declarations(KINDS_DIR) if KINDS_DIR.is_dir() else {}

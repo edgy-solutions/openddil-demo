@@ -101,11 +101,9 @@ from gate import (  # noqa: E402
     AuthzUnavailable,
     EgressGate,
 )
-from startup import require_tables  # noqa: E402
+from startup import require_tables, store_dsn_from_env  # noqa: E402
 
 LISTEN_PORT = int(os.getenv("OPENDDIL_EGRESS_PANE_PORT", "8090"))
-POSTGRES_DSN = os.getenv(
-    "POSTGRES_DSN", "postgres://postgres:password@postgres-hq:5432/openddil")
 # Same default `main.py` uses for OPENDDIL_EGRESS_DESTINATION — the pane's
 # default view is the same link the running gate actually enforces.
 DEFAULT_DESTINATION = os.getenv("OPENDDIL_EGRESS_DESTINATION", "system:c2-stand-in-atl")
@@ -128,7 +126,7 @@ async def _fetch_all_records() -> list[dict[str, Any]]:
     to answer: it is whatever arrived on the stream, and the gate's answer
     over exactly that set is what the pane exists to show. `ORDER BY
     asset_id` only for a stable response order across requests."""
-    conn = await asyncpg.connect(POSTGRES_DSN)
+    conn = await asyncpg.connect(store_dsn_from_env())
     try:
         rows = await conn.fetch(
             "SELECT asset_id, originator_nation, releasable_to "
@@ -156,7 +154,7 @@ async def _fetch_records_by_kind(kind: str) -> list[dict[str, Any]]:
     THIS destination's gate admits them. Intake's decision and this pane's
     decision answer different questions; the two are not expected to agree.
     `ORDER BY key` only for a stable response order across requests."""
-    conn = await asyncpg.connect(POSTGRES_DSN)
+    conn = await asyncpg.connect(store_dsn_from_env())
     try:
         rows = await conn.fetch(
             "SELECT kind, key, originator_nation, releasable_to, owning_tier, "
@@ -362,9 +360,8 @@ def main() -> None:
     # single request — a missing one would otherwise surface as a 500 on
     # the first `/decisions` call instead of a named startup refusal.
     asyncio.run(require_tables(
-        POSTGRES_DSN, ["asset_logistics_status", "intake_records"]))
-    log.info("egress pane-api listening on :%s (postgres=...@%s)",
-              LISTEN_PORT, POSTGRES_DSN.rsplit("@", 1)[-1])
+        store_dsn_from_env(), ["asset_logistics_status", "intake_records"]))
+    log.info("egress pane-api listening on :%s", LISTEN_PORT)
     ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), PaneApi).serve_forever()
 
 

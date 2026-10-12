@@ -23,6 +23,7 @@ refusal, not a bug.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any, Awaitable, Callable, Iterable, Protocol
 
@@ -67,11 +68,47 @@ def require_topics(
         sys.exit(3)
 
 
+_store_source_logged = False
+
+
+def store_dsn_from_env() -> str | None:
+    """Where the store connection comes from; the ONE copy of this rule.
+
+    POSTGRES_DSN, if set and non-empty, is returned as the docker compose
+    fallback. Otherwise, when PGHOST is non-empty the standard PG*
+    environment is the source and None is returned: `asyncpg.connect(None)`
+    reads PGHOST/PGPORT/PGDATABASE/PGUSER/PGPASSWORD/PGSSLMODE itself, so
+    the password never sits in a string built here. Neither set -> one
+    `STARTUP_REFUSED store_connection_unset` line and `sys.exit(2)`; there
+    is no credential default. The source (never a DSN or a password) is
+    logged once per process.
+    """
+    global _store_source_logged
+    dsn = os.getenv("POSTGRES_DSN", "")
+    if dsn:
+        if not _store_source_logged:
+            log.info("store connection: POSTGRES_DSN (compose fallback)")
+            _store_source_logged = True
+        return dsn
+    host = os.getenv("PGHOST", "")
+    if host:
+        if not _store_source_logged:
+            log.info(
+                "store connection: PG* environment (host=%s db=%s user=%s)",
+                host, os.getenv("PGDATABASE", ""), os.getenv("PGUSER", ""))
+            _store_source_logged = True
+        return None
+    log.error(
+        "STARTUP_REFUSED store_connection_unset: set PGHOST (with PGDATABASE, "
+        "PGUSER and PGPASSWORD or PGPASSFILE) or, for docker compose, POSTGRES_DSN")
+    sys.exit(2)
+
+
 async def require_tables(
-    dsn: str,
+    dsn: str | None,
     tables: Iterable[str],
     *,
-    connect: Callable[[str], Awaitable[Any]] | None = None,
+    connect: Callable[[str | None], Awaitable[Any]] | None = None,
 ) -> None:
     """Refuse to start if any of `tables` does not exist, checked with
     `to_regclass` — NULL means "no such relation", same as a missing topic.

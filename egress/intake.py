@@ -78,13 +78,11 @@ from gate import (
     AuthzUnavailable, EgressGate, Label, ask_topaz, extract_label_at,
     load_registry_versions, new_decision_id,
 )
-from startup import require_tables, require_topics
+from startup import require_tables, require_topics, store_dsn_from_env
 from kinds import Declarations
 
 log = logging.getLogger("egress.intake")
 
-POSTGRES_DSN = os.getenv(
-    "POSTGRES_DSN", "postgres://postgres:password@postgres-hq:5432/openddil")
 
 # --- reasons ------------------------------------------------------------
 # Distinct operational events, same discipline as gate.py's REASON_* — see
@@ -832,7 +830,7 @@ class IntakeStore:
     not on any hot read path where a held pool would matter, and a fresh
     connection means no connection-liveness bookkeeping to get wrong."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str | None) -> None:
         self._dsn = dsn
 
     async def get_existing(self, kind: str, key: str) -> ExistingRecord | None:
@@ -1027,6 +1025,8 @@ async def _main_async() -> int:
         log.error("FATAL: OPENDDIL_EGRESS_INTAKE_CONFIG is not set")
         return 2
 
+    store_dsn = store_dsn_from_env()
+
     known = load_kinds(KINDS_DIR) if KINDS_DIR.is_dir() else {}
     declarations_map = load_declarations(KINDS_DIR) if KINDS_DIR.is_dir() else {}
 
@@ -1059,7 +1059,7 @@ async def _main_async() -> int:
         wanted_topics = sorted(
             {e.answers.topic for e in entries} | {e.onward_topic for e in entries})
         require_topics(admin, wanted_topics)
-        await require_tables(POSTGRES_DSN, ["intake_records"])
+        await require_tables(store_dsn, ["intake_records"])
 
     # Registry versions, loaded unconditionally before any entry starts
     # polling — see gate.py's `load_registry_versions`. Probed against the
@@ -1074,7 +1074,7 @@ async def _main_async() -> int:
             log.error("FATAL: registry versions unavailable: %s", exc)
             return 2
 
-    store = IntakeStore(POSTGRES_DSN)
+    store = IntakeStore(store_dsn)
 
     tasks = []
     for entry in entries:

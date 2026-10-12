@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from startup import require_tables, require_topics  # noqa: E402
+from startup import require_tables, require_topics, store_dsn_from_env  # noqa: E402
 
 
 # --- require_topics -----------------------------------------------------
@@ -155,3 +155,55 @@ def test_require_tables_empty_list_proceeds():
     asyncio.run(require_tables(
         "postgres://stand-in", [], connect=_unreachable_connect(),
     ))  # nothing wanted, nothing checked
+
+
+# --- store_dsn_from_env: PG* environment first, DSN only as compose fallback
+
+
+def _clear_store_env(monkeypatch):
+    for k in ("POSTGRES_DSN", "PGHOST", "PGDATABASE", "PGUSER", "PGPASSWORD"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_store_dsn_set_is_used(monkeypatch):
+    _clear_store_env(monkeypatch)
+    monkeypatch.setenv("POSTGRES_DSN", "postgres://u:pw-test-only@h:5432/d")
+    monkeypatch.setenv("PGHOST", "ignored")
+    assert store_dsn_from_env() == "postgres://u:pw-test-only@h:5432/d"
+
+
+def test_store_pghost_only_connects_with_dsn_none(monkeypatch):
+    import asyncio
+    import sys
+    import types
+
+    _clear_store_env(monkeypatch)
+    monkeypatch.setenv("PGHOST", "db.internal")
+    monkeypatch.setenv("PGPASSWORD", "pw-test-only")
+    dsn = store_dsn_from_env()
+    assert dsn is None
+
+    seen = []
+
+    class _Conn:
+        async def fetchval(self, *a):
+            return "x"
+
+        async def close(self):
+            pass
+
+    async def fake_connect(*args, **kwargs):
+        seen.append(args)
+        return _Conn()
+
+    fake = types.SimpleNamespace(connect=fake_connect)
+    monkeypatch.setitem(sys.modules, "asyncpg", fake)
+    asyncio.run(require_tables(dsn, ["intake_records"]))
+    assert seen == [(None,)]
+
+
+def test_store_neither_set_exits(monkeypatch):
+    _clear_store_env(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        store_dsn_from_env()
+    assert exc.value.code == 2
