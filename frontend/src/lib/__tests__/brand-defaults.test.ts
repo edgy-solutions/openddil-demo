@@ -37,12 +37,12 @@ describe('/brand/ defaults', () => {
     const refs = brandRefs();
     expect(refs.has('favicon.png')).toBe(true);
     expect(refs.has('logo.png')).toBe(true);
-  });
+  }, 30_000); // a tree walk under the full parallel suite
 
   it('every /brand/ path referenced by the UI is a file in public/brand/', () => {
     const missing = [...brandRefs()]
       .filter(([name]) => !existsSync(join(ROOT, 'public', 'brand', name)))
       .map(([name, from]) => `/brand/${name} (referenced in ${from})`);
     expect(missing).toEqual([]);
-  });
+  }, 30_000); // a tree walk under the full parallel suite
 });

@@ -56,5 +56,5 @@ describe('link control wiring', () => {
         expect(text.includes(f), `${path.relative(SRC, file)} contains ${f}`).toBe(false);
       }
     }
-  });
+  }, 30_000); // a tree walk under the full parallel suite
 });
