@@ -36,6 +36,8 @@ from assembler import (  # noqa: E402
     build_picture,
     episodes,
     handle_cm_state_message,
+    handle_posture_message,
+    parse_posture_transition,
     load_assembler_config,
     record_key,
 )
@@ -343,7 +345,7 @@ def test_a_different_fault_code_produces_a_new_record_not_a_revision():
 def test_an_empty_fault_code_produces_no_record():
     state = _route_state()
     assert _produced(state, cm_state(discrepancies=[discrepancy(fault_code="")])) == []
-    assert state.counters == {"records": 0, "revisions": 0, "sources": 0}
+    assert state.counters == {"records": 0, "revisions": 0, "sources": 0, "arrivals": 0}
 
 
 def test_a_resolved_discrepancy_absent_from_the_list_produces_no_record():
@@ -504,7 +506,7 @@ def test_a_failed_delivery_raises_and_leaves_bookkeeping_unchanged_then_a_retry_
         asyncio.run(handle_cm_state_message(
             state, message, read_asset=_no_picture, now=NOW, produce=_make_produce(failing)))
     assert state.last_produced == {}
-    assert state.counters == {"records": 0, "revisions": 0, "sources": 0}
+    assert state.counters == {"records": 0, "revisions": 0, "sources": 0, "arrivals": 0}
 
     succeeding = _FakeDeliveryProducer(fail=False)
     asyncio.run(handle_cm_state_message(
@@ -1167,3 +1169,236 @@ def test_provenance_end_to_end_through_build_picture_and_assemble():
     assert by_key["telemetry_latest_state:dis:1:1:1000"] == "2026-02-01T00:00:00Z"
     assert by_key["asset_logistics_status:dis:1:1:1000"] == "2026-02-02T00:00:00Z"
     assert by_key["parts-availability:site-a:part:p-1"] == "2023-11-14T22:13:20Z"
+
+
+# --- arrival: deferred episodes re-emitted on emplacement -------------------
+
+KIND_A_ARRIVAL_DECL = Declarations(
+    key="/ref", label="/marking", owning_tier="/tier",
+    episode=EpisodeDecl(asset="/subject", component="/what/part", fault_code="/what/code"),
+    trigger="/kind", provenance="/prov",
+)
+
+ASSET = "dis:1:1:1000"
+T0 = 1_700_000_000  # seconds; an episode detected here is older than a march order at T0 + 100
+OLD_NS = T0 * 1_000_000_000
+NEW_NS = (T0 + 200) * 1_000_000_000
+
+
+def _at(seconds):
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _transition_msg(to, tid, seconds, asset=ASSET, as_string=False, frm="x"):
+    data = {"from": frm, "to": to, "at": _at(seconds)}
+    return {
+        "type": "openddil.posture.transition", "id": tid, "subject": asset,
+        "data": json.dumps(data) if as_string else data,
+    }
+
+
+def _tr(to, tid, seconds, asset=ASSET):
+    return parse_posture_transition(_transition_msg(to, tid, seconds, asset))
+
+
+def _arrival_state():
+    route = AssemblerRoute(
+        name="r1", kind="KindA", trigger_topic="t", output_topic="o", posture_topic="p")
+    return _RouteState(route=route, declarations=KIND_A_ARRIVAL_DECL, schema={})
+
+
+def _feed_cm(state, cm, sink):
+    asyncio.run(handle_cm_state_message(
+        state, cm, read_asset=_no_picture, now=NOW,
+        produce=lambda t, p, k: sink.append((t, p, k))))
+
+
+def _feed_posture(state, transition, sink):
+    asyncio.run(handle_posture_message(
+        state, transition, read_asset=_no_picture, now=NOW,
+        produce=lambda t, p, k: sink.append((t, p, k))))
+
+
+def _two_episode_cm():
+    return cm_state(discrepancies=[
+        discrepancy(component="SLOT-1", fault_code="F001", detected_at_ns=OLD_NS),
+        discrepancy(component="SLOT-2", fault_code="F002", detected_at_ns=NEW_NS),
+    ])
+
+
+def _march_and_move(state, sink, tid="m1", at=T0 + 100):
+    _feed_posture(state, _tr("march_ordered", tid, at), sink)
+    _feed_posture(state, _tr("moving", tid + "-mv", at + 10), sink)
+
+
+def test_parse_posture_transition_object_data():
+    t = parse_posture_transition(_transition_msg("emplaced", "e1", T0))
+    assert (t.id, t.asset, t.to, t.at) == ("e1", ASSET, "emplaced", _at(T0))
+    assert t.at_ns == T0 * 1_000_000_000
+
+
+def test_parse_posture_transition_string_data():
+    t = parse_posture_transition(_transition_msg("emplaced", "e1", T0, as_string=True))
+    assert t is not None and t.to == "emplaced" and t.at_ns == T0 * 1_000_000_000
+
+
+def test_parse_posture_transition_wrong_type_is_none():
+    msg = _transition_msg("emplaced", "e1", T0)
+    msg["type"] = "openddil.something.else"
+    assert parse_posture_transition(msg) is None
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda m: m.pop("id"),
+    lambda m: m.pop("subject"),
+    lambda m: m.update(data="not json"),
+    lambda m: m.update(data=None),
+    lambda m: m.update(data={"to": "emplaced"}),
+    lambda m: m.update(data={"to": "emplaced", "at": "yesterday"}),
+    lambda m: m.update(data={"to": "emplaced", "at": "2026-10-02T00:00:00"}),
+])
+def test_parse_posture_transition_malformed_is_none(mutate):
+    msg = _transition_msg("emplaced", "e1", T0)
+    mutate(msg)
+    assert parse_posture_transition(msg) is None
+
+
+def test_parse_posture_transition_non_mapping_is_none():
+    assert parse_posture_transition(["x"]) is None
+    assert parse_posture_transition(None) is None
+
+
+def test_arrival_re_emits_only_the_episode_open_before_the_march_order():
+    state = _arrival_state()
+    sink: list = []
+    cm = _two_episode_cm()
+    _feed_cm(state, cm, sink)
+    assert len(sink) == 2
+    first_key = json.loads(sink[0][1])["ref"]
+    sink.clear()
+
+    _march_and_move(state, sink)
+    _feed_posture(state, _tr("emplacing", "p1", T0 + 120), sink)
+    assert sink == []
+    _feed_posture(state, _tr("emplaced", "e1", T0 + 300), sink)
+
+    assert len(sink) == 1
+    topic, payload, key = sink[0]
+    rec = json.loads(payload)
+    assert topic == "o"
+    assert key.decode() == first_key == rec["ref"]
+    assert rec["kind"] == "cm_discrepancy"
+    assert rec["prov"][-1] == {"row_key": "tactical_events:e1", "observed_at": _at(T0 + 300)}
+    assert state.counters["arrivals"] == 1
+
+
+def test_emplaced_without_a_move_is_a_cancelled_march_order(caplog):
+    state = _arrival_state()
+    sink: list = []
+    _feed_cm(state, _two_episode_cm(), sink)
+    sink.clear()
+    _feed_posture(state, _tr("march_ordered", "m1", T0 + 100), sink)
+    with caplog.at_level(logging.INFO, logger="egress.assembler"):
+        _feed_posture(state, _tr("emplaced", "e1", T0 + 150), sink)
+    assert sink == []
+    assert any("arrival skipped: asset=" in r.getMessage()
+               and "emplaced without a move since march order" in r.getMessage()
+               for r in caplog.records)
+    _feed_posture(state, _tr("emplaced", "e2", T0 + 160), sink)
+    assert sink == []
+
+
+def test_the_same_emplaced_transition_twice_produces_once():
+    state = _arrival_state()
+    sink: list = []
+    _feed_cm(state, _two_episode_cm(), sink)
+    sink.clear()
+    _march_and_move(state, sink)
+    _feed_posture(state, _tr("emplaced", "e1", T0 + 300), sink)
+    _feed_posture(state, _tr("emplaced", "e1", T0 + 300), sink)
+    assert len(sink) == 1
+    assert state.counters["arrivals"] == 1
+
+
+def test_emplaced_with_no_march_order_produces_nothing():
+    state = _arrival_state()
+    sink: list = []
+    _feed_cm(state, _two_episode_cm(), sink)
+    sink.clear()
+    _feed_posture(state, _tr("emplaced", "e1", T0 + 300), sink)
+    assert sink == []
+
+
+def test_arrival_with_no_cm_state_in_memory_warns_and_produces_nothing(caplog):
+    state = _arrival_state()
+    sink: list = []
+    _march_and_move(state, sink)
+    with caplog.at_level(logging.WARNING, logger="egress.assembler"):
+        _feed_posture(state, _tr("emplaced", "e1", T0 + 300), sink)
+    assert sink == []
+    assert any(r.levelno == logging.WARNING and ASSET in r.getMessage() for r in caplog.records)
+
+
+def test_a_second_move_with_a_new_transition_produces_one_more_record():
+    state = _arrival_state()
+    sink: list = []
+    _feed_cm(state, cm_state(discrepancies=[discrepancy(detected_at_ns=OLD_NS)]), sink)
+    sink.clear()
+    _march_and_move(state, sink, "m1", T0 + 100)
+    _feed_posture(state, _tr("emplaced", "e1", T0 + 300), sink)
+    _march_and_move(state, sink, "m2", T0 + 400)
+    _feed_posture(state, _tr("emplaced", "e2", T0 + 600), sink)
+    assert len(sink) == 2
+    assert json.loads(sink[1][1])["prov"][-1]["row_key"] == "tactical_events:e2"
+    assert state.counters["arrivals"] == 2
+
+
+def test_a_later_unchanged_cm_state_message_is_still_a_no_op():
+    state = _arrival_state()
+    sink: list = []
+    cm = _two_episode_cm()
+    _feed_cm(state, cm, sink)
+    sink.clear()
+    _march_and_move(state, sink)
+    _feed_posture(state, _tr("emplaced", "e1", T0 + 300), sink)
+    sink.clear()
+    _feed_cm(state, cm, sink)
+    assert sink == []
+
+
+def test_other_postures_and_other_assets_produce_nothing():
+    state = _arrival_state()
+    sink: list = []
+    _feed_cm(state, _two_episode_cm(), sink)
+    sink.clear()
+    _march_and_move(state, sink)
+    _feed_posture(state, _tr("radiating", "r1", T0 + 200), sink)
+    _feed_posture(state, _tr("emplaced", "e9", T0 + 300, asset="dis:9:9:9"), sink)
+    assert sink == []
+
+
+def _write_cfg(tmp_path, **extra):
+    entry = {"name": "r1", "kind": "KindA", "trigger_topic": "t", "output_topic": "o", **extra}
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps([entry]))
+    return path
+
+
+def test_config_accepts_posture_topic(tmp_path):
+    routes = load_assembler_config(_write_cfg(tmp_path, posture_topic="p"), ["KindA"])
+    assert routes[0].posture_topic == "p"
+
+
+@pytest.mark.parametrize("bad", ["", 5, None])
+def test_config_rejects_a_bad_posture_topic(tmp_path, bad):
+    with pytest.raises(AssemblerConfigError, match="posture_topic"):
+        load_assembler_config(_write_cfg(tmp_path, posture_topic=bad), ["KindA"])
+
+
+def test_config_absent_posture_topic_means_no_subscription(tmp_path):
+    import assembler
+    routes = load_assembler_config(_write_cfg(tmp_path), ["KindA"])
+    assert routes[0].posture_topic is None
+    assert assembler.subscription_topics(routes) == {"t"}
+    with_posture = load_assembler_config(_write_cfg(tmp_path, posture_topic="p"), ["KindA"])
+    assert assembler.subscription_topics(with_posture) == {"t", "p"}

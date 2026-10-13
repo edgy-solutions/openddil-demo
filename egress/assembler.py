@@ -44,6 +44,24 @@ key a downstream consumer has already seen, not a duplicate record under a
 new key, which is exactly what an upsert-by-key destination (the gate's
 sink, and whatever reads it) needs: re-applying the same key is a no-op in
 meaning even though it is a re-send on the wire.
+
+ARRIVAL RE-EMITS DEFERRED EPISODES
+A unit that march-orders carries its open discrepancies with it: the
+maintenance is deferred until it emplaces. When a route has a
+`posture_topic`, the edge's posture transitions are read from it, and when
+an asset that has march-ordered AND moved since then is emplaced again,
+each of its episodes that was already open at the march order (detected
+before it) is assembled and produced once more. It is the SAME episode,
+so the record key is unchanged: the fault did not reoccur. The record's
+trigger pointer keeps `cm_discrepancy`, because it names what OPENED the
+episode, and the episode is the discrepancy's; the arrival is carried in
+provenance as one more entry, `tactical_events:<transition id>` observed
+at the transition's own time, appended last. A march order that is
+followed by an emplacement with no move in between was cancelled in place
+and sends nothing. The march-order, moved and already-sent bookkeeping, and
+the latest cm-state per asset, are in memory only: a restart loses them, so
+an arrival with no cm-state on record sends nothing (it logs a warning),
+and a march order made before the restart is not remembered.
 """
 from __future__ import annotations
 
@@ -55,7 +73,7 @@ import signal as signal_module
 import sys
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
@@ -668,6 +686,9 @@ class AssemblerRoute:
     # pairs — `dict(...)` at the point of use, the same convention
     # `part_refs` uses.
     battle_condition: tuple[tuple[str, "Designation"], ...] = ()
+    # Optional topic of posture transitions; absent = no subscription, no
+    # arrival state, nothing extra produced.
+    posture_topic: str | None = None
 
 
 def _entry_label(entry: object, index: int) -> str:
@@ -722,6 +743,11 @@ def load_assembler_config(
             raise AssemblerConfigError(
                 f"{label}: 'part_refs' must map non-empty component strings to "
                 "non-empty part reference strings")
+
+        posture_topic = entry.get("posture_topic")
+        if "posture_topic" in entry and (
+                not isinstance(posture_topic, str) or not posture_topic):
+            raise AssemblerConfigError(f"{label}: 'posture_topic' must be a non-empty string")
 
         raw_battle_condition = entry.get("battle_condition", {})
         if not isinstance(raw_battle_condition, Mapping):
@@ -779,6 +805,7 @@ def load_assembler_config(
             output_topic=entry["output_topic"], parts_topic=entry.get("parts_topic"),
             part_refs=tuple(sorted(part_refs.items())),
             battle_condition=tuple(battle_condition),
+            posture_topic=posture_topic,
         ))
     return routes
 
@@ -794,8 +821,13 @@ class _RouteState:
     # restart re-emitting every open episode once is correct here, not a bug.
     last_produced: dict[str, tuple[str, ...]] = field(default_factory=dict)
     counters: dict[str, int] = field(default_factory=lambda: {
-        "records": 0, "revisions": 0, "sources": 0,
+        "records": 0, "revisions": 0, "sources": 0, "arrivals": 0,
     })
+    # Arrival bookkeeping, in memory only — see the module docstring.
+    latest_cm_state: dict[str, Mapping[str, Any]] = field(default_factory=dict)
+    march_ordered_at_ns: dict[str, int] = field(default_factory=dict)
+    moved_since_march_order: set[str] = field(default_factory=set)
+    arrivals_produced: set[tuple[str, str]] = field(default_factory=set)
 
 
 def _source_ids(episode: Episode) -> tuple[str, ...]:
@@ -821,6 +853,36 @@ async def build_route_picture(
     )
 
 
+async def _picture_with_retry(
+    state: _RouteState,
+    cm_state: Mapping[str, Any],
+    episode: Episode,
+    owning_tier: str,
+    key: str,
+    *,
+    read_asset: ReadAsset,
+    postgres_retry: Sequence[float],
+) -> dict[str, Any]:
+    """Bounded retry with backoff on a postgres error. The offset the
+    triggering message arrived on is not committed until the caller returns
+    without raising."""
+    attempt = 0
+    while True:
+        try:
+            return await build_route_picture(
+                state, cm_state, episode, owning_tier, read_asset=read_asset)
+        except Exception:  # noqa: BLE001 — retried, then re-raised
+            if attempt >= len(postgres_retry):
+                raise
+            delay = postgres_retry[attempt]
+            log.warning(
+                "postgres error building picture for %s (attempt %d); retrying in %.1fs",
+                key, attempt + 1, delay,
+            )
+            await asyncio.sleep(delay)
+            attempt += 1
+
+
 async def _produce_episode(
     state: _RouteState,
     cm_state: Mapping[str, Any],
@@ -843,25 +905,9 @@ async def _produce_episode(
     if state.last_produced.get(key) == source_ids:
         return
 
-    # Bounded retry with backoff on a postgres error. The offset this
-    # episode's message arrived on is not committed until this returns
-    # without raising — see the caller.
-    attempt = 0
-    while True:
-        try:
-            picture = await build_route_picture(
-                state, cm_state, episode, owning_tier, read_asset=read_asset)
-            break
-        except Exception:  # noqa: BLE001 — retried, then re-raised
-            if attempt >= len(postgres_retry):
-                raise
-            delay = postgres_retry[attempt]
-            log.warning(
-                "postgres error building picture for %s (attempt %d); retrying in %.1fs",
-                key, attempt + 1, delay,
-            )
-            await asyncio.sleep(delay)
-            attempt += 1
+    picture = await _picture_with_retry(
+        state, cm_state, episode, owning_tier, key,
+        read_asset=read_asset, postgres_retry=postgres_retry)
 
     record = assemble(
         state.route.kind, state.declarations, state.schema, cm_state, episode, picture, now,
@@ -884,15 +930,142 @@ async def handle_cm_state_message(
     produce: Callable[[str, bytes, bytes], None],
 ) -> None:
     """Every open episode in one cm-state message, assembled and produced
-    (or skipped as an unchanged duplicate) in turn."""
+    (or skipped as an unchanged duplicate) in turn. The message is recorded
+    as the asset's latest cm-state first, for a later arrival."""
+    asset = cm_state.get("asset_id", "")
+    if asset:
+        state.latest_cm_state[asset] = cm_state
     for episode in episodes(cm_state):
         await _produce_episode(state, cm_state, episode, read_asset=read_asset, now=now, produce=produce)
+
+
+# --- arrival: posture transitions -------------------------------------------
+
+POSTURE_TRANSITION_TYPE = "openddil.posture.transition"
+
+
+@dataclass(frozen=True)
+class PostureTransition:
+    id: str
+    asset: str
+    to: str
+    at: str
+    at_ns: int
+
+
+def parse_posture_transition(msg: Mapping[str, Any]) -> PostureTransition | None:
+    """A posture-transition CloudEvent -> `PostureTransition`; anything else
+    (another type on the same topic, a malformed event) -> None. Never
+    raises. `data` may be an object or a JSON string."""
+    try:
+        if not isinstance(msg, Mapping) or msg.get("type") != POSTURE_TRANSITION_TYPE:
+            return None
+        tid, asset = msg.get("id"), msg.get("subject")
+        if not isinstance(tid, str) or not tid or not isinstance(asset, str) or not asset:
+            return None
+        data = msg.get("data")
+        if isinstance(data, (str, bytes)):
+            data = json.loads(data)
+        if not isinstance(data, Mapping):
+            return None
+        to, at = data.get("to"), data.get("at")
+        if not isinstance(to, str) or not to or not isinstance(at, str) or not at:
+            return None
+        delta = _parse_rfc3339(at).astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        at_ns = (delta // timedelta(microseconds=1)) * 1000
+        return PostureTransition(id=tid, asset=asset, to=to, at=at, at_ns=at_ns)
+    except Exception:  # noqa: BLE001 — malformed input is "not a transition"
+        return None
+
+
+async def handle_posture_message(
+    state: _RouteState,
+    transition: PostureTransition,
+    *,
+    read_asset: ReadAsset,
+    now: datetime,
+    produce: Callable[[str, bytes, bytes], None],
+    postgres_retry: Sequence[float] = (0.5, 1.0, 2.0, 4.0, 8.0),
+) -> None:
+    """Track march orders; on an emplacement after a move, re-emit each
+    episode that was open at the march order. See the module docstring.
+    Does not touch `last_produced`."""
+    asset = transition.asset
+    if transition.to == "march_ordered":
+        state.march_ordered_at_ns[asset] = transition.at_ns
+        state.moved_since_march_order.discard(asset)
+        return
+    if transition.to == "moving":
+        if asset in state.march_ordered_at_ns:
+            state.moved_since_march_order.add(asset)
+        return
+    if transition.to != "emplaced" or asset not in state.march_ordered_at_ns:
+        return
+
+    march_ns = state.march_ordered_at_ns[asset]
+    march_at = _rfc3339(march_ns)
+    if asset not in state.moved_since_march_order:
+        log.info("arrival skipped: asset=%s emplaced without a move since march order %s",
+                 asset, march_at)
+        del state.march_ordered_at_ns[asset]
+        return
+
+    cm_state = state.latest_cm_state.get(asset)
+    if cm_state is None:
+        log.warning("arrival for asset=%s has no cm-state in memory; nothing sent", asset)
+    else:
+        owning_tier = owning_tier_of(cm_state)
+        for episode in episodes(cm_state):
+            if episode.detected_at_ns >= march_ns:
+                continue
+            key = record_key(
+                state.route.kind, owning_tier, episode.asset, episode.component,
+                episode.fault_code, episode.detected_at_ns)
+            if (key, transition.id) in state.arrivals_produced:
+                continue
+            picture = await _picture_with_retry(
+                state, cm_state, episode, owning_tier, key,
+                read_asset=read_asset, postgres_retry=postgres_retry)
+            record = assemble(
+                state.route.kind, state.declarations, state.schema, cm_state, episode,
+                picture, now)
+            ptr = state.declarations.provenance
+            if ptr:
+                entries = list(pointer.get(record, ptr, []))
+                entries.append({
+                    "row_key": f"tactical_events:{transition.id}",
+                    "observed_at": transition.at,
+                })
+                pointer.set(record, ptr, entries)
+            produce(state.route.output_topic,
+                    json.dumps(record, separators=(",", ":")).encode("utf-8"),
+                    key.encode("utf-8"))
+            state.arrivals_produced.add((key, transition.id))
+            state.counters["arrivals"] += 1
+            log.info("arrival: asset=%s key=%s transition=%s deferred since march order %s",
+                     asset, key, transition.id, march_at)
+
+    del state.march_ordered_at_ns[asset]
+    state.moved_since_march_order.discard(asset)
+
+
+def subscription_topics(routes: Iterable[AssemblerRoute]) -> set[str]:
+    """Every topic the main loop consumes for these routes."""
+    topics: set[str] = set()
+    for route in routes:
+        topics.add(route.trigger_topic)
+        if route.parts_topic:
+            topics.add(route.parts_topic)
+        if route.posture_topic:
+            topics.add(route.posture_topic)
+    return topics
 
 
 def log_counters(states: Iterable[_RouteState]) -> None:
     """One line per route: `records` (distinct keys ever produced),
     `revisions` (same key, new sources), `sources` (source entries carried
-    across every record produced). Logged at shutdown and every 60s by
+    across every record produced), `arrivals` (records re-sent on an
+    emplacement). Logged at shutdown and every 60s by
     `main`."""
     for state in states:
         log.info("assembler route=%s %s", state.route.name, json.dumps(state.counters, sort_keys=True))
@@ -998,12 +1171,14 @@ async def _main_async() -> int:
     topics: set[str] = set()
     trigger_states: dict[str, list[_RouteState]] = {}
     parts_states: dict[str, list[_RouteState]] = {}
+    posture_states: dict[str, list[_RouteState]] = {}
+    topics |= subscription_topics(routes)
     for state in states.values():
-        topics.add(state.route.trigger_topic)
         trigger_states.setdefault(state.route.trigger_topic, []).append(state)
         if state.route.parts_topic:
-            topics.add(state.route.parts_topic)
             parts_states.setdefault(state.route.parts_topic, []).append(state)
+        if state.route.posture_topic:
+            posture_states.setdefault(state.route.posture_topic, []).append(state)
 
     signal_module.signal(signal_module.SIGTERM, _stop)
     signal_module.signal(signal_module.SIGINT, _stop)
@@ -1046,6 +1221,13 @@ async def _main_async() -> int:
                 if record is not None:
                     for state in parts_states.get(topic, []):
                         state.parts.ingest(record)
+                    transition = (parse_posture_transition(record)
+                                  if topic in posture_states else None)
+                    for state in posture_states.get(topic, []):
+                        if transition is not None:
+                            await handle_posture_message(
+                                state, transition, read_asset=read_asset,
+                                now=datetime.now(timezone.utc), produce=produce)
                     for state in trigger_states.get(topic, []):
                         # Not committed until produced — a postgres error
                         # that exhausts the retry budget, or a produce whose
