@@ -58,6 +58,7 @@ import {
   POSTURE_ORDER, countPosture, postureClass, postureLabel, postureText, usePostureClock,
 } from './lib/posture';
 import { deployment } from './deployment';
+import { UnitMovePanels } from './components/MovePanel';
 import { acceptRegionParam, healRegion } from './lib/regionScope';
 import { SubtreeScopeLabel } from './components/SubtreeScopeLabel';
 
@@ -516,6 +517,7 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
                 selectedId={selectedAssetId}
                 onSelect={setSelectedAssetId}
               />
+              <UnitMovePanels tierKind="region" />
               {/* Region-scoped munitions rollup by type. Same component
                   as the HQ panel; the launcherIdFilter prop restricts
                   aggregation to launchers in the selected AOR. Regional

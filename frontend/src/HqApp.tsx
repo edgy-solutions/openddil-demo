@@ -32,6 +32,7 @@ import ReleasedRecordsPane from './components/releasability/ReleasedRecordsPane'
 import EgressAdmissionPane from './components/releasability/EgressAdmissionPane';
 import { deployment } from './deployment';
 import EdgeAttribution from './components/hq/EdgeAttribution';
+import { UnitMovePanels } from './components/MovePanel';
 import RegionFleetSummary from './components/hq/RegionFleetSummary';
 import MunitionsInventory from './components/hq/MunitionsInventory';
 import {
@@ -351,6 +352,7 @@ export default function HqApp() {
             RegionalApp/HqApp themselves don't render it. */}
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-140px)]">
           <EdgeAttribution />
+          <UnitMovePanels tierKind="hq" />
           <RegionFleetSummary />
           <FleetReadiness fleetSummary={regionFleet.data} />
           {/* MunitionsInventory (Phase 3, 2026-07-13): theater-wide

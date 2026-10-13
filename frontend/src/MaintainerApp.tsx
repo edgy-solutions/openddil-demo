@@ -29,6 +29,7 @@ import { WeaponsCapabilityCard } from './components/WeaponsCapabilityCard';
 import MunitionsLoadoutCard from './components/MunitionsLoadoutCard';
 import GroundDiagnosticsCard from './components/GroundDiagnosticsCard';
 import PostureCard from './components/PostureCard';
+import { AssetMovePanel } from './components/MovePanel';
 import LogisticsStatusCard from './components/LogisticsStatusCard';
 import {
   useFleetAssets,
@@ -599,6 +600,9 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             posture={tel ? { status: tel.posture_status, since: tel.posture_since } : null}
             isLoading={telemetry.isLoading}
           />
+          {selectedAssetId && (
+            <AssetMovePanel assetId={selectedAssetId} variant={variant} tierKind="edge" />
+          )}
           <GroundDiagnosticsCard
             opState={tel?.operational_state ?? null}
             isLoading={telemetry.isLoading}
