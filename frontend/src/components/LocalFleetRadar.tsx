@@ -15,7 +15,7 @@
 // rectangle at 52°N.
 //
 // Adaptive scale: max-distance-from-center fills the radar's outer ring
-// (90 units of the 100-unit viewBox). This keeps the picture useful
+// (radius 90; the viewBox reaches 125 to fit labels). This keeps the picture useful
 // whether assets are 5km or 50km away from the FOB. Falls back to a
 // fixed 30km full-scale when no assets have positions yet (cold start).
 //
@@ -75,6 +75,9 @@ function radarLabel(asset: Asset): string {
 // 30km is a reasonable SHORAD-class engagement neighborhood.
 const FALLBACK_RANGE_KM = 30;
 const KM_PER_DEG_LAT = 111;
+// Half-width of the square viewBox. The rings stop at 90 and the
+// crosshairs at 100; the rest is room for the labels beside the dots.
+const VIEW_HALF = 125;
 
 export default function LocalFleetRadar({
   localAssets = [],
@@ -111,27 +114,13 @@ export default function LocalFleetRadar({
   const unitsPerKm = 90 / maxDistKm;
 
   return (
-    <div className="w-[280px] h-[180px] shrink-0 border border-slate-700 bg-slate-900/90 shadow-2xl flex flex-col pointer-events-none panel">
-      <div className="bg-slate-800 text-[10px] px-2 py-1 text-slate-300 font-bold font-mono border-b border-slate-700 flex justify-between items-center">
-        <div className="flex flex-col">
-          <span className="tracking-wider">LOCAL FLEET RADAR</span>
-          {/* KM-ring label legibility — bumped from text-[8px] slate-500
-              (illegibly faint on slate-900) to text-[9px] slate-300
-              tracking-wider. Still subordinate to the LOCAL FLEET RADAR
-              header but actually readable now. */}
-          <span className="text-[9px] text-slate-300 tracking-wider">
-            {hasCenter ? `${maxDistKm.toFixed(0)} KM RING` : 'CENTERLESS'}
-          </span>
-        </div>
-        {/* The old NOMINAL/DEGRADED pill here read the uplink (`degraded`,
-            fed from MaintainerApp's link state) and had nothing to do
-            with the assets this radar is plotting -- a severed WAN link
-            turned this amber with no data behind it. Removed outright;
-            no fleet-liveness summary was already computed at this call
-            site to show instead. */}
-      </div>
-      <div className="flex-1 w-full relative overflow-hidden flex items-center justify-center">
-        <svg width="100%" height="100%" viewBox="-100 -100 200 200">
+    // A bare square, no frame or title: the overlay slot around it draws
+    // the one outline. 176 px over the 250-unit viewBox keeps the rings
+    // the size they had under the old title bar.
+    <div className="w-[176px] h-[176px] shrink-0 pointer-events-none">
+      <div className="w-full h-full relative overflow-hidden">
+        <svg width="100%" height="100%" viewBox={`${-VIEW_HALF} ${-VIEW_HALF} ${VIEW_HALF * 2} ${VIEW_HALF * 2}`}
+             role="img" aria-label="Local fleet radar">
           {/* Radar background circles */}
           <circle cx="0" cy="0" r="30" fill="none" stroke="#334155" strokeWidth="1" />
           <circle cx="0" cy="0" r="60" fill="none" stroke="#334155" strokeWidth="1" />
@@ -169,8 +158,15 @@ export default function LocalFleetRadar({
             const isSelected = !!selectedAssetId && asset.id === selectedAssetId;
             // Place the label outward of the dot and anchor it on the
             // side away from center, so labels don't stack over each
-            // other or the crosshairs.
-            const onLeft = x < 0;
+            // other or the crosshairs. A label that would run past the
+            // square's edge goes on the inner side instead.
+            const label = radarLabel(asset);
+            const fontSize = isSelected ? 8 : 7;
+            const labelW = label.length * fontSize * 0.6;
+            const outwardFits = x < 0
+              ? x - 9 - labelW >= -VIEW_HALF
+              : x + 9 + labelW <= VIEW_HALF;
+            const onLeft = outwardFits ? x < 0 : x >= 0;
             const labelX = x + (onLeft ? -9 : 9);
             // Selected asset stands out: amber dot + larger radius +
             // amber label. With most assets at the FOB center stacking
@@ -200,11 +196,11 @@ export default function LocalFleetRadar({
                   y={y + 3}
                   textAnchor={onLeft ? 'end' : 'start'}
                   fill={labelFill}
-                  fontSize={isSelected ? '8' : '7'}
+                  fontSize={fontSize}
                   fontWeight={isSelected ? 'bold' : 'normal'}
                   fontFamily="monospace"
                 >
-                  {radarLabel(asset)}
+                  {label}
                 </text>
               </g>
             );
