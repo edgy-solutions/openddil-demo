@@ -284,6 +284,76 @@ function Spares({ members, tierKind, parts }: { members: MemberInput[]; tierKind
   );
 }
 
+function TierView({ tierKind, buffer, member, reporting, edge, link, pos }: {
+  tierKind: TierKind;
+  buffer: EdgeBufferStatus | null | undefined;
+  member: MemberInput;
+  reporting: string | null;
+  edge: string | null;
+  link: LinkStatusRow | undefined;
+  pos: { lat: number; lon: number } | null;
+}) {
+  return (
+    <>
+      {tierKind === 'edge' ? (
+        <>
+          {buffer ? (
+            <>
+              <Row label="">
+                <span data-testid="move-uplink" data-severed={buffer.hq_link_severed ? 'true' : 'false'}>
+                  {buffer.hq_link_severed ? 'uplink severed' : 'uplink up'}
+                </span>
+                <Prov source="edge_buffer_status.hq_link_severed" at={buffer.updated_at} />
+              </Row>
+              <Row label="buffer depth">
+                <span data-testid="move-buffer" data-value={buffer.bridge_group_lag}>{buffer.bridge_group_lag}</span>
+                <Prov source="bridge_group_lag" at={buffer.updated_at} />
+              </Row>
+            </>
+          ) : (
+            <Row label="uplink"><Absence reason="no edge_buffer_status row" testId="move-uplink" /></Row>
+          )}
+        </>
+      ) : (
+        <>
+          <Row label="reporting">
+            {reporting ?? 'unknown'}
+            <Prov source="reporting_status" at={member.fleet?.reportingStatusAt} />
+          </Row>
+          <Row label="last sample">
+            {member.fleet?.lastSampleAt
+              ? <>{fmtT(member.fleet.lastSampleAt)}<Prov source="last_sample_at" /></>
+              : <Absence reason="no sample on record" />}
+          </Row>
+          <Row label={reporting && reporting !== 'reporting' ? 'last position held' : 'position'}>
+            {pos
+              ? <>{pos.lat.toFixed(5)}, {pos.lon.toFixed(5)}<Prov source="fleet position" at={member.fleet?.lastSampleAt} /></>
+              : <Absence reason="no position on record" />}
+          </Row>
+          {link ? (
+            <div
+              className="text-[11px] text-slate-300 break-words"
+              data-testid="move-link"
+              data-edge={link.id}
+              data-state={link.link_state}
+            >
+              <span className="text-slate-500">link {link.id} </span>
+              {link.link_state}; heartbeat age {link.heartbeat_age_s === null ? 'unknown' : `${link.heartbeat_age_s}s`}; bridge lag {link.bridge_lag}
+              <Prov source="link_status" at={link.updated_at} />
+            </div>
+          ) : (
+            <Row label="">
+              <span data-testid="move-link" data-edge={edge ?? ''} data-state="absent" data-absent={`no link row for ${edge ?? 'unknown edge'}`} className="text-slate-400 italic">
+                no link row for {edge ?? 'unknown edge'}
+              </span>
+            </Row>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // One member's section
 // ---------------------------------------------------------------------------
@@ -305,6 +375,7 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
   const pos = member.fleet?.position ?? null;
   const readiness = readinessAfterEmplacement(member.logistics, ep.emplacedAt);
   const resupplied = resupplySince(member.resupplies, marchMs);
+  const silent = tierKind !== 'edge' && ((reporting !== null && reporting !== 'reporting') || (link !== undefined && link.link_state !== 'up' && link.link_state !== 'idle'));
 
   return (
     <div className="border-t border-slate-700/50 pt-1 mt-1 min-w-0">
@@ -338,7 +409,9 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
           <Timing
             testId="move-mo-time"
             label={`since march order ${fmtT(ep.marchOrderedAt)}`}
-            measured={Number.isFinite(marchMs)
+            measured={silent
+              ? { absent: `${edge ?? 'the edge'} not reporting since ${fmtT(member.fleet?.lastSampleAt)}: whether the unit has moved is unknown here; the march-order time comes from the edge's transitions once they arrive` }
+              : Number.isFinite(marchMs)
               ? { value: (nowMs - marchMs) / 1000, source: 'browser clock minus march order time', at: ep.marchOrderedAt }
               : { absent: 'march order time unparseable' }}
             standardS={standard?.marchOrderS}
@@ -346,6 +419,7 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
             running
             member={member.assetId}
           />
+          <TierView tierKind={tierKind} buffer={buffer} member={member} reporting={reporting} edge={edge} link={link} pos={pos} />
         </>
       )}
 
@@ -366,61 +440,7 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
             variant={variant}
             member={member.assetId}
           />
-          {tierKind === 'edge' ? (
-            <>
-              {buffer ? (
-                <>
-                  <Row label="">
-                    <span data-testid="move-uplink" data-severed={buffer.hq_link_severed ? 'true' : 'false'}>
-                      {buffer.hq_link_severed ? 'uplink severed' : 'uplink up'}
-                    </span>
-                    <Prov source="edge_buffer_status.hq_link_severed" at={buffer.updated_at} />
-                  </Row>
-                  <Row label="buffer depth">
-                    <span data-testid="move-buffer" data-value={buffer.bridge_group_lag}>{buffer.bridge_group_lag}</span>
-                    <Prov source="bridge_group_lag" at={buffer.updated_at} />
-                  </Row>
-                </>
-              ) : (
-                <Row label="uplink"><Absence reason="no edge_buffer_status row" testId="move-uplink" /></Row>
-              )}
-            </>
-          ) : (
-            <>
-              <Row label="reporting">
-                {reporting ?? 'unknown'}
-                <Prov source="reporting_status" at={member.fleet?.reportingStatusAt} />
-              </Row>
-              <Row label="last sample">
-                {member.fleet?.lastSampleAt
-                  ? <>{fmtT(member.fleet.lastSampleAt)}<Prov source="last_sample_at" /></>
-                  : <Absence reason="no sample on record" />}
-              </Row>
-              <Row label={reporting && reporting !== 'reporting' ? 'last position held' : 'position'}>
-                {pos
-                  ? <>{pos.lat.toFixed(5)}, {pos.lon.toFixed(5)}<Prov source="fleet position" at={member.fleet?.lastSampleAt} /></>
-                  : <Absence reason="no position on record" />}
-              </Row>
-              {link ? (
-                <div
-                  className="text-[11px] text-slate-300 break-words"
-                  data-testid="move-link"
-                  data-edge={link.id}
-                  data-state={link.link_state}
-                >
-                  <span className="text-slate-500">link {link.id} </span>
-                  {link.link_state}; heartbeat age {link.heartbeat_age_s === null ? 'unknown' : `${link.heartbeat_age_s}s`}; bridge lag {link.bridge_lag}
-                  <Prov source="link_status" at={link.updated_at} />
-                </div>
-              ) : (
-                <Row label="">
-                  <span data-testid="move-link" data-edge={edge ?? ''} data-state="absent" data-absent={`no link row for ${edge ?? 'unknown edge'}`} className="text-slate-400 italic">
-                    no link row for {edge ?? 'unknown edge'}
-                  </span>
-                </Row>
-              )}
-            </>
-          )}
+          <TierView tierKind={tierKind} buffer={buffer} member={member} reporting={reporting} edge={edge} link={link} pos={pos} />
         </>
       )}
 

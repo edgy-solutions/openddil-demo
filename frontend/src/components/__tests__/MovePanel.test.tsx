@@ -201,6 +201,61 @@ describe('MovePanel phases', () => {
   });
 });
 
+describe('MovePanel stale view from march order on', () => {
+  const fleetOf = (reportingStatus: string) => ({
+    reportingStatus, reportingStatusAt: '2026-10-06T12:03:00Z',
+    lastSampleAt: '2026-10-06T12:02:59Z', position: { lat: 1.234567, lon: 2.5 }, edgeId: 'edge-1',
+  });
+  const linkMap = (link_state: string) => new Map([['edge-1', {
+    id: 'edge-1', link_state, traffic: '', declared_idle: false,
+    heartbeat_age_s: 12, last_heartbeat_at: null, bridge_lag: 7, updated_at: '2026-10-06T12:03:00Z',
+  }]]);
+  const tierProps = (tierKind: 'hq' | 'region', reporting: string, link_state: string) => props({
+    kind: 'unit', tierKind, scopeId: 'u1', scopeLabel: 'Unit 1',
+    members: [member({ fleet: fleetOf(reporting) })],
+    links: linkMap(link_state),
+    nowMs: Date.parse('2026-10-06T12:05:00Z'),
+  });
+
+  it('hq, not reporting and link down: march-order time is absent, stale view shown', () => {
+    const out = html(tierProps('hq', 'not_reporting', 'down'));
+    expect(out).toMatch(/data-testid="move-mo-time"[^>]*data-absent="[^"]*not reporting since/);
+    expect(out).not.toContain('standard by');
+    expect(out).toContain('last position held');
+    expect(out).toContain('1.23457');
+    expect(out).toMatch(/data-testid="move-link"[^>]*data-state="down"/);
+  });
+
+  it('hq, reporting and link up: running timer with a verdict, stale view rows present', () => {
+    const out = html(tierProps('hq', 'reporting', 'up'));
+    expect(out).toMatch(/data-testid="move-mo-time"[^>]*data-value="300"[^>]*data-verdict="over"/);
+    expect(out).not.toMatch(/data-testid="move-mo-time"[^>]*data-absent/);
+    expect(out).toContain('position');
+    expect(out).not.toContain('last position held');
+    expect(out).toMatch(/data-testid="move-link"[^>]*data-state="up"/);
+  });
+
+  it('region, reporting but link down: silent', () => {
+    const out = html(tierProps('region', 'reporting', 'down'));
+    expect(out).toMatch(/data-testid="move-mo-time"[^>]*data-absent=/);
+    expect(out).not.toContain('standard by');
+  });
+
+  it('region, link idle and reporting: not silent', () => {
+    const out = html(tierProps('region', 'reporting', 'idle'));
+    expect(out).not.toMatch(/data-testid="move-mo-time"[^>]*data-absent/);
+    expect(out).toMatch(/data-testid="move-mo-time"[^>]*data-verdict=/);
+  });
+
+  it('edge in march_ordered: uplink and buffer rows, running verdict kept', () => {
+    const buffer = { bridge_group_lag: 42, hq_link_severed: true, probe_healthy: false, updated_at: '2026-10-06T12:05:00Z' };
+    const out = html(props({ buffer, nowMs: Date.parse('2026-10-06T12:05:00Z') }));
+    expect(out).toMatch(/data-testid="move-uplink"[^>]*data-severed="true"/);
+    expect(out).toContain('data-testid="move-buffer"');
+    expect(out).toMatch(/data-testid="move-mo-time"[^>]*data-value="300"[^>]*data-verdict="over"/);
+  });
+});
+
 describe('MovePanel spares', () => {
   const parts = [
     { site: 'edge-1', partRef: 'P-1', onHand: 3, leadTimeDays: null, nearestSiteWithStock: 'edge-9', nearestOnHand: 8, source: 'feed', observedAt: '2026-10-06T10:00:00Z', updatedAt: null, originatorNation: null, releasableTo: null },
