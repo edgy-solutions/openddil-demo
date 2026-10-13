@@ -313,13 +313,22 @@ export function readinessAfterEmplacement(
 }
 
 export function operationalStatusConcept(phase: string): Maybe<string> {
+  // ADR-0044 posture amendment: an INTENT for egress mapping only, by concept
+  // name. Posture never sets operational status, and readiness, not posture,
+  // answers whether an emplaced asset is in fact operational.
   if (phase === 'march_ordered' || phase === 'moving' || phase === 'emplacing') {
     return {
-      value: 'JC3IEDM operational status: temporarily not operational (weapon function)',
+      value: 'JC3IEDM operational status intent: temporarily not operational (weapon function); egress mapping only',
       source: `posture phase ${phase}`,
     };
   }
-  return { absent: 'not inferred from posture' };
+  if (phase === 'emplaced') {
+    return {
+      value: 'JC3IEDM operational status intent: operational (weapon function); egress mapping only, readiness decides',
+      source: 'posture phase emplaced',
+    };
+  }
+  return { absent: 'no operational status intent for this posture' };
 }
 
 /** Resupply rows received at or after `sinceMs`, newest first. */

@@ -181,11 +181,14 @@ describe('readinessAfterEmplacement', () => {
 });
 
 describe('operationalStatusConcept and resupplySince', () => {
-  it('maps moving phases, not emplaced', () => {
+  it('declares the ADR-0044 intent per phase, egress mapping only', () => {
     expect(operationalStatusConcept('moving')).toMatchObject({
-      value: 'JC3IEDM operational status: temporarily not operational (weapon function)',
+      value: 'JC3IEDM operational status intent: temporarily not operational (weapon function); egress mapping only',
     });
-    expect(operationalStatusConcept('emplaced')).toEqual({ absent: 'not inferred from posture' });
+    expect(operationalStatusConcept('emplaced')).toMatchObject({
+      value: 'JC3IEDM operational status intent: operational (weapon function); egress mapping only, readiness decides',
+    });
+    expect(operationalStatusConcept('unspecified')).toEqual({ absent: 'no operational status intent for this posture' });
   });
   it('newest first, since bound', () => {
     const rows = [
