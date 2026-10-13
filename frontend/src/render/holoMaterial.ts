@@ -1,6 +1,8 @@
 // Shared holographic ShaderMaterial (module singleton). One program and one
 // uniform set serve every solid part; the scene component advances `t` once
 // per frame. Sweep range uniforms let the scene fit the band to the model.
+// The sweep band is kept faint (alpha +.08, colour +.4): additive blending
+// and bloom multiply it, and a bright band pulls the eye off the faults.
 import * as THREE from 'three';
 
 const vertexShader = `varying vec3 vN;varying vec3 vV;varying vec3 vW;
@@ -11,8 +13,8 @@ void main(){float f=pow(1.-abs(dot(normalize(vN),vV)),2.2);
  float scan=.55+.45*sin(vW.y*38.-t*5.);
  float sweep=smoothstep(.25,0.,abs(vW.y-(mod(t*.9,span)+y0)));
  float flick=.92+.08*sin(t*47.)*sin(t*13.);
- float a=(.05+f*.85)*scan*flick+sweep*.5;
- gl_FragColor=vec4(col*(.6+f*1.4+sweep*1.5),a);}`;
+ float a=(.05+f*.85)*scan*flick+sweep*.08;
+ gl_FragColor=vec4(col*(.6+f*1.4+sweep*.4),a);}`;
 
 export const HOLO_CYAN = 0x22d3ee;
 export const HOLO_EDGE = '#67e8f9';
