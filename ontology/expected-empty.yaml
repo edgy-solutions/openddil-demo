@@ -136,6 +136,35 @@ expected_empty:
       check-effector-consumer.sh.
       Declared 2026-10-06.
 
+  effector_resupply:
+    sparse: true
+    producer: effector-launch
+    reason: >-
+      One row per DIS Resupply Received -- rows exist only when a launcher is
+      resupplied, so a store with no launcher behind it has none, and every
+      store has none from a reset until the first resupply lands. Both are
+      the correct case, not a partial deployment.
+      DECLARING THIS PLAINLY EMPTY WOULD BE WRONG for the same reason as
+      effector_launch: it would equally excuse a projector that had stopped
+      reading effector-events. The resupply handler shares that table's
+      mapping and consumer group, so its liveness is measured the same way,
+      by check-effector-consumer.sh on the projector's own group.
+      Declared 2026-10-13, after the first pre-flight following a reset
+      refused it at every tier store.
+
+  parts_availability:
+    stores: [tier]
+    reason: >-
+      The spare-parts stand-in publishes to the root only, and the projector
+      mapping that writes this table is HQ-only and never forwarded. No tier
+      projector has a mapping for it, so a tier store has nothing that could
+      write this table and its emptiness is structural.
+      SCOPED TO TIERS ON PURPOSE. The root's copy holds the stand-in's rows
+      and must keep being checked: an unscoped row would excuse a stopped
+      stand-in at the one store where the table is meant to fill.
+      Declared 2026-10-13, after the first pre-flight following a reset
+      refused it at every tier store.
+
 
   asset_registry:
     stores: [tier]
