@@ -11,7 +11,7 @@
 // op/status, and a cut rate source must read "unknown", never "paused".
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ExercisePopupView, type ExercisePopupViewProps } from '../ExercisePopup';
+import { ExercisePopupView, pillState, type ExercisePopupViewProps } from '../ExercisePopup';
 import type { ExerciseActivity, ExerciseLastCommand, ExerciseResetJob } from '../../../lib/exerciseControl';
 
 const BASE: ExercisePopupViewProps = {
@@ -22,6 +22,7 @@ const BASE: ExercisePopupViewProps = {
   reset: null,
   open: false,
   onToggleOpen: () => {},
+  onClose: () => {},
   pendingConfirmOp: null,
   onOpClick: () => {},
   onConfirm: () => {},
@@ -63,14 +64,41 @@ describe('ExercisePopupView', () => {
     expect(html).toContain('Exercise control: not authorised');
     expect(html).not.toContain('supervisor');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>/);
+    expect(html).toContain('title="Exercise control: not authorised"');
+    expect(html).toContain('data-state="EXERCISE"');
     // Forbidden must never open the popup body, even if open=true is passed.
+    expect(html).not.toContain('data-testid="exercise-panel"');
     expect(html).not.toContain('Last command sent');
   });
 
-  it('closed popup (open=false) renders the button only, no popup body', () => {
+  it('closed popup (open=false) renders the pill only, no panel', () => {
     const html = renderToStaticMarkup(<ExercisePopupView {...BASE} open={false} activity={RUNNING} />);
-    expect(html).toContain('EXERCISE');
+    expect(html).toContain('data-testid="exercise-pill"');
+    expect(html).toContain('data-state="RUNNING"');
+    expect(html).not.toContain('data-testid="exercise-panel"');
     expect(html).not.toContain('Running');
+  });
+
+  it('the closed pill shows RUNNING for running activity even when lastCommand.op is stop -- the rule', () => {
+    const html = renderToStaticMarkup(
+      <ExercisePopupView {...BASE} open={false} activity={RUNNING} lastCommand={LAST_STOP} />,
+    );
+    expect(html).toContain('data-state="RUNNING"');
+    expect(html).not.toContain('IDLE');
+  });
+
+  it('stale dims the pill and says so in the title', () => {
+    const fresh = renderToStaticMarkup(<ExercisePopupView {...BASE} activity={RUNNING} />);
+    expect(fresh).not.toContain('opacity-60');
+    const html = renderToStaticMarkup(<ExercisePopupView {...BASE} activity={RUNNING} stale={true} />);
+    expect(html).toContain('opacity-60');
+    expect(html).toContain('title="status stale"');
+  });
+
+  it('open renders the panel', () => {
+    const html = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} activity={RUNNING} />);
+    expect(html).toContain('data-testid="exercise-panel"');
+    expect(html).toContain('aria-label="Exercise"');
   });
 
   it('open + running activity shows "Running" and the per-source rate', () => {
@@ -141,9 +169,45 @@ describe('ExercisePopupView', () => {
 
   it('renders one button per adapter op', () => {
     const html = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} activity={RUNNING} ops={['pause', 'resume']} />);
-    expect(html).toContain('>pause<');
-    expect(html).toContain('>resume<');
-    expect(html).not.toContain('>stop<');
+    expect(html).toContain('Pause</button>');
+    expect(html).toContain('Resume</button>');
+    expect(html).not.toContain('Stop</button>');
+  });
+
+  it('each op button carries its label; an unknown op shows its name', () => {
+    const html = renderToStaticMarkup(
+      <ExercisePopupView {...BASE} open={true} activity={RUNNING} ops={['run', 'pause', 'resume', 'stop', 'restart', 'warp']} />,
+    );
+    for (const label of ['Run', 'Pause', 'Resume', 'Stop', 'Restart', 'warp']) {
+      expect(html).toContain(`${label}</button>`);
+    }
+  });
+
+  describe('pillState', () => {
+    it('running gives RUNNING', () => {
+      expect(pillState(RUNNING, null).word).toBe('RUNNING');
+    });
+
+    it('paused gives IDLE, never PAUSED or STOPPED', () => {
+      const st = pillState(PAUSED, null);
+      expect(st.word).toBe('IDLE');
+      expect(st.word).not.toMatch(/PAUSED|STOPPED/);
+      expect(st.title).toBe('no entity PDUs (paused or stopped)');
+    });
+
+    it('an unknown or unreachable source, or no activity, gives UNKNOWN', () => {
+      expect(pillState(UNKNOWN_CUT_LINK, null).word).toBe('UNKNOWN');
+      expect(pillState(null, null).word).toBe('UNKNOWN');
+    });
+
+    it('a running reset job gives RESETTING even when activity is running', () => {
+      const job: ExerciseResetJob = {
+        available: true,
+        latest: { name: 'j', state: 'running', started_at: '2026-10-08T00:00:00Z', finished_at: null, requested_by: 's' },
+        error: null,
+      };
+      expect(pillState(RUNNING, job).word).toBe('RESETTING');
+    });
   });
 
   describe('reset Job', () => {
@@ -194,12 +258,12 @@ describe('ExercisePopupView', () => {
       const blocked = renderToStaticMarkup(
         <ExercisePopupView {...BASE} open={true} resetJob={{ ...JOB('succeeded', null), may_press: false }} />,
       );
-      expect(blocked).toMatch(/<button[^>]*disabled=""[^>]*>Restart exercise<\/button>/);
+      expect(blocked).toMatch(/<button[^>]*disabled=""[^>]*>(?:<svg.*?<\/svg>)?Restart exercise<\/button>/);
       expect(blocked).toContain('Restart exercise: supervisor login only');
       expect(blocked).toContain('The reset destroys exercise state and takes about 13 minutes.');
       for (const job of [{ ...JOB('succeeded', null), may_press: true }, JOB('succeeded', null)]) {
         const html = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} resetJob={job} />);
-        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>Restart exercise<\/button>/);
+        expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*>(?:<svg.*?<\/svg>)?Restart exercise<\/button>/);
         expect(html).not.toContain('supervisor login only');
       }
     });
