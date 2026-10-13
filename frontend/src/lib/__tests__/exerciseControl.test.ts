@@ -5,7 +5,9 @@
 // separate facts carried through untouched from the service's own JSON --
 // never cross-read, never inferred from each other.
 import { describe, expect, it, vi } from 'vitest';
-import { createExerciseControlController, type ExerciseStatusBody } from '../exerciseControl';
+import {
+  createExerciseControlController, type ExerciseSequenceRun, type ExerciseStatusBody,
+} from '../exerciseControl';
 
 const PAUSED_STATUS: ExerciseStatusBody = {
   adapter: { name: 'stub', ops: ['pause', 'resume', 'stop', 'run', 'restart'] },
@@ -196,5 +198,65 @@ describe('createExerciseControlController', () => {
     const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
     await c.poll();
     expect(c.getState().status?.reset_job?.available).toBe(true);
+  });
+
+  describe('named sequences', () => {
+    const SEQ_STATUS: ExerciseStatusBody = {
+      ...PAUSED_STATUS,
+      sequences: [{ name: 'warm_up', label: 'Warm up', steps: 2, total_wait_s: 5, may_press: true }],
+    };
+    const RUN: ExerciseSequenceRun = {
+      op: 'warm_up', label: 'Warm up', subject: 'supervisor.1',
+      started_at: '2026-10-13T00:00:00Z', finished_at: null, state: 'running',
+      steps: [
+        { i: 0, kind: 'call', name: 'open', method: 'POST', url: 'http://h/x', state: 'running',
+          status: null, error: null, at: '2026-10-13T00:00:00Z', done_at: null },
+        { i: 1, kind: 'wait', name: null, wait_s: 5, state: 'pending', status: null, error: null,
+          at: null, done_at: null },
+      ],
+    };
+
+    async function polled(second: Response) {
+      const fetchImpl = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify(SEQ_STATUS), { status: 200 }))
+        .mockResolvedValueOnce(second);
+      const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+      await c.poll();
+      return c;
+    }
+
+    it('403 on a declared sequence is a refusal with the served reason; kind stays ok', async () => {
+      const c = await polled(new Response(JSON.stringify({ error: 'forbidden', reason: 'supervisor_only' }), { status: 403 }));
+      await c.runOp('warm_up');
+      expect(c.getState().kind).toBe('ok');
+      expect(c.getState().refusal).toBe('supervisor_only');
+    });
+
+    it('403 on an undeclared op still gives forbidden', async () => {
+      const c = await polled(new Response(JSON.stringify({ error: 'forbidden' }), { status: 403 }));
+      await c.runOp('stop');
+      expect(c.getState().kind).toBe('forbidden');
+    });
+
+    it('202 on a sequence folds the run into status.sequence and last_command', async () => {
+      const c = await polled(new Response(JSON.stringify(RUN), { status: 202 }));
+      await c.runOp('warm_up');
+      const st = c.getState();
+      expect(st.kind).toBe('ok');
+      expect(st.refusal).toBeUndefined();
+      expect(st.status?.sequence).toEqual(RUN);
+      expect(st.status?.last_command).toEqual({
+        op: 'warm_up', at: RUN.started_at, status: 202, error: null, subject: 'supervisor.1', sequence: true,
+      });
+    });
+
+    it('409 on a sequence is a refusal and last_command stays', async () => {
+      const c = await polled(new Response(JSON.stringify({
+        error: 'sequence already running', reason: 'sequence_running', op: 'other',
+      }), { status: 409 }));
+      await c.runOp('warm_up');
+      expect(c.getState().refusal).toBe('sequence_running');
+      expect(c.getState().status?.last_command).toEqual(PAUSED_STATUS.last_command);
+    });
   });
 });

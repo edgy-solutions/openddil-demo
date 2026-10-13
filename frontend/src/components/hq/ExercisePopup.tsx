@@ -22,7 +22,8 @@ import {
 } from 'lucide-react';
 import { useExerciseControl } from '../../hooks/useExerciseControl';
 import type {
-  ExerciseActivity, ExerciseLastCommand, ExerciseReset, ExerciseResetJob,
+  ExerciseActivity, ExerciseLastCommand, ExerciseReset, ExerciseResetJob, ExerciseSequence,
+  ExerciseSequenceRun, ExerciseSequenceStep,
 } from '../../lib/exerciseControl';
 import type { Tone } from '../network/tone';
 
@@ -80,6 +81,8 @@ export interface ExercisePopupViewProps {
   lastCommand: ExerciseLastCommand | null;
   reset: ExerciseReset | null;
   resetJob?: ExerciseResetJob | null;
+  sequences?: ExerciseSequence[] | null;
+  sequence?: ExerciseSequenceRun | null;
   refusal?: string | null;
   stale?: boolean;
   open: boolean;
@@ -102,6 +105,7 @@ function activityBadgeText(activity: ExerciseActivity | null): string {
 
 function lastCommandText(cmd: ExerciseLastCommand | null): string {
   if (!cmd) return 'No command sent yet';
+  if (cmd.sequence) return `${cmd.op} started by ${cmd.subject} at ${cmd.at} (sequence)`;
   const outcome = cmd.error ? cmd.error : String(cmd.status ?? 'no response');
   return `Last command sent: ${cmd.op} at ${cmd.at} -> ${outcome} by ${cmd.subject}`;
 }
@@ -118,8 +122,58 @@ function resetJobText(job: ExerciseResetJob | null | undefined): string {
   return `Reset job ${latest.name}: ${latest.state}${done}`;
 }
 
+/** Host (and port) of a call's URL; never the path or query. */
+function hostOf(url: string | undefined): string {
+  if (!url) return '';
+  try {
+    return new URL(url).host;
+  } catch {
+    return '';
+  }
+}
+
+function stepText(st: ExerciseSequenceStep): string {
+  if (st.name) return st.name;
+  if (st.kind === 'wait') return `wait ${st.wait_s ?? 0} s`;
+  return `${st.method ?? ''} ${hostOf(st.url)}`.trim();
+}
+
+function SequenceRunPanel({ run }: { run: ExerciseSequenceRun }) {
+  const haltedAt = run.state === 'halted'
+    ? (run.steps.find((st) => st.state === 'failed') ?? run.steps.find((st) => st.state === 'skipped'))
+    : undefined;
+  return (
+    <div className="mt-2 text-[10px] text-slate-300" data-testid="exercise-sequence-run" data-state={run.state}>
+      <div>
+        <span className="font-bold">{run.label}</span> {run.state} by {run.subject}
+      </div>
+      <div className="text-slate-500">
+        started {run.started_at}
+        {run.finished_at ? `, finished ${run.finished_at}` : ''}
+      </div>
+      <ul className="mt-1">
+        {run.steps.map((st) => (
+          <li key={st.i} data-testid="exercise-sequence-step" data-i={st.i} data-state={st.state}>
+            {stepText(st)}: {st.state}
+            {st.state === 'failed' && (st.status !== null || st.error) && (
+              <span className="text-amber-400">
+                {st.status !== null ? ` ${st.status}` : ''}{st.error ? ` ${st.error}` : ''}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+      {run.state === 'halted' && (
+        <div className="mt-1 text-amber-400">
+          halted at step {haltedAt ? haltedAt.i : '?'}: later steps were skipped; nothing was undone
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ExercisePopupView({
-  kind, ops, activity, lastCommand, reset, resetJob, refusal, stale, open, onToggleOpen,
+  kind, ops, activity, lastCommand, reset, resetJob, sequences, sequence, refusal, stale, open, onToggleOpen,
   onClose, rootRef, pillRef, pendingConfirmOp, onOpClick, onConfirm, onCancelConfirm,
 }: ExercisePopupViewProps) {
   const popId = useId();
@@ -129,6 +183,9 @@ export function ExercisePopupView({
   const resetAvailable = resetJob?.available === true;
   // An older gateway omits may_press; only an explicit false disables.
   const resetBlocked = resetJob?.may_press === false;
+  const sequenceList = sequences ?? [];
+  const sequenceRunning = sequence?.state === 'running';
+  const pendingSequence = sequenceList.find((q) => q.name === pendingConfirmOp);
 
   const ps: PillState = forbidden
     ? { icon: CircleHelp, word: 'EXERCISE', tone: 'neutral' }
@@ -239,11 +296,48 @@ export function ExercisePopupView({
               </div>
             )}
 
+            {sequenceList.length > 0 && (
+              <div className="mt-2">
+                <div className="flex flex-wrap gap-1">
+                  {sequenceList.map((q) => {
+                    const disabled = q.may_press === false || sequenceRunning;
+                    const desc = q.description ? `${q.description} ` : '';
+                    return (
+                      <button
+                        key={q.name}
+                        type="button"
+                        data-testid="exercise-sequence-button"
+                        data-op={q.name}
+                        disabled={disabled}
+                        title={`${desc}(${q.steps} steps, about ${q.total_wait_s} s)`}
+                        onClick={disabled ? undefined : () => onOpClick(q.name)}
+                        className={`${OP_BUTTON} disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        {q.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {sequenceList.filter((q) => q.may_press === false).map((q) => (
+                  <div key={q.name} className="mt-0.5 text-[10px] text-slate-500">
+                    {q.label}: supervisor login only
+                  </div>
+                ))}
+                {sequenceRunning && (
+                  <div className="mt-0.5 text-[10px] text-slate-500">a sequence is running</div>
+                )}
+              </div>
+            )}
+
+            {sequence && <SequenceRunPanel run={sequence} />}
+
             {pendingConfirmOp && (
               <div className="mt-2 text-[10px] text-amber-400">
                 {pendingConfirmOp === 'reset'
                   ? 'Restart exercise: reset (deletes scenario state), then restart?'
-                  : `Confirm ${pendingConfirmOp}?`}
+                  : pendingSequence
+                    ? `${pendingSequence.label}: run the sequence? It changes the exercise for every viewer.`
+                    : `Confirm ${pendingConfirmOp}?`}
                 <button type="button" onClick={onConfirm} className="ml-2 underline">yes</button>
                 <button type="button" onClick={onCancelConfirm} className="ml-2 underline">cancel</button>
               </div>
@@ -298,7 +392,7 @@ export default function ExercisePopup() {
   }, [open, close]);
 
   function handleOpClick(op: string): void {
-    if (CONFIRM_OPS.has(op)) {
+    if (CONFIRM_OPS.has(op) || (status?.sequences ?? []).some((q) => q.name === op)) {
       setPendingConfirmOp(op);
       return;
     }
@@ -318,6 +412,8 @@ export default function ExercisePopup() {
       lastCommand={status?.last_command ?? null}
       reset={status?.reset ?? null}
       resetJob={status?.reset_job ?? null}
+      sequences={status?.sequences ?? null}
+      sequence={status?.sequence ?? null}
       refusal={refusal}
       stale={stale}
       open={open}

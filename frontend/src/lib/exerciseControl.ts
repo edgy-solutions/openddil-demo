@@ -42,6 +42,43 @@ export interface ExerciseLastCommand {
   /** Set when the op was sent on behalf of another (the reset's pause). */
   via?: string;
   job?: string;
+  /** True when the op started a named sequence. */
+  sequence?: boolean;
+}
+
+/** A named, supervisor-only timed list of calls the server declares. */
+export interface ExerciseSequence {
+  name: string;
+  label: string;
+  description?: string;
+  steps: number;
+  total_wait_s: number;
+  /** False when the gateway would refuse this subject. Absent means allowed. */
+  may_press?: boolean;
+}
+
+export interface ExerciseSequenceStep {
+  i: number;
+  kind: 'call' | 'wait';
+  name?: string | null;
+  method?: string;
+  url?: string;
+  wait_s?: number;
+  state: 'pending' | 'running' | 'ok' | 'failed' | 'skipped';
+  status: number | null;
+  error: string | null;
+  at: string | null;
+  done_at: string | null;
+}
+
+export interface ExerciseSequenceRun {
+  op: string;
+  label: string;
+  subject: string;
+  started_at: string;
+  finished_at: string | null;
+  state: 'running' | 'completed' | 'halted';
+  steps: ExerciseSequenceStep[];
 }
 
 export interface ExerciseAdapter {
@@ -79,6 +116,10 @@ export interface ExerciseStatusBody {
   reset: ExerciseReset;
   /** Absent from servers that predate the reset Job. */
   reset_job?: ExerciseResetJob;
+  /** Absent from servers that predate named sequences. */
+  sequences?: ExerciseSequence[];
+  /** The latest sequence run, running or finished; null when none yet. */
+  sequence?: ExerciseSequenceRun | null;
 }
 
 export interface ExerciseControlState {
@@ -152,8 +193,9 @@ export function createExerciseControlController(
         method: 'POST',
         credentials: 'same-origin',
       });
-      if (op === 'reset' && res.status === 403) {
-        // A refused reset is a refusal, not a loss of exercise-control access.
+      const isSequence = (state.status?.sequences ?? []).some((q) => q.name === op);
+      if ((op === 'reset' || isSequence) && res.status === 403) {
+        // A refused reset or sequence is a refusal, not a loss of exercise-control access.
         const refused = (await res.json()) as { reason?: string; error?: string };
         setState({ ...state, refusal: refused.reason ?? refused.error ?? 'refused (403)' });
         return;
@@ -170,6 +212,20 @@ export function createExerciseControlController(
         // Refused or not created: nothing was sent, so last_command stays.
         const refused = (await res.json()) as { reason?: string; error?: string };
         setState({ ...state, refusal: refused.reason ?? refused.error ?? `refused (${res.status})` });
+        return;
+      }
+      if (res.status === 202 && isSequence) {
+        // A sequence started: the body is the run record. Shown as served;
+        // later progress arrives only through polling.
+        const run = (await res.json()) as ExerciseSequenceRun;
+        if (state.status) {
+          const sent: ExerciseLastCommand = {
+            op, at: run.started_at, status: 202, error: null, subject: run.subject, sequence: true,
+          };
+          setState({
+            kind: 'ok', status: { ...state.status, sequence: run, last_command: sent }, stale: state.stale,
+          });
+        }
         return;
       }
       if (res.status === 202) {

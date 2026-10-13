@@ -12,7 +12,9 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ExercisePopupView, pillState, type ExercisePopupViewProps } from '../ExercisePopup';
-import type { ExerciseActivity, ExerciseLastCommand, ExerciseResetJob } from '../../../lib/exerciseControl';
+import type {
+  ExerciseActivity, ExerciseLastCommand, ExerciseResetJob, ExerciseSequence, ExerciseSequenceRun,
+} from '../../../lib/exerciseControl';
 
 const BASE: ExercisePopupViewProps = {
   kind: 'ok',
@@ -274,5 +276,127 @@ describe('ExercisePopupView', () => {
       );
       expect(html).toContain('Refused: reset_running');
     });
+  });
+});
+
+
+describe('ExercisePopupView sequences', () => {
+  const SEQS: ExerciseSequence[] = [
+    { name: 'warm_up', label: 'Warm up', description: 'Bring the apparatus up', steps: 3, total_wait_s: 20, may_press: true },
+    { name: 'cool_down', label: 'Cool down', steps: 1, total_wait_s: 0 },
+  ];
+  const step = (over: Record<string, unknown>) => ({
+    i: 0, kind: 'call' as const, name: null, method: 'POST', url: 'http://apparatus.internal:8080/a/b?q=1',
+    state: 'pending' as const, status: null, error: null, at: null, done_at: null, ...over,
+  });
+  const run = (over: Partial<ExerciseSequenceRun>): ExerciseSequenceRun => ({
+    op: 'warm_up', label: 'Warm up', subject: 'supervisor.1', started_at: '2026-10-13T00:00:00Z',
+    finished_at: null, state: 'running', steps: [], ...over,
+  });
+  const render = (extra: Partial<ExercisePopupViewProps>) =>
+    renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} {...extra} />);
+  const buttonTags = (html: string) =>
+    html.match(/<button[^>]*data-testid="exercise-sequence-button"[^>]*>/g) ?? [];
+
+  it('renders one button per sequence with data-op and a descriptive title', () => {
+    const html = render({ sequences: SEQS });
+    expect(buttonTags(html)).toHaveLength(2);
+    expect(html).toContain('data-op="warm_up"');
+    expect(html).toContain('data-op="cool_down"');
+    expect(html).toContain('Bring the apparatus up (3 steps, about 20 s)');
+    expect(html).toContain('Warm up');
+  });
+
+  it('may_press false disables the button with the note; absent does not', () => {
+    const html = render({ sequences: [{ ...SEQS[0], may_press: false }, SEQS[1]] });
+    expect(html).toContain('Warm up: supervisor login only');
+    expect(html).not.toContain('Cool down: supervisor login only');
+    const [warm, cool] = buttonTags(html);
+    expect(warm).toContain('disabled=""');
+    expect(cool).not.toContain('disabled=""');
+  });
+
+  it('a running run disables every sequence button with one line', () => {
+    const html = render({ sequences: SEQS, sequence: run({}) });
+    const tags = buttonTags(html);
+    expect(tags).toHaveLength(2);
+    for (const t of tags) expect(t).toContain('disabled=""');
+    expect(html.match(/a sequence is running/g)).toHaveLength(1);
+  });
+
+  it('a finished run leaves the buttons enabled', () => {
+    const html = render({ sequences: SEQS, sequence: run({ state: 'completed', finished_at: '2026-10-13T00:01:00Z' }) });
+    for (const t of buttonTags(html)) expect(t).not.toContain('disabled=""');
+    expect(html).not.toContain('a sequence is running');
+  });
+
+  it('the confirm step carries the sequence text', () => {
+    const html = render({ sequences: SEQS, pendingConfirmOp: 'warm_up' });
+    expect(html).toContain('Warm up: run the sequence? It changes the exercise for every viewer.');
+  });
+
+  it('the run panel shows state, subject, times and one row per step', () => {
+    const html = render({
+      sequences: SEQS,
+      sequence: run({
+        state: 'completed', finished_at: '2026-10-13T00:01:00Z',
+        steps: [
+          step({ i: 0, name: 'open valve', state: 'ok', status: 200 }),
+          step({ i: 1, kind: 'wait', wait_s: 5, method: undefined, url: undefined, state: 'ok' }),
+          step({ i: 2, state: 'pending' }),
+        ],
+      }),
+    });
+    expect(html).toContain('data-testid="exercise-sequence-run"');
+    expect(html).toContain('data-state="completed"');
+    expect(html).toContain('supervisor.1');
+    expect(html).toContain('started 2026-10-13T00:00:00Z');
+    expect(html).toContain('finished 2026-10-13T00:01:00Z');
+    expect(html.match(/data-testid="exercise-sequence-step"/g)).toHaveLength(3);
+    expect(html).toContain('data-i="1"');
+    expect(html).toContain('open valve');
+    expect(html).toContain('wait 5 s');
+    expect(html).toContain('POST apparatus.internal:8080');
+    expect(html).not.toContain('/a/b');
+    expect(html).not.toContain('q=1');
+    expect(html).not.toContain('halted at step');
+  });
+
+  it('a running run has no finished text', () => {
+    const html = render({ sequences: SEQS, sequence: run({}) });
+    expect(html).not.toContain('finished ');
+  });
+
+  it('a halted run shows the halted line; a failed step shows its status and error', () => {
+    const html = render({
+      sequences: SEQS,
+      sequence: run({
+        state: 'halted', finished_at: '2026-10-13T00:00:30Z',
+        steps: [
+          step({ i: 0, name: 'open valve', state: 'ok', status: 200 }),
+          step({ i: 1, name: 'arm', state: 'failed', status: 503, error: 'upstream refused' }),
+          step({ i: 2, name: 'fire', state: 'skipped' }),
+        ],
+      }),
+    });
+    expect(html).toContain('halted at step 1: later steps were skipped; nothing was undone');
+    expect(html).toMatch(/data-i="1"[^>]*data-state="failed"|data-state="failed"[^>]*data-i="1"/);
+    expect(html).toContain('503');
+    expect(html).toContain('upstream refused');
+  });
+
+  it('no sequences means no buttons and no panel', () => {
+    for (const extra of [{}, { sequences: [] }, { sequence: null }]) {
+      const html = render(extra);
+      expect(html).not.toContain('exercise-sequence-button');
+      expect(html).not.toContain('exercise-sequence-run');
+    }
+  });
+
+  it('last command from a sequence reads as started', () => {
+    const html = render({
+      lastCommand: { op: 'warm_up', at: '2026-10-13T00:00:00Z', status: 202, error: null, subject: 'supervisor.1', sequence: true },
+    });
+    expect(html).toContain('warm_up started by supervisor.1 at 2026-10-13T00:00:00Z (sequence)');
   });
 });
