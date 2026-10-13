@@ -1075,6 +1075,57 @@ def test_s3_last_command_is_set_at_start(sapp):
     _wait_run(url)
 
 
+def _wan_run(sapp, seqs, op, path_status=None, subject="alice"):
+    import unittest
+    url, app_state, base = sapp
+    app_state.sequences.update(seqs(base))
+    seq_state["status_by_path"].update(path_status or {})
+    with unittest.TestCase().assertLogs("exercise.control", level="INFO") as cm:
+        _post(url + "/exercise/op/" + op, subject=subject)
+        _wait_run(url)
+    return [m.split(":", 2)[2] for m in cm.output if m.split(":", 2)[2].startswith("WAN ")]
+
+
+def test_f_cut_and_heal_log_wan_control_as_the_subject(sapp):
+    out = _wan_run(sapp, lambda b: {"cutheal": {"label": "c", "steps": [
+        {"method": "POST", "url": b + "/proxies/uplink-x", "body": {"enabled": False}},
+        {"wait_s": 0},
+        {"method": "POST", "url": b + "/proxies/uplink-x", "body": {"enabled": True}}]}},
+        "cutheal")
+    assert len(out) == 2 and all(m.startswith("WAN CONTROL") for m in out)
+    assert out[0].startswith("WAN CONTROL subject=alice proxy=uplink-x enabled=False upstream_status=200 ")
+    assert out[1].startswith("WAN CONTROL subject=alice proxy=uplink-x enabled=True upstream_status=200 ")
+
+
+def test_f_toxics_call_logs_wan_toxics(sapp):
+    out = _wan_run(sapp, lambda b: {"tox": {"label": "t", "steps": [
+        {"method": "POST", "url": b + "/proxies/uplink-x/toxics", "body": {"type": "latency"}}]}},
+        "tox")
+    assert len(out) == 1
+    assert out[0].startswith("WAN TOXICS subject=alice proxy=uplink-x method=POST upstream_status=200 ")
+
+
+def test_f_other_calls_log_no_wan_line(sapp):
+    out = _wan_run(sapp, lambda b: {"arm": {"label": "a", "steps": [
+        {"method": "POST", "url": b + "/posture/arm", "body": {"enabled": True}}]}}, "arm")
+    assert out == []
+
+
+def test_f_halted_run_logs_failed_step_and_not_skipped_one(sapp):
+    out = _wan_run(sapp, lambda b: {"h": {"label": "h", "steps": [
+        {"method": "POST", "url": b + "/proxies/uplink-x", "body": {"enabled": False}},
+        {"method": "POST", "url": b + "/proxies/uplink-x", "body": {"enabled": True}}]}},
+        "h", path_status={"/proxies/uplink-x": 500})
+    assert len(out) == 1 and "enabled=False upstream_status=500 " in out[0]
+
+
+def test_f_transport_error_logs_status_none(sapp):
+    out = _wan_run(sapp, lambda b: {"d": {"label": "d", "steps": [
+        {"method": "POST", "url": "http://127.0.0.1:1/proxies/uplink-x",
+         "body": {"enabled": False}}]}}, "d")
+    assert len(out) == 1 and "upstream_status=None " in out[0]
+
+
 def test_s4_a_500_halts_and_later_steps_are_skipped(sapp):
     url, app_state, _ = sapp
     seq_state["status_by_path"]["/two"] = 500

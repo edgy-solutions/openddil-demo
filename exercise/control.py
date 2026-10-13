@@ -53,6 +53,9 @@ from typing import Any
 
 log = logging.getLogger("exercise.control")
 
+_WAN_PROXY_RE = re.compile(r"^/proxies/(?P<proxy>[^/]+)$")
+_WAN_TOXICS_RE = re.compile(r"^/proxies/(?P<proxy>[^/]+)/toxics(/.*)?$")
+
 # The only op keys an adapter file may map — anything else refuses startup.
 ALLOWED_OPS = frozenset({"pause", "resume", "stop", "restart", "run"})
 
@@ -752,7 +755,36 @@ class AppState:
         threading.Thread(target=self._run_sequence, args=(run, seq), daemon=True).start()
         return initial
 
+    @staticmethod
+    def _log_wan_line(st: dict[str, Any], subject: str, status: int | None,
+                      name: str, i: int) -> None:
+        path = urllib.parse.urlsplit(st["url"]).path
+        method = str(st["method"]).upper()
+        body = st.get("body")
+        m = _WAN_PROXY_RE.match(path)
+        if m and method == "POST" and isinstance(body, dict) and "enabled" in body:
+            log.info("WAN CONTROL subject=%s proxy=%s enabled=%s upstream_status=%s "
+                     "sequence=%s step=%s", subject, m.group("proxy"), body["enabled"],
+                     status, name, i)
+            return
+        m = _WAN_TOXICS_RE.match(path)
+        if m:
+            log.info("WAN TOXICS subject=%s proxy=%s method=%s upstream_status=%s "
+                     "sequence=%s step=%s", subject, m.group("proxy"), method,
+                     status, name, i)
+
     def _run_sequence(self, run: dict[str, Any], seq: dict[str, Any]) -> None:
+        """Run a named sequence's steps in order, halting on the first failure.
+
+        Call steps go straight to the link proxy's admin API, not through the
+        gateway, so the gateway's plain-text "WAN CONTROL" / "WAN TOXICS" lines
+        never see them. A search for "who changed a link during this window"
+        greps for those lines, and a sequence's cut and heal are real link
+        changes by the subject who pressed it, so each such step also logs a
+        line in the same vocabulary (see _log_wan_line). Skipped steps change
+        nothing and log nothing; a transport error still logs, with
+        upstream_status=None, because the write may have landed.
+        """
         name, subject = run["op"], run["subject"]
         halted = False
         for i, st in enumerate(seq["steps"]):
@@ -783,6 +815,8 @@ class AppState:
             log.info(json.dumps({"exercise_sequence": name, "step": i, "kind": rec["kind"],
                                   "state": rec["state"], "status": status, "error": error,
                                   "subject": subject}))
+            if "wait_s" not in st:
+                self._log_wan_line(st, subject, status, name, i)
             if not ok:
                 halted = True
         with self._lock:
