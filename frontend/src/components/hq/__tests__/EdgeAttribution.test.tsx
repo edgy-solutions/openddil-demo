@@ -26,6 +26,8 @@ const asset = (edge_id: string): ClassifiedFleetAsset => ({
   asset_class: 'SENSOR',
   platform_variant: 'TEST',
   last_sample_at: new Date().toISOString(),
+  reporting_status: null,
+  reporting_status_at: null,
   parent_launcher_id: null,
   firing_event_urn: null,
 } as unknown as ClassifiedFleetAsset);

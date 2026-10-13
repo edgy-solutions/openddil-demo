@@ -19,6 +19,7 @@
 import { AlertTriangle, ChevronRight } from 'lucide-react';
 import type { TacticalEvent } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
+import { isPostureEvent } from '../lib/posture';
 
 // Map a CloudEvent's best-effort severity string to a feed colour.
 //
@@ -70,7 +71,7 @@ function formatTime(iso: string): string {
  * of comments and bakes them into the bundle as unused utilities.
  */
 export default function AlertFeed({
-  events,
+  events: allEvents,
   isLoading = false,
   selectedAssetId,
   onSelectAsset,
@@ -80,6 +81,7 @@ export default function AlertFeed({
   selectedAssetId?: string;
   onSelectAsset?: (assetId: string) => void;
 }) {
+  const events = allEvents.filter((e) => !isPostureEvent(e.type));
   return (
     <div className="panel shrink-0 flex flex-col max-h-[280px] p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center shrink-0">

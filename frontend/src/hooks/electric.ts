@@ -115,3 +115,13 @@ export function useTableShape<T>(
     lastSyncedAt,
   };
 }
+
+/** A Postgres text[] as Electric returns it (an array, or the brace-string
+ *  form some drivers produce). NULL stays null: an unlabelled row is not a
+ *  row released to nobody. */
+export function parseTextArray(v: unknown): string[] | null {
+  if (v === null || v === undefined) return null;
+  if (Array.isArray(v)) return v.map(String);
+  if (typeof v === 'string') return v.replace(/^\{|\}$/g, '').split(',').filter(Boolean);
+  return null;
+}

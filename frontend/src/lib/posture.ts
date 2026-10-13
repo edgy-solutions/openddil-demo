@@ -84,3 +84,9 @@ export function usePostureClock(intervalMs = 1000): number {
   }, [intervalMs]);
   return now;
 }
+
+/** Posture transitions are move-panel input, not alerts: the tactical event
+ *  feed leaves them out. */
+export function isPostureEvent(type: string): boolean {
+  return type.startsWith('openddil.posture.');
+}

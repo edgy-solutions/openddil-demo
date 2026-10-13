@@ -280,6 +280,47 @@ export interface Deployment {
    *  case. Parsed by `parseChildLinks`. DECLARED ONLY — never inferred from
    *  an id; the chart is the only source of this list. */
   childLinks?: ChildLinkEntry[];
+  /** Declared inputs to the move panel: effector declared load, movement
+   *  standards and movement units. ABSENT on an older chart that carries
+   *  neither key; present (possibly with empty maps) otherwise. Parsed by
+   *  `parseMoveInputs`. DECLARED ONLY. */
+  moveInputs?: MoveInputs;
+}
+
+/** A declared quantity with its unit, e.g. {value: 500, unit: 'L'}. */
+export interface UnitQuantity {
+  value: number;
+  unit: string;
+}
+
+/** Declared movement standard for one platform variant. Every field optional:
+ *  an undeclared one is unknown, never defaulted. */
+export interface MoveStandard {
+  marchOrderS?: number;
+  emplaceS?: number;
+  fuelTank?: UnitQuantity;
+  fuelBurnPerKm?: UnitQuantity;
+}
+
+/** A declared movement unit: the assets that move together. */
+export interface MoveUnit {
+  id: string;
+  label: string;
+  members: string[];
+  plannedMoveKm?: number;
+}
+
+/** Declared effector load: munition key -> count, per asset id and per
+ *  platform variant. */
+export interface DeclaredLoadConfig {
+  asset: Record<string, Record<string, number>>;
+  variant: Record<string, Record<string, number>>;
+}
+
+export interface MoveInputs {
+  declaredLoad: DeclaredLoadConfig;
+  standards: Record<string, MoveStandard>;
+  units: MoveUnit[];
 }
 
 /** THE TIER A DEPLOYMENT GETS WHEN IT DECLARES NONE.
@@ -573,6 +614,148 @@ export function __setChildLinksForTest(links: ChildLinkEntry[] | undefined): voi
   active = { ...active, childLinks: links };
 }
 
+// Munition key: seven dot-joined non-negative integers.
+const MUNITION_KEY_RE = /^\d+\.\d+\.\d+\.\d+\.\d+\.\d+\.\d+$/;
+
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === 'object' && !Array.isArray(x);
+}
+
+function isNonNegFinite(x: unknown): x is number {
+  return typeof x === 'number' && Number.isFinite(x) && x >= 0;
+}
+
+function parseLoadBlock(raw: unknown, kind: 'asset' | 'variant'): Record<string, Record<string, number>> {
+  const out: Record<string, Record<string, number>> = {};
+  if (raw === undefined || raw === null) return out;
+  if (!isRecord(raw)) {
+    console.warn(`[deployment] effectors.declaredLoad.${kind} dropped: not a mapping`);
+    return out;
+  }
+  for (const [key, munitions] of Object.entries(raw)) {
+    if (!isRecord(munitions)) {
+      console.warn(`[deployment] effectors.declaredLoad.${kind}.${key} dropped: not a mapping`);
+      continue;
+    }
+    const entry: Record<string, number> = {};
+    for (const [mk, n] of Object.entries(munitions)) {
+      if (!MUNITION_KEY_RE.test(mk) || !isNonNegFinite(n) || !Number.isInteger(n)) {
+        console.warn(`[deployment] effectors.declaredLoad.${kind}.${key}.${mk} dropped: want a 7-part munition key and a non-negative integer`);
+        continue;
+      }
+      entry[mk] = n;
+    }
+    out[key] = entry;
+  }
+  return out;
+}
+
+function parseUnitQuantity(raw: unknown, name: string): UnitQuantity | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || !isNonNegFinite(raw.value) || typeof raw.unit !== 'string' || !raw.unit.trim()) {
+    console.warn(`[deployment] movement.standards.${name} dropped: want {value >= 0, unit}`);
+    return undefined;
+  }
+  return { value: raw.value, unit: raw.unit.trim() };
+}
+
+function parseStandards(raw: unknown): Record<string, MoveStandard> {
+  const out: Record<string, MoveStandard> = {};
+  if (raw === undefined || raw === null) return out;
+  if (!isRecord(raw)) {
+    console.warn('[deployment] movement.standards dropped: not a mapping');
+    return out;
+  }
+  for (const [variant, s] of Object.entries(raw)) {
+    if (!isRecord(s)) {
+      console.warn(`[deployment] movement.standards.${variant} dropped: not a mapping`);
+      continue;
+    }
+    const std: MoveStandard = {};
+    for (const f of ['marchOrderS', 'emplaceS'] as const) {
+      if (s[f] === undefined) continue;
+      if (isNonNegFinite(s[f])) std[f] = s[f] as number;
+      else console.warn(`[deployment] movement.standards.${variant}.${f} dropped: want a finite number >= 0`);
+    }
+    for (const f of ['fuelTank', 'fuelBurnPerKm'] as const) {
+      const q = parseUnitQuantity(s[f], `${variant}.${f}`);
+      if (q) std[f] = q;
+    }
+    out[variant] = std;
+  }
+  return out;
+}
+
+function parseUnits(raw: unknown): MoveUnit[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    console.warn('[deployment] movement.units dropped: not a list');
+    return [];
+  }
+  const out: MoveUnit[] = [];
+  raw.forEach((u, i) => {
+    const name = isRecord(u) && typeof u.id === 'string' && u.id ? u.id : `#${i}`;
+    if (
+      !isRecord(u) || typeof u.id !== 'string' || !u.id.trim() ||
+      typeof u.label !== 'string' || !u.label.trim() ||
+      !Array.isArray(u.members) || !u.members.every((m) => typeof m === 'string')
+    ) {
+      console.warn(`[deployment] movement.units entry ${name} dropped: want id, label and a members list of strings`);
+      return;
+    }
+    const unit: MoveUnit = { id: u.id.trim(), label: u.label.trim(), members: u.members as string[] };
+    if (u.plannedMoveKm !== undefined) {
+      if (isNonNegFinite(u.plannedMoveKm)) unit.plannedMoveKm = u.plannedMoveKm;
+      else console.warn(`[deployment] movement.units entry ${name} plannedMoveKm dropped: want a finite number >= 0`);
+    }
+    out.push(unit);
+  });
+  return out;
+}
+
+/** Parses the whole `deployment.json` object for the move panel's declared
+ *  inputs. Undefined when neither `effectors.declaredLoad` nor `movement` is
+ *  present (older chart). A malformed entry is dropped alone, with a
+ *  console.warn naming it; the rest of the block is kept. */
+export function parseMoveInputs(raw: unknown): MoveInputs | undefined {
+  if (!isRecord(raw)) return undefined;
+  const eff = isRecord(raw.effectors) ? raw.effectors : undefined;
+  const load = eff?.declaredLoad;
+  const mv = raw.movement;
+  if (load === undefined && mv === undefined) return undefined;
+  if (load !== undefined && !isRecord(load)) {
+    console.warn('[deployment] effectors.declaredLoad dropped: not a mapping');
+  }
+  if (mv !== undefined && !isRecord(mv)) {
+    console.warn('[deployment] movement dropped: not a mapping');
+  }
+  const loadRec = isRecord(load) ? load : {};
+  const mvRec = isRecord(mv) ? mv : {};
+  return {
+    declaredLoad: {
+      asset: parseLoadBlock(loadRec.asset, 'asset'),
+      variant: parseLoadBlock(loadRec.variant, 'variant'),
+    },
+    standards: parseStandards(mvRec.standards),
+    units: parseUnits(mvRec.units),
+  };
+}
+
+/** Declared move-panel inputs, or undefined on a chart that predates them. */
+export function moveInputs(): MoveInputs | undefined {
+  return active.moveInputs;
+}
+
+/** The declared movement unit this asset is a member of, if any. */
+export function unitForAsset(assetId: string): MoveUnit | undefined {
+  return active.moveInputs?.units.find((u) => u.members.includes(assetId));
+}
+
+/** TEST SEAM. Sets the declared move inputs without a fetch. */
+export function __setMoveInputsForTest(m: MoveInputs | undefined): void {
+  active = { ...active, moveInputs: m };
+}
+
 export function parseManualQa(raw: unknown): ManualQaConfig | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const stub = (raw as Record<string, unknown>).stub;
@@ -679,6 +862,7 @@ export async function loadDeployment(): Promise<void> {
         manualQa: parseManualQa((j as { manualQa?: unknown }).manualQa),
         edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
         childLinks: parseChildLinks((j as { childLinks?: unknown }).childLinks),
+        moveInputs: parseMoveInputs(j),
       };
     }
   } catch {

@@ -91,3 +91,21 @@ export function useMunitionLaunches(): ShapeResult<MunitionLaunch> {
     where: 'munition_asset_id IS NOT NULL',
   });
 }
+
+/** A launch row that also names its launcher, for hooks that read several
+ *  launchers at once. */
+export interface EffectorLaunchFor extends EffectorLaunch {
+  launcherAssetId: string;
+}
+
+export function mapEffectorLaunchFor(row: Record<string, unknown>): EffectorLaunchFor {
+  return { ...mapEffectorLaunch(row), launcherAssetId: str(row.launcher_asset_id) };
+}
+
+/** Effector launches fired by any of the given launcher assets. */
+export function useEffectorLaunchesFor(launcherAssetIds: string[]): ShapeResult<EffectorLaunchFor> {
+  const ids = [...new Set(launcherAssetIds)].sort();
+  return useTableShape('effector_launch', mapEffectorLaunchFor, {
+    where: `launcher_asset_id IN (${(ids.length ? ids : ['']).map(sqlLiteral).join(', ')})`,
+  });
+}

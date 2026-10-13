@@ -28,6 +28,8 @@ export function sentinelFleetRow(): Record<string, unknown> {
     callsign: SENTINEL,
     force_id: 'force-blue',
     last_sample_at: new Date().toISOString(),
+    reporting_status: null,
+    reporting_status_at: null,
     schema_revision: 1,
     edge_id: SENTINEL_EDGE,
     region_id: 'region-east',

@@ -14,6 +14,9 @@ export interface FleetAsset {
   callsign: string | null;
   force_id: string | null;
   last_sample_at: string | null;
+  /** Reporting status of the asset and when it last changed, as stored. */
+  reporting_status: string | null;
+  reporting_status_at: string | null;
   schema_revision: number;
   // ADR-0023 Phase 6a: per-asset edge attribution. Comes from
   // telemetry_latest_state.edge_id / region_id, which the projector's
@@ -101,6 +104,8 @@ function mapFleetAsset(row: Record<string, any>): FleetAsset {
     callsign: row.callsign ?? null,
     force_id: row.force_id ?? null,
     last_sample_at: row.last_sample_at ?? null,
+    reporting_status: row.reporting_status ?? null,
+    reporting_status_at: row.reporting_status_at ?? null,
     schema_revision: num(row.schema_revision),
     edge_id: row.edge_id ?? null,
     region_id: row.region_id ?? null,
