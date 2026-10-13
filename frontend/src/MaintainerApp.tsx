@@ -502,7 +502,6 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
                 selected={selectedEdge}
                 onSelect={onSelectEdge}
               />
-              <div className="h-10 w-px shrink-0 bg-slate-700" aria-hidden="true" />
               <div className="min-w-0">
                 <h2 className="text-sm text-slate-200 tracking-wider uppercase mb-1">
                   {selectedAsset
