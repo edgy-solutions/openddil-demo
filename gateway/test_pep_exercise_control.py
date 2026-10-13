@@ -392,3 +392,80 @@ def test_slow_reset_is_relayed_not_502_but_slow_status_is_502(pep_url, monkeypat
     assert code == 202
     code, body = _get(pep_url + "/exercise/status", "supervisor.1")
     assert code == 502 and b"upstream unavailable" in body
+
+
+# --- fail-closed gate: sequences and unknown words need the supervisor -------
+
+SEQ_REFUSAL_TAIL = ("needs the supervisor login: an exercise sequence changes the "
+                    "exercise for every viewer.")
+
+
+def test_operator_sequence_is_403_with_zero_upstream_calls(pep_url, caplog):
+    with caplog.at_level("WARNING"):
+        code, body = _post(pep_url + "/exercise/op/cutheal", "operator.1")
+    assert code == 403
+    doc = json.loads(body)
+    assert doc == {"error": "forbidden", "reason": "cutheal " + SEQ_REFUSAL_TAIL}
+    assert state["calls"] == []
+    msgs = [r.getMessage() for r in caplog.records if "EXERCISE OP REFUSED" in r.getMessage()]
+    assert msgs and "subject=operator.1" in msgs[0] and "role=edge-operator" in msgs[0]
+    assert "op=cutheal" in msgs[0]
+
+
+def test_supervisor_sequence_is_forwarded_with_subject_header(pep_url):
+    state["status"] = 202
+    code, _ = _post(pep_url + "/exercise/op/cutheal", "supervisor.1")
+    assert code == 202
+    assert len(state["calls"]) == 1
+    assert state["calls"][0]["path"] == "/exercise/op/cutheal"
+    assert state["calls"][0]["subject_header"] == "supervisor.1"
+
+
+def test_unknown_word_from_non_supervisor_is_403_fail_closed(pep_url):
+    code, body = _post(pep_url + "/exercise/op/whatever", "operator.1")
+    assert code == 403
+    assert json.loads(body)["reason"].startswith("whatever needs the supervisor login")
+    assert state["calls"] == []
+
+
+def test_the_five_open_ops_are_forwarded_for_a_non_supervisor(pep_url):
+    for op in ("pause", "resume", "stop", "restart", "run"):
+        state["calls"].clear()
+        code, _ = _post(pep_url + "/exercise/op/" + op, "operator.1")
+        assert code == 200, op
+        assert [c["path"] for c in state["calls"]] == ["/exercise/op/" + op]
+
+
+def test_status_adds_may_press_to_each_sequence_entry(pep_url):
+    state["body"] = json.dumps({"sequences": [{"name": "a"}, "junk", {"name": "b"}],
+                                "reset_job": {"state": "idle"}}).encode()
+    try:
+        _, body = _get(pep_url + "/exercise/status", "operator.1")
+        doc = json.loads(body)
+        assert doc["sequences"] == [{"name": "a", "may_press": False}, "junk",
+                                    {"name": "b", "may_press": False}]
+        assert doc["reset_job"]["may_press"] is False
+        _, body = _get(pep_url + "/exercise/status", "supervisor.1")
+        doc = json.loads(body)
+        assert [s["may_press"] for s in doc["sequences"] if isinstance(s, dict)] == [True, True]
+    finally:
+        state["body"] = ORIGINAL_BODY
+
+
+def test_status_without_sequences_or_reset_job_is_byte_identical(pep_url):
+    for raw in (ORIGINAL_BODY, b'{"sequences": 3}', b'{"sequences": "x", "a": 1}'):
+        state["body"] = raw
+        try:
+            _, body = _get(pep_url + "/exercise/status", "operator.1")
+            assert body == raw
+        finally:
+            state["body"] = ORIGINAL_BODY
+
+
+def test_status_with_reset_job_only_is_annotated_as_before(pep_url):
+    state["body"] = b'{"reset_job": {"state": "idle"}}'
+    try:
+        _, body = _get(pep_url + "/exercise/status", "operator.1")
+        assert json.loads(body) == {"reset_job": {"state": "idle", "may_press": False}}
+    finally:
+        state["body"] = ORIGINAL_BODY

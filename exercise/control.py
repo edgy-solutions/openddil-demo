@@ -20,6 +20,17 @@ are served, never merged into one:
 
 The adapter's own response body is read only for its HTTP status; it is
 never parsed, stored, or returned — see _call_adapter below.
+
+NAMED SEQUENCES: an optional JSON file (EXERCISE_SEQUENCES_FILE) declares
+named, timed lists of HTTP calls and waits against in-cluster exercise
+apparatus; POST /exercise/op/<name> starts one in a background thread and
+answers 202 with a run record whose per-step state is served by GET
+/exercise/status. Halt rule: the first step that is not 2xx, or that hits a
+transport error, is marked failed, every later step is skipped and the run is
+halted; a halted run undoes nothing, whatever the executed steps changed stays
+changed. A URL never carries credentials: a sequence file with one in a URL is
+refused at startup. Only one sequence runs at a time, and the run lives in
+memory only: a pod restart loses a running sequence.
 """
 from __future__ import annotations
 
@@ -123,6 +134,97 @@ def load_adapter_config(path: str | os.PathLike) -> dict[str, Any]:
 
     return {"name": name if isinstance(name, str) else "", "endpoint": endpoint.rstrip("/"),
             "operations": ops_out}
+
+
+SEQUENCE_NAME_RE = re.compile(r"[a-z]{1,32}")
+SEQUENCE_MAX_STEPS = 32
+SEQUENCE_MAX_WAIT_STEP_S = 900
+SEQUENCE_MAX_WAIT_TOTAL_S = 1800
+
+
+def load_sequences(path: str | os.PathLike | None) -> dict[str, dict[str, Any]]:
+    """`{name: {label, description?, steps: [...]}}` -> `{name: {label,
+    description, steps}}`, or raises AdapterConfigError naming the sequence
+    and step. An unset or empty path, or a file holding `{}`, means no
+    sequences. A step is `{"wait_s": n}` (0 < n <= 900) or `{"method", "url",
+    "body"?, "name"?}`; the url is plain http with a host and no credentials.
+    A sequence has 1..32 steps and at most 1800 s of waiting in total.
+    """
+    if path is None or str(path).strip() == "":
+        return {}
+    try:
+        raw = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AdapterConfigError(f"cannot read sequences file {path}: {exc}") from exc
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise AdapterConfigError(f"sequences file {path} is not valid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise AdapterConfigError(f"sequences file {path} must be a JSON object")
+
+    out: dict[str, dict[str, Any]] = {}
+    for name, entry in data.items():
+        if not SEQUENCE_NAME_RE.fullmatch(name):
+            raise AdapterConfigError(
+                f"sequences file {path}: sequence name {name!r} must match [a-z]{{1,32}}")
+        if name in ALLOWED_OPS or name == "reset":
+            raise AdapterConfigError(
+                f"sequences file {path}: sequence name {name!r} collides with a built-in op")
+        if not isinstance(entry, dict):
+            raise AdapterConfigError(f"sequences file {path}: sequence {name!r} must be an object")
+        label = entry.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise AdapterConfigError(
+                f"sequences file {path}: sequence {name!r}: 'label' must be a non-empty string")
+        description = entry.get("description", "")
+        if not isinstance(description, str):
+            raise AdapterConfigError(
+                f"sequences file {path}: sequence {name!r}: 'description' must be a string")
+        raw_steps = entry.get("steps")
+        if not isinstance(raw_steps, list) or not 1 <= len(raw_steps) <= SEQUENCE_MAX_STEPS:
+            raise AdapterConfigError(
+                f"sequences file {path}: sequence {name!r}: 'steps' must be a list of "
+                f"1..{SEQUENCE_MAX_STEPS} entries")
+        steps: list[dict[str, Any]] = []
+        total_wait = 0.0
+        for i, step in enumerate(raw_steps):
+            where = f"sequences file {path}: sequence {name!r} step {i}"
+            if not isinstance(step, dict):
+                raise AdapterConfigError(f"{where}: must be an object")
+            if "wait_s" in step:
+                wait = step["wait_s"]
+                if (isinstance(wait, bool) or not isinstance(wait, (int, float))
+                        or not 0 < wait <= SEQUENCE_MAX_WAIT_STEP_S):
+                    raise AdapterConfigError(
+                        f"{where}: wait_s must be a number > 0 and <= {SEQUENCE_MAX_WAIT_STEP_S}")
+                total_wait += wait
+                steps.append({"wait_s": wait})
+                continue
+            method = step.get("method")
+            url = step.get("url")
+            body = step.get("body", {})
+            step_name = step.get("name")
+            if not isinstance(method, str) or not method.strip():
+                raise AdapterConfigError(f"{where}: missing 'method'")
+            if not isinstance(url, str) or not url.startswith("http://"):
+                raise AdapterConfigError(f"{where}: 'url' must be a string starting http://")
+            parts = urllib.parse.urlsplit(url)
+            if not parts.hostname or "@" in parts.netloc:
+                raise AdapterConfigError(
+                    f"{where}: 'url' needs a host and must not carry credentials")
+            if not isinstance(body, dict):
+                raise AdapterConfigError(f"{where}: 'body' must be an object")
+            if step_name is not None and not isinstance(step_name, str):
+                raise AdapterConfigError(f"{where}: 'name' must be a string")
+            steps.append({"method": method.strip().upper(), "url": url, "body": body,
+                          "name": step_name})
+        if total_wait > SEQUENCE_MAX_WAIT_TOTAL_S:
+            raise AdapterConfigError(
+                f"sequences file {path}: sequence {name!r}: total wait_s {total_wait} exceeds "
+                f"{SEQUENCE_MAX_WAIT_TOTAL_S}")
+        out[name] = {"label": label.strip(), "description": description, "steps": steps}
+    return out
 
 
 # --- Prometheus text scraping --------------------------------------------------
@@ -477,8 +579,14 @@ def _now_iso() -> str:
 class AppState:
     def __init__(self, adapter: dict[str, Any], store: RateStore, reset_record_file: str | None,
                  restart_max_zero_age_s: float = DEFAULT_RESTART_MAX_ZERO_AGE_S,
-                 reset_launcher: ResetJobLauncher | None = None):
+                 reset_launcher: ResetJobLauncher | None = None,
+                 sequences: dict[str, dict[str, Any]] | None = None):
         self.adapter = adapter
+        self.sequences = sequences or {}
+        # Latest sequence run record; mutated by the run thread under _lock.
+        self.sequence_run: dict[str, Any] | None = None
+        # Serialises the running-check and the record creation of a start.
+        self.sequence_lock = threading.Lock()
         self.reset_launcher = reset_launcher
         self.restart_max_zero_age_s = restart_max_zero_age_s
         # measured_zero_at values an earlier successful restart already used.
@@ -562,10 +670,14 @@ class AppState:
             self.restart_zero_used = measured_zero_at
 
     def _call_step(self, step: dict[str, Any]) -> tuple[int | None, str | None]:
-        url = self.adapter["endpoint"] + step["path"]
-        data = json.dumps(step["body"]).encode("utf-8")
+        return self._send_call(self.adapter["endpoint"] + step["path"], step["method"],
+                               step["body"])
+
+    @staticmethod
+    def _send_call(url: str, method: str, body: dict[str, Any]) -> tuple[int | None, str | None]:
+        data = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
-        req = urllib.request.Request(url, data=data, method=step["method"], headers=headers)
+        req = urllib.request.Request(url, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 resp.read()
@@ -595,6 +707,89 @@ class AppState:
             if status is None or not 200 <= status < 300:
                 break
         return status, error, steps
+
+    # --- named sequences --------------------------------------------------
+    def get_sequence_run(self) -> dict[str, Any] | None:
+        with self._lock:
+            return copy.deepcopy(self.sequence_run)
+
+    def sequence_summaries(self) -> list[dict[str, Any]]:
+        return [{"name": name, "label": seq["label"], "description": seq.get("description", ""),
+                 "steps": len(seq["steps"]),
+                 "total_wait_s": sum(st["wait_s"] for st in seq["steps"] if "wait_s" in st)}
+                for name, seq in sorted(self.sequences.items())]
+
+    def running_sequence(self) -> str | None:
+        with self._lock:
+            run = self.sequence_run
+            return run["op"] if run is not None and run["state"] == "running" else None
+
+    def start_sequence(self, name: str, subject: str) -> dict[str, Any]:
+        """Create the run record, set last_command, start the daemon thread
+        and return a copy of the record in its initial state. The caller has
+        already checked that nothing is running."""
+        seq = self.sequences[name]
+        steps_rec = []
+        for i, st in enumerate(seq["steps"]):
+            rec: dict[str, Any] = {"i": i, "kind": "wait" if "wait_s" in st else "call",
+                                   "name": st.get("name"), "state": "pending", "status": None,
+                                   "error": None, "at": None, "done_at": None}
+            if "wait_s" in st:
+                rec["wait_s"] = st["wait_s"]
+            else:
+                rec["method"] = st["method"]
+                rec["url"] = st["url"]
+            steps_rec.append(rec)
+        started = _now_iso()
+        run = {"op": name, "label": seq["label"], "subject": subject, "started_at": started,
+               "finished_at": None, "state": "running", "steps": steps_rec}
+        with self._lock:
+            self.sequence_run = run
+            self.last_command = {"op": name, "at": started, "status": 202, "error": None,
+                                 "subject": subject, "sequence": True}
+            initial = copy.deepcopy(run)
+        log.info(json.dumps({"exercise_sequence": name, "event": "start", "subject": subject}))
+        threading.Thread(target=self._run_sequence, args=(run, seq), daemon=True).start()
+        return initial
+
+    def _run_sequence(self, run: dict[str, Any], seq: dict[str, Any]) -> None:
+        name, subject = run["op"], run["subject"]
+        halted = False
+        for i, st in enumerate(seq["steps"]):
+            rec = run["steps"][i]
+            if halted:
+                with self._lock:
+                    rec["state"] = "skipped"
+                log.info(json.dumps({"exercise_sequence": name, "step": i, "kind": rec["kind"],
+                                      "state": "skipped", "status": None, "error": None,
+                                      "subject": subject}))
+                continue
+            with self._lock:
+                rec["state"] = "running"
+                rec["at"] = _now_iso()
+            status: int | None = None
+            error: str | None = None
+            if "wait_s" in st:
+                time.sleep(st["wait_s"])
+                ok = True
+            else:
+                status, error = self._send_call(st["url"], st["method"], st["body"])
+                ok = status is not None and 200 <= status < 300
+            with self._lock:
+                rec["state"] = "ok" if ok else "failed"
+                rec["status"] = status
+                rec["error"] = error
+                rec["done_at"] = _now_iso()
+            log.info(json.dumps({"exercise_sequence": name, "step": i, "kind": rec["kind"],
+                                  "state": rec["state"], "status": status, "error": error,
+                                  "subject": subject}))
+            if not ok:
+                halted = True
+        with self._lock:
+            run["state"] = "halted" if halted else "completed"
+            run["finished_at"] = _now_iso()
+        log.info(json.dumps({"exercise_sequence": name, "event": run["state"],
+                              "subject": subject}))
 
 
 # --- HTTP ----------------------------------------------------------------------
@@ -655,6 +850,8 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                     "restart_allowed": refusal is None,
                     "restart_refusal": refusal,
                     "reset_job": reset_job,
+                    "sequences": app.sequence_summaries(),
+                    "sequence": app.get_sequence_run(),
                 })
                 return
             self._send_json(404, {"error": "not found"})
@@ -668,6 +865,10 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
             if op == "reset" and app.reset_launcher is not None:
                 self._drain()
                 self._handle_reset()
+                return
+            if op in app.sequences:
+                self._drain()
+                self._handle_sequence(op)
                 return
             if op not in app.adapter["operations"]:
                 # Refused BEFORE any outward call -- an unknown op never
@@ -711,6 +912,40 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
             log.info(json.dumps({"exercise_op": op, "status": status, "error": error,
                                   "subject": subject}))
             self._send_json(200, record)
+
+        def _handle_sequence(self, name: str) -> None:
+            subject = self.headers.get(SUBJECT_HEADER, "").strip()
+            if not subject:
+                self._send_json(400, {"error": "missing subject header"})
+                return
+            if not SUBJECT_RE.fullmatch(subject):
+                self._send_json(400, {"error": "invalid subject"})
+                return
+            with app.sequence_lock:
+                running = app.running_sequence()
+                if running is not None:
+                    log.info(json.dumps({"exercise_op_refused": name,
+                                          "reason": "sequence_running", "subject": subject}))
+                    self._send_json(409, {"error": "sequence already running",
+                                          "reason": "sequence_running", "op": running})
+                    return
+                if app.reset_launcher is not None:
+                    try:
+                        current = app.reset_launcher.latest()
+                    except KubeApiError as exc:
+                        log.warning(json.dumps({"exercise_sequence": name, "event": "refused",
+                                                 "status": exc.status, "subject": subject}))
+                        self._send_json(502, {"error": "reset job state unavailable",
+                                              "status": exc.status})
+                        return
+                    if current is not None and current["state"] == "running":
+                        log.info(json.dumps({"exercise_op_refused": name,
+                                              "reason": "reset_running", "subject": subject}))
+                        self._send_json(409, {"error": "reset already running",
+                                              "reason": "reset_running", "job": current["name"]})
+                        return
+                record = app.start_sequence(name, subject)
+            self._send_json(202, record)
 
         def _handle_reset(self) -> None:
             # The simulator is quieted through the adapter (pause) before the
@@ -822,10 +1057,16 @@ def main() -> int:
             print(str(exc), file=sys.stderr)
             return 1
 
+    try:
+        sequences = load_sequences(os.getenv("EXERCISE_SEQUENCES_FILE", "").strip())
+    except AdapterConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
     store = RateStore(sources=sources, window=window, min_rate=min_rate)
     app = AppState(adapter=adapter, store=store, reset_record_file=reset_record_file,
                    restart_max_zero_age_s=max_zero_age,
-                   reset_launcher=reset_launcher)
+                   reset_launcher=reset_launcher, sequences=sequences)
 
     stop_event = threading.Event()
     scraper = threading.Thread(target=scrape_loop, args=(store, scrape_interval, stop_event),

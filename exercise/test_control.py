@@ -903,3 +903,269 @@ def test_reset_without_a_pause_op_still_runs(kapp):
     assert state["adapter_calls"] == []
     assert len(kube["posts"]) == 1
     assert app_state.get_last_command()["pause"] is None
+
+
+# =============================================================================
+# named exercise sequences
+# =============================================================================
+
+def _seq_file(tmp_path, obj):
+    p = tmp_path / "sequences.json"
+    p.write_text(json.dumps(obj), encoding="utf-8")
+    return p
+
+
+GOOD_SEQ = {"label": "Cut and heal", "description": "cut, wait, heal",
+            "steps": [{"method": "post", "url": "http://127.0.0.1:9/a", "body": {"x": 1}},
+                      {"wait_s": 5}]}
+
+
+def test_s1_valid_sequences_load(tmp_path):
+    out = control.load_sequences(_seq_file(tmp_path, {"cutheal": GOOD_SEQ}))
+    seq = out["cutheal"]
+    assert seq["label"] == "Cut and heal" and seq["description"] == "cut, wait, heal"
+    assert seq["steps"][0]["method"] == "POST" and seq["steps"][0]["body"] == {"x": 1}
+    assert seq["steps"][1] == {"wait_s": 5}
+
+
+def test_s1_empty_object_unset_and_empty_path_mean_no_sequences(tmp_path):
+    assert control.load_sequences(_seq_file(tmp_path, {})) == {}
+    (tmp_path / "e.json").write_text("{}")
+    assert control.load_sequences(str(tmp_path / "e.json")) == {}
+    assert control.load_sequences(None) == {}
+    assert control.load_sequences("") == {}
+
+
+def _bad(seq):
+    return {"cutheal": {"label": "L", "steps": seq}}
+
+
+def _step(**kw):
+    s = {"method": "POST", "url": "http://host/x"}
+    s.update(kw)
+    return s
+
+
+@pytest.mark.parametrize("doc,needle", [
+    ({"Bad": GOOD_SEQ}, "Bad"),
+    ({"has1": GOOD_SEQ}, "has1"),
+    ({"a" * 33: GOOD_SEQ}, "name"),
+    ({"pause": GOOD_SEQ}, "pause"),
+    ({"reset": GOOD_SEQ}, "reset"),
+    ({"cutheal": {"label": "", "steps": [_step()]}}, "label"),
+    ({"cutheal": {"label": "L", "description": 3, "steps": [_step()]}}, "description"),
+    (_bad([]), "steps"),
+    (_bad([_step()] * 33), "steps"),
+    (_bad([{"wait_s": 0}]), "step 0"),
+    (_bad([{"wait_s": 901}]), "step 0"),
+    (_bad([{"wait_s": "3"}]), "step 0"),
+    (_bad([{"wait_s": True}]), "step 0"),
+    (_bad([_step(), {"wait_s": 900}, {"wait_s": 900}, {"wait_s": 10}]), "wait"),
+    (_bad([_step(url="https://host/x")]), "step 0"),
+    (_bad([_step(), _step(url="ftp://host/x")]), "step 1"),
+    (_bad([_step(url="http://user:pw@host/x")]), "step 0"),
+    (_bad([_step(url="http://user@host/x")]), "step 0"),
+    (_bad([_step(url="http:///x")]), "step 0"),
+    (_bad([_step(body=[1])]), "step 0"),
+    (_bad([_step(method="")]), "step 0"),
+    (_bad([_step(name=5)]), "step 0"),
+    (_bad(["x"]), "step 0"),
+    ([], "object"),
+])
+def test_s2_load_sequences_rejections(tmp_path, doc, needle):
+    with pytest.raises(control.AdapterConfigError) as ei:
+        control.load_sequences(_seq_file(tmp_path, doc))
+    assert needle in str(ei.value)
+    if needle.startswith("step"):
+        assert "cutheal" in str(ei.value)
+
+
+def test_s2_unreadable_and_malformed_refuse(tmp_path):
+    with pytest.raises(control.AdapterConfigError):
+        control.load_sequences(tmp_path / "missing.json")
+    (tmp_path / "bad.json").write_text("{nope")
+    with pytest.raises(control.AdapterConfigError):
+        control.load_sequences(tmp_path / "bad.json")
+
+
+seq_state = {"calls": [], "status_by_path": {}}
+
+
+class SeqStub(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        seq_state["calls"].append((self.command, self.path, json.loads(body or b"null")))
+        out = b'{"secret": "never stored"}'
+        self.send_response(seq_state["status_by_path"].get(self.path, 200))
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    do_PUT = do_POST
+
+
+def _wait_run(url, want=("completed", "halted"), timeout=10):
+    end = time.time() + timeout
+    while time.time() < end:
+        _, st = _get(url + "/exercise/status")
+        if st["sequence"] and st["sequence"]["state"] in want:
+            return st["sequence"]
+        time.sleep(0.02)
+    raise AssertionError("sequence did not finish")
+
+
+@pytest.fixture
+def sapp(tmp_path):
+    stub = _serve(SeqStub)
+    seq_state.update(calls=[], status_by_path={})
+    base = f"http://127.0.0.1:{stub.server_port}"
+    seqs = {
+        "three": {"label": "Three", "description": "d", "steps": [
+            {"method": "POST", "url": base + "/one", "body": {"n": 1}, "name": "first"},
+            {"wait_s": 0.05},
+            {"method": "PUT", "url": base + "/two", "body": {"n": 2}},
+            {"method": "POST", "url": base + "/three", "body": {}},
+        ]},
+        "slow": {"label": "Slow", "steps": [{"wait_s": 0.6},
+                                            {"method": "POST", "url": base + "/after", "body": {}}]},
+        "dead": {"label": "Dead", "steps": [{"method": "POST", "url": "http://127.0.0.1:1/x", "body": {}},
+                                             {"method": "POST", "url": base + "/never", "body": {}}]},
+    }
+    cfg = {"name": "stand-in", "endpoint": base,
+           "operations": {"pause": {"method": "POST", "path": "/pause", "body": {}}}}
+    adapter = control.load_adapter_config(_write(tmp_path, cfg))
+    store = control.RateStore(sources=[], window=30.0, min_rate=0.1)
+    app_state = control.AppState(adapter=adapter, store=store, reset_record_file=None,
+                                 sequences=seqs)
+    handler_srv = _serve(control.make_handler(app_state))
+    yield f"http://127.0.0.1:{handler_srv.server_port}", app_state, base
+    for s in (stub, handler_srv):
+        s.shutdown()
+
+
+def test_s3_sequence_completes_in_order_with_configured_bodies(sapp):
+    url, app_state, base = sapp
+    code, rec = _post(url + "/exercise/op/three", subject="sup@x")
+    assert code == 202
+    assert rec["state"] == "running" and rec["finished_at"] is None
+    assert rec["op"] == "three" and rec["label"] == "Three" and rec["subject"] == "sup@x"
+    assert [s["state"] for s in rec["steps"]] == ["pending"] * 4
+    assert [s["kind"] for s in rec["steps"]] == ["call", "wait", "call", "call"]
+    final = _wait_run(url)
+    assert final["state"] == "completed" and final["finished_at"]
+    assert [s["state"] for s in final["steps"]] == ["ok"] * 4
+    assert [s["status"] for s in final["steps"] if s["kind"] == "call"] == [200, 200, 200]
+    assert final["steps"][0]["name"] == "first"
+    assert seq_state["calls"] == [("POST", "/one", {"n": 1}), ("PUT", "/two", {"n": 2}),
+                                  ("POST", "/three", {})]
+    assert "never stored" not in json.dumps(final)
+
+
+def test_s3_last_command_is_set_at_start(sapp):
+    url, app_state, _ = sapp
+    _post(url + "/exercise/op/slow", subject="sup@x")
+    _, st = _get(url + "/exercise/status")
+    lc = st["last_command"]
+    assert lc["op"] == "slow" and lc["status"] == 202 and lc["error"] is None
+    assert lc["subject"] == "sup@x" and lc["sequence"] is True and lc["at"]
+    _wait_run(url)
+
+
+def test_s4_a_500_halts_and_later_steps_are_skipped(sapp):
+    url, app_state, _ = sapp
+    seq_state["status_by_path"]["/two"] = 500
+    _post(url + "/exercise/op/three", subject="sup@x")
+    final = _wait_run(url)
+    assert final["state"] == "halted" and final["finished_at"]
+    assert [s["state"] for s in final["steps"]] == ["ok", "ok", "failed", "skipped"]
+    assert final["steps"][2]["status"] == 500
+    assert [c[1] for c in seq_state["calls"]] == ["/one", "/two"]
+
+
+def test_s4_transport_error_halts(sapp):
+    url, app_state, _ = sapp
+    _post(url + "/exercise/op/dead", subject="sup@x")
+    final = _wait_run(url)
+    assert final["state"] == "halted"
+    assert final["steps"][0]["state"] == "failed"
+    assert final["steps"][0]["status"] is None and final["steps"][0]["error"]
+    assert final["steps"][1]["state"] == "skipped"
+    assert seq_state["calls"] == []
+
+
+def test_s5_second_sequence_while_running_is_409(sapp):
+    url, app_state, _ = sapp
+    code, _ = _post(url + "/exercise/op/slow", subject="sup@x")
+    assert code == 202
+    code, body = _post(url + "/exercise/op/three", subject="sup@x")
+    assert code == 409
+    assert body == {"error": "sequence already running", "reason": "sequence_running",
+                    "op": "slow"}
+    _wait_run(url)
+    assert [c[1] for c in seq_state["calls"]] == ["/after"]  # nothing from 'three'
+    code, _ = _post(url + "/exercise/op/three", subject="sup@x")
+    assert code == 202
+    _wait_run(url)
+
+
+class _RunningLauncher:
+    def latest(self):
+        return {"name": "job-1", "state": "running"}
+
+
+def test_s5_reset_job_running_is_409_before_any_call(sapp):
+    url, app_state, _ = sapp
+    app_state.reset_launcher = _RunningLauncher()
+    code, body = _post(url + "/exercise/op/three", subject="sup@x")
+    assert code == 409 and body["reason"] == "reset_running"
+    time.sleep(0.2)
+    assert seq_state["calls"] == []
+    app_state.reset_launcher = None
+    _, st = _get(url + "/exercise/status")
+    assert st["sequence"] is None and st["last_command"] is None
+
+
+def test_s6_status_carries_sequences_and_the_run_record(sapp):
+    url, app_state, _ = sapp
+    _, st = _get(url + "/exercise/status")
+    assert st["sequence"] is None
+    assert [s["name"] for s in st["sequences"]] == ["dead", "slow", "three"]
+    three = st["sequences"][2]
+    assert three == {"name": "three", "label": "Three", "description": "d", "steps": 4,
+                     "total_wait_s": 0.05}
+    assert st["sequences"][1]["description"] == ""
+    _post(url + "/exercise/op/three", subject="sup@x")
+    final = _wait_run(url)
+    _, st = _get(url + "/exercise/status")
+    assert st["sequence"] == final
+
+
+def test_s6_status_without_sequences_has_empty_list(app):
+    url, _app, _store = app
+    _, st = _get(url + "/exercise/status")
+    assert st["sequences"] == [] and st["sequence"] is None
+
+
+def test_s7_subject_400s_and_no_call(sapp):
+    url, app_state, _ = sapp
+    code, body = _post(url + "/exercise/op/three")
+    assert code == 400 and body["error"] == "missing subject header"
+    code, body = _post(url + "/exercise/op/three", subject="bad subject!")
+    assert code == 400 and body["error"] == "invalid subject"
+    time.sleep(0.2)
+    assert seq_state["calls"] == []
+    _, st = _get(url + "/exercise/status")
+    assert st["sequence"] is None
+
+
+def test_s8_main_refuses_a_bad_sequences_file(monkeypatch, tmp_path):
+    cfg = {"name": "n", "endpoint": "http://127.0.0.1:1",
+           "operations": {"pause": {"method": "POST", "path": "/p", "body": {}}}}
+    monkeypatch.setenv("EXERCISE_ADAPTER_FILE", str(_write(tmp_path, cfg)))
+    monkeypatch.setenv("EXERCISE_SEQUENCES_FILE", str(_seq_file(tmp_path, {"Bad": GOOD_SEQ})))
+    monkeypatch.delenv("EXERCISE_RESET_JOB_FILE", raising=False)
+    assert control.main() == 1
