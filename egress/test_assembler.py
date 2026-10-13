@@ -39,6 +39,7 @@ from assembler import (  # noqa: E402
     handle_posture_message,
     parse_posture_transition,
     load_assembler_config,
+    event_id_for,
     record_key,
 )
 from gate import ADMIT, REASON_NO_OVERLAP, REASON_UNLABELLED, EgressGate  # noqa: E402
@@ -1402,3 +1403,83 @@ def test_config_absent_posture_topic_means_no_subscription(tmp_path):
     assert assembler.subscription_topics(routes) == {"t"}
     with_posture = load_assembler_config(_write_cfg(tmp_path, posture_topic="p"), ["KindA"])
     assert assembler.subscription_topics(with_posture) == {"t", "p"}
+
+
+# --- episode id and event id ------------------------------------------------
+
+def test_event_id_for_the_opening_event_is_the_episode_id():
+    assert event_id_for("ep-1") == "ep-1"
+    assert event_id_for("ep-1", source_ids=["a"]) == "ep-1"
+    assert event_id_for("ep-1", source_ids=["a", "a"]) == "ep-1"
+
+
+def test_event_id_for_a_revision_differs_is_deterministic_and_order_insensitive():
+    rev = event_id_for("ep-1", source_ids=["a", "b"])
+    assert rev != "ep-1"
+    assert rev == event_id_for("ep-1", source_ids=["a", "b"])
+    assert rev == event_id_for("ep-1", source_ids=["b", "a"])
+    assert rev != event_id_for("ep-1", source_ids=["a", "c"])
+
+
+def test_event_id_for_an_arrival_differs_from_the_episode_and_any_revision():
+    arrival = event_id_for("ep-1", transition_id="t1")
+    assert arrival != "ep-1"
+    assert arrival != event_id_for("ep-1", source_ids=["a", "b"])
+    assert arrival == event_id_for("ep-1", transition_id="t1")
+    assert arrival != event_id_for("ep-1", transition_id="t2")
+
+
+KIND_A_EPISODE_DECL = Declarations(
+    key="/ref", label="/marking", owning_tier="/tier",
+    episode=EpisodeDecl(asset="/subject", component="/what/part", fault_code="/what/code"),
+    trigger="/kind", provenance="/prov", episode_id="/episode",
+)
+
+
+def _episode_state():
+    route = AssemblerRoute(
+        name="r1", kind="KindA", trigger_topic="t", output_topic="o", posture_topic="p")
+    return _RouteState(route=route, declarations=KIND_A_EPISODE_DECL, schema={})
+
+
+def _episode_run(state):
+    """Open, revise, then march/move/emplace; return the three records."""
+    sink: list = []
+    one = [{"event_id": "ev-1"}]
+    two = [{"event_id": "ev-1"}, {"event_id": "ev-2"}]
+    _feed_cm(state, cm_state(discrepancies=[discrepancy(
+        detected_at_ns=OLD_NS, sources=one)]), sink)
+    _feed_cm(state, cm_state(discrepancies=[discrepancy(
+        detected_at_ns=OLD_NS, sources=two)]), sink)
+    _march_and_move(state, sink)
+    _feed_posture(state, _tr("emplaced", "e1", T0 + 300), sink)
+    assert len(sink) == 3
+    return [(json.loads(p), k.decode()) for _, p, k in sink]
+
+
+def test_a_kind_with_episode_id_gives_each_event_its_own_id_under_one_episode():
+    (opening, k1), (revision, k2), (arrival, k3) = _episode_run(_episode_state())
+    episode = opening["episode"]
+    assert opening["ref"] == episode
+    assert revision["episode"] == episode and revision["ref"] != episode
+    assert arrival["episode"] == episode
+    assert arrival["ref"] not in (episode, revision["ref"])
+    assert arrival["ref"] == event_id_for(episode, transition_id="e1")
+    assert revision["ref"] == event_id_for(episode, source_ids=["ev-1", "ev-2"])
+    assert k1 == k2 == k3 == episode  # one partition key per episode
+
+
+def test_a_restart_reproduces_the_same_event_ids():
+    first = _episode_run(_episode_state())
+    again = _episode_run(_episode_state())
+    assert [r["ref"] for r, _ in first] == [r["ref"] for r, _ in again]
+
+
+def test_a_kind_without_episode_id_has_no_episode_field():
+    state = _arrival_state()
+    sink: list = []
+    _feed_cm(state, cm_state(discrepancies=[discrepancy(
+        detected_at_ns=OLD_NS, sources=[{"event_id": "ev-1"}, {"event_id": "ev-2"}])]), sink)
+    rec = json.loads(sink[0][1])
+    assert "episode" not in rec
+    assert rec["ref"] == sink[0][2].decode()

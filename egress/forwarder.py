@@ -50,7 +50,7 @@ blocks a later send: only `delivered` short-circuits as `duplicate`.
 
 DEDUPE AND THE ONE ACCEPTED WINDOW
 Every Restate wipe and every scenario reset re-emits CM revisions, and a
-revision reuses its event_id, so the same event can reach this process more
+revision of an episode may reuse its event_id, so the same event can reach this process more
 than once across restarts even though the destination already has it. A
 route with `dedupe_field` set consults `egress_delivered_events` before
 every send and never sends an event_id already recorded there as
@@ -153,7 +153,12 @@ class ForwardRoute:
     chart docs use "event_id"); when set, every record is checked against
     `egress_delivered_events` before a send, and the route's own deliveries
     are recorded there. When unset, behaviour is exactly what it was before
-    either field existed — the store is never consulted or written."""
+    either field existed — the store is never consulted or written.
+
+    `case_field`: the top-level key of the decoded record carrying the id
+    the destination should return as its case id (one case per episode,
+    shared by every event of it). When unset the expected case id is the
+    record's event id (`dedupe_field`)."""
 
     name: str
     sink_topic: str
@@ -164,6 +169,7 @@ class ForwardRoute:
     auth: ClientCredentials | None = None
     held: bool = False
     dedupe_field: str | None = None
+    case_field: str | None = None
 
 
 def _entry_label(entry: object, index: int) -> str:
@@ -252,10 +258,14 @@ def load_forward_config(path: str | os.PathLike) -> list[ForwardRoute]:
         if dedupe_field is not None and (not isinstance(dedupe_field, str) or not dedupe_field):
             raise ForwardConfigError(f"{label}: 'dedupe_field' must be a non-empty string")
 
+        case_field = entry.get("case_field")
+        if case_field is not None and (not isinstance(case_field, str) or not case_field):
+            raise ForwardConfigError(f"{label}: 'case_field' must be a non-empty string")
+
         routes.append(ForwardRoute(
             name=name, sink_topic=entry["sink_topic"], url=entry["url"],
             kind=entry["kind"], envelope=envelope, token_file=token_file, auth=auth,
-            held=held, dedupe_field=dedupe_field,
+            held=held, dedupe_field=dedupe_field, case_field=case_field,
         ))
     return routes
 
@@ -414,10 +424,19 @@ class DeliveredStore:
         self._call(_exec)
 
 
+def _expected_case_id(route: ForwardRoute, record: Any, event_id: str | None) -> Any:
+    """The case id the destination should return: the record's `case_field`
+    when the route declares one, otherwise the event id."""
+    if route.case_field is not None and isinstance(record, Mapping):
+        return record.get(route.case_field)
+    return event_id
+
+
 def _case_id_from_body(resp_body: bytes) -> str | None:
     """The case_id a 2xx response body carries, or `None`. The door's
-    documented rule: the case key is our event_id, carried at
-    workflow.case_id; a top-level case_id is the older shape. Nothing else
+    documented rule: the case key is the record's `case_field` when the
+    route declares one (one case per episode), otherwise its event_id,
+    carried at workflow.case_id; a top-level case_id is the older shape. Nothing else
     of the body is read."""
     try:
         parsed_body = json.loads(resp_body)
@@ -744,11 +763,13 @@ def _deliver_inner(
             delivered_to_destination = True
             case_id = _case_id_from_body(resp_body)
             # Never log the rest of the body -- only the case_id it carried.
-            case_id_mismatch = event_id is not None and case_id is not None and case_id != event_id
+            expected_case_id = _expected_case_id(route, record, event_id)
+            case_id_mismatch = (
+                event_id is not None and case_id is not None and case_id != expected_case_id)
             if case_id_mismatch:
                 _bump(counts, "case_id_mismatch")
-                log.warning("case_id_mismatch route=%s key=%s event_id=%s case_id=%s",
-                            route.name, key, event_id, case_id)
+                log.warning("case_id_mismatch route=%s key=%s event_id=%s case_id=%s expected=%s",
+                            route.name, key, event_id, case_id, expected_case_id)
             elif case_id is None:
                 _bump(counts, "case_id_missing")
 
@@ -1001,7 +1022,7 @@ def resend_once(
 
     case_id = _case_id_from_body(resp_body)
     extra: dict[str, Any] = {"case_id": case_id}
-    if case_id is not None and case_id != event_id:
+    if case_id is not None and case_id != _expected_case_id(route, record, event_id):
         extra["case_id_mismatch"] = True
     try:
         store.record_resend(route.name, event_id, status, case_id)

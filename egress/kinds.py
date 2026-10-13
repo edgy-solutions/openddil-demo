@@ -98,6 +98,11 @@ class Declarations:
     # the trigger `kind` values the assembler module declares, never a
     # free string the schema would have to vocabulary-check on its own.
     trigger: str | None = None
+    # Where the record carries the id of the EPISODE (one per occurrence),
+    # distinct from `key`, which then names one EVENT. Absent = the legacy
+    # behaviour: `key` carries the episode id and every event of an episode
+    # shares it.
+    episode_id: str | None = None
 
 
 def _require_pointer(block: Mapping, name: str) -> str:
@@ -161,6 +166,7 @@ def load_declarations(directory: str | Path) -> dict[str, "Declarations"]:
                 picture=block.get("picture"),
                 provenance=_optional_pointer(block, "provenance"),
                 trigger=_optional_pointer(block, "trigger"),
+                episode_id=_optional_pointer(block, "episode_id"),
             )
         except Exception as exc:  # noqa: BLE001 — re-raised naming the file
             raise ValueError(

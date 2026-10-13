@@ -187,3 +187,29 @@ def test_a_non_string_trigger_is_refused(tmp_path):
     with pytest.raises(Exception) as exc:
         load_declarations(tmp_path)
     assert "KindA.schema.json" in str(exc.value)
+
+
+# --- episode_id (the episode's own id, distinct from the event `key`) -------
+
+def test_a_block_with_episode_id_loads(tmp_path):
+    declared = dict(KIND_A_DECLARED)
+    declared["x-openddil"] = dict(KIND_A_DECLARED["x-openddil"], episode_id="/episode")
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(declared))
+
+    assert load_declarations(tmp_path)["KindA"].episode_id == "/episode"
+
+
+def test_a_schema_without_episode_id_is_unchanged(tmp_path):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(KIND_A_DECLARED))
+
+    assert load_declarations(tmp_path)["KindA"].episode_id is None
+
+
+def test_a_non_string_episode_id_is_refused(tmp_path):
+    declared = dict(KIND_A_DECLARED)
+    declared["x-openddil"] = dict(KIND_A_DECLARED["x-openddil"], episode_id=123)
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(declared))
+
+    with pytest.raises(Exception) as exc:
+        load_declarations(tmp_path)
+    assert "KindA.schema.json" in str(exc.value)

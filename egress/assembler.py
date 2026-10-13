@@ -32,6 +32,20 @@ postgres read and the in-memory parts-availability lookup — lives in
 `read_asset`/`PartsBook` below and is injected, the same seam
 `EgressGate.for_destination` gives `main.py` for the PDP.
 
+EPISODE ID AND EVENT ID
+An episode has one `episode_id` (see `record_key`). When the kind declares
+an `episode_id` pointer, the episode id is written there and the `key`
+pointer carries the id of one EVENT of the episode instead: the opening,
+each revision (a new source inside the open episode) and each arrival
+re-send has its own `event_id` (`event_id_for`). The opening event's id
+equals the episode id; a revision's and an arrival's do not. That is on
+purpose: every event already delivered under the old rule (one id for the
+whole episode) keeps its id, so a restart's re-emission of an open episode
+stays a duplicate at a dedupe route instead of re-posting it. A kind that
+declares no `episode_id` keeps the old behaviour: `key` is the episode id
+on every event. The Kafka message key is the episode id either way, so one
+episode stays on one partition, in order.
+
 RESTART RE-EMITS, ON PURPOSE
 The runner's de-duplication key is `(record key, sorted source event_ids)`,
 held only in this process's memory. A restart starts that memory empty, so
@@ -137,16 +151,40 @@ def record_key(
     kind: str, owning_tier: str, asset: str, component: str, fault_code: str,
     detected_at_ns: int,
 ) -> str:
-    """The identity of one OCCURRENCE of a fault: one uuid5 per (kind,
+    """The `episode_id`: the identity of one OCCURRENCE of a fault: one uuid5 per (kind,
     owning_tier, asset, component, fault_code, first-observed time). A
     second source inside an open occurrence keeps that time, so it is a
     revision under the same key. A fault that clears and reappears, or a
     re-run after the store is emptied, is a new occurrence and a new key.
     Still deterministic and re-derivable from the cm-state record alone — a
     restart, or a second process reading the same episode, computes the
-    identical key without consulting any store."""
+    identical key without consulting any store.
+
+    When the kind declares `episode_id` this is that field, and each event
+    of the episode has its own `event_id` (`event_id_for`); otherwise it is
+    also the `key` of every event."""
     seed = f"{kind}|{owning_tier}|{asset}|{component}|{fault_code}|{detected_at_ns}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def event_id_for(
+    episode_id: str, *, source_ids: Iterable[str] = (), transition_id: str | None = None,
+) -> str:
+    """The id of one EVENT of an episode. Pure and deterministic: the same
+    inputs give the same id in any process, across restarts.
+
+    An arrival (`transition_id` given) is its own event. Otherwise, fewer
+    than two distinct sources is the opening event and its id IS the episode
+    id, so an event delivered before events had ids of their own keeps the
+    id it was delivered under and a restart's re-emission stays a duplicate.
+    Two or more distinct sources is a revision, identified by the set of
+    sources (order does not matter)."""
+    if transition_id is not None:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{episode_id}|arrival|{transition_id}"))
+    distinct = sorted(set(source_ids))
+    if len(distinct) < 2:
+        return episode_id
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{episode_id}|sources|{','.join(distinct)}"))
 
 
 def _rfc3339(ns: int) -> str:
@@ -318,9 +356,15 @@ def assemble(
     owning_tier = owning_tier_of(cm_state)
 
     out: dict[str, Any] = {}
-    pointer.set(out, decl.key, record_key(
+    episode_id = record_key(
         kind, owning_tier, episode.asset, episode.component, episode.fault_code,
-        episode.detected_at_ns))
+        episode.detected_at_ns)
+    if decl.episode_id is None:
+        pointer.set(out, decl.key, episode_id)
+    else:
+        pointer.set(out, decl.episode_id, episode_id)
+        pointer.set(out, decl.key, event_id_for(
+            episode_id, source_ids=_source_ids(episode)))
 
     label = _label_from_cm_state(cm_state)
     if label is not None:
@@ -1037,6 +1081,9 @@ async def handle_posture_message(
                     "observed_at": transition.at,
                 })
                 pointer.set(record, ptr, entries)
+            if state.declarations.episode_id is not None:
+                pointer.set(record, state.declarations.key,
+                            event_id_for(key, transition_id=transition.id))
             produce(state.route.output_topic,
                     json.dumps(record, separators=(",", ":")).encode("utf-8"),
                     key.encode("utf-8"))

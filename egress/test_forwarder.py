@@ -1257,3 +1257,65 @@ def test_record_resend_is_an_update_never_an_insert():
 def test_record_resend_zero_rows_raises():
     with pytest.raises(RuntimeError):
         _store_with(_StubConn("UPDATE 0")).record_resend("to-a", "ev-1", 200, None)
+
+
+# --- case_field: the expected case id is the episode's, not the event's -----
+
+def _case_field_run(body: bytes):
+    route = _route(dedupe_field="event_id", case_field="episode_id")
+    store = _FakeStore()
+    record = {"event_id": "E2", "episode_id": "EP1"}
+    consumer = _FakeConsumer([_FakeMessage("sink-a", b"k1", json.dumps(record).encode())])
+    counts: dict[str, int] = {}
+    run_once(
+        consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
+        post=lambda u, d, h: (200, body), sleep=lambda d: pytest.fail("no retry expected"),
+        poll_timeout=1.0, counts=counts, store=store, log_outcome=lambda *a, **k: None,
+    )
+    return counts, store
+
+
+def test_case_field_expects_the_episode_id_and_a_match_is_clean():
+    counts, store = _case_field_run(b'{"workflow":{"case_id":"EP1"}}')
+    assert counts["delivered"] == 1
+    assert counts.get("case_id_mismatch") is None
+    assert store._rows[("to-a", "E2")]["case_id"] == "EP1"
+
+
+def test_case_field_returning_the_event_id_is_a_counted_mismatch_but_delivered():
+    counts, store = _case_field_run(b'{"workflow":{"case_id":"E2"}}')
+    assert counts["delivered"] == 1
+    assert counts["case_id_mismatch"] == 1
+    assert store._rows[("to-a", "E2")]["case_id"] == "E2"
+
+
+def test_resend_with_case_field_compares_against_the_episode_id():
+    rig = _ResendRig(body=json.dumps({"workflow": {"case_id": "EP1"}}).encode())
+    route = _route(dedupe_field="event_id", case_field="episode_id")
+    rec = {"event_id": "ev-1", "episode_id": "EP1"}
+    assert rig.run({"to-a": route}, record=rec) == 0
+    assert "case_id_mismatch" not in rig.audits[1]
+
+    rig = _ResendRig(body=json.dumps({"workflow": {"case_id": "ev-1"}}).encode())
+    assert rig.run({"to-a": route}, record=rec) == 0
+    assert rig.audits[1]["case_id_mismatch"] is True
+
+
+@pytest.mark.parametrize("bad", ["", 5])
+def test_config_refuses_a_bad_case_field(tmp_path, bad):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest",
+         "kind": "KindA", "dedupe_field": "event_id", "case_field": bad},
+    ])
+    with pytest.raises(ForwardConfigError) as exc:
+        load_forward_config(path)
+    assert "case_field" in str(exc.value)
+
+
+def test_config_accepts_case_field(tmp_path):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest",
+         "kind": "KindA", "dedupe_field": "event_id", "case_field": "episode_id"},
+    ])
+    [route] = load_forward_config(path)
+    assert route.case_field == "episode_id"
