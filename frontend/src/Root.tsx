@@ -225,12 +225,16 @@ function Root() {
                 title={`tier ${tier.id}${tier.parent ? ` · parent ${tier.parent}` : ' · root'}`}>
             TIER {(tier.label ?? tier.id).toUpperCase()}
           </span>
-          <span className="min-w-0 truncate text-[10px] text-slate-500"
-                title="The scope this instance reads. Unscoped is correct at a tier node, whose store holds only its own subtree.">
-            {tier.scope
-              ? `${tier.scope.column} = ${tier.scope.value}`
-              : 'unscoped (this tier’s own store)'}
-          </span>
+          {/* An unscoped tier reads its own store, which the chip already
+              says; only a scoped read needs its own label. */}
+          {tier.scope && (
+            <span className="min-w-0 truncate text-[10px] text-slate-300"
+                  data-testid="tier-scope"
+                  title={`The scope this instance reads: ${tier.scope.column} = ${tier.scope.value}`}>
+              <span className="tracking-widest text-slate-500">SCOPE </span>
+              {tier.scope.value}
+            </span>
+          )}
           {/* WHOSE SCREEN THIS IS. In the shared chrome so it renders for
               EVERY tier shape — it used to live in the edge-shaped header
               alone, which left the HQ and regional shapes showing a
