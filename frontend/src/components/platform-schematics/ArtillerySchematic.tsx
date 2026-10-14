@@ -21,6 +21,7 @@ import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { SchematicProps } from './types';
 import { SchematicMaterial } from '../../render/SchematicMaterial';
+import { tint } from '../../render/tint';
 
 export function ArtillerySchematic({ degraded, operationalState }: SchematicProps) {
     const hingeRef = useRef<THREE.Mesh>(null);
@@ -51,14 +52,17 @@ export function ArtillerySchematic({ degraded, operationalState }: SchematicProp
                 podRef.current.rotation.x = Math.sin(time * 0.5) * 0.2 + 0.5;
             }
         }
+        // The hinge is a solid part: in holographic it is the shared holo
+        // shader (no colour), so tint() leaves it alone and the tube
+        // indicators below carry the state.
         if (hingeRef.current) {
-            const mat = hingeRef.current.material as THREE.MeshBasicMaterial;
+            const mat = hingeRef.current.material;
             if (powerOff) {
-                mat.color.setHex(0x0f172a);   // darker than nominal slate
+                tint(mat, 0x0f172a);   // darker than nominal slate
             } else if (degraded || healthFault) {
-                mat.color.setHex(0xf59e0b);
+                tint(mat, 0xf59e0b);
             } else {
-                mat.color.setHex(0x334155);
+                tint(mat, 0x334155);
             }
         }
 
