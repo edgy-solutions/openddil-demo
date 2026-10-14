@@ -12,7 +12,9 @@
 //            glTF binaries land here as they're sourced; e.g.
 //            HEADQUARTER_COMPLEX -> '/models/hq.glb' once we have one)
 //   Tier 2 — schematic from SCHEMATIC_REGISTRY in platform-schematics/
-//            (the 12-entry ORBAT registry + legacy DIS variants)
+//            (the 12-entry ORBAT registry + legacy DIS variants,
+//            plus a suffix family: *_Sensor / *_radar -> radar,
+//            *_Interceptor / *_Launcher -> launcher; see findSchematic)
 //   Tier 3 — UnknownPlatformBadge (labeled wireframe octahedron)
 //
 // Why no auto-fallback through other schematics: the maintainer
@@ -35,7 +37,7 @@ import type { ReactNode, ComponentType } from 'react';
 import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import {
-    SCHEMATIC_REGISTRY,
+    findSchematic,
     UnknownPlatformBadge,
     type SchematicProps,
 } from './platform-schematics';
@@ -260,7 +262,7 @@ export default function AssetVisual({
 }: AssetVisualProps) {
     const glbUrl = platformVariant ? GLB_REGISTRY[platformVariant] : undefined;
     const SchematicComp: ComponentType<SchematicProps> | undefined =
-        platformVariant ? SCHEMATIC_REGISTRY[platformVariant] : undefined;
+        findSchematic(platformVariant);
 
     // Severity-equivalent "degraded" flag for the schematic's own indicator
     // strip animation. Friendly + severity > OK -> show degraded animation.

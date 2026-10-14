@@ -39,7 +39,7 @@ import { RenderModeMenu } from '../render/RenderModeMenu';
 import { useRenderModePreference } from '../render/renderMode';
 import { useTransitPhase, transitClass } from './EdgeTransit';
 import {
-    SCHEMATIC_REGISTRY,
+    findSchematic,
     UnknownPlatformBadge,
     type SchematicProps,
 } from './platform-schematics';
@@ -298,7 +298,7 @@ export default function DiagnosticCanvas({
 
     const { title, subtitle } = titleForVariant(platformVariant);
     const SchematicComp = platformVariant
-        ? SCHEMATIC_REGISTRY[platformVariant]
+        ? findSchematic(platformVariant)
         : undefined;
 
     return (
