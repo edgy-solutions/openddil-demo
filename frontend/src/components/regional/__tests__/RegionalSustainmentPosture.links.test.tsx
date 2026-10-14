@@ -59,6 +59,9 @@ const control: UseLinkControlResult = {
   setToxics: () => {},
 };
 
+// The count line is one span per part; compare on the flattened text.
+const stripTags = (h: string) => h.replace(/<[^>]+>/g, '');
+
 function render(indicator: string, aorAssetCount = 20): string {
   mockEdgeBuffer.mockReturnValue({ status: null, isError: false });
   mockIndicator.mockReturnValue(indicator);
@@ -79,16 +82,16 @@ function render(indicator: string, aorAssetCount = 20): string {
 
 describe('RegionalSustainmentPosture — link card and title count', () => {
   it('counts the uplink and both children when all are up', () => {
-    expect(render('up')).toContain('3 UP · 0 IDLE · 0 DOWN');
+    expect(stripTags(render('up'))).toContain('3 UP · 0 IDLE · 0 DOWN');
   });
 
   it('counts a severed uplink as down', () => {
-    expect(render('severed')).toContain('2 UP · 0 IDLE · 1 DOWN');
+    expect(stripTags(render('severed'))).toContain('2 UP · 0 IDLE · 1 DOWN');
   });
 
   it('never counts an unobserved uplink as up', () => {
     const html = render('unknown');
-    expect(html).toContain('2 UP · 0 IDLE · 0 DOWN · 1 UNKNOWN');
+    expect(stripTags(html)).toContain('2 UP · 0 IDLE · 0 DOWN · 1 UNKNOWN');
   });
 
   it('title counts the AOR rows even when no asset is renderable on the map', () => {
