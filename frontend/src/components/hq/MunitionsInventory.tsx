@@ -1,72 +1,416 @@
 // =============================================================================
 // MunitionsInventory -- munitions rollup by type
 // =============================================================================
-// Phase 3 of the munitions taxonomy work (2026-07-13). Sibling panel to
-// FORCE POSTURE (which handles HARDWARE readiness); this one is the
-// EFFECTOR inventory dimension of the commander's air-defense picture.
+// The EFFECTOR inventory dimension of the commander's air-defense picture,
+// sibling to FORCE POSTURE (which handles HARDWARE readiness).
 //
-// Reads useMunitionsStockpile() -- a frontend-derived rollup from
-// asset_capability_state (per-launcher weapons-capability snapshots).
-// Initial ammo values are derived via a running max-seen accumulator;
-// expended values are `initial - current` per (launcher, capability)
-// rolled up to munition_type.
+// PRIMARY SOURCE: the effector ledger. effector_launch + effector_resupply are
+// replayed in the browser against the declared load from the deployment
+// (effectors.declaredLoad); see lib/munitionsLedger.ts. Loaded is only ever a
+// declared number -- a launcher with no declaration shows "undeclared", never
+// zero, and the type rollup counts how many launchers it left out.
 //
-// SCOPING (2026-07-14): `launcherIdFilter` prop lets a caller restrict
-// the aggregation to a subset of launchers -- e.g. a region-scoped
-// panel that only sums stockpile for launchers in the selected
-// region. When null/undefined, the panel aggregates fleet-wide (HQ
-// behavior). Fully derived, no new hook needed.
+// SECOND SOURCE: the weapons-capability feed (useMunitionsStockpile), shown
+// only when it carries entries and never merged with the ledger. Two
+// witnesses are displayed side by side, not summed.
 //
-// Known operational quirks (surfaced via the SYNTHESIZED-style badge):
-//   * A page reload zeroes the max-seen accumulator, so post-reload
-//     the "expended" count restarts from the reload point. The Reset
-//     button surfaces this explicitly so the operator understands
-//     what they're seeing.
-//   * A cluster flush + fresh scenario resets the pipeline but not
-//     the frontend cache. Click Reset after a flush to realign.
+// SCOPING: `regionId` restricts the ledger to launchers in that region
+// (undefined = theater, which also gets a by-region breakdown).
+// `launcherIdFilter` restricts only the second-source block.
+//
+// Known operational quirks of the second source:
+//   * A page reload zeroes its max-seen accumulator, so post-reload the
+//     "expended" count restarts from the reload point. The Reset button
+//     surfaces this explicitly so the operator understands what they're seeing.
+//   * A cluster flush + fresh scenario resets the pipeline but not the
+//     frontend cache. Click Reset after a flush to realign.
 // =============================================================================
 import { useMemo } from 'react';
 import { RefreshCw, Target } from 'lucide-react';
 import {
+  useAllEffectorLaunches,
+  useAllEffectorResupply,
+  useFleetAssets,
   useMunitionsStockpile,
   type MunitionTypeRollup,
 } from '../../hooks';
+import { moveInputs } from '../../deployment';
 import { displayMunitionType } from '../../lib/munitionType';
+import { usePostureClock } from '../../lib/posture';
+import { isAbsent, type Maybe } from '../../lib/movePanel';
+import {
+  buildMunitionsLedger,
+  type LauncherLedgerRow,
+  type MunitionTypeLedgerRow,
+  type MunitionsLedger,
+} from '../../lib/munitionsLedger';
 
-function ProvenanceBadge() {
+const GRID = 'grid grid-cols-[1fr_auto_auto_auto_auto_auto_auto] gap-x-3 gap-y-1 text-[11px] font-mono';
+const HEAD = 'text-[10px] text-slate-500 tracking-widest uppercase text-right';
+
+export interface CapabilitySecondSource {
+  byType: MunitionTypeRollup[];
+  totals: { available: number; expended: number; initial: number };
+  reset: () => void;
+}
+
+function LedgerBadge() {
   return (
     <span
-      className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-amber-700/50 bg-amber-900/30 text-amber-400 uppercase rounded-sm cursor-help"
+      className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-emerald-700/50 bg-emerald-900/30 text-emerald-400 uppercase rounded-sm cursor-help"
       title={
-        "Available = current ammo per launcher summed by munition type. " +
-        "Expended = (max observed ammo) - (current), summed by type. " +
-        "Max observed is tracked client-side across the session; " +
-        "click Reset after a cluster flush or scenario change to realign."
+        "Effector ledger: effector_launch and effector_resupply replayed in the browser. " +
+        "Loaded is the declared load from the deployment; remaining = loaded - expended. " +
+        "A launcher with no declared load has no remaining figure."
       }
     >
-      DERIVED
+      LEDGER
     </span>
   );
 }
 
+function absentReason(m: Maybe<number>): string | undefined {
+  return isAbsent(m) ? m.absent : undefined;
+}
+
+function numOrDash(m: Maybe<number>) {
+  return isAbsent(m)
+    ? <span className="text-slate-600 cursor-help" title={m.absent}>—</span>
+    : <>{m.value}</>;
+}
+
+// Rose when nothing is left, amber when a quarter or less of the load is left.
+function remainingClass(remaining: Maybe<number>, loaded: Maybe<number>): string {
+  if (isAbsent(remaining)) return 'text-slate-500';
+  if (remaining.value <= 0) return 'text-rose-400 font-bold';
+  if (!isAbsent(loaded) && loaded.value > 0 && remaining.value <= loaded.value * 0.25) return 'text-amber-400';
+  return 'text-emerald-400';
+}
+
+function valueAttrs(
+  r: { loaded: Maybe<number>; remaining: Maybe<number> },
+  n: { expended: number; inFlight: number; unresolved: number; received: number },
+) {
+  const loadedAbsent = absentReason(r.loaded);
+  const remainingAbsent = absentReason(r.remaining);
+  return {
+    'data-loaded': loadedAbsent === undefined ? (r.loaded as { value: number }).value : undefined,
+    'data-loaded-absent': loadedAbsent,
+    'data-remaining': remainingAbsent === undefined ? (r.remaining as { value: number }).value : undefined,
+    'data-remaining-absent': remainingAbsent,
+    'data-expended': n.expended,
+    'data-inflight': n.inFlight,
+    'data-unresolved': n.unresolved,
+    'data-received': n.received,
+  };
+}
+
+function LauncherRow({ r }: { r: LauncherLedgerRow }) {
+  const undeclared = isAbsent(r.loaded);
+  return (
+    <div
+      className="contents"
+      data-testid="munitions-launcher-row"
+      data-launcher={r.launcherAssetId}
+      data-munition={r.munitionKey}
+      data-region={r.regionId ?? 'unknown'}
+      {...valueAttrs(r, {
+        expended: r.expended.value,
+        inFlight: r.inFlight.value,
+        unresolved: r.unresolved.value,
+        received: r.received.value,
+      })}
+    >
+      <div className="text-slate-400 truncate pl-4 text-[10px]" title={r.launcherAssetId}>
+        {r.launcherAssetId}{r.variant ? ` (${r.variant})` : ''}
+      </div>
+      <div className="text-right text-slate-600">1</div>
+      <div className="text-right tabular-nums text-slate-400">
+        {undeclared
+          ? <span className="text-amber-400 cursor-help" title={absentReason(r.loaded)}>undeclared</span>
+          : numOrDash(r.loaded)}
+      </div>
+      <div className="text-right tabular-nums text-slate-400">{r.expended.value}</div>
+      <div className={`text-right tabular-nums ${remainingClass(r.remaining, r.loaded)}`}>
+        {undeclared
+          ? <span className="text-amber-400 cursor-help" title={absentReason(r.remaining)}>undeclared</span>
+          : numOrDash(r.remaining)}
+      </div>
+      <div className="text-right tabular-nums text-slate-400">{r.inFlight.value}</div>
+      <div className="text-right tabular-nums text-slate-400">{r.unresolved.value}</div>
+    </div>
+  );
+}
+
+function TypeRow({
+  row, scope, testId, region, withLaunchers,
+}: {
+  row: MunitionTypeLedgerRow;
+  scope: string;
+  testId: string;
+  region?: string;
+  withLaunchers: boolean;
+}) {
+  return (
+    <>
+      <div
+        className="contents"
+        data-testid={testId}
+        data-munition={row.munitionKey}
+        data-scope={scope}
+        data-region={region}
+        data-launchers={row.launchers}
+        data-undeclared={row.undeclaredLaunchers}
+        {...valueAttrs(row, row)}
+      >
+        <div className="text-slate-300 truncate" title={row.munitionKey}>
+          {row.munitionKey}
+        </div>
+        <div className="text-right tabular-nums text-slate-500">{row.launchers}</div>
+        <div className="text-right tabular-nums text-slate-300">
+          {numOrDash(row.loaded)}
+          {row.undeclaredLaunchers > 0 && (
+            <span className="text-amber-400 text-[9px] ml-1">+{row.undeclaredLaunchers} undecl.</span>
+          )}
+        </div>
+        <div className="text-right tabular-nums text-slate-300">{row.expended}</div>
+        <div className={`text-right tabular-nums ${remainingClass(row.remaining, row.loaded)}`}>
+          {numOrDash(row.remaining)}
+        </div>
+        <div className="text-right tabular-nums text-slate-300">{row.inFlight}</div>
+        <div className="text-right tabular-nums text-slate-300">{row.unresolved}</div>
+      </div>
+      {withLaunchers && row.rows.map((r) => (
+        <LauncherRow key={`${r.launcherAssetId}|${r.munitionKey}`} r={r} />
+      ))}
+    </>
+  );
+}
+
+function LedgerHeads() {
+  return (
+    <>
+      <div className="text-[10px] text-slate-500 tracking-widest uppercase">TYPE</div>
+      <div className={HEAD} title="Launchers">LNCH</div>
+      <div className={`${HEAD} cursor-help`} title="Declared load from the deployment">LOAD</div>
+      <div className={`${HEAD} cursor-help`} title="Fired minus resupplied, never below zero">EXPD</div>
+      <div className={`${HEAD} cursor-help`} title="Declared load minus expended">REM</div>
+      <div className={`${HEAD} cursor-help`} title="Launched, no detonation seen yet">FLT</div>
+      <div className={`${HEAD} cursor-help`} title="Timed out with no detonation seen">UNRES</div>
+    </>
+  );
+}
+
+function SecondSource({ capability }: { capability: CapabilitySecondSource }) {
+  return (
+    <div className="mt-3 border border-slate-700 p-2" data-testid="munitions-second-source">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[10px] text-slate-400 tracking-wider uppercase">
+          Second source: weapons-capability feed (not merged with the ledger)
+        </span>
+        <button
+          type="button"
+          onClick={capability.reset}
+          className="text-[10px] text-slate-500 hover:text-slate-300 flex items-center gap-1 border border-slate-700 px-1.5 py-0.5 rounded-sm"
+          title="Zero the max-seen accumulator (post-flush / new-scenario realignment)"
+        >
+          <RefreshCw className="w-3 h-3" />
+          RESET
+        </button>
+      </div>
+      <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-4 gap-y-1 text-[11px] font-mono">
+        <div className="text-[10px] text-slate-500 tracking-widest uppercase">TYPE</div>
+        <div className="text-[10px] text-slate-500 tracking-widest uppercase text-right">AVAIL</div>
+        {/* EXPD / INIT are derived from a running max-seen accumulator
+            held in browser memory (useMunitionsStockpile) -- there is no
+            durable stockpile table yet, so a page reload re-derives INIT
+            from current ammo and EXPD resets to 0. The column heads have
+            no room for a qualifier, so the basis rides in the tooltip
+            (ADR-0017 discipline applied to a derived metric). */}
+        <div
+          className="text-[10px] text-slate-500 tracking-widest uppercase text-right cursor-help"
+          title="Expended since this browser session started. Derived from observed ammo drops, not a durable stockpile record — a page reload resets this to 0."
+        >EXPD*</div>
+        <div
+          className="text-[10px] text-slate-500 tracking-widest uppercase text-right cursor-help"
+          title="Initial load, inferred as the maximum ammo observed for each launcher during this browser session — not a durable stockpile record."
+        >INIT*</div>
+        {capability.byType.map((row) => {
+          // Color the available count by consumption fraction: full
+          // = emerald, drained past 75% = amber, fully drained = rose.
+          const drainFrac = row.initial > 0
+            ? (row.initial - row.available) / row.initial
+            : 0;
+          const availClass = row.available === 0
+            ? 'text-rose-400 font-bold'
+            : drainFrac > 0.75
+              ? 'text-amber-400'
+              : 'text-emerald-400';
+          return (
+            <div key={row.munition_type} className="contents">
+              <div className="text-slate-300 truncate" title={row.munition_type}>
+                {displayMunitionType(row.munition_type)}
+                <span className="text-slate-500 ml-2 text-[10px]">
+                  ({row.launcher_count} lncher{row.launcher_count === 1 ? '' : 's'})
+                </span>
+              </div>
+              <div className={`text-right tabular-nums ${availClass}`}>{row.available}</div>
+              <div className="text-right tabular-nums text-slate-300">{row.expended}</div>
+              <div className="text-right tabular-nums text-slate-500">{row.initial}</div>
+            </div>
+          );
+        })}
+        <div className="border-t border-slate-800 pt-1 mt-1 text-slate-400 tracking-widest text-[10px] uppercase">
+          TOTAL
+        </div>
+        <div className="border-t border-slate-800 pt-1 mt-1 text-right tabular-nums text-emerald-400 font-bold">
+          {capability.totals.available}
+        </div>
+        <div className="border-t border-slate-800 pt-1 mt-1 text-right tabular-nums text-slate-300">
+          {capability.totals.expended}
+        </div>
+        <div className="border-t border-slate-800 pt-1 mt-1 text-right tabular-nums text-slate-500">
+          {capability.totals.initial}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function clockZ(iso: string): string {
+  return iso ? `${iso.slice(11, 19)}Z` : '—';
+}
+
+/** Pure view of one ledger (and, when present, the capability feed beside it). */
+export function MunitionsLedgerView({
+  title, ledger, loading, capability,
+}: {
+  title: string;
+  ledger: MunitionsLedger;
+  loading: boolean;
+  capability: CapabilitySecondSource | null;
+}) {
+  const empty = ledger.byType.length === 0;
+  return (
+    <div className="panel shrink-0 p-3">
+      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center justify-between">
+        <span className="flex items-center">
+          <Target className="w-4 h-4 mr-2 text-amber-400" />
+          {title}
+          <LedgerBadge />
+        </span>
+      </h2>
+      <div className="text-[10px] text-slate-500 mb-2" data-testid="munitions-provenance">
+        Effector ledger: effector_launch + effector_resupply replayed in the browser; loaded =
+        declared load from the deployment (effectors.declaredLoad); as of {clockZ(ledger.asOf)}
+      </div>
+
+      {empty ? (
+        <div
+          className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2"
+          data-testid="munitions-empty"
+          data-reason={loading ? 'loading' : 'no-launchers'}
+        >
+          {/* An absence with a known cause is not "awaiting" data. Once the
+              ledger has loaded, an empty scope means no launcher here has a
+              declared load or a recorded fire/resupply -- nothing is coming
+              that would change that, so it must not read as "check back
+              later". Only the loading state is a wait. */}
+          {loading
+            ? 'Loading effector ledger…'
+            : 'No launcher in this scope has a declared load or a recorded fire/resupply'}
+        </div>
+      ) : (
+        <>
+          <div className={GRID}>
+            <LedgerHeads />
+            {ledger.byType.map((row) => (
+              <TypeRow
+                key={row.munitionKey}
+                row={row}
+                scope={ledger.scope}
+                testId="munitions-type-row"
+                withLaunchers
+              />
+            ))}
+          </div>
+          {ledger.scope === 'theater' && ledger.byRegion.length > 0 && (
+            <div className="mt-3">
+              <div className="text-[10px] text-slate-500 tracking-widest uppercase mb-1">By region</div>
+              {ledger.byRegion.map((g) => (
+                <div key={g.regionId} className="mb-2">
+                  <div
+                    className="text-[10px] text-slate-400 tracking-wider uppercase mb-1"
+                    data-testid="munitions-region"
+                    data-region={g.regionId}
+                  >
+                    {g.regionId}
+                  </div>
+                  <div className={GRID}>
+                    {g.byType.map((row) => (
+                      <TypeRow
+                        key={row.munitionKey}
+                        row={row}
+                        scope={ledger.scope}
+                        testId="munitions-region-type-row"
+                        region={g.regionId}
+                        withLaunchers={false}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {capability && <SecondSource capability={capability} />}
+    </div>
+  );
+}
+
 export default function MunitionsInventory({
+  regionId,
   launcherIdFilter,
   title = 'Munitions Inventory (theater)',
 }: {
-  /** When set, restrict rollup to entries whose launcher_asset_id is in
-   *  this Set. Enables region-scoped panels without duplicating hooks. */
+  /** Restrict the ledger to launchers in this region. Undefined = theater. */
+  regionId?: string;
+  /** When set, restrict the second-source (weapons-capability) rollup to
+   *  entries whose launcher_asset_id is in this Set. */
   launcherIdFilter?: ReadonlySet<string>;
   /** Panel header label -- lets a region-scoped caller override the
    *  default (theater) label. */
   title?: string;
 } = {}) {
+  const fleet = useFleetAssets();
+  const launches = useAllEffectorLaunches();
+  const resupplies = useAllEffectorResupply();
   const stockpile = useMunitionsStockpile();
+  const declaredLoad = moveInputs()?.declaredLoad;
+  const nowMs = usePostureClock(5000);
 
-  // Region-scoped view: re-aggregate byType and totals over just the
-  // filtered subset. Cheap -- entries are typically a few dozen rows.
-  // The `reset` callback stays fleet-wide because the max-seen state
-  // is shared globally (a launcher's initial_ammo doesn't know or care
-  // which region asked the question).
+  const ledger = useMemo(
+    () => buildMunitionsLedger({
+      fleet: fleet.data.map((a) => ({
+        assetId: a.asset_id,
+        variant: a.platform_variant,
+        regionId: a.region_id,
+      })),
+      launches: launches.data,
+      resupplies: resupplies.data,
+      declaredLoad,
+      regionId,
+      asOfMs: nowMs,
+    }),
+    [fleet.data, launches.data, resupplies.data, declaredLoad, regionId, nowMs],
+  );
+
+  // Second source, optionally restricted to a launcher subset: re-aggregate
+  // byType and totals over just the filtered entries. Cheap -- entries are
+  // typically a few dozen rows. The `reset` callback stays fleet-wide because
+  // the max-seen state is shared globally.
   const view = useMemo(() => {
     if (!launcherIdFilter) {
       return { byType: stockpile.byType, totals: stockpile.totals };
@@ -99,105 +443,16 @@ export default function MunitionsInventory({
     return { byType, totals: { available, expended, initial } };
   }, [stockpile.entries, stockpile.byType, stockpile.totals, launcherIdFilter]);
 
-  const empty = view.byType.length === 0;
+  const capability = view.byType.length === 0
+    ? null
+    : { byType: view.byType, totals: view.totals, reset: stockpile.reset };
 
   return (
-    <div className="panel shrink-0 p-3">
-      <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center justify-between">
-        <span className="flex items-center">
-          <Target className="w-4 h-4 mr-2 text-amber-400" />
-          {title}
-          <ProvenanceBadge />
-        </span>
-        <button
-          type="button"
-          onClick={stockpile.reset}
-          className="text-[10px] text-slate-500 hover:text-slate-300 flex items-center gap-1 border border-slate-700 px-1.5 py-0.5 rounded-sm"
-          title="Zero the max-seen accumulator (post-flush / new-scenario realignment)"
-        >
-          <RefreshCw className="w-3 h-3" />
-          RESET
-        </button>
-      </h2>
-
-      {empty ? (
-        <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
-          {/* DECLARED IDLE, NOT AWAITED. `asset-capability-snapshot` is at
-              watermark 0 on every broker in this deployment because DIS
-              EntityStatePDU carries no loadout or stores information — see
-              ADR-0038 and scripts/declared-idle-topics.yaml, status
-              `declared`. "Awaiting first emission" asserts that one is
-              coming; nothing here will ever emit one, so the sentence was a
-              promise the fleet cannot keep.
-
-              Same discipline as UNSPECIFIED-is-not-a-value: an absence with a
-              known cause and an absence awaiting data are different absences,
-              and only one of them means "check back later". */}
-          Not carried by any source in this fleet — no weapons-capability feed
-          is deployed here (DIS carries no loadout).
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-4 gap-y-1 text-[11px] font-mono">
-            <div className="text-[10px] text-slate-500 tracking-widest uppercase">TYPE</div>
-            <div className="text-[10px] text-slate-500 tracking-widest uppercase text-right">AVAIL</div>
-            {/* EXPD / INIT are derived from a running max-seen accumulator
-                held in browser memory (useMunitionsStockpile) -- there is no
-                durable stockpile table yet, so a page reload re-derives INIT
-                from current ammo and EXPD resets to 0. The column heads have
-                no room for a qualifier, so the basis rides in the tooltip
-                (ADR-0017 discipline applied to a derived metric). Drop the
-                qualifier when the durable stockpile table lands (munitions
-                Phase 3). */}
-            <div
-              className="text-[10px] text-slate-500 tracking-widest uppercase text-right cursor-help"
-              title="Expended since this browser session started. Derived from observed ammo drops, not a durable stockpile record — a page reload resets this to 0."
-            >EXPD*</div>
-            <div
-              className="text-[10px] text-slate-500 tracking-widest uppercase text-right cursor-help"
-              title="Initial load, inferred as the maximum ammo observed for each launcher during this browser session — not a durable stockpile record."
-            >INIT*</div>
-            {view.byType.map((row) => {
-              // Color the available count by consumption fraction: full
-              // = emerald, drained past 75% = amber, fully drained = rose.
-              const drainFrac = row.initial > 0
-                ? (row.initial - row.available) / row.initial
-                : 0;
-              const availClass = row.available === 0
-                ? 'text-rose-400 font-bold'
-                : drainFrac > 0.75
-                  ? 'text-amber-400'
-                  : 'text-emerald-400';
-              return (
-                <div key={row.munition_type} className="contents">
-                  <div className="text-slate-300 truncate" title={row.munition_type}>
-                    {displayMunitionType(row.munition_type)}
-                    <span className="text-slate-500 ml-2 text-[10px]">
-                      ({row.launcher_count} lncher{row.launcher_count === 1 ? '' : 's'})
-                    </span>
-                  </div>
-                  <div className={`text-right tabular-nums ${availClass}`}>{row.available}</div>
-                  <div className="text-right tabular-nums text-slate-300">{row.expended}</div>
-                  <div className="text-right tabular-nums text-slate-500">{row.initial}</div>
-                </div>
-              );
-            })}
-            {/* Totals row */}
-            <div className="border-t border-slate-800 pt-1 mt-1 text-slate-400 tracking-widest text-[10px] uppercase">
-              TOTAL
-            </div>
-            <div className="border-t border-slate-800 pt-1 mt-1 text-right tabular-nums text-emerald-400 font-bold">
-              {view.totals.available}
-            </div>
-            <div className="border-t border-slate-800 pt-1 mt-1 text-right tabular-nums text-slate-300">
-              {view.totals.expended}
-            </div>
-            <div className="border-t border-slate-800 pt-1 mt-1 text-right tabular-nums text-slate-500">
-              {view.totals.initial}
-            </div>
-          </div>
-        </>
-      )}
-    </div>
+    <MunitionsLedgerView
+      title={title}
+      ledger={ledger}
+      loading={fleet.isLoading || launches.isLoading || resupplies.isLoading}
+      capability={capability}
+    />
   );
 }

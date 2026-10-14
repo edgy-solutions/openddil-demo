@@ -355,12 +355,13 @@ export default function HqApp() {
           <UnitMovePanels tierKind="hq" />
           <RegionFleetSummary />
           <FleetReadiness fleetSummary={regionFleet.data} />
-          {/* MunitionsInventory (Phase 3, 2026-07-13): theater-wide
-              effector rollup by munition_type. Sibling to FORCE POSTURE
-              (hardware axis) -- this is the EFFECTOR axis. Derived
-              client-side from asset_capability_state via max-seen
-              accumulator; see components/hq/MunitionsInventory.tsx +
-              hooks/useMunitionsStockpile.ts. */}
+          {/* MunitionsInventory: theater-wide effector rollup by munition
+              type. Sibling to FORCE POSTURE (hardware axis) -- this is the
+              EFFECTOR axis. The primary source is the effector ledger
+              (launch + resupply replayed against the declared load); the
+              weapons-capability feed appears as a separate second source
+              only when it carries data. See components/hq/MunitionsInventory.tsx
+              and lib/munitionsLedger.ts. */}
           <MunitionsInventory />
           <TopFactorsTheater topFactors={regionTopFactors.data} />
           <ConfigurationPosture

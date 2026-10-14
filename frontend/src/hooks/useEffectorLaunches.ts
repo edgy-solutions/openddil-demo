@@ -9,9 +9,8 @@
 // Detonation seen.
 //
 // Declared load / remaining-of-declared is deliberately NOT read here --
-// how declared load reaches the browser is still an open decision, and
-// effector_declared_load / effector_launcher_counts are not published to
-// Electric.
+// declared load reaches the browser through deployment.json
+// `effectors.declaredLoad` (see lib/munitionsLedger.ts).
 import { num, useTableShape, sqlLiteral, type ShapeResult } from './electric';
 
 export interface EffectorLaunch {
@@ -107,5 +106,27 @@ export function useEffectorLaunchesFor(launcherAssetIds: string[]): ShapeResult<
   const ids = [...new Set(launcherAssetIds)].sort();
   return useTableShape('effector_launch', mapEffectorLaunchFor, {
     where: `launcher_asset_id IN (${(ids.length ? ids : ['']).map(sqlLiteral).join(', ')})`,
+  });
+}
+
+/** A launch row with the region and edge it was recorded under, for
+ *  whole-ledger rollups. */
+export interface EffectorLaunchLedger extends EffectorLaunchFor {
+  regionId: string | null;
+  edgeId: string | null;
+}
+
+export function mapEffectorLaunchLedger(row: Record<string, unknown>): EffectorLaunchLedger {
+  return {
+    ...mapEffectorLaunchFor(row),
+    regionId: nullableStr(row.region_id),
+    edgeId: nullableStr(row.edge_id),
+  };
+}
+
+/** Every effector launch this tier's store holds (the tier's own scope). */
+export function useAllEffectorLaunches(): ShapeResult<EffectorLaunchLedger> {
+  return useTableShape('effector_launch', mapEffectorLaunchLedger, {
+    where: 'launcher_asset_id IS NOT NULL',
   });
 }

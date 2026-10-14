@@ -449,10 +449,9 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
 
   // Launcher-id set for the region-scoped MunitionsInventory panel.
   // Every LAUNCHER-class asset in the (already region-filtered)
-  // hardware fleet contributes its asset_id. MunitionsInventory
-  // aggregates stockpile entries whose launcher_asset_id is in this
-  // set -- gives a region-scoped rollup by munition type without
-  // requiring a new hook.
+  // hardware fleet contributes its asset_id. It scopes only the
+  // second-source (weapons-capability) block of MunitionsInventory;
+  // the effector ledger is scoped by regionId instead.
   const regionLauncherIds = useMemo(() => {
     const launcherIds = new Set(allCapability.data.map((c) => c.asset_id));
     const set = new Set<string>();
@@ -519,11 +518,11 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
               />
               <UnitMovePanels tierKind="region" />
               {/* Region-scoped munitions rollup by type. Same component
-                  as the HQ panel; the launcherIdFilter prop restricts
-                  aggregation to launchers in the selected AOR. Regional
-                  commander gets available / expended / initial per
-                  munition type across their launcher fleet. */}
+                  as the HQ panel; regionId restricts the effector ledger
+                  to launchers in the selected AOR, and launcherIdFilter
+                  restricts the second-source capability block. */}
               <MunitionsInventory
+                regionId={selectedRegion ?? undefined}
                 title={`Munitions Inventory (${(selectedRegion ?? '—').toUpperCase()})`}
                 launcherIdFilter={regionLauncherIds}
               />

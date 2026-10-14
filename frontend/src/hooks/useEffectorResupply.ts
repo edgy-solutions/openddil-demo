@@ -47,3 +47,10 @@ export function useEffectorResupply(launcherAssetIds: string[]): ShapeResult<Eff
     where: `launcher_asset_id IN (${(ids.length ? ids : ['']).map(sqlLiteral).join(', ')})`,
   });
 }
+
+/** Every resupply this tier's store holds (the tier's own scope). */
+export function useAllEffectorResupply(): ShapeResult<EffectorResupply> {
+  return useTableShape('effector_resupply', mapEffectorResupply, {
+    where: 'launcher_asset_id IS NOT NULL',
+  });
+}
