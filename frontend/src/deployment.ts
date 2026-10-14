@@ -3,9 +3,11 @@
 // =============================================================================
 // Per-deployment configuration the OSS defaults can't carry: customer
 // branding (title, logo), FOB topology (lat/lons used by the 3D maps), and
-// anything else that varies by who's deploying. Lives in /deployment/
-// deployment.json — mounted into the frontend pod by the overlay bundle,
-// served by nginx, fetched here at startup.
+// anything else that varies by who's deploying. Two sources, both served
+// by nginx and fetched here at startup: /deployment/deployment.json from
+// the chart, and an optional /deployment-overlay/deployment.json mounted
+// by an overlay bundle. The overlay wins per top-level key. An overlay
+// that ships a logo or map image references it as /deployment-overlay/<name>.
 //
 // Renamed from "branding" once it grew past title+logo to also carry the
 // FOB list — same lifecycle ("things that change when you deploy for a
@@ -41,8 +43,9 @@ export interface Fob {
  *  HQ 3D view places this map image under the FOBs so the geographic
  *  context is real (rather than the OSS-default decorative texture).
  *
- *  `image` is a path the frontend can GET (typically the overlay path
- *  `/deployment/<name>.png` mounted from the deployment ConfigMap).
+ *  `image` is a path the frontend can GET (typically a path such as
+ *  `/deployment/<name>.png` or `/deployment-overlay/<name>.png`, mounted
+ *  from a deployment ConfigMap).
  *
  *  `bounds` describes the geographic rectangle the image covers (WGS84
  *  decimal degrees). The component projects these bounds into scene
@@ -829,18 +832,52 @@ export function applyBranding(d: Deployment, b: unknown): Deployment {
   };
 }
 
+/** GET a same-origin JSON file and return it only when it is a plain object.
+ *  Undefined on a non-ok response, a fetch or parse failure, or a result that
+ *  is null or an array. That also covers a dev server answering with
+ *  index.html, or the session gate redirecting to sign-in HTML. */
+export async function fetchJsonObject(
+  url: string,
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return undefined;
+    const j: unknown = await res.json();
+    if (!j || typeof j !== 'object' || Array.isArray(j)) return undefined;
+    return j as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Shallow-merge the chart's deployment.json (base) with the optional overlay
+ *  bundle's (overlay). An overlay key replaces the whole base value for that
+ *  key. Both undefined -> undefined (no file anywhere). */
+export function mergeDeploymentSources(
+  base: Record<string, unknown> | undefined,
+  overlay: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (base === undefined && overlay === undefined) return undefined;
+  return { ...(base ?? {}), ...(overlay ?? {}) };
+}
+
 /**
- * Fetch optional overlay deployment config, then the optional branding
- * overlay (which overrides deployment.json's title and logo only — never
- * its topology), then apply document.title and the favicon. Call once
- * before the first render. Any failure (no overlay, 404, bad JSON) leaves
- * the prior state in place — it never throws.
+ * Fetch the chart's deployment config (/deployment/) and the optional overlay
+ * bundle's (/deployment-overlay/), merge them with the overlay winning per
+ * top-level key, then the optional branding overlay (which overrides the
+ * title and logo only — never topology), then apply document.title and the
+ * favicon. Call once before the first render. Any failure (no file, 404, bad
+ * JSON) leaves the prior state in place — it never throws.
  */
 export async function loadDeployment(): Promise<void> {
   try {
-    const res = await fetch('/deployment/deployment.json', { cache: 'no-store' });
-    if (res.ok) {
-      const j = (await res.json()) as Partial<Deployment>;
+    const [base, overlay] = await Promise.all([
+      fetchJsonObject('/deployment/deployment.json'),
+      fetchJsonObject('/deployment-overlay/deployment.json'),
+    ]);
+    const merged = mergeDeploymentSources(base, overlay);
+    if (merged) {
+      const j = merged as Partial<Deployment>;
       active = {
         title: j.title?.trim() || DEFAULT.title,
         logo: j.logo?.trim() || DEFAULT.logo,
