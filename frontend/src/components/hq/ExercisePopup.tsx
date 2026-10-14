@@ -119,7 +119,8 @@ function resetJobText(job: ExerciseResetJob | null | undefined): string {
   const latest = job?.latest;
   if (!latest) return 'Reset job: none yet';
   const done = latest.finished_at ? ` (${latest.finished_at})` : '';
-  return `Reset job ${latest.name}: ${latest.state}${done}`;
+  const what = job?.mode === 'quick' ? 'Quick reset job' : 'Reset job';
+  return `${what} ${latest.name}: ${latest.state}${done}`;
 }
 
 /** Host (and port) of a call's URL; never the path or query. */
@@ -183,6 +184,8 @@ export function ExercisePopupView({
   const resetAvailable = resetJob?.available === true;
   // An older gateway omits may_press; only an explicit false disables.
   const resetBlocked = resetJob?.may_press === false;
+  const quickReset = resetJob?.mode === 'quick';
+  const resetLabel = quickReset ? 'Quick reset' : 'Restart exercise';
   const sequenceList = sequences ?? [];
   const sequenceRunning = sequence?.state === 'running';
   const pendingSequence = sequenceList.find((q) => q.name === pendingConfirmOp);
@@ -281,16 +284,22 @@ export function ExercisePopupView({
                 <button
                   type="button"
                   disabled={resetBlocked}
-                  title={resetBlocked ? 'The reset destroys exercise state and takes about 13 minutes.' : undefined}
+                  title={
+                    quickReset
+                      ? 'Clears exercise data in about a minute. Not measured; the exercise stays paused afterwards.'
+                      : resetBlocked
+                        ? 'The reset destroys exercise state and takes about 13 minutes.'
+                        : undefined
+                  }
                   onClick={resetBlocked ? undefined : () => onOpClick('reset')}
                   className={`${OP_BUTTON} disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   <Rewind className="h-3 w-3" aria-hidden="true" />
-                  Restart exercise
+                  {resetLabel}
                 </button>
                 {resetBlocked && (
                   <div className="mt-0.5 text-[10px] text-slate-500">
-                    Restart exercise: supervisor login only
+                    {resetLabel}: supervisor login only
                   </div>
                 )}
               </div>
@@ -334,7 +343,9 @@ export function ExercisePopupView({
             {pendingConfirmOp && (
               <div className="mt-2 text-[10px] text-amber-400">
                 {pendingConfirmOp === 'reset'
-                  ? 'Restart exercise: reset (deletes scenario state), then restart?'
+                  ? quickReset
+                    ? 'Quick reset: pause the exercise and clear its data (not measured)? It stays paused; press Resume or Restart when ready.'
+                    : 'Restart exercise: reset (deletes scenario state), then restart?'
                   : pendingSequence
                     ? `${pendingSequence.label}: run the sequence? It changes the exercise for every viewer.`
                     : `Confirm ${pendingConfirmOp}?`}
@@ -350,7 +361,9 @@ export function ExercisePopupView({
             )}
             {refusal && <div className="mt-1 text-[10px] text-amber-400">Refused: {refusal}</div>}
             <div className="mt-1 text-[9px] text-slate-500">
-              {resetAvailable
+              {resetAvailable && quickReset
+                ? 'Quick reset clears the exercise data in the cluster and leaves the exercise paused.'
+                : resetAvailable
                 ? 'Restart exercise runs the reset in the cluster, then sends restart only if the reset measured zero.'
                 : 'Restart is two halves: stop here, then an operator runs the reset, then restart and run here.'}
             </div>

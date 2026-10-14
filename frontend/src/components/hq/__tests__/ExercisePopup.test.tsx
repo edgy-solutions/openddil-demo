@@ -270,6 +270,41 @@ describe('ExercisePopupView', () => {
       }
     });
 
+    describe('mode', () => {
+      const MODE = (mode?: 'quick' | 'full'): ExerciseResetJob => ({ ...JOB('succeeded', null), mode });
+
+      it('quick mode names the button, title, confirm, blocked text and job line', () => {
+        const on = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} resetJob={MODE('quick')} />);
+        expect(on).toContain('Quick reset</button>');
+        expect(on).not.toContain('Restart exercise');
+        expect(on).toContain('Clears exercise data in about a minute. Not measured; the exercise stays paused afterwards.');
+        expect(on).toContain('Quick reset job rel-exercise-reset-abc: succeeded');
+        const confirm = renderToStaticMarkup(
+          <ExercisePopupView {...BASE} open={true} resetJob={MODE('quick')} pendingConfirmOp="reset" />,
+        );
+        expect(confirm).toContain(
+          'Quick reset: pause the exercise and clear its data (not measured)? It stays paused; press Resume or Restart when ready.',
+        );
+        const blocked = renderToStaticMarkup(
+          <ExercisePopupView {...BASE} open={true} resetJob={{ ...MODE('quick'), may_press: false }} />,
+        );
+        expect(blocked).toContain('Quick reset: supervisor login only');
+      });
+
+      it('full mode and a missing mode keep the Restart exercise texts', () => {
+        for (const mode of ['full', undefined] as const) {
+          const on = renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} resetJob={MODE(mode)} />);
+          expect(on).toContain('Restart exercise</button>');
+          expect(on).not.toContain('Quick reset');
+          expect(on).toContain('Reset job rel-exercise-reset-abc: succeeded');
+          const confirm = renderToStaticMarkup(
+            <ExercisePopupView {...BASE} open={true} resetJob={MODE(mode)} pendingConfirmOp="reset" />,
+          );
+          expect(confirm).toContain('Restart exercise: reset (deletes scenario state), then restart?');
+        }
+      });
+    });
+
     it('shows a refusal reason', () => {
       const html = renderToStaticMarkup(
         <ExercisePopupView {...BASE} open={true} resetJob={JOB('running', null)} refusal="reset_running" />,

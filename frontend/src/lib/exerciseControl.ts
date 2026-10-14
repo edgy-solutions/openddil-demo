@@ -107,6 +107,10 @@ export interface ExerciseResetJob {
   /** False when the gateway would refuse this subject's reset. Absent from
    *  gateways that predate the field, which is treated as allowed. */
   may_press?: boolean;
+  /** What the button runs: the quick clear (the exercise stays paused) or the
+   *  full measured reset plus restart. Absent from controls that predate the
+   *  field, which is treated as full. */
+  mode?: 'quick' | 'full';
 }
 
 export interface ExerciseStatusBody {

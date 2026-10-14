@@ -435,6 +435,12 @@ class InvalidSubject(ValueError):
     pass
 
 
+def reset_mode() -> str:
+    """What the reset button runs: "quick" or "full". Unset or anything else is
+    "full", so a chart that predates the setting behaves as it always did."""
+    return "quick" if os.getenv("EXERCISE_RESET_MODE", "").strip() == "quick" else "full"
+
+
 def load_reset_job_template(path: str | os.PathLike) -> dict[str, Any]:
     try:
         tpl = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -863,7 +869,8 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                 activity = app.store.status(now)
                 refusal, _rec = app.restart_refusal()
                 reset_job: dict[str, Any] = {"available": app.reset_launcher is not None,
-                                             "latest": None, "error": None}
+                                             "latest": None, "error": None,
+                                             "mode": reset_mode()}
                 if app.reset_launcher is not None:
                     try:
                         reset_job["latest"] = app.reset_launcher.latest()

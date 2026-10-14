@@ -659,13 +659,13 @@ def test_r6_missing_subject_and_bad_subject_are_400(kapp):
 def test_r7_status_without_launcher(app):
     url, _app_state, _store = app
     _, body = _get(url + "/exercise/status")
-    assert body["reset_job"] == {"available": False, "latest": None, "error": None}
+    assert body["reset_job"] == {"available": False, "latest": None, "error": None, "mode": "full"}
 
 
 def test_r8_status_with_launcher_and_states(kapp):
     url, _ = kapp
     _, body = _get(url + "/exercise/status")
-    assert body["reset_job"] == {"available": True, "latest": None, "error": None}
+    assert body["reset_job"] == {"available": True, "latest": None, "error": None, "mode": "full"}
     kube["jobs"] = [
         _job("old", "2026-01-01T00:00:00Z", conds=[{"type": "Failed", "status": "True"}]),
         _job("new", "2026-01-02T00:00:00Z", by="sup",
@@ -689,6 +689,15 @@ def test_r9_status_still_answers_when_api_is_down(kapp):
     assert body["reset_job"]["available"] is True
     assert body["reset_job"]["latest"] is None and body["reset_job"]["error"]
     assert "adapter" in body and "restart_allowed" in body
+
+def test_r10_status_reports_reset_mode(kapp, monkeypatch):
+    url, _ = kapp
+    monkeypatch.delenv("EXERCISE_RESET_MODE", raising=False)
+    assert _get(url + "/exercise/status")[1]["reset_job"]["mode"] == "full"
+    monkeypatch.setenv("EXERCISE_RESET_MODE", "quick")
+    assert _get(url + "/exercise/status")[1]["reset_job"]["mode"] == "quick"
+    monkeypatch.setenv("EXERCISE_RESET_MODE", "bogus")
+    assert _get(url + "/exercise/status")[1]["reset_job"]["mode"] == "full"
 
 
 def test_r10_concurrent_resets_create_exactly_one_job(kapp):
