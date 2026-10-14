@@ -15,8 +15,9 @@ vi.mock('../../../hooks', () => ({
   useAllLogisticsStatus: () => ({ data: [], isLoading: false }),
   useAllCapabilityState: () => ({ data: [], isLoading: false }),
   useFleetTiers: () => new Map(),
-  useMunitionsStockpile: () => ({ data: [] }),
-  stockpileForLauncher: () => null,
+  useMunitionsStockpile: () => ({ data: [], entries: [] }),
+  useAllEffectorLaunches: () => ({ data: [], isLoading: false }),
+  useAllEffectorResupply: () => ({ data: [], isLoading: false }),
   useEdgeBuffer: () => mockEdgeBuffer(),
   useLinkStatus: () => mockLinkStatus(),
 }));

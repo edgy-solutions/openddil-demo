@@ -36,14 +36,18 @@ import DdilNetworkLink from '../DdilNetworkLink';
 import AssetVisual from '../AssetVisual';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
-import { deployment, type Fob } from '../../deployment';
+import { deployment, moveInputs, type Fob } from '../../deployment';
+import { buildMunitionsLedger } from '../../lib/munitionsLedger';
+import { calloutAmmo } from '../../lib/calloutAmmo';
+import { usePostureClock } from '../../lib/posture';
 import {
   useFleetAssetsForRegion,
   useAllLogisticsStatus,
   useAllCapabilityState,
   useFleetTiers,
   useMunitionsStockpile,
-  stockpileForLauncher,
+  useAllEffectorLaunches,
+  useAllEffectorResupply,
   useEdgeBuffer,
   useLinkStatus,
   type FleetAsset,
@@ -702,8 +706,29 @@ export default function RegionalSustainmentPosture({
   // Stockpile feed for the 3D asset callouts (launcher rows only).
   // Fleet-wide is fine even though this view is region-scoped -- the
   // launcher's own asset_id already filters us to just this region's
-  // launchers via stockpileForLauncher(entries, id).
+  // launchers via calloutAmmo(id, ...).
   const stockpile = useMunitionsStockpile();
+  // Callout ammo reads the effector ledger first (same as the loadout and
+  // inventory cards); the feed above is the fallback (lib/calloutAmmo.ts).
+  const effLaunches = useAllEffectorLaunches();
+  const effResupplies = useAllEffectorResupply();
+  const declaredLoad = moveInputs()?.declaredLoad;
+  const ledgerClock = usePostureClock(5000);
+  const ledger = useMemo(
+    () => buildMunitionsLedger({
+      fleet: fleet.data.map((a) => ({
+        assetId: a.asset_id,
+        variant: a.platform_variant,
+        regionId: a.region_id,
+      })),
+      launches: effLaunches.data,
+      resupplies: effResupplies.data,
+      declaredLoad,
+      regionId: undefined,
+      asOfMs: ledgerClock,
+    }),
+    [fleet.data, effLaunches.data, effResupplies.data, declaredLoad, ledgerClock],
+  );
 
   // 2026-07-13 Phase 5: split fleet into hardware vs. in-flight
   // munitions. Hardware renders as 3D assets on the map; in-flight
@@ -934,16 +959,12 @@ export default function RegionalSustainmentPosture({
             {renderables.map((a) => {
               const shortName = assetShortName(a.asset_id, a.callsign);
               const family = familyLabel(a.platform_variant);
-              // Launcher ammo: sum current + initial across all stores
-              // owned by this launcher (from useMunitionsStockpile).
-              // Non-launchers get ammoText = null, so the ammo tail
-              // just doesn't render.
-              const stores = stockpileForLauncher(stockpile.entries, a.asset_id);
-              const hasStores = stores.length > 0;
-              const cur = hasStores ? stores.reduce((s, r) => s + r.current_ammo, 0) : 0;
-              const max = hasStores ? stores.reduce((s, r) => s + r.initial_ammo, 0) : 0;
-              const ammoText = hasStores ? `${cur}/${max}` : null;
-              const depleted = hasStores && cur === 0 && max > 0;
+              // Launcher ammo: ledger remaining/loaded, else the feed's
+              // current/max (lib/calloutAmmo.ts). Non-launchers get
+              // null, so the ammo tail just doesn't render.
+              const ammo = calloutAmmo(a.asset_id, ledger, stockpile.entries);
+              const ammoText = ammo ? ammo.text : null;
+              const depleted = ammo ? ammo.depleted : false;
               return (
                 <AssetCallout
                   key={`callout-${a.asset_id}`}
