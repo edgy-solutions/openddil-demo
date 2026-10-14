@@ -36,6 +36,7 @@ import DdilNetworkLink from '../DdilNetworkLink';
 import AssetVisual from '../AssetVisual';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
+import { LinkSummary } from '../network/LinkSummary';
 import { deployment, moveInputs, type Fob } from '../../deployment';
 import { buildMunitionsLedger } from '../../lib/munitionsLedger';
 import { calloutAmmo } from '../../lib/calloutAmmo';
@@ -129,10 +130,8 @@ import { assetCallsign } from '../../lib/assetLabel';
 import { useLinkIndicator } from '../../hooks/useLinkIndicator';
 import type { UseLinkControlResult } from '../../hooks/useLinkControl';
 import {
-  allLinksDown,
   classifyLink,
   summarizeLinks,
-  summaryText,
   type LinkReading,
 } from '../../lib/linkStatus';
 
@@ -814,7 +813,6 @@ export default function RegionalSustainmentPosture({
     return [uplink, ...childIds.map((id) => classifyLink(linkRows.links.get(id), linkNowMs))];
   }, [linkControl.status, linkControl.children, linkRows.links, uplinkIndicator, linkNowMs]);
   const linkCounts = summarizeLinks(linkReadings);
-  const linksSevered = allLinksDown(linkReadings);
   const tiers = useFleetTiers(hardwareFleet, edgeBufferStatus?.hq_link_severed === true);
 
   // Project around the active region's FOBs so the camera bbox is the
@@ -880,7 +878,7 @@ export default function RegionalSustainmentPosture({
               with the same helpers and colour rule as TheaterReadinessPosture's
               GLOBAL LINK STATUS. */}
           <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-            <span className={linksSevered ? 'text-rose-400' : 'text-emerald-400'}>{summaryText(linkCounts)}</span>
+            <LinkSummary counts={linkCounts} />
           </div>
         </div>
       </div>

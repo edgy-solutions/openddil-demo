@@ -122,7 +122,7 @@ describe('TheaterReadinessPosture — link card', () => {
     const html = renderToStaticMarkup(<TheaterReadinessPosture />);
     mockFobs.splice(0, mockFobs.length);
     expect(html).toContain('GLOBAL LINK STATUS');
-    expect(html).toContain('1 UP · 0 IDLE · 0 DOWN');
+    expect(html.replace(/<[^>]+>/g, '')).toContain('1 UP · 0 IDLE · 0 DOWN');
     expect(html).not.toContain('DIRECT LINKS');
     expect(html).not.toContain('link-toggle-');
   });

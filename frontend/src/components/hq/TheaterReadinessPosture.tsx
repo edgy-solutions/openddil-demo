@@ -38,12 +38,12 @@ import {
 } from '../../hooks';
 import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
+import { LinkSummary } from '../network/LinkSummary';
 import {
   allLinksDown,
   linkForFob,
   linkStateWord,
   summarizeLinks,
-  summaryText,
   type LinkReading,
   type LinkState,
 } from '../../lib/linkStatus';
@@ -465,7 +465,7 @@ export default function TheaterReadinessPosture() {
               </div>
             ) : (
               <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-                <span className={severed ? 'text-rose-400' : 'text-emerald-400'}>{summaryText(linkCounts)}</span>
+                <LinkSummary counts={linkCounts} />
               </div>
             )}
           </div>
