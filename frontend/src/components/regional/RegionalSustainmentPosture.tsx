@@ -36,7 +36,7 @@ import DdilNetworkLink from '../DdilNetworkLink';
 import AssetVisual from '../AssetVisual';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
-import { LinkSummary } from '../network/LinkSummary';
+import { LinkChips } from '../network/LinkChips';
 import { deployment, moveInputs, type Fob } from '../../deployment';
 import { buildMunitionsLedger } from '../../lib/munitionsLedger';
 import { calloutAmmo } from '../../lib/calloutAmmo';
@@ -881,14 +881,16 @@ export default function RegionalSustainmentPosture({
             )}
           </p>
         </div>
-        <div className="text-right bg-slate-900/80 p-2 border border-slate-700">
-          <div className="text-[10px] text-slate-500 mb-1">THEATER LINK STATUS</div>
+        {/* Same card and chips as the HQ posture HUD (TheaterReadinessPosture). */}
+        <div
+          data-testid="regional-link-hud"
+          className="w-72 rounded-xl border border-zinc-800 bg-zinc-900/75 backdrop-blur-sm shadow-lg px-4 py-3 text-left"
+        >
+          <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">THEATER LINK STATUS</h2>
           {/* Counts the uplink and every child link this region monitors,
               with the same helpers and colour rule as TheaterReadinessPosture's
               GLOBAL LINK STATUS. */}
-          <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-            <LinkSummary counts={linkCounts} />
-          </div>
+          <LinkChips counts={linkCounts} />
         </div>
       </div>
 

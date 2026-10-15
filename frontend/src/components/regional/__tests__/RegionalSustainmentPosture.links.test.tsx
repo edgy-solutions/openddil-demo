@@ -60,8 +60,10 @@ const control: UseLinkControlResult = {
   setToxics: () => {},
 };
 
-// The count line is one span per part; compare on the flattened text.
-const stripTags = (h: string) => h.replace(/<[^>]+>/g, '');
+// The chip row carries the full count line as its aria-label; each chip its own count.
+const label = (h: string) => (h.match(/role="group" aria-label="([^"]*)"/) || [])[1];
+const chip = (h: string, key: string) =>
+  (h.match(new RegExp(`data-testid="link-chip-${key}" data-count="([0-9]+)"`)) || [])[1];
 
 function render(indicator: string, aorAssetCount = 20): string {
   mockEdgeBuffer.mockReturnValue({ status: null, isError: false });
@@ -83,16 +85,22 @@ function render(indicator: string, aorAssetCount = 20): string {
 
 describe('RegionalSustainmentPosture — link card and title count', () => {
   it('counts the uplink and both children when all are up', () => {
-    expect(stripTags(render('up'))).toContain('3 UP · 0 IDLE · 0 DOWN');
+    const html = render('up');
+    expect(label(html)).toBe('3 UP · 0 IDLE · 0 DOWN');
+    expect(chip(html, 'up')).toBe('3');
+    expect(chip(html, 'unknown')).toBeUndefined();
   });
 
   it('counts a severed uplink as down', () => {
-    expect(stripTags(render('severed'))).toContain('2 UP · 0 IDLE · 1 DOWN');
+    const html = render('severed');
+    expect(label(html)).toBe('2 UP · 0 IDLE · 1 DOWN');
+    expect(chip(html, 'down')).toBe('1');
   });
 
   it('never counts an unobserved uplink as up', () => {
     const html = render('unknown');
-    expect(stripTags(html)).toContain('2 UP · 0 IDLE · 0 DOWN · 1 UNKNOWN');
+    expect(label(html)).toBe('2 UP · 0 IDLE · 0 DOWN · 1 UNKNOWN');
+    expect(chip(html, 'unknown')).toBe('1');
   });
 
   it('title counts the AOR rows even when no asset is renderable on the map', () => {
