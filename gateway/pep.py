@@ -674,6 +674,145 @@ EXERCISE_RESET_REFUSAL = ("Restart exercise needs the supervisor login: it destr
                           "exercise state and takes about 13 minutes.")
 
 
+# --- asset arrivals: the declare panel's read and write (ADR-0050 s2) ---------
+# Both routes are absent (404) unless the intake URL AND the edges this PEP
+# owns are configured, the same "not wired at this tier" convention as
+# CM_INTAKE_URL. Every authorization decision for a declaration is made here;
+# the intake only carries the record.
+ARRIVALS_INTAKE_URL = os.getenv("OPENDDIL_DECLARATION_INTAKE_URL", "").strip().rstrip("/")
+ARRIVALS_EDGES = _parse_roles_csv(os.getenv("OPENDDIL_ARRIVALS_EDGES", ""))
+ARRIVALS_DECLARE_ROLES = _parse_roles_csv(os.getenv(
+    "OPENDDIL_ARRIVALS_DECLARE_ROLES", "edge-operator,regional-operator,supervisor"))
+ARRIVALS_OWNING_TIER = os.getenv("OPENDDIL_ARRIVALS_OWNING_TIER", "root").strip() or "root"
+RELEASABILITY_FILE = os.getenv("OPENDDIL_RELEASABILITY_FILE", "/ontology/releasability.yaml")
+BASELINES_DIRS = os.getenv("OPENDDIL_BASELINES_DIRS", "/baselines")
+MAX_ARRIVALS_BODY_BYTES = 8 * 1024
+
+
+def _parse_arrivals_units(raw: str) -> list:
+    """JSON list of {"id","name"}. Malformed yields an EMPTY list (nothing
+    is declarable), logged, as _parse_picture_clients does for its map."""
+    if not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        parsed = None
+    if (not isinstance(parsed, list)
+            or not all(isinstance(u, dict) and isinstance(u.get("id"), str) and u["id"]
+                       and isinstance(u.get("name"), str) for u in parsed)):
+        logging.getLogger("pep").error("OPENDDIL_ARRIVALS_UNITS must be a JSON list of "
+                                       '{"id","name"}; no units are declarable')
+        return []
+    return [{"id": u["id"], "name": u["name"]} for u in parsed]
+
+
+ARRIVALS_UNITS = _parse_arrivals_units(os.getenv("OPENDDIL_ARRIVALS_UNITS", ""))
+
+
+def _deployment_nations() -> list[str]:
+    """The keys under `nations:` in the releasability file, re-read on every
+    call. A minimal indentation-based read of that one mapping (the PEP stays
+    stdlib-only and no YAML parser is available): the first indented key
+    line sets the key indent, deeper lines are skipped, a column-0 line ends
+    the block. An unreadable file yields no nations, so nothing is declarable."""
+    try:
+        with open(RELEASABILITY_FILE, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return []
+    out: list[str] = []
+    in_block = False
+    key_indent = None
+    for line in lines:
+        body = line.split("#", 1)[0].rstrip()
+        if not body.strip():
+            continue
+        indent = len(body) - len(body.lstrip(" "))
+        if not in_block:
+            in_block = indent == 0 and body.strip() == "nations:"
+            continue
+        if indent == 0:
+            break
+        if key_indent is None:
+            key_indent = indent
+        if indent == key_indent:
+            m = re.match(r"^\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\s*:", body)
+            if m:
+                out.append(m.group(1))
+    return out
+
+
+_BASELINE_FIELD = re.compile(r"^(platform_variant|baseline_id):[ \t]*[\"']?([^\"'#\s]+)",
+                             re.M)
+
+
+def _load_baselines() -> dict[str, list[str]]:
+    """{platform_variant: [baseline_id, ...]} from every *.yaml in
+    BASELINES_DIRS (colon list). Keyed as the cm-service loader keys them:
+    by the file's top-level `platform_variant`, naming the file's top-level
+    `baseline_id`. Only those two column-0 scalars are read, with a regex
+    (no YAML parser; the PEP stays stdlib-only)."""
+    import glob  # noqa: PLC0415
+    out: dict[str, list[str]] = {}
+    for directory in re.split(r":(?![\\/])", BASELINES_DIRS):
+        if not directory.strip():
+            continue
+        for path in sorted(glob.glob(os.path.join(directory.strip(), "*.yaml"))):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            found = {k: v for k, v in _BASELINE_FIELD.findall(text)}
+            variant, bid = found.get("platform_variant"), found.get("baseline_id")
+            if variant and bid and bid not in out.setdefault(variant, []):
+                out[variant].append(bid)
+    return out
+
+
+def _pg_array(value) -> list[str]:
+    """A text[] column as Electric delivers it: a list, or a Postgres array
+    literal string such as {ATL,BDR}."""
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+        inner = value[1:-1]
+        return [p.strip().strip('"') for p in inner.split(",") if p.strip()]
+    return []
+
+
+def _parse_ts(value) -> float | None:
+    """Epoch seconds from an ISO-ish timestamp, or None."""
+    if not isinstance(value, str):
+        return None
+    import datetime  # noqa: PLC0415
+    text = value.strip().replace(" ", "T", 1)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    if re.search(r"[+-]\d\d$", text):
+        text += ":00"
+    try:
+        dt = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.timestamp()
+
+
+def _position(kinematics) -> dict | None:
+    if isinstance(kinematics, str):
+        try:
+            kinematics = json.loads(kinematics)
+        except ValueError:
+            return None
+    if not isinstance(kinematics, dict):
+        return None
+    pos = kinematics.get("position")
+    return pos if isinstance(pos, dict) else None
+
+
 def table_class(table: str) -> str:
     """'nation' | 'role' | 'subject' | 'refused'.
 
@@ -780,7 +919,20 @@ def read_visible_row(table: str, asset_id: str, nations: list[str]) -> dict | No
     replicated rather than a point-in-time snapshot that may be hours stale.
     """
     where = compose(f"asset_id = {_sql_str(asset_id)}", policy_predicate(nations))
+    rows = _follow_shape(table, where, None, asset_id)
+    return rows[0] if rows else None
+
+
+def _follow_shape(table: str, where: str, columns: list[str] | None,
+                  default_key: str) -> list[dict]:
+    """The shape-following loop described in read_visible_row's docstring,
+    shared by every bounded read in this file: GET the shape, follow
+    handle/offset until up-to-date, apply insert/update/delete, return the
+    surviving rows. `where` is used as given (callers compose their own
+    predicate); `columns` limits what Electric sends."""
     base_params = {"table": table, "where": where}
+    if columns:
+        base_params["columns"] = ",".join(columns)
     deadline = time.monotonic() + 10
     handle: str | None = None
     offset: str | None = None
@@ -840,7 +992,7 @@ def read_visible_row(table: str, asset_id: str, nations: list[str]) -> dict | No
             if control == "must-refetch":
                 must_refetch = True
                 break
-            key = msg.get("key") or asset_id
+            key = msg.get("key") or default_key
             operation = msg_headers.get("operation") if isinstance(msg_headers, dict) else None
             # A delete is honoured whether or not it carries a value: skipping
             # it would leave a row visible that the shape has dropped.
@@ -863,7 +1015,7 @@ def read_visible_row(table: str, asset_id: str, nations: list[str]) -> dict | No
             continue
 
         if up_to_date:
-            return next(iter(rows.values()), None)
+            return list(rows.values())
 
         new_handle = resp_headers.get("electric-handle") or resp_headers.get("electric-shape-id")
         new_offset = resp_headers.get("electric-offset")
@@ -974,6 +1126,50 @@ def _cm_record(*, allowed: bool, subject: str, asset_id: str | None,
                     fault_code=fault_code, event_id=event_id, reason=reason,
                     resource="cm:discrepancy")
     return decision_id
+
+
+_DECLARE_KEYS = {"asset_id", "edge_id", "serial", "unit", "originator_nation",
+                 "releasable_to", "baseline_id", "source", "confirm_serial"}
+
+
+def _parse_declare_body(payload) -> dict:
+    """Strict shape check for POST /arrivals/declare, or raise ValueError(reason).
+    Unknown keys are refused; declared_by and the other server-set fields are
+    never read from the body."""
+    if not isinstance(payload, dict):
+        raise ValueError("body must be a JSON object")
+    extra = set(payload) - _DECLARE_KEYS
+    if extra:
+        raise ValueError("unknown field: " + ", ".join(sorted(extra)))
+
+    def text(key, optional=False):
+        v = payload.get(key)
+        if v is None and optional:
+            return None
+        if not isinstance(v, str) or not v.strip():
+            raise ValueError(f"{key} must be a non-empty string")
+        return v
+
+    out = {k: text(k) for k in ("asset_id", "edge_id", "unit", "originator_nation")}
+    out["serial"] = text("serial", optional=True)
+    out["baseline_id"] = text("baseline_id", optional=True)
+    rel = payload.get("releasable_to")
+    if (not isinstance(rel, list)
+            or not all(isinstance(n, str) and n for n in rel) or len(set(rel)) != len(rel)):
+        raise ValueError("releasable_to must be a list of distinct strings")
+    out["releasable_to"] = rel
+    source = payload.get("source")
+    if source not in ("declare", "expect-confirm"):
+        raise ValueError("source must be declare or expect-confirm")
+    out["source"] = source
+    confirm = payload.get("confirm_serial")
+    if source == "expect-confirm":
+        out["confirm_serial"] = text("confirm_serial")
+    elif confirm is not None:
+        raise ValueError("confirm_serial is only for source expect-confirm")
+    else:
+        out["confirm_serial"] = None
+    return out
 
 
 # 1024 bytes, fixed rather than configurable -- the body is one key (a bool,
@@ -1438,6 +1634,313 @@ class Pep(BaseHTTPRequestHandler):
         # Step 9: recorded.
         self._cm_allow(subject=subject, asset_id=asset_id, fault_code=fault_code,
                        event_id=event_id)
+
+    # --- asset arrivals (ADR-0050 s2) ----------------------------------------
+    def _arrivals_enabled(self) -> bool:
+        return bool(ARRIVALS_INTAKE_URL) and bool(ARRIVALS_EDGES)
+
+    def _arrivals_gate(self, path: str, edge_id: str, record) -> tuple | None:
+        """Session -> Topaz -> known subject -> role -> owned edge, in that
+        order. Returns (subject, decision) or None after answering.
+        `record(status, reason, subject)` answers a post-subject refusal."""
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return None
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject, resource=path, status=503)
+            return None
+        if not decision.get("subject_known"):
+            self._deny("subject unknown to the PDP", subject=subject, resource=path,
+                       status=403)
+            return None
+        if decision.get("role") not in ARRIVALS_DECLARE_ROLES:
+            log.warning("ARRIVALS REFUSED subject=%s role=%s", subject, decision.get("role"))
+            record(403, "role may not work the arrivals panel", subject)
+            return None
+        if edge_id not in ARRIVALS_EDGES:
+            record(404, "edge not owned by this gateway", subject)
+            return None
+        return subject, decision
+
+    def _handle_arrivals_get(self, parsed) -> None:
+        path = parsed.path
+        if not self._arrivals_enabled():
+            self._deny("arrivals route not configured at this tier", subject="",
+                       resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        edge_id = (params.get("edge_id") or [""])[0]
+
+        def record(status, reason, subject):
+            self._deny(reason, subject=subject, resource=path, status=status,
+                       marker="ARRIVALS REFUSED")
+
+        gate = self._arrivals_gate(path, edge_id, record)
+        if gate is None:
+            return
+        subject, decision = gate
+        allowed = decision["allowed_nations"]
+        e = _sql_str(edge_id)
+        try:
+            tel = _follow_shape(
+                "telemetry_latest_state", f"edge_id = {e} AND originator_nation IS NULL",
+                ["asset_id", "edge_id", "platform_variant", "kinematics", "last_sample_at"],
+                "")
+            reg = _follow_shape("asset_registry", f"edge_id = {e}",
+                                ["asset_id", "assigned_at"], "")
+            decl = _follow_shape("asset_declaration", f"edge_id = {e}", ["asset_id"], "")
+            fielding = _follow_shape(
+                "asset_fielding",
+                compose(f"fielded_to = {e}", policy_predicate(allowed)),
+                ["serial", "platform_variant", "unit", "originator_nation",
+                 "releasable_to", "due_by"], "")
+            corr = _follow_shape("asset_correlation", f"edge_id = {e}", ["serial"], "")
+        except ElectricUnavailable as exc:
+            self._deny(f"electric unavailable: {exc}", subject=subject, resource=path,
+                       status=502)
+            return
+        declared_ids = {r.get("asset_id") for r in decl}
+        first_seen = {r.get("asset_id"): r.get("assigned_at") for r in reg}
+        correlated = {r.get("serial") for r in corr}
+        open_expected = [r for r in fielding if r.get("serial") not in correlated]
+        now = time.time()
+        expected = []
+        for r in sorted(open_expected, key=lambda r: str(r.get("serial"))):
+            due = _parse_ts(r.get("due_by"))
+            expected.append({
+                "serial": r.get("serial"), "platform_variant": r.get("platform_variant"),
+                "unit": r.get("unit"), "owning_nation": r.get("originator_nation"),
+                "releasable_to": _pg_array(r.get("releasable_to")),
+                "due_by": r.get("due_by"), "overdue": due is not None and due < now,
+            })
+        undeclared = []
+        for r in sorted(tel, key=lambda r: str(r.get("asset_id"))):
+            if r.get("asset_id") in declared_ids:
+                continue
+            variant = r.get("platform_variant")
+            undeclared.append({
+                "asset_id": r.get("asset_id"),
+                "first_seen": first_seen.get(r.get("asset_id")),
+                "last_seen": r.get("last_sample_at"),
+                "platform_variant": variant or "UNKNOWN",
+                "position": _position(r.get("kinematics")),
+                "candidates": [x["serial"] for x in expected
+                               if variant and x["platform_variant"] == variant],
+            })
+        nations = _deployment_nations()
+        body = {
+            "edge_id": edge_id, "undeclared": undeclared, "expected": expected,
+            "units": ARRIVALS_UNITS, "nations": nations,
+            "declarable_nations": [n for n in nations if n in allowed],
+            "baselines": _load_baselines(),
+        }
+        self._send(200, json.dumps(body).encode(), [("Content-Type", "application/json")])
+
+    def _handle_arrivals_declare(self, parsed) -> None:
+        path = parsed.path
+        if not self._arrivals_enabled():
+            self._drain_body()
+            self._deny("arrivals route not configured at this tier", subject="",
+                       resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        if not self._content_type_is_json():
+            self._drain_body()
+            self._deny("Content-Type must be application/json", subject="",
+                       resource=path, status=415, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        if self._origin_is_cross_site():
+            self._drain_body()
+            self._deny("cross-site origin", subject="", resource=path, status=403,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        length = self._content_length()
+        if length > MAX_ARRIVALS_BODY_BYTES:
+            self._deny("body too large", subject="", resource=path, status=413,
+                       headers=[("Connection", "close")],
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        raw = self.rfile.read(length) if length else b""
+        try:
+            payload = json.loads(raw or b"{}")
+        except ValueError:
+            self._send(400, json.dumps({"error": "malformed JSON body"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+        body = payload if isinstance(payload, dict) else {}
+        asset_hint = body.get("asset_id") if isinstance(body.get("asset_id"), str) else None
+        edge_hint = body.get("edge_id") if isinstance(body.get("edge_id"), str) else ""
+
+        def record(status, reason, subject):
+            ref = new_decision_id()
+            record_decision(decision_id=ref, allowed=False, subject=subject or None,
+                            asset_id=asset_hint, resource="arrival:declare",
+                            reason=(f"{reason}; nation={body.get('originator_nation')} "
+                                    f"source={body.get('source')} "
+                                    f"serial={body.get('serial')}"))
+            log.warning("ARRIVAL DECLARE REFUSED ref=%s reason=%s subject=%s asset_id=%s",
+                        ref, reason, subject or "<none>", asset_hint or "-")
+            out = {"error": "arrival declaration refused", "cause": reason,
+                   "reference": ref}
+            self._send(status, json.dumps(out).encode(),
+                       [("Content-Type", "application/json")])
+
+        gate = self._arrivals_gate(path, edge_hint, record)
+        if gate is None:
+            return
+        subject, decision = gate
+        allowed = decision["allowed_nations"]
+
+        try:
+            f = _parse_declare_body(payload)
+        except ValueError as exc:
+            record(400, str(exc), subject)
+            return
+        asset_id, edge_id = f["asset_id"], f["edge_id"]
+        nation, releasable = f["originator_nation"], f["releasable_to"]
+
+        if nation not in allowed:
+            record(403, "originator_nation is not one this subject may declare", subject)
+            return
+        deployment = _deployment_nations()
+        if nation not in deployment or any(n not in deployment for n in releasable):
+            record(400, "nation is not a deployment nation", subject)
+            return
+        if nation in releasable:
+            record(400, "releasable_to must not include originator_nation", subject)
+            return
+        if f["unit"] not in {u["id"] for u in ARRIVALS_UNITS}:
+            record(400, "unit is not a known unit", subject)
+            return
+
+        e, a = _sql_str(edge_id), _sql_str(asset_id)
+        try:
+            observed = _follow_shape(
+                "telemetry_latest_state",
+                f"edge_id = {e} AND asset_id = {a} AND originator_nation IS NULL",
+                ["asset_id", "edge_id", "platform_variant", "region_id"], asset_id)
+            declared = _follow_shape("asset_declaration", f"asset_id = {a}",
+                                     ["asset_id"], asset_id)
+        except ElectricUnavailable as exc:
+            record(502, f"electric unavailable: {exc}", subject)
+            return
+        # One answer for unknown, already labelled, or already declared: this
+        # route never confirms that an id exists.
+        if not observed or declared:
+            record(404, "asset is not awaiting declaration at this edge", subject)
+            return
+        row = observed[0]
+        variant = row.get("platform_variant")
+
+        if f["baseline_id"] is not None and f["baseline_id"] not in _load_baselines().get(
+                variant or "", []):
+            record(400, "baseline_id is not a baseline of this asset's variant", subject)
+            return
+
+        serial = f["serial"]
+        if f["source"] == "expect-confirm":
+            serial = f["confirm_serial"]
+            if f["serial"] is not None and f["serial"] != serial:
+                record(400, "serial must be null or equal confirm_serial", subject)
+                return
+            try:
+                fielding = _follow_shape(
+                    "asset_fielding",
+                    compose(f"serial = {_sql_str(serial)} AND fielded_to = {e}",
+                            policy_predicate(allowed)),
+                    ["serial", "platform_variant", "unit", "originator_nation",
+                     "releasable_to"], serial)
+            except ElectricUnavailable as exc:
+                record(502, f"electric unavailable: {exc}", subject)
+                return
+            if not fielding:
+                record(404, "confirm_serial is not an open expected arrival at this edge",
+                       subject)
+                return
+            exp = fielding[0]
+            if exp.get("platform_variant") != variant:
+                record(400, "platform_variant differs from the expected arrival", subject)
+                return
+            if (exp.get("unit") != f["unit"] or exp.get("originator_nation") != nation
+                    or sorted(_pg_array(exp.get("releasable_to"))) != sorted(releasable)):
+                record(400, "unit, originator_nation or releasable_to differ from the "
+                            "expected arrival", subject)
+                return
+        if serial is not None:
+            try:
+                taken = _follow_shape("asset_correlation", f"serial = {_sql_str(serial)}",
+                                      ["serial"], serial)
+            except ElectricUnavailable as exc:
+                record(502, f"electric unavailable: {exc}", subject)
+                return
+            if taken:
+                record(409, "serial is already correlated to an asset", subject)
+                return
+
+        declared_rec = {
+            "asset_id": asset_id, "serial": serial, "unit": f["unit"],
+            "originator_nation": nation, "releasable_to": releasable,
+            "baseline_id": f["baseline_id"], "declared_by": subject,
+            "declared_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "source": f["source"], "edge_id": edge_id,
+            "region_id": row.get("region_id") or None,
+            "owning_tier": ARRIVALS_OWNING_TIER,
+        }
+
+        def allow_line(note):
+            ref = new_decision_id()
+            record_decision(decision_id=ref, allowed=True, subject=subject,
+                            asset_id=asset_id, resource="arrival:declare",
+                            reason=f"{note}; nation={nation} source={f['source']} "
+                                   f"serial={serial}")
+            return ref
+
+        def post(url, obj):
+            req = urllib.request.Request(url, data=json.dumps(obj).encode(),
+                                         headers={"Content-Type": "application/json"},
+                                         method="POST")
+            with urllib.request.urlopen(req, timeout=15):
+                pass
+
+        try:
+            post(ARRIVALS_INTAKE_URL, declared_rec)
+        except urllib.error.HTTPError as exc:
+            record(502, f"declaration intake returned HTTP {exc.code}", subject)
+            return
+        except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+            record(502, f"declaration intake unreachable: {exc}", subject)
+            return
+
+        baseline_assigned = False
+        if f["baseline_id"] is not None:
+            event = {
+                "eventId": str(uuid.uuid4()), "assetId": asset_id,
+                "recordedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "recordedBy": subject,
+                "baselineAssigned": {"baselineId": f["baseline_id"],
+                                     "reason": "assigned at arrival declaration"},
+            }
+            try:
+                if not CM_INTAKE_URL:
+                    raise RuntimeError("cm intake not configured")
+                post(CM_INTAKE_URL, event)
+                baseline_assigned = True
+            except Exception as exc:  # noqa: BLE001
+                ref = allow_line("declared; baseline assignment failed: "
+                                 f"{type(exc).__name__}")
+                self._send(502, json.dumps({
+                    "declared": True, "baseline_assigned": False,
+                    "cause": "declaration recorded; baseline assignment failed",
+                    "reference": ref}).encode(), [("Content-Type", "application/json")])
+                return
+        allow_line("declared" + ("; baseline assigned" if baseline_assigned else ""))
+        self._send(201, json.dumps({"declared": declared_rec,
+                                    "baseline_assigned": baseline_assigned}).encode(),
+                   [("Content-Type", "application/json")])
 
     def _handle_manual_ask(self, parsed) -> None:
         """Serve POST /manual/ask: a maintainer's question, scoped to the
@@ -1907,6 +2410,9 @@ class Pep(BaseHTTPRequestHandler):
         if parsed.path == "/manual/ask":
             self._handle_manual_ask(parsed)
             return
+        if parsed.path == "/arrivals/declare":
+            self._handle_arrivals_declare(parsed)
+            return
         if parsed.path.startswith("/proxies/"):
             self._handle_wan_control(parsed, "POST")
             return
@@ -2318,6 +2824,9 @@ class Pep(BaseHTTPRequestHandler):
             return
         if parsed.path == "/cm/fault-codes":
             self._handle_cm_fault_codes(parsed)
+            return
+        if parsed.path == "/arrivals":
+            self._handle_arrivals_get(parsed)
             return
         if parsed.path.startswith("/proxies/"):
             self._handle_wan_control(parsed, "GET")
