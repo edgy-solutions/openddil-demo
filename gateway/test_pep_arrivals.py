@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import urllib.error
@@ -107,10 +108,17 @@ def _fake_shape(table, where, columns, default_key):
         return [{"asset_id": r["asset_id"], "assigned_at": "2026-10-15T11:00:00Z"}
                 for r in state["telemetry"]]
     if table == "asset_declaration":
-        return [r for r in state["declared"] if f"'{r['asset_id']}'" in where or "edge_id" in where]
+        return [r for r in state["declared"]
+                if where == "true" or f"'{r['asset_id']}'" in where or "edge_id" in where]
     if table == "asset_fielding":
         if "serial = " in where:
             return [r for r in FIELDING if f"serial = '{r['serial']}'" in where]
+        m = re.search(r"originator_nation IN \(([^)]*)\)", where)
+        if m:
+            nations = re.findall(r"'([^']*)'", m.group(1))
+            return [r for r in FIELDING if r["originator_nation"] in nations]
+        if where == "false":
+            return []
         return list(FIELDING)
     if table == "asset_correlation":
         if "serial = " in where:
@@ -301,3 +309,88 @@ def test_decision_line_per_outcome(pep_url, caplog):
     assert len(lines) == 2
     assert '"allowed": true' in lines[0] and '"subject": "op-atl"' in lines[0]
     assert '"allowed": false' in lines[1]
+
+
+# --- GET /arrivals/summary ----------------------------------------------------
+def _tel(asset_id, edge, nation=None):
+    return {"asset_id": asset_id, "edge_id": edge, "originator_nation": nation}
+
+
+def _summary_state():
+    state["telemetry"] = [
+        _tel("dis:9:9:1", "edge-a"), _tel("dis:9:9:2", "edge-a"),
+        _tel("dis:9:9:3", "edge-a", "ATL"), _tel("dis:9:9:4", "edge-b", "ATL"),
+    ]
+    state["declared"] = [{"asset_id": "dis:9:9:2", "edge_id": "edge-a"}]
+    state["correlated"] = [{"serial": "SN-2"}]
+
+
+def test_summary_shape(pep_url):
+    _summary_state()
+    status, body = _req(pep_url + "/arrivals/summary", "op-atl")
+    assert status == 200
+    assert body["edges"] == [
+        {"edge_id": "edge-a", "undeclared": 1, "expected": 2, "overdue": 1},
+        {"edge_id": "edge-b", "undeclared": 0, "expected": 0, "overdue": 0},
+    ]
+
+
+def test_summary_carries_no_ids(pep_url):
+    _summary_state()
+    req = urllib.request.Request(pep_url + "/arrivals/summary",
+                                 headers={"X-OpenDDIL-Subject": "op-atl"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        raw = r.read().decode()
+    for needle in ("dis:9:9", "SN-1", "SN-2", "SN-3"):
+        assert needle not in raw
+
+
+def test_summary_fielding_read_is_policy_only(pep_url, env):
+    pep = env[0]
+    _summary_state()
+    status, body = _req(pep_url + "/arrivals/summary", "op-bdr")
+    assert status == 200
+    by = {e["edge_id"]: e for e in body["edges"]}
+    assert by["edge-a"]["expected"] == 0
+    (where,) = [w for t, w, _c in state["shape_reads"] if t == "asset_fielding"]
+    assert where == pep.compose(None, pep.policy_predicate(["BDR"]))
+
+
+def test_summary_edge_from_fielding_alone(pep_url):
+    _summary_state()
+    FIELDING.append({"serial": "SN-Z", "platform_variant": "X", "unit": "u1",
+                     "originator_nation": "ATL", "releasable_to": "{}",
+                     "due_by": "2999-01-01 00:00:00+00", "fielded_to": "edge-z"})
+    try:
+        status, body = _req(pep_url + "/arrivals/summary", "op-atl")
+    finally:
+        FIELDING.pop()
+    assert status == 200
+    assert {"edge_id": "edge-z", "undeclared": 0, "expected": 1, "overdue": 0} in body["edges"]
+
+
+def test_summary_gates(pep_url, env, monkeypatch):
+    pep = env[0]
+    url = pep_url + "/arrivals/summary"
+    assert _req(url, None)[0] == 401
+    assert _req(url, "nobody")[0] == 403
+
+    state["electric_down"] = pep.ElectricUnavailable("down")
+    assert _req(url, "op-atl")[0] == 502
+    state["electric_down"] = None
+
+    def boom(_subject):
+        raise pep.AuthzUnavailable("down")
+
+    monkeypatch.setattr(pep, "ask_topaz", boom)
+    assert _req(url, "op-atl")[0] == 503
+
+
+def test_summary_not_gated_on_ownership_or_role(pep_url, monkeypatch, env):
+    pep = env[0]
+    monkeypatch.setattr(pep, "ARRIVALS_EDGES", frozenset())
+    assert _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")[0] == 404
+    assert _req(pep_url + "/arrivals/summary", "op-atl")[0] == 200
+    monkeypatch.setattr(pep, "ARRIVALS_EDGES", frozenset({"edge-a"}))
+    assert "observer" not in pep.ARRIVALS_DECLARE_ROLES
+    assert _req(pep_url + "/arrivals/summary", "obs-atl")[0] == 200

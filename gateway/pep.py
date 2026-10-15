@@ -1741,6 +1741,70 @@ class Pep(BaseHTTPRequestHandler):
         }
         self._send(200, json.dumps(body).encode(), [("Content-Type", "application/json")])
 
+    def _handle_arrivals_summary(self, parsed) -> None:
+        """Per-edge counts for HQ: undeclared, expected, overdue. Counts only,
+        never an id. Open to every signed-in, known subject at any tier: no
+        role check and no arrivals-ownership check. Query parameters are
+        ignored. Definitions match _handle_arrivals_get."""
+        path = parsed.path
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject, resource=path, status=503)
+            return
+        if not decision.get("subject_known"):
+            self._deny("subject unknown to the PDP", subject=subject, resource=path,
+                       status=403)
+            return
+        allowed = decision["allowed_nations"]
+        try:
+            tel = _follow_shape("telemetry_latest_state", "true",
+                                ["asset_id", "edge_id", "originator_nation"], "")
+            decl = _follow_shape("asset_declaration", "true", ["asset_id", "edge_id"], "")
+            fielding = _follow_shape(
+                "asset_fielding", compose(None, policy_predicate(allowed)),
+                ["serial", "fielded_to", "due_by"], "")
+            corr = _follow_shape("asset_correlation", "true", ["serial"], "")
+        except ElectricUnavailable as exc:
+            self._deny(f"electric unavailable: {exc}", subject=subject, resource=path,
+                       status=502)
+            return
+        declared_ids = {r.get("asset_id") for r in decl}
+        correlated = {r.get("serial") for r in corr}
+        now = time.time()
+        counts: dict[str, dict] = {}
+
+        def edge(e):
+            return counts.setdefault(
+                e, {"edge_id": e, "undeclared": 0, "expected": 0, "overdue": 0})
+
+        for r in tel:
+            e = r.get("edge_id")
+            if e is None:
+                continue
+            row = edge(e)
+            if r.get("originator_nation") is None and r.get("asset_id") not in declared_ids:
+                row["undeclared"] += 1
+        for r in fielding:
+            e = r.get("fielded_to")
+            if e is None:
+                continue
+            row = edge(e)
+            if r.get("serial") in correlated:
+                continue
+            row["expected"] += 1
+            due = _parse_ts(r.get("due_by"))
+            if due is not None and due < now:
+                row["overdue"] += 1
+        body = {"edges": [counts[k] for k in sorted(counts)]}
+        self._send(200, json.dumps(body).encode(), [("Content-Type", "application/json")])
+
     def _handle_arrivals_declare(self, parsed) -> None:
         path = parsed.path
         if not self._arrivals_enabled():
@@ -2827,6 +2891,9 @@ class Pep(BaseHTTPRequestHandler):
             return
         if parsed.path == "/arrivals":
             self._handle_arrivals_get(parsed)
+            return
+        if parsed.path == "/arrivals/summary":
+            self._handle_arrivals_summary(parsed)
             return
         if parsed.path.startswith("/proxies/"):
             self._handle_wan_control(parsed, "GET")
