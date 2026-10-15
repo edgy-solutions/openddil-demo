@@ -38,8 +38,12 @@ const sixRowFixture: EffectorLaunch[] = [
 ];
 
 describe('effectorCounts', () => {
-  it('computes expended / in flight / unresolved over the six-row fixture', () => {
-    expect(effectorCounts(sixRowFixture)).toEqual({ expended: 6, inFlight: 2, unresolved: 1 });
+  it('computes expended / unresolved from launches; in flight is the count passed in', () => {
+    expect(effectorCounts(sixRowFixture, 2)).toEqual({ expended: 6, inFlight: 2, unresolved: 1 });
+  });
+
+  it('ignores effector_launch NULL rows for in flight (ADR-0049)', () => {
+    expect(effectorCounts(sixRowFixture).inFlight).toBe(0);
   });
 });
 
@@ -73,7 +77,9 @@ describe('EffectorTracksCard', () => {
   });
 
   it('shows the header counts from the six-row fixture', () => {
-    const html = renderToStaticMarkup(<EffectorTracksCard launches={sixRowFixture} />);
+    const html = renderToStaticMarkup(
+      <EffectorTracksCard launches={sixRowFixture} inFlightCount={2} />,
+    );
     expect(html).toContain('Effector Tracks');
     // expended 6, in flight 2, unresolved 1 -- each adjacent to its label.
     expect(html).toMatch(/Expended[^<]*<[^>]*>6/);

@@ -11,6 +11,7 @@ import type { ClassifiedFleetAsset } from '../../../hooks';
 
 vi.mock('../../../hooks', () => ({
   useClassifiedFleet: () => ({ data: MOCK_FLEET, isLoading: false }),
+  useInFlightMunitionTracks: () => ({ data: [], isLoading: false }),
 }));
 vi.mock('../../../deployment', () => ({
   edgeAttachment: vi.fn(),

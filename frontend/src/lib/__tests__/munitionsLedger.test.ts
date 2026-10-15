@@ -1,6 +1,11 @@
 // munitionsLedger -- launcher set, scope, replay and rollup semantics.
 import { describe, expect, it } from 'vitest';
-import { buildMunitionsLedger, type LedgerLaunchInput, type LedgerResupplyInput } from '../munitionsLedger';
+import {
+  buildMunitionsLedger,
+  type LedgerLaunchInput,
+  type LedgerResupplyInput,
+  type LedgerTrackInput,
+} from '../munitionsLedger';
 import { isAbsent } from '../movePanel';
 
 const KEY = '2.1.225.1.0.0.0';
@@ -25,9 +30,13 @@ const RESUPPLY: LedgerResupplyInput[] = [
   { launcherAssetId: 'L1', munitionType: KEY, quantity: 1, receivedAt: at(600), regionId: 'r1' },
 ];
 
+const TRACKS: LedgerTrackInput[] = [
+  { launcherAssetId: 'L1', munitionType: KEY, terminalState: null },
+];
+
 function build(over: Partial<Parameters<typeof buildMunitionsLedger>[0]> = {}) {
   return buildMunitionsLedger({
-    fleet: FLEET, launches: LAUNCHES, resupplies: RESUPPLY, declaredLoad: LOAD,
+    fleet: FLEET, launches: LAUNCHES, resupplies: RESUPPLY, tracks: TRACKS, declaredLoad: LOAD,
     asOfMs: T0 + 150_000, ...over,
   });
 }
@@ -156,5 +165,21 @@ describe('buildMunitionsLedger', () => {
     });
     expect(l.byType.map((t) => t.munitionKey)).toEqual(['1.1', '9.9']);
     expect(l.byType[1].rows.map((r) => r.launcherAssetId)).toEqual(['A', 'B']);
+  });
+
+  it('in flight is the non-terminal tracks per launcher and type, not effector_launch NULL rows', () => {
+    const tracks: LedgerTrackInput[] = [
+      { launcherAssetId: 'L1', munitionType: KEY, terminalState: null },
+      { launcherAssetId: 'L1', munitionType: KEY, terminalState: null },
+      { launcherAssetId: 'L1', munitionType: KEY, terminalState: 'detonated' },
+      { launcherAssetId: 'L1', munitionType: '9.9.9', terminalState: null },
+      { launcherAssetId: null, munitionType: KEY, terminalState: null },
+    ];
+    const r = build({ tracks }).byType[0].rows[0];
+    expect(val(r.inFlight)).toBe(2);
+    expect(r.inFlight).toMatchObject({ source: 'munition_track terminal_state IS NULL' });
+    expect(val(r.expended)).toBe(3);
+    expect(val(r.unresolved)).toBe(0);
+    expect(val(build({ tracks: [] }).byType[0].rows[0].inFlight)).toBe(0);
   });
 });

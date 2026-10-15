@@ -18,6 +18,7 @@ vi.mock('../../../hooks', () => ({
   useMunitionsStockpile: () => ({ data: [], entries: [] }),
   useAllEffectorLaunches: () => ({ data: [], isLoading: false }),
   useAllEffectorResupply: () => ({ data: [], isLoading: false }),
+  useInFlightMunitionTracks: () => ({ data: [], isLoading: false }),
   useEdgeBuffer: () => mockEdgeBuffer(),
   useLinkStatus: () => mockLinkStatus(),
 }));

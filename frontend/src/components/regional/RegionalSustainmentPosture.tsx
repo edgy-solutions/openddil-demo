@@ -49,6 +49,7 @@ import {
   useMunitionsStockpile,
   useAllEffectorLaunches,
   useAllEffectorResupply,
+  useInFlightMunitionTracks,
   useEdgeBuffer,
   useLinkStatus,
   type FleetAsset,
@@ -58,13 +59,10 @@ import {
 } from '../../hooks';
 import { makeAssetClassifier } from '../../lib/assetClass';
 import { useMunitionLaunches } from '../../hooks/useEffectorLaunches';
-import {
-  launchesByMunition,
-  launchFor,
-  dedupFirings,
-} from '../../lib/munitionAsset';
 import { isTierVisibleIn3D, type AssetTier } from '../../lib/assetTier';
 import { makeProjection, type Projection } from '../../lib/geoProjection';
+import { trackLatLon } from '../../lib/munitionTrackLayout';
+import MunitionTrackMarker from '../MunitionTrackMarker';
 
 // Scene scale: ~80 units per degree of latitude puts a regional-sized bbox
 // (~3°) at ~240 scene units, fitting comfortably in the ~400-unit canvas
@@ -576,6 +574,7 @@ function AssetCallout({
 // DdilNetworkLink convention.
 
 const REGIONAL_AGGREGATOR_Y = 8;   // slightly elevated above FOB markers (Y=0)
+const TRACK_MARKER_Y = 6;           // in-flight track dots ride just above the ground
 const HQ_MARKER_Y = 40;             // stacked above the regional aggregator
 
 function RegionalAggregatorNode({ position, label, severed }: {
@@ -711,6 +710,7 @@ export default function RegionalSustainmentPosture({
   // inventory cards); the feed above is the fallback (lib/calloutAmmo.ts).
   const effLaunches = useAllEffectorLaunches();
   const effResupplies = useAllEffectorResupply();
+  const inFlightTracks = useInFlightMunitionTracks();
   const declaredLoad = moveInputs()?.declaredLoad;
   const ledgerClock = usePostureClock(5000);
   const ledger = useMemo(
@@ -722,16 +722,18 @@ export default function RegionalSustainmentPosture({
       })),
       launches: effLaunches.data,
       resupplies: effResupplies.data,
+      tracks: inFlightTracks.data,
       declaredLoad,
       regionId: undefined,
       asOfMs: ledgerClock,
     }),
-    [fleet.data, effLaunches.data, effResupplies.data, declaredLoad, ledgerClock],
+    [fleet.data, effLaunches.data, effResupplies.data, inFlightTracks.data, declaredLoad, ledgerClock],
   );
 
   // 2026-07-13 Phase 5: split fleet into hardware vs. in-flight
   // munitions. Hardware renders as 3D assets on the map; in-flight
-  // munitions surface only as a header ticker.
+  // munitions surface only as a header ticker and as track dots (below),
+  // both from munition_track (ADR-0049), never from these fleet rows.
   //
   // Rationale: MUNITION-class rows (fired interceptors + their seeker
   // payloads) share a platform_variant with launcher hardware
@@ -749,34 +751,19 @@ export default function RegionalSustainmentPosture({
   // in-flight munitions never land in that table by design).
   const allCapability = useAllCapabilityState();
   const munitionLaunches = useMunitionLaunches();
-  const { hardwareFleet, inflightCount } = useMemo(() => {
+  const hardwareFleet = useMemo(() => {
     const classify = makeAssetClassifier(allCapability.data, munitionLaunches.data);
-    const launchByMunition = launchesByMunition(munitionLaunches.data);
-    const hw: FleetAsset[] = [];
-    const inflightSeed: Array<{
-      asset_id: string;
-      platform_variant: string | null;
-      parent_launcher_id: string | null;
-      firing_event_urn: string | null;
-    }> = [];
-    for (const a of fleet.data) {
-      const cls = classify(a);
-      if (cls === 'MUNITION') {
-        inflightSeed.push({
-          asset_id: a.asset_id,
-          platform_variant: a.platform_variant,
-          ...launchFor(a.asset_id, launchByMunition),
-        });
-      } else {
-        hw.push(a);
-      }
-    }
-    // Dedup so we count firings, not delivery-vehicle + seeker-payload
-    // pairs. Matches the identical dedup applied on the HQ Fleet Tree
-    // + FORCE POSTURE + per-launcher Loadout card so all four views
-    // agree on "N in flight."
-    return { hardwareFleet: hw, inflightCount: dedupFirings(inflightSeed).length };
+    return fleet.data.filter((a) => classify(a) !== 'MUNITION');
   }, [fleet.data, allCapability.data, munitionLaunches.data]);
+
+  // In flight is the in-flight munition_track rows (ADR-0049), the same rows the
+  // map draws as dots -- not MUNITION-class fleet rows. Region-scoped on the
+  // row's own region_id when it has one.
+  const regionTracks = useMemo(
+    () => inFlightTracks.data.filter((t) => !regionId || !t.regionId || t.regionId === regionId),
+    [inFlightTracks.data, regionId],
+  );
+  const inflightCount = regionTracks.length;
 
   // 5-tier liveness map. This is a REMOTE view of the edge, so
   // COMM_LOST (stale AND severed) is a legitimate reading here -- but
@@ -836,6 +823,28 @@ export default function RegionalSustainmentPosture({
     () => buildRenderables(hardwareFleet, logistics.data, fobs, proj, tiers),
     [hardwareFleet, logistics.data, fobs, proj, tiers],
   );
+
+  // Track dots go through the same projection a fleet asset takes. The line
+  // runs to the launcher only when it is rendered on this map.
+  const trackMarkers = useMemo(() => {
+    const posById = new Map(renderables.map((a) => [a.asset_id, a.position]));
+    const out: {
+      track: (typeof regionTracks)[number];
+      position: [number, number, number];
+      launcherPosition?: [number, number, number];
+    }[] = [];
+    for (const t of regionTracks) {
+      const ll = trackLatLon(t);
+      if (!ll) continue;
+      const [x, z] = proj.project(ll.lat, ll.lon);
+      out.push({
+        track: t,
+        position: [x, TRACK_MARKER_Y, z],
+        launcherPosition: t.launcherAssetId ? posById.get(t.launcherAssetId) : undefined,
+      });
+    }
+    return out;
+  }, [regionTracks, renderables, proj]);
 
   const targetAsset = useMemo(
     () => renderables.find((a) => a.asset_id === selectedAssetId),
@@ -943,6 +952,16 @@ export default function RegionalSustainmentPosture({
               opState={a.operational_state}
               tier={a.tier}
               onClick={(e) => { e.stopPropagation(); onAssetSelect(a.asset_id, a.severity); }}
+            />
+          ))}
+
+          {/* In-flight tracks: not assets, so no click, callout or list entry. */}
+          {trackMarkers.map((m) => (
+            <MunitionTrackMarker
+              key={`track-${m.track.munitionAssetId}`}
+              track={m.track}
+              position={m.position}
+              launcherPosition={m.launcherPosition}
             />
           ))}
 

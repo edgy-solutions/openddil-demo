@@ -1,7 +1,8 @@
 // munitionsLedger -- per-launcher and per-munition-type rollup of the effector
 // ledger (effector_launch + effector_resupply) against the declared load.
 //
-// Pure: the caller supplies the fleet, the ledger rows and the clock. Declared
+// Pure: the caller supplies the fleet, the ledger rows, the in-flight tracks
+// and the clock. Declared
 // load is the only source of "loaded"; a launcher without one stays Absent and
 // is never counted as zero, so a rollup says how many launchers it left out.
 import type { DeclaredLoadConfig } from '../deployment';
@@ -25,6 +26,11 @@ export interface LedgerLaunchInput {
   launchedAt: string;
   terminalState: string | null;
   regionId: string | null;
+}
+export interface LedgerTrackInput {
+  launcherAssetId: string | null;
+  munitionType: string;
+  terminalState: string | null;
 }
 export interface LedgerResupplyInput {
   launcherAssetId: string;
@@ -79,6 +85,7 @@ export interface MunitionsLedger {
 
 const UNKNOWN_REGION = 'unknown';
 const TERMINAL_SOURCE = 'effector_launch terminal_state';
+const TRACK_SOURCE = 'munition_track terminal_state IS NULL';
 
 function ms(iso: string): number {
   return Date.parse(iso);
@@ -130,12 +137,15 @@ export function buildMunitionsLedger(args: {
   fleet: LedgerLauncherInput[];
   launches: LedgerLaunchInput[];
   resupplies: LedgerResupplyInput[];
+  /** munition_track rows. In flight = the non-terminal ones, per launcher and
+   *  type (ADR-0049); effector_launch no longer feeds the in-flight number. */
+  tracks: LedgerTrackInput[];
   declaredLoad: DeclaredLoadConfig | undefined;
   /** undefined/null = theater */
   regionId?: string | null;
   asOfMs: number;
 }): MunitionsLedger {
-  const { fleet, launches, resupplies, declaredLoad, asOfMs } = args;
+  const { fleet, launches, resupplies, tracks, declaredLoad, asOfMs } = args;
   const theater = args.regionId == null;
   const asOf = Number.isFinite(asOfMs) ? new Date(asOfMs).toISOString() : '';
 
@@ -208,7 +218,14 @@ export function buildMunitionsLedger(args: {
             },
         expended: row.expended,
         remaining: row.remaining,
-        inFlight: sum((l) => l.terminalState === null),
+        inFlight: {
+          value: tracks.filter((t) =>
+            t.terminalState === null
+            && t.launcherAssetId === id
+            && t.munitionType === row.munitionKey).length,
+          source: TRACK_SOURCE,
+          at: asOf,
+        },
         unresolved: sum((l) => l.terminalState === 'unresolved'),
         received: row.received,
         fired: row.fired,

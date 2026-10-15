@@ -30,6 +30,7 @@ import { RefreshCw, Target } from 'lucide-react';
 import {
   useAllEffectorLaunches,
   useAllEffectorResupply,
+  useInFlightMunitionTracks,
   useFleetAssets,
   useMunitionsStockpile,
   type MunitionTypeRollup,
@@ -335,6 +336,7 @@ export default function MunitionsInventory({
   const fleet = useFleetAssets();
   const launches = useAllEffectorLaunches();
   const resupplies = useAllEffectorResupply();
+  const tracks = useInFlightMunitionTracks();
   const stockpile = useMunitionsStockpile();
   const declaredLoad = moveInputs()?.declaredLoad;
   const nowMs = usePostureClock(5000);
@@ -348,11 +350,12 @@ export default function MunitionsInventory({
       })),
       launches: launches.data,
       resupplies: resupplies.data,
+      tracks: tracks.data,
       declaredLoad,
       regionId,
       asOfMs: nowMs,
     }),
-    [fleet.data, launches.data, resupplies.data, declaredLoad, regionId, nowMs],
+    [fleet.data, launches.data, resupplies.data, tracks.data, declaredLoad, regionId, nowMs],
   );
 
   // Second source, optionally restricted to a launcher subset: re-aggregate

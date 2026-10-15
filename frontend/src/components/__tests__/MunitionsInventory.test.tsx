@@ -20,6 +20,10 @@ function ledger(regionId?: string) {
       { launcherAssetId: 'L2', munitionType: KEY, quantity: 1, launchedAt: at(130), terminalState: null, regionId: 'r2' },
     ],
     resupplies: [],
+    tracks: [
+      { launcherAssetId: 'L1', munitionType: KEY, terminalState: null },
+      { launcherAssetId: 'L2', munitionType: KEY, terminalState: null },
+    ],
     regionId,
     asOfMs: T0 + 150_000,
   });
@@ -103,7 +107,7 @@ describe('MunitionsLedgerView', () => {
 
   it('explains an empty ledger by cause', () => {
     const empty = buildMunitionsLedger({
-      fleet: [], launches: [], resupplies: [], declaredLoad: undefined, asOfMs: T0,
+      fleet: [], launches: [], resupplies: [], tracks: [], declaredLoad: undefined, asOfMs: T0,
     });
     const loading = html({ ledger: empty, loading: true });
     expect(loading).toContain('data-testid="munitions-empty"');

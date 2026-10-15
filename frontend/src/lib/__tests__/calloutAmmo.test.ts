@@ -17,7 +17,7 @@ const LAUNCHES: LedgerLaunchInput[] = [
   { launcherAssetId: 'L2', munitionType: KEY, quantity: 1, launchedAt: at(60), terminalState: null, regionId: 'r1' },
 ];
 const ledger = (launches = LAUNCHES) => buildMunitionsLedger({
-  fleet: FLEET, launches, resupplies: [], declaredLoad: LOAD, asOfMs: T0 + 300_000,
+  fleet: FLEET, launches, resupplies: [], tracks: [], declaredLoad: LOAD, asOfMs: T0 + 300_000,
 });
 const feed = (id: string, cur: number, max: number): StockpileEntry => ({
   launcher_asset_id: id, capability_id: 'c', munition_type: KEY, current_ammo: cur, initial_ammo: max, expended: max - cur,

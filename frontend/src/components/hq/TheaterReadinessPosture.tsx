@@ -34,10 +34,14 @@ import {
   useClassifiedFleet,
   useAllLogisticsStatus,
   useLinkStatus,
+  useInFlightMunitionTracks,
   type ClassifiedFleetAsset,
+  type MunitionTrack,
 } from '../../hooks';
 import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
+import { trackLatLon } from '../../lib/munitionTrackLayout';
+import MunitionTrackMarker from '../MunitionTrackMarker';
 import { LinkSummary } from '../network/LinkSummary';
 import {
   allLinksDown,
@@ -52,6 +56,8 @@ import {
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
 // within view at the default (0, 150, 600) camera.
 const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
+// In-flight tracks ride a little above the ground plane so they read over the grid.
+const TRACK_MARKER_Y = 6;
 
 // Per-FOB composition breakdown, driven by the asset_class discriminator
 // (src/lib/assetClass.ts) rather than by platform_variant pattern-matching.
@@ -63,11 +69,13 @@ const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
 //   * sensors        — asset_class = SENSOR
 //   * launchers      — asset_class = LAUNCHER  (real launcher hardware)
 //   * facilities     — asset_class = FACILITY
-//   * inflight       — asset_class = MUNITION  (fired, in flight, transient)
+//   * inflight       — in-flight munition_track rows (ADR-0049), not fleet rows;
+//                     the MUNITION class only keeps them out of the hardware counts
 //   * other          — PLATFORM / UNKNOWN (legacy DIS, unresolved variants)
 //
 // Reading the COP: a healthy posture has a balanced sensors:launchers
-// ratio per FOB. In-flight munitions are shown as a per-FOB ticker so
+// ratio per FOB. In-flight munitions are shown as a per-FOB ticker (the same
+// munition_track rows the map draws as dots) so
 // the commander can see engagement activity at a glance without
 // polluting the hardware counts.
 function categoryOf(cls: AssetClass): 'sensors' | 'launchers' | 'facilities' | 'inflight' | 'other' {
@@ -100,14 +108,21 @@ interface FobMetrics {
   attachment?: EdgeAttachment;
 }
 
+/** Edge a track is attributed to: its own edge_id, else its launcher's. */
+function trackEdge(t: MunitionTrack, edgeByAsset: Map<string, string | null>): string | null {
+  return t.edgeId ?? (t.launcherAssetId ? edgeByAsset.get(t.launcherAssetId) ?? null : null);
+}
+
 function buildFobMetrics(
   fobs: Fob[],
   fleet: ClassifiedFleetAsset[],
   logistics: ReturnType<typeof useAllLogisticsStatus>['data'],
+  tracks: MunitionTrack[],
   scale: number,
 ): FobMetrics[] {
   const proj = makeProjection(fobs, scale);
   const sevByAsset = new Map(logistics.map((l) => [l.asset_id, l.overall_severity]));
+  const edgeByAsset = new Map(fleet.map((a) => [a.asset_id, a.edge_id]));
 
   return fobs.map((fob) => {
     const [x, z] = proj.project(fob.lat, fob.lon);
@@ -119,8 +134,14 @@ function buildFobMetrics(
     for (const a of assets) {
       const sev = sevByAsset.get(a.asset_id) ?? 'LOGISTICS_SEVERITY_UNSPECIFIED';
       bySev.set(sev, (bySev.get(sev) ?? 0) + 1);
-      composition[categoryOf(a.asset_class)]++;
+      // MUNITION-class fleet rows no longer feed the in-flight figure.
+      const cat = categoryOf(a.asset_class);
+      if (cat !== 'inflight') composition[cat]++;
     }
+    // A track belongs to the FOB of its own edge_id, else its launcher's.
+    composition.inflight = tracks.filter(
+      (t) => trackEdge(t, edgeByAsset) === fob.edge_id,
+    ).length;
     return {
       fob,
       scenePos: [x, z],
@@ -389,6 +410,7 @@ export default function TheaterReadinessPosture() {
   }, []);
   const fleet = useClassifiedFleet();
   const logistics = useAllLogisticsStatus();
+  const tracks = useInFlightMunitionTracks();
 
   // Projection is computed once here and shared with both the FOB metrics
   // (for marker positions) and the TacticalMapUnderlay (so a deployment-
@@ -399,12 +421,13 @@ export default function TheaterReadinessPosture() {
   );
 
   const metrics = useMemo(
-    () => buildFobMetrics(fobs, fleet.data, logistics.data, HQ_SCENE_SCALE_UNITS_PER_DEG),
-    [fobs, fleet.data, logistics.data],
+    () => buildFobMetrics(fobs, fleet.data, logistics.data, tracks.data, HQ_SCENE_SCALE_UNITS_PER_DEG),
+    [fobs, fleet.data, logistics.data, tracks.data],
   );
 
   // Per-class posture rollups: hardware (SENSORS / LAUNCHERS / FACILITIES)
-  // gets a severity breakdown; fired MUNITIONs (in flight) get a count.
+  // gets a severity breakdown; the IN FLIGHT count is the in-flight
+  // munition_track rows (ADR-0049), not MUNITION-class fleet rows.
   // The severity/class split solves two divergences we saw earlier:
   //   1. FORCE POSTURE (asset_logistics_status count) diverging from
   //      the GLOBAL FLEET header (telemetry_latest_state count). Fleet-
@@ -415,6 +438,29 @@ export default function TheaterReadinessPosture() {
     () => buildPostureRollups(fleet.data, logistics.data),
     [fleet.data, logistics.data],
   );
+
+  const trackMarkers = useMemo(() => {
+    const fobPos = new Map(metrics.map((m) => [m.fob.edge_id, m.scenePos]));
+    const edgeByAsset = new Map(fleet.data.map((a) => [a.asset_id, a.edge_id]));
+    const out: {
+      track: MunitionTrack;
+      position: [number, number, number];
+      launcherPosition?: [number, number, number];
+    }[] = [];
+    for (const t of tracks.data) {
+      const ll = trackLatLon(t);
+      if (!ll) continue;
+      const [x, z] = proj.project(ll.lat, ll.lon);
+      const lEdge = t.launcherAssetId ? edgeByAsset.get(t.launcherAssetId) : null;
+      const lp = lEdge ? fobPos.get(lEdge) : undefined;
+      out.push({
+        track: t,
+        position: [x, TRACK_MARKER_Y, z],
+        launcherPosition: lp ? [lp[0], 0, lp[1]] : undefined,
+      });
+    }
+    return out;
+  }, [tracks.data, fleet.data, metrics, proj]);
 
   // One link per FOB, each read from its own link_status row. Counts run
   // over the FOB list, not the pre-§A invented "17 radars."
@@ -504,10 +550,10 @@ export default function TheaterReadinessPosture() {
                 )}
               </tbody>
             </table>
-            {rollups.inflight.total > 0 && (
+            {tracks.data.length > 0 && (
               <div className="flex items-center justify-end font-mono text-[11px] tracking-wider pt-1 mt-1 border-t border-slate-700">
                 <span className="text-slate-500 mr-2">IN FLIGHT</span>
-                <span className="text-amber-300 font-bold">{rollups.inflight.total}</span>
+                <span className="text-amber-300 font-bold">{tracks.data.length}</span>
               </div>
             )}
           </div>
@@ -613,6 +659,19 @@ export default function TheaterReadinessPosture() {
               composition={m.composition}
               attachment={m.attachment}
               link={fobLinks[i]}
+            />
+          ))}
+
+          {/* In-flight munition tracks (ADR-0049): a dot at the track's projected
+              position, a line to the launcher's FOB when the launcher is
+              attributed to one. This map draws FOBs, not individual assets,
+              so the FOB is the launcher's position here. */}
+          {trackMarkers.map((m) => (
+            <MunitionTrackMarker
+              key={`track-${m.track.munitionAssetId}`}
+              track={m.track}
+              position={m.position}
+              launcherPosition={m.launcherPosition}
             />
           ))}
 

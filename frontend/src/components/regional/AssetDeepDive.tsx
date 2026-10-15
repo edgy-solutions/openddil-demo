@@ -17,6 +17,7 @@ import {
   useTelemetryLatest,
   useTelemetryWindows,
   useEffectorLaunches,
+  useInFlightMunitionTracks,
   useAssetElementTelemetry,
 } from '../../hooks';
 
@@ -31,6 +32,7 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
   const telemetry = useTelemetryLatest(assetId);
   const telemetryWindows = useTelemetryWindows(assetId);
   const effectorLaunches = useEffectorLaunches(assetId);
+  const inFlightTracks = useInFlightMunitionTracks();
   const elementTelemetry = useAssetElementTelemetry(assetId);
 
   const tel = telemetry.data[0] ?? null;
@@ -65,7 +67,10 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
           start rather than flashing the genuinely-empty copy. */}
       <CmStateCard cm={cm.data[0] ?? null} isLoading={cm.isLoading} />
       <LogisticsStatusCard logistics={logistics.data[0] ?? null} isLoading={logistics.isLoading} />
-      <EffectorTracksCard launches={effectorLaunches.data} />
+      <EffectorTracksCard
+        launches={effectorLaunches.data}
+        inFlightCount={inFlightTracks.data.filter((t) => t.launcherAssetId === assetId).length}
+      />
       <TelemetryCharts
         telemetry={tel}
         platformVariant={variant}

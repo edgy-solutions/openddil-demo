@@ -11,8 +11,11 @@ const at = (s: number) => new Date(T0 + s * 1000).toISOString();
 
 type Launch = { terminalState: string | null; quantity: number; s: number };
 
-function ledger(launches: Launch[], opts: { declared?: boolean; resupply?: boolean } = {}) {
-  const { declared = true, resupply = false } = opts;
+function ledger(
+  launches: Launch[],
+  opts: { declared?: boolean; resupply?: boolean; inFlight?: number } = {},
+) {
+  const { declared = true, resupply = false, inFlight = 0 } = opts;
   return buildMunitionsLedger({
     fleet: [{ assetId: 'L1', variant: 'MRAD_Interceptor', regionId: 'r1' }],
     declaredLoad: declared ? { asset: {}, variant: { MRAD_Interceptor: { [KEY]: 5 } } } : undefined,
@@ -23,6 +26,9 @@ function ledger(launches: Launch[], opts: { declared?: boolean; resupply?: boole
     resupplies: resupply
       ? [{ launcherAssetId: 'L1', munitionType: KEY, quantity: 1, receivedAt: at(200), regionId: 'r1' }]
       : [],
+    tracks: Array.from({ length: inFlight }, () => (
+      { launcherAssetId: 'L1', munitionType: KEY, terminalState: null }
+    )),
     regionId: undefined,
     asOfMs: T0 + 300_000,
   } as Parameters<typeof buildMunitionsLedger>[0]);
@@ -63,9 +69,11 @@ describe('MunitionsLoadoutView', () => {
     expect(h).not.toContain('Not carried');
   });
 
-  it('counts a launch with no terminal state as in flight', () => {
-    const h = html({ ledger: ledger([{ terminalState: null, quantity: 1, s: 60 }]) });
+  it('counts in-flight munition_track rows as in flight, not a launch with no terminal state', () => {
+    const h = html({ ledger: ledger([], { inFlight: 1 }) });
     expect(h).toContain('data-inflight="1"');
+    const noTrack = html({ ledger: ledger([{ terminalState: null, quantity: 1, s: 60 }]) });
+    expect(noTrack).toContain('data-inflight="0"');
   });
 
   it('shows undeclared when there is no declared load', () => {

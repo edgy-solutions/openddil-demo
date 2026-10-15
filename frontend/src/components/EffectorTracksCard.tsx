@@ -11,6 +11,9 @@
 // always-rendered an empty-state used to read as "launcher state is broken"
 // on every ordinary (non-launcher) selection, which is the common case.
 //
+// In flight is the count of in-flight munition_track rows (ADR-0049), passed in
+// by the caller -- not effector_launch terminal_state NULL.
+//
 // Never "miss" or "hit" as an outcome label -- DIS carries no such event,
 // so an in-flight round with no Detonation is unresolved, not missed.
 // Remaining-of-declared is out of scope here: declared load is not served
@@ -47,16 +50,16 @@ export interface EffectorCounts {
   unresolved: number;
 }
 
-/** expended = sum(quantity); inFlight = terminal_state null; unresolved =
- *  terminal_state 'unresolved'. */
-export function effectorCounts(launches: EffectorLaunch[]): EffectorCounts {
+/** expended = sum(quantity); unresolved = terminal_state 'unresolved'.
+
+ *  inFlight is not derived from launches: the caller passes the count of
+ *  in-flight munition_track rows (ADR-0049). */
+export function effectorCounts(launches: EffectorLaunch[], inFlight = 0): EffectorCounts {
   let expended = 0;
-  let inFlight = 0;
   let unresolved = 0;
   for (const l of launches) {
     expended += l.quantity;
-    if (l.terminalState === null) inFlight += 1;
-    else if (l.terminalState === 'unresolved') unresolved += 1;
+    if (l.terminalState === 'unresolved') unresolved += 1;
   }
   return { expended, inFlight, unresolved };
 }
@@ -89,15 +92,18 @@ function LaunchRow({ launch }: { launch: EffectorLaunch }) {
 
 export default function EffectorTracksCard({
   launches,
+  inFlightCount = 0,
 }: {
   launches: EffectorLaunch[];
+  /** Non-terminal munition_track rows for this launcher (ADR-0049). */
+  inFlightCount?: number;
 }) {
   // No empty-state panel: non-launchers are the common case, and an
   // always-rendered "no launches yet" copy would read as "launcher state
   // is broken" on every ordinary selection.
   if (launches.length === 0) return null;
 
-  const counts = effectorCounts(launches);
+  const counts = effectorCounts(launches, inFlightCount);
   const sorted = [...launches].sort((a, b) =>
     a.launchedAt < b.launchedAt ? 1 : a.launchedAt > b.launchedAt ? -1 : 0,
   );

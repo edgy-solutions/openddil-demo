@@ -30,6 +30,8 @@
 // header subtitle.
 
 import { assetCallsign } from '../lib/assetLabel';
+import { trackLatLon } from '../lib/munitionTrackLayout';
+import type { MunitionTrack } from '../hooks/useMunitionTracks';
 
 interface Asset {
   id: string;
@@ -58,6 +60,11 @@ interface LocalFleetRadarProps {
    *  detail panels (otherwise all dots at the FOB center stack and the
    *  radar reads as "indistinguishable cluster"). */
   selectedAssetId?: string | null;
+  /** In-flight munition_track rows (ADR-0049). Drawn as amber dots through the
+   *  same projection as the assets, with a line to the launcher when it is
+   *  one of localAssets. Tracks are not assets: not selectable, not labelled
+   *  as fleet. Needs a centre; without one they are not placed. */
+  munitionTracks?: MunitionTrack[];
 }
 
 // Short radar label — the declared callsign (ADR-0047: asset_id is
@@ -84,6 +91,7 @@ export default function LocalFleetRadar({
   centerLat,
   centerLon,
   selectedAssetId,
+  munitionTracks = [],
 }: LocalFleetRadarProps) {
   const hasCenter =
     typeof centerLat === 'number' && typeof centerLon === 'number' &&
@@ -105,11 +113,24 @@ export default function LocalFleetRadar({
       })
     : null;
 
+  // Tracks take the same tangent-plane projection as assets, so one scale
+  // covers both.
+  const projectedTracks = hasCenter
+    ? munitionTracks.flatMap((t) => {
+        const ll = trackLatLon(t);
+        if (!ll) return [];
+        const cosLat = Math.cos((centerLat as number) * Math.PI / 180);
+        const dx = (ll.lon - (centerLon as number)) * KM_PER_DEG_LAT * cosLat;
+        const dy = -((ll.lat - (centerLat as number)) * KM_PER_DEG_LAT);
+        return [{ track: t, dx, dy, dist: Math.sqrt(dx * dx + dy * dy) }];
+      })
+    : [];
+
   // Scale so the farthest asset lands at radius 90 (outer of the 3 rings).
   // If all assets are at the center, use a fixed fallback range so the
   // ring labels still make sense.
   const maxDistKm = projected
-    ? Math.max(FALLBACK_RANGE_KM, ...projected.map((p) => p.dist))
+    ? Math.max(FALLBACK_RANGE_KM, ...projected.map((p) => p.dist), ...projectedTracks.map((p) => p.dist))
     : FALLBACK_RANGE_KM;
   const unitsPerKm = 90 / maxDistKm;
 
@@ -202,6 +223,30 @@ export default function LocalFleetRadar({
                 >
                   {label}
                 </text>
+              </g>
+            );
+          })}
+
+          {/* In-flight tracks: wrapped in a g carrying the testid so the marker is a
+              DOM element. A launcher not among the assets draws no line. */}
+          {projectedTracks.map(({ track, dx, dy }) => {
+            const x = dx * unitsPerKm;
+            const y = dy * unitsPerKm;
+            const lau = track.launcherAssetId
+              ? projected?.find((p) => p.asset.id === track.launcherAssetId)
+              : undefined;
+            return (
+              <g
+                key={`track-${track.munitionAssetId}`}
+                data-testid="munition-track-marker"
+                data-munition={track.munitionAssetId}
+                data-launcher={track.launcherAssetId ?? ''}
+              >
+                {lau && (
+                  <line x1={lau.dx * unitsPerKm} y1={lau.dy * unitsPerKm} x2={x} y2={y}
+                        stroke="#f59e0b" strokeWidth="0.75" opacity="0.7" />
+                )}
+                <circle cx={x} cy={y} r="2.5" fill="#f59e0b" />
               </g>
             );
           })}

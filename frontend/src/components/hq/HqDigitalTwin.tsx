@@ -14,13 +14,15 @@
 // polluted the tree with N transient rows per firing that would
 // disappear on the next TTL sweep. Now they live in their own
 // "IN FLIGHT" collapsed group at the bottom of the tree.
+//
+// ADR-0049: that group is now fed by in-flight munition_track rows, not by
+// MUNITION-class fleet rows; the MUNITION class only keeps the hardware tree clean.
 import { useMemo } from 'react';
 import { Globe, ChevronRight, Rocket } from 'lucide-react';
-import { useClassifiedFleet, useAllCmState, useAllLogisticsStatus } from '../../hooks';
+import { useClassifiedFleet, useAllCmState, useAllLogisticsStatus, useInFlightMunitionTracks } from '../../hooks';
 import { platformFamily, shortSeverity, severityHeatClass } from '../../lib/fleetAggregates';
 import { assetCallsign } from '../../lib/assetLabel';
 import { cmStatusBadge } from '../CmStateCard';
-import { dedupFirings } from '../../lib/munitionAsset';
 import { postureClass, postureText, usePostureClock } from '../../lib/posture';
 
 export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
@@ -28,25 +30,19 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
   const nowMs = usePostureClock();
   const cm = useAllCmState();
   const logistics = useAllLogisticsStatus();
+  const tracks = useInFlightMunitionTracks();
 
   const cmByAsset = new Map(cm.data.map((c) => [c.asset_id, c]));
   const sevByAsset = new Map(logistics.data.map((l) => [l.asset_id, l.overall_severity]));
 
-  // Split classified fleet into hardware vs. in-flight munitions. The
-  // hardware side is what belongs in the "fleet" tree conceptually --
-  // in-flight munitions are engagement activity, not enterprise assets.
-  const { hardware, inflight } = useMemo(() => {
-    const hw: typeof fleet.data = [];
-    const inf: typeof fleet.data = [];
-    for (const a of fleet.data) {
-      if (a.asset_class === 'MUNITION') inf.push(a);
-      else hw.push(a);
-    }
-    // Dedup the in-flight rows down to one representative per firing.
-    // Two rows per firing (delivery vehicle + seeker payload) would
-    // double-count engagement activity otherwise.
-    return { hardware: hw, inflight: dedupFirings(inf) };
-  }, [fleet.data]);
+  // Hardware tree: MUNITION-class rows stay out (the upstream feed still models
+  // munitions as assets). The IN FLIGHT group and its count are the in-flight
+  // munition_track rows (ADR-0049) -- the same rows the maps draw as dots.
+  const hardware = useMemo(
+    () => fleet.data.filter((a) => a.asset_class !== 'MUNITION'),
+    [fleet.data],
+  );
+  const inflight = tracks.data;
 
   // Group the hardware fleet by platform family.
   const families = new Map<string, typeof hardware>();
@@ -139,17 +135,17 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
             </summary>
             <div className="tree-node space-y-1 py-1 mt-1">
               {inflight.map((a) => {
-                const munitionType = a.platform_variant ?? 'UNKNOWN';
+                const munitionType = a.munitionType || 'UNKNOWN';
                 return (
                   <div
-                    key={a.asset_id}
+                    key={a.munitionAssetId}
                     className="flex items-center justify-between gap-2 p-1 hover:bg-slate-800 rounded text-[10px]"
-                    title={a.asset_id}
+                    title={a.munitionAssetId}
                   >
                     <span className="min-w-0 flex-1 truncate text-slate-300">
                       <span className="text-amber-300">{munitionType}</span>
-                      {a.parent_launcher_id && (
-                        <span className="opacity-60"> ← {a.parent_launcher_id}</span>
+                      {a.launcherAssetId && (
+                        <span className="opacity-60"> ← {a.launcherAssetId}</span>
                       )}
                     </span>
                   </div>

@@ -9,7 +9,8 @@
 // effector_launch + effector_resupply are replayed in the browser against the
 // declared load from the deployment (effectors.declaredLoad). Loaded is only
 // ever a declared number -- a launcher with no declaration shows "undeclared",
-// never zero. In flight comes only from the ledger.
+// never zero. In flight comes from in-flight munition_track rows, grouped by
+// launcher and type (ADR-0049) -- the same rows the maps draw as dots.
 //
 // SECOND SOURCE: the weapons-capability feed (useMunitionsStockpile), shown
 // as a compact block only when it carries entries for this launcher. It is
@@ -19,6 +20,7 @@
 //   * useClassifiedFleet                       -- render-or-hide gate
 //   * useFleetAssets / useAllEffectorLaunches /
 //     useAllEffectorResupply / declaredLoad    -- the ledger
+//   * useInFlightMunitionTracks                -- the in-flight number
 //   * useMunitionsStockpile                    -- second source
 // =============================================================================
 import { useMemo } from 'react';
@@ -26,6 +28,7 @@ import { Target, Package } from 'lucide-react';
 import {
   useAllEffectorLaunches,
   useAllEffectorResupply,
+  useInFlightMunitionTracks,
   useClassifiedFleet,
   useFleetAssets,
   useMunitionsStockpile,
@@ -168,6 +171,7 @@ export default function MunitionsLoadoutCard({
   const fleetAssets = useFleetAssets();
   const launches = useAllEffectorLaunches();
   const resupplies = useAllEffectorResupply();
+  const tracks = useInFlightMunitionTracks();
   const stockpile = useMunitionsStockpile();
   const declaredLoad = moveInputs()?.declaredLoad;
   const nowMs = usePostureClock(5000);
@@ -183,11 +187,12 @@ export default function MunitionsLoadoutCard({
         })),
       launches: launches.data.filter((l) => l.launcherAssetId === assetId),
       resupplies: resupplies.data.filter((l) => l.launcherAssetId === assetId),
+      tracks: tracks.data.filter((t) => t.launcherAssetId === assetId),
       declaredLoad,
       regionId: undefined,
       asOfMs: nowMs,
     }),
-    [fleetAssets.data, launches.data, resupplies.data, declaredLoad, assetId, nowMs],
+    [fleetAssets.data, launches.data, resupplies.data, tracks.data, declaredLoad, assetId, nowMs],
   );
 
   // Class of the selected asset drives the render-or-hide gate.

@@ -42,6 +42,7 @@ import {
   useLogisticsStatus,
   useTacticalEvents,
   useAssetElementTelemetry,
+  useInFlightMunitionTracks,
 } from './hooks';
 import { useLinkControl } from './hooks/useLinkControl';
 import { makeAssetClassifier } from './lib/assetClass';
@@ -240,6 +241,13 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // limit is bumped from 10 to 20 because filtering is gone — without
   // this the operator's feed would clip useful sibling-asset rows.
   const events = useTacticalEvents(20);
+  // In-flight tracks for the radar dots (ADR-0049); the edge store holds only
+  // its own, the filter covers a multi-edge scope.
+  const inFlightTracks = useInFlightMunitionTracks();
+  const radarTracks = useMemo(
+    () => inFlightTracks.data.filter((t) => !selectedEdge || !t.edgeId || t.edgeId === selectedEdge),
+    [inFlightTracks.data, selectedEdge],
+  );
   // Per-element tree + asset rollups (core_temp_c, uptime_hours) from
   // openddil-logistics-sim. Lifted to MaintainerApp from DiagnosticCanvas
   // so the asset rollups can flow into header readouts alongside the
@@ -564,6 +572,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
                   localAssets={radarAssets}
                   centerLat={radarCenter.lat}
                   centerLon={radarCenter.lon}
+                  munitionTracks={radarTracks}
                   selectedAssetId={selectedAssetId}
                 />
               }
