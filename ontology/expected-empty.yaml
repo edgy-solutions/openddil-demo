@@ -284,3 +284,39 @@ expected_empty:
     producer: openddil-logistics-sim
     declared_by: cnogradi
     declared_on: 2026-09-05
+
+  asset_declaration:
+    reason: >-
+      A row exists only once a person has declared an observed entity, or
+      confirmed it as an expected serial. Until then the table is empty by
+      design, and an exercise reset with the clear-declarations option set
+      empties it again. This is not a stopped producer: there is no
+      producer, only people, so there is nothing for a liveness probe to
+      measure.
+      Declared 2026-10-15, when the arrival tables were first declared to
+      the gate.
+
+  asset_correlation:
+    reason: >-
+      A correlation is written only by a person's declaration or
+      confirmation. Until one has been made the table is empty by design,
+      and an exercise reset with the clear-declarations option set empties
+      it again. This is not a stopped producer: there is no producer, only
+      people.
+      Declared 2026-10-15, when the arrival tables were first declared to
+      the gate.
+
+  asset_fielding:
+    reason: >-
+      Fielding records come from the logistics system of record's adapter,
+      or the logistics simulator standing in for it. A store is empty
+      wherever nothing is fielded to that edge, its region or HQ, and a
+      store holding none is not a stall.
+      DECLARED PLAIN, NOT SPARSE, because no producer probe for fielding
+      exists and an unrecognised `producer:` value would read as
+      UNMEASURED. That makes this a standing claim only about stores that
+      are fielded nothing: a store that DOES receive fielding records and
+      then reads empty for long is still a finding, and the reader of this
+      row must check that before accepting the zero.
+      Declared 2026-10-15, when the arrival tables were first declared to
+      the gate.
