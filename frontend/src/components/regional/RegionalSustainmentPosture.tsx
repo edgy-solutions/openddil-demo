@@ -907,7 +907,9 @@ export default function RegionalSustainmentPosture({
       </div>
 
       <div className="absolute inset-0 cursor-move">
-        <Canvas camera={{ position: [0, 150, 180], fov: 40 }} onPointerMissed={() => onAssetSelect(null, null)}>
+        {/* isolation: drei <Html> labels carry z-indexes up to ~16.7M, which beat the z-10
+            HUD overlays. A stacking context on the Canvas keeps them all beneath. */}
+        <Canvas style={{ isolation: 'isolate' }} camera={{ position: [0, 150, 180], fov: 40 }} onPointerMissed={() => onAssetSelect(null, null)}>
           <color attach="background" args={[0x020617]} />
           <fogExp2 attach="fog" args={[0x020617, 0.005]} />
           <ambientLight intensity={0.8} />

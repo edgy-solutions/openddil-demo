@@ -588,7 +588,9 @@ export default function TheaterReadinessPosture() {
             into solid color and blanking the screen" on zoom-out. 8000 leaves
             comfortable headroom for any camera position the OrbitControls
             permits + the full scene extent. */}
-        <Canvas camera={{ position: [0, 150, 600], fov: 45, near: 0.1, far: 8000 }}>
+        {/* isolation: drei <Html> labels carry z-indexes up to ~16.7M, which beat the z-10
+            HUD overlays. A stacking context on the Canvas keeps them all beneath. */}
+        <Canvas style={{ isolation: 'isolate' }} camera={{ position: [0, 150, 600], fov: 45, near: 0.1, far: 8000 }}>
           <color attach="background" args={[0x020617]} />
           {/* Linear fog: starts at 200 (close-range depth cue stays the
               same as before) and reaches full opacity at 4000. Earlier
