@@ -16,7 +16,7 @@ Five assertions. The fourth and fifth are the ones that matter:
   2. that PDU adds NOTHING to raw-sensor-stream and nothing to ingress-dlq
      -- a refused force is a policy decision, not malformed data
   3. a kind=1, force=1 PDU still lands on raw-sensor-stream
-  4. a kind=2, force=2 PDU increments dis_ingress_kind_dropped{kind="2"}
+  4. a kind=3, force=2 PDU increments dis_ingress_kind_dropped{kind="3"}
      and does NOT move dis_ingress_force_dropped{force="2"} -- the kind
      gate runs first and deletes the message, so the force gate never
      sees it; a munition from an opposing force is counted once, by kind
@@ -28,7 +28,7 @@ Five assertions. The fourth and fifth are the ones that matter:
 
 Without (3) this test passes for a gate that drops the entire feed, which
 is a total ingress outage that looks like a clean deploy. Without (4) it
-passes for a gate that double-counts a kind=2 PDU from an opposing force
+passes for a gate that double-counts a kind=3 PDU from an opposing force
 as both a kind drop and a force drop, which would make either counter
 meaningless as a signal of how much traffic a given gate refused. Without
 (5) a refused force's removal would be dropped as unreachable, or worse,
@@ -59,7 +59,7 @@ from _helpers import (  # noqa: E402
 NAME = "test_56_dis_force_gate"
 
 ADMITTED_KIND = 1        # PLATFORM
-GATED_KIND = 2            # MUNITION (for assertion 4, via dis_kind_gate)
+GATED_KIND = 3            # not a track kind (ADR-0049 routes kind 2 to munition-tracks before the gates)
 ADMITTED_FORCE = 1        # Friendly
 REFUSED_FORCE = 2         # Opposing
 METRIC_FORCE = "dis_ingress_force_dropped"

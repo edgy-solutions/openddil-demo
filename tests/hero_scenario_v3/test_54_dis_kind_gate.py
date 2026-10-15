@@ -8,17 +8,27 @@ absent from the asset_id, so no fleet query can exclude munitions by key
 pattern; and there is no eviction path, so a round admitted once stays a
 member. See openddil-helm/scripts/FINDING-2026-09-26-kind2-munition-resolution.md.
 
-Five assertions. The third and fifth are the ones that matter:
+Since ADR-0049 the gate has two exits. Kind 2 (DIS_TRACK_ENTITY_KINDS) is
+routed ahead of it to the munition-tracks topic as a child track and counted
+in dis_ingress_kind_tracked; any other unadmitted kind (3 here) is still
+refused and counted in dis_ingress_kind_dropped. Neither becomes an asset.
 
-  1. a kind=2 PDU increments dis_ingress_kind_dropped{kind="2"}
+Six assertions. The third and fifth are the ones that matter:
+
+  1. a kind=2 PDU increments dis_ingress_kind_tracked{kind="2"}, leaves
+     dis_ingress_kind_dropped{kind="2"} unchanged, and advances the
+     munition-tracks watermark
   2. a kind=2 PDU adds NOTHING to raw-sensor-stream, and nothing to
-     ingress-dlq — a gated kind is a policy decision, not malformed data
+     ingress-dlq; it never reaches the fleet (no telemetry_latest_state
+     row) and it lands as a munition_track row
   3. a kind=1 PDU still lands on raw-sensor-stream
   4. a Remove Entity for the id admitted in (3) lands on raw-sensor-stream
   5. a Remove Entity for an id that was never admitted also passes the gate
      (it is stateless), and creates nothing: no telemetry_latest_state row,
      and the projector, AssetCM and AssetLogistics each count it as a
      removal for an unknown key
+  6. a kind=3 PDU is still dropped: dis_ingress_kind_dropped{kind="3"}
+     increases, and neither raw-sensor-stream nor munition-tracks moves
 
 Without (3) this test passes for a gate that drops the entire feed, which is a
 total ingress outage that looks like a clean deploy. Without (4) it passes for
@@ -52,9 +62,15 @@ from _helpers import (  # noqa: E402
 
 NAME = "test_54_dis_kind_gate"
 
-GATED_KIND = 2        # MUNITION
+TRACK_KIND = 2        # MUNITION: a child track, not an asset (ADR-0049)
+GATED_KIND = 3        # not admitted, not tracked: still dropped
 ADMITTED_KIND = 1     # PLATFORM
 METRIC = "dis_ingress_kind_dropped"
+METRIC_TRACKED = "dis_ingress_kind_tracked"
+TOPIC_TRACKS = "munition-tracks"
+TRACK_ENTITY = 54002
+TRACK_ID = f"dis:1:1:{TRACK_ENTITY}"
+GATED_ENTITY = 54004  # 54003 is the never-admitted removal id below
 UNSEEN_ENTITY = 54003
 UNSEEN_ID = f"dis:1:1:{UNSEEN_ENTITY}"
 
@@ -131,33 +147,79 @@ def main() -> None:
         skip_(NAME, "Connect metrics endpoint unreachable — cannot judge the gate")
 
     dropped_before = metric_value_labeled(baseline_text, METRIC,
-                                          {"kind": str(GATED_KIND)})
+                                          {"kind": str(TRACK_KIND)})
+    tracked_before = metric_value_labeled(baseline_text, METRIC_TRACKED,
+                                          {"kind": str(TRACK_KIND)})
     silver_before = _hw(TOPIC_SILVER)
     dlq_before = _hw(TOPIC_DLQ)
+    tracks_before = _hw(TOPIC_TRACKS)
 
-    # --- 1 + 2: the gated kind ------------------------------------------
-    send_udp_bytes(_pdu(GATED_KIND, 54002, "GATE-MUNITION"))
+    # --- 1 + 2: the track kind ------------------------------------------
+    send_udp_bytes(_pdu(TRACK_KIND, TRACK_ENTITY, "GATE-MUNITION"))
     time.sleep(3.0)
 
-    dropped_after = metric_value_labeled(scrape_connect_metrics(), METRIC,
-                                         {"kind": str(GATED_KIND)})
-    if dropped_after <= dropped_before:
+    after_text = scrape_connect_metrics()
+    tracked_after = metric_value_labeled(after_text, METRIC_TRACKED,
+                                         {"kind": str(TRACK_KIND)})
+    if tracked_after <= tracked_before:
         fail_(NAME,
-              f'{METRIC}{{kind="{GATED_KIND}"}} did not increase '
-              f"({dropped_before} -> {dropped_after}) — the drop is silent")
+              f'{METRIC_TRACKED}{{kind="{TRACK_KIND}"}} did not increase '
+              f"({tracked_before} -> {tracked_after}) — the route is silent")
+    dropped_after = metric_value_labeled(after_text, METRIC,
+                                         {"kind": str(TRACK_KIND)})
+    if dropped_after != dropped_before:
+        fail_(NAME,
+              f'{METRIC}{{kind="{TRACK_KIND}"}} moved '
+              f"({dropped_before} -> {dropped_after}) — a track kind is "
+              f"being counted as refused too")
+
+    tracks_after = _hw(TOPIC_TRACKS)
+    if tracks_after < tracks_before + 1:
+        fail_(NAME,
+              f"kind={TRACK_KIND} did NOT reach {TOPIC_TRACKS} "
+              f"(watermark {tracks_before} -> {tracks_after})")
 
     silver_mid = _hw(TOPIC_SILVER)
     if silver_mid > silver_before:
         fail_(NAME,
-              f"kind={GATED_KIND} leaked onto {TOPIC_SILVER} "
+              f"kind={TRACK_KIND} leaked onto {TOPIC_SILVER} "
               f"(watermark {silver_before} -> {silver_mid})")
 
     dlq_mid = _hw(TOPIC_DLQ)
     if dlq_mid > dlq_before:
         fail_(NAME,
-              f"kind={GATED_KIND} was dead-lettered to {TOPIC_DLQ} "
-              f"(watermark {dlq_before} -> {dlq_mid}) — a gated kind is a "
-              f"policy decision, not an error")
+              f"kind={TRACK_KIND} was dead-lettered to {TOPIC_DLQ} "
+              f"(watermark {dlq_before} -> {dlq_mid}) — a track kind is "
+              f"routed, not an error")
+
+    # Never in the fleet, and in the in-flight table. The projector needs a
+    # moment to consume munition-tracks.
+    time.sleep(5.0)
+    if _rows_for(TRACK_ID) != 0:
+        fail_(NAME, f"{TRACK_ID} (kind={TRACK_KIND}) has a "
+                    f"telemetry_latest_state row — a munition became a "
+                    f"fleet member")
+    n_tracks = int(query_postgres(
+        "select count(*) from munition_track "
+        f"where munition_asset_id = '{TRACK_ID}'")[0][0])
+    if n_tracks < 1:
+        fail_(NAME, f"no munition_track row for {TRACK_ID} after the "
+                    f"projector had time to consume {TOPIC_TRACKS}")
+
+    # --- 6: a kind that is neither admitted nor tracked is still dropped --
+    gated_before = metric_value_labeled(scrape_connect_metrics(), METRIC,
+                                        {"kind": str(GATED_KIND)})
+    send_udp_bytes(_pdu(GATED_KIND, GATED_ENTITY, "GATE-OTHER"))
+    time.sleep(3.0)
+    gated_after = metric_value_labeled(scrape_connect_metrics(), METRIC,
+                                       {"kind": str(GATED_KIND)})
+    if gated_after <= gated_before:
+        fail_(NAME,
+              f'{METRIC}{{kind="{GATED_KIND}"}} did not increase '
+              f"({gated_before} -> {gated_after}) — the drop is silent")
+    if _hw(TOPIC_SILVER) > silver_mid or _hw(TOPIC_TRACKS) > tracks_after:
+        fail_(NAME, f"kind={GATED_KIND} reached {TOPIC_SILVER} or "
+                    f"{TOPIC_TRACKS}")
 
     # --- 3: the admitted kind still flows -------------------------------
     send_udp_bytes(_pdu(ADMITTED_KIND, 54001, "GATE-PLATFORM"))
@@ -221,8 +283,10 @@ def main() -> None:
                     f"telemetry_latest_state row")
 
     pass_(NAME,
-          f"kind={GATED_KIND} refused and counted "
-          f"({dropped_before:.0f} -> {dropped_after:.0f}), no DLQ entry, "
+          f"kind={TRACK_KIND} tracked "
+          f"({tracked_before:.0f} -> {tracked_after:.0f}), not dropped, "
+          f"not in the fleet, in munition_track; kind={GATED_KIND} still "
+          f"refused ({gated_before:.0f} -> {gated_after:.0f}), no DLQ entry, "
           f"kind={ADMITTED_KIND} still admitted; admitted id's removal "
           f"through; unseen removal through the gate, no row, counted by "
           + ", ".join(f"{k} {counts_before[k]:.0f} -> {counts_after[k]:.0f}"

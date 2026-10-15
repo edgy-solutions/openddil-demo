@@ -265,6 +265,12 @@ services:
               -p 4 -r 1 \
               -c retention.ms=2592000000 \
               || true
+          # In-flight munition tracks (ADR-0049): short-lived child tracks,
+          # a day of retention and no compaction.
+          rpk -X brokers=$$B topic create munition-tracks \
+              -p 4 -r 1 \
+              -c retention.ms=86400000 \
+              || true
           rpk -X brokers=$$B topic create asset-cm-state \
               -p 8 -r 1 \
               -c cleanup.policy=compact \
@@ -1281,6 +1287,8 @@ services:
       # for in projector_config.yaml.
       EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
       EFFECTOR_TERMINAL_TIMEOUT_S: "60"
+      DIS_TRACK_ENTITY_KINDS: "2"
+      MUNITION_TRACK_SILENCE_S: "12"
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
       - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro
@@ -1314,6 +1322,8 @@ services:
       # see projector-01 for why 60s here, not 300s.
       EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
       EFFECTOR_TERMINAL_TIMEOUT_S: "60"
+      DIS_TRACK_ENTITY_KINDS: "2"
+      MUNITION_TRACK_SILENCE_S: "12"
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
       - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro
@@ -1345,6 +1355,8 @@ services:
       # see projector-01 for why 60s here, not 300s.
       EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
       EFFECTOR_TERMINAL_TIMEOUT_S: "60"
+      DIS_TRACK_ENTITY_KINDS: "2"
+      MUNITION_TRACK_SILENCE_S: "12"
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
       - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro
@@ -1384,6 +1396,8 @@ services:
       # see projector-01 for why 60s here, not 300s.
       EFFECTOR_DECLARED_LOAD_PATH: /etc/openddil/effector-declared-load.yaml
       EFFECTOR_TERMINAL_TIMEOUT_S: "60"
+      DIS_TRACK_ENTITY_KINDS: "2"
+      MUNITION_TRACK_SILENCE_S: "12"
     volumes:
       - ../openddil-contracts/gen/python:/proto:ro
       - ./config/effector-declared-load.yaml:/etc/openddil/effector-declared-load.yaml:ro

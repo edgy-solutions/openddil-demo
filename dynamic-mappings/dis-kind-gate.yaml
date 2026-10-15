@@ -20,6 +20,10 @@
 #     for the life of the state stores, so a live-fire run grows the fleet
 #     monotonically and every asset count on screen includes spent rounds.
 #
+# SINCE ADR-0049, kinds in `DIS_TRACK_ENTITY_KINDS` (default 2) never reach
+# this gate: openddil-base-connect.yaml routes them to dis-munition-track.yaml
+# first. The rest of this note explains why a munition must not be an asset.
+#
 # So the gate is the guard until the asset-lifecycle design lands
 # (openddil-contracts/decisions/DESIGN-2026-09-26-asset-lifecycle.md). It is
 # not that design and does not substitute for it: this refuses membership at
@@ -36,6 +40,10 @@
 # NOTHING — that is honoured literally rather than second-guessed, because an
 # operator who declares an empty set has declared one, and the consequence is
 # instantly loud (Silver goes flat and the counter spikes) rather than silent.
+#
+# `DIS_TRACK_ENTITY_KINDS` (default `2`) is read upstream of this gate. A kind
+# listed there is tracked, not dropped: `dis_ingress_kind_dropped` no longer
+# counts it, `dis_ingress_kind_tracked` (dis-munition-track.yaml) does.
 #
 # MUNITION ROWS STILL BELONG IN THE ONTOLOGY. Admission and resolution are
 # independent: coverage should still reach zero UNKNOWN on kind=2 tuples per

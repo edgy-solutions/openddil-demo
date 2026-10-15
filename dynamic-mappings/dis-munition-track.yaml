@@ -1,0 +1,49 @@
+# =============================================================================
+# DIS MUNITION TRACK DIVERSION (ingress)
+# =============================================================================
+# Answers ONE question: what does an Entity State PDU of a track kind (default
+# kind 2, MUNITION; `DIS_TRACK_ENTITY_KINDS`) look like as a track record?
+# ADR-0049: a munition in flight is a child track keyed by its own id, not an
+# asset. It is routed here ahead of dis_kind_gate, so it never meets the
+# admission gate that would refuse it.
+#
+# WHAT NEVER HAPPENS. No asset_id is built, nothing is protobuf-encoded, and
+# nothing reaches raw-sensor-stream. The record stays JSON and its only sink
+# is the `munition-tracks` topic (openddil-base-connect.yaml output.switch),
+# so the fleet cannot grow by a spent round.
+#
+# THE ROUTE IS A NUMBER, NOT SILENCE. Every record this resource maps
+# increments `dis_ingress_kind_tracked{kind="<n>"}` on the Connect metrics
+# endpoint (:4196/metrics). Kind cardinality is bounded (one octet). Read it
+# the way dis_kind_gate's counter is read; that counter no longer counts these
+# kinds.
+#
+# MALFORMED GOES TO THE SAME DLQ. A record with no `entity_id_urn` or
+# `location_ecef` cannot be keyed or placed; it is refused (throw), and the
+# top-level catch sends it to ingress-dlq like any other mapping failure.
+# =============================================================================
+processor_resources:
+  - label: dis_munition_track
+    processors:
+      - metric:
+          type: counter
+          name: dis_ingress_kind_tracked
+          labels:
+            kind: '${! this.dis_entity_type.kind.or(-1).int64().string() }'
+
+      - mapping: |
+          root = if this.entity_id_urn.or("") == "" || this.location_ecef == null {
+            throw("munition track record missing entity_id_urn or location_ecef")
+          } else { {} }
+          root.munition_urn = this.entity_id_urn
+          # Same key names as dis_ingestor's _munition_type_dict (kind, domain,
+          # country, category, subcategory, specific, extra).
+          root.munition_type = this.dis_entity_type
+          root.location_ecef = this.location_ecef
+          root.linear_velocity_ecef = this.linear_velocity_ecef
+          root.force_id = this.force_id
+          root.marking = this.marking
+          root.sample_time = this.ingest_timestamp
+          root.provenance.edge_id = this.origin_node.edge_id
+          root.provenance.region_id = this.origin_node.region_id
+          meta is_munition_track = "true"

@@ -64,13 +64,16 @@ pipeline:
       #      kinematics or health. See dynamic-mappings/dis-effector.yaml.
       #      Its only sink is Kafka, so the record survives unchanged (only
       #      a meta flag is set) and falls through to output.switch below.
-      #   3. default (Entity State, Remove Entity) — the kind/force gates and
-      #      sim_dis_mapping, moved into this arm so cases 1 and 2 never
-      #      reach them: once sim_dis_mapping runs, `dis_entity_type.kind`
-      #      has moved under `asset.` and gating there would be refusing
-      #      something already built. See dynamic-mappings/dis-kind-gate.yaml
-      #      and dynamic-mappings/dis-force-gate.yaml for why kind runs
-      #      before force.
+      #   3. default (Entity State, Remove Entity) — the track kinds leave
+      #      first (ADR-0049: a munition is a child track, not an asset; see
+      #      dynamic-mappings/dis-munition-track.yaml), then the rest go
+      #      through the kind/force gates and sim_dis_mapping, moved into
+      #      this arm so cases 1 and 2 never reach them: once
+      #      sim_dis_mapping runs, `dis_entity_type.kind` has moved under
+      #      `asset.` and gating there would be refusing something already
+      #      built. See dynamic-mappings/dis-kind-gate.yaml and
+      #      dynamic-mappings/dis-force-gate.yaml for why kind runs before
+      #      force (unchanged).
       - switch:
           - check: 'this.pdu_type.or("") == "event_report"'
             processors:
@@ -82,15 +85,24 @@ pipeline:
 
           - check: ""
             processors:
-              - resource: "dis_kind_gate"
-              - resource: "dis_force_gate"
-              - resource: "sim_dis_mapping"
-              - mapping: |
-                  meta asset_id = this.asset.asset_id
-              - protobuf:
-                  operator: from_json
-                  message: openddil.telemetry.v1.EntityTelemetryEvent
-                  import_paths: [ "/proto" ]
+              - switch:
+                  # Track arm. Removals are excluded: they carry no
+                  # dis_entity_type, and a removal is not a track sample.
+                  - check: 'this.pdu_type.or("entity_state") != "remove_entity" && "${DIS_TRACK_ENTITY_KINDS:2}".split(",").map_each(s -> s.trim()).filter(s -> s != "").contains(this.dis_entity_type.kind.or(-1).int64().string())'
+                    processors:
+                      - resource: "dis_munition_track"
+
+                  - check: ""
+                    processors:
+                      - resource: "dis_kind_gate"
+                      - resource: "dis_force_gate"
+                      - resource: "sim_dis_mapping"
+                      - mapping: |
+                          meta asset_id = this.asset.asset_id
+                      - protobuf:
+                          operator: from_json
+                          message: openddil.telemetry.v1.EntityTelemetryEvent
+                          import_paths: [ "/proto" ]
 
     # Catch block handles malformed data or schema errors
     - catch:
@@ -121,6 +133,16 @@ output:
             seed_brokers: [ "${REDPANDA_BROKER:redpanda-edge-01:9092}" ]
             topic: "effector-events"
             key: '${! json("launcher_urn") }'
+            max_in_flight: 64
+      # Munition tracks, diverted and flagged by dis_munition_track (see
+      # dynamic-mappings/dis-munition-track.yaml). Still JSON, keyed by
+      # munition_urn so one round's samples stay ordered on a partition.
+      - check: meta("is_munition_track") == "true"
+        output:
+          kafka_franz:
+            seed_brokers: [ "${REDPANDA_BROKER:redpanda-edge-01:9092}" ]
+            topic: "munition-tracks"
+            key: '${! json("munition_urn") }'
             max_in_flight: 64
       - output:
           kafka_franz:
