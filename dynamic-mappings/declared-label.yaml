@@ -14,6 +14,8 @@
 # DECLARED_LABEL_TTL.
 #
 # Connection settings come from the PG* environment, never literals.
+# connect_timeout=2 bounds a hung store: the lookup fails fast and the record
+# goes out unlabelled, instead of stalling every ingress thread.
 # =============================================================================
 cache_resources:
   - label: declared_labels
@@ -32,7 +34,7 @@ processor_resources:
             processors:
               - sql_select:
                   driver: postgres
-                  dsn: "postgres://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}?sslmode=${PGSSLMODE}"
+                  dsn: "postgres://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}?sslmode=${PGSSLMODE}&connect_timeout=2"
                   table: asset_declaration
                   columns:
                     - originator_nation
