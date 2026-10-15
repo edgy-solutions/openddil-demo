@@ -135,3 +135,29 @@ describe('ArrivalsPanel', () => {
     });
   });
 });
+
+describe('ArrivalsPanel partial declaration', () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it('shows a persistent warning, closes the form and refetches on a 502 partial', async () => {
+    const fn = mockFetch({
+      post: { status: 502, body: { declared: true, baseline_assigned: false, cause: 'cm intake down' } },
+    });
+    render(<ArrivalsPanel edgeId="edge-01" />);
+    fireEvent.click(await screen.findByTestId('arrivals-confirm-dis:1:1:9001-S-100'));
+    fireEvent.change(screen.getByDisplayValue('none'), { target: { value: 'bl-1' } });
+    const gets = () => fn.mock.calls.filter(([, i]) => i?.method !== 'POST').length;
+    const before = gets();
+    fireEvent.click(screen.getByTestId('arrivals-submit'));
+    await waitFor(() => expect(gets()).toBe(before + 1));
+    await waitFor(() => expect(screen.queryByTestId('arrivals-form')).toBeNull());
+    expect(screen.getByTestId('arrivals-warning').textContent).toContain(
+      'dis:1:1:9001 declared; baseline bl-1 NOT assigned: cm intake down',
+    );
+    fireEvent.click(screen.getByLabelText('Dismiss'));
+    expect(screen.queryByTestId('arrivals-warning')).toBeNull();
+  });
+});

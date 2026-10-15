@@ -40,7 +40,7 @@ function ArrivalForm({
   data: ArrivalsData;
   target: FormTarget;
   onClose: () => void;
-  onDone: () => void;
+  onDone: (warning: string | null) => void;
 }) {
   const { row, confirmSerial } = target;
   const expected = confirmSerial
@@ -85,7 +85,11 @@ function ArrivalForm({
     );
     setSubmitting(false);
     if (result.kind === 'ok') {
-      onDone();
+      onDone(
+        result.warning
+          ? `${row.asset_id} declared; baseline ${baseline} NOT assigned: ${result.warning}`
+          : null,
+      );
     } else {
       setError(result.kind === 'refused' ? result.reason : result.message);
     }
@@ -235,6 +239,7 @@ function ExpectedRow({ x }: { x: ExpectedArrival }) {
 export default function ArrivalsPanel({ edgeId }: { edgeId: string | null }) {
   const [state, setState] = useState<LoadArrivalsResult | undefined>(undefined);
   const [target, setTarget] = useState<FormTarget | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
     if (!edgeId) return;
@@ -275,6 +280,17 @@ export default function ArrivalsPanel({ edgeId }: { edgeId: string | null }) {
         </span>
       </div>
 
+      {warning && (
+        <div
+          data-testid="arrivals-warning"
+          className="flex items-start justify-between gap-2 mb-2 text-[11px] text-amber-400"
+        >
+          <span>{warning}</span>
+          <button type="button" aria-label="Dismiss" onClick={() => setWarning(null)}>
+            ×
+          </button>
+        </div>
+      )}
       {data.undeclared.length === 0 ? (
         <div className="text-[11px] text-slate-500 mb-2">No undeclared arrivals</div>
       ) : (
@@ -318,8 +334,9 @@ export default function ArrivalsPanel({ edgeId }: { edgeId: string | null }) {
                   data={data}
                   target={target}
                   onClose={() => setTarget(null)}
-                  onDone={() => {
+                  onDone={(w) => {
                     setTarget(null);
+                    setWarning(w);
                     void refetch();
                   }}
                 />
