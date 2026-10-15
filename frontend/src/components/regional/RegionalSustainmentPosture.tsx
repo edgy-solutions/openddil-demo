@@ -881,10 +881,11 @@ export default function RegionalSustainmentPosture({
             )}
           </p>
         </div>
-        {/* Same card and chips as the HQ posture HUD (TheaterReadinessPosture). */}
+        {/* Same card and chips as the HQ posture HUD (TheaterReadinessPosture), same opaque
+            .panel-over-page fill so it matches the right column. */}
         <div
           data-testid="regional-link-hud"
-          className="w-72 rounded-xl border border-zinc-800 bg-zinc-900/75 backdrop-blur-sm shadow-lg px-4 py-3 text-left"
+          className="w-72 rounded-xl border border-zinc-800 bg-slate-950 bg-[linear-gradient(rgb(24_24_27/0.4),rgb(24_24_27/0.4))] shadow-lg px-4 py-3 text-left"
         >
           <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">THEATER LINK STATUS</h2>
           {/* Counts the uplink and every child link this region monitors,

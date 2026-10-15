@@ -517,11 +517,13 @@ export default function TheaterReadinessPosture() {
               : 'no FOB topology'} // {fleet.data.length} ASSET{fleet.data.length === 1 ? '' : 'S'}
           </p>
         </div>
-        {/* The right-hand panels' border and radius (.panel: zinc-800, rounded-xl), spelled as
-            utilities: .panel is unlayered CSS, so it would beat any bg/border utility here. */}
+        {/* The right-hand panels' look (.panel: zinc-800 border, rounded-xl, zinc-900/40 fill), spelled as
+            utilities: .panel is unlayered CSS, so it would beat any bg/border utility here. The fill is
+            .panel's zinc-900/40 over the page's slate-950, made opaque so the map behind the card
+            (a darker blue than the page) does not tint it away from the right column. */}
         <div
           data-testid="hq-posture-hud"
-          className={`w-72 rounded-xl border bg-zinc-900/75 backdrop-blur-sm shadow-lg px-4 py-3 text-left ${severed ? 'border-rose-900' : 'border-zinc-800'}`}
+          className={`w-72 rounded-xl border bg-slate-950 bg-[linear-gradient(rgb(24_24_27/0.4),rgb(24_24_27/0.4))] shadow-lg px-4 py-3 text-left ${severed ? 'border-rose-900' : 'border-zinc-800'}`}
         >
           {/* GLOBAL LINK STATUS — transport-level, counted per FOB from link_status
               ⚠ THE LINK COUNT IS THE FOB COUNT. `totalLinks = metrics.length`,
