@@ -76,7 +76,13 @@ processor_resources:
           {"originator_nation": $rel_doc.default_originator_nation,
            "releasable_to": []}
         } else { {} }
-        let rel = $rel_doc.assets.get($src.entity_id_urn).or($rel_default)
+        # Label order (ADR-0050 s2.6): file assets[id], else file default, else the
+        # declared label the ingress lookup left in metadata, else unlabelled.
+        let declared = if meta("declared_originator") != null {
+          {"originator_nation": meta("declared_originator"),
+           "releasable_to": meta("declared_releasable").parse_json()}
+        } else { {} }
+        let rel = $rel_doc.assets.get($src.entity_id_urn).or(if $rel_default.length() > 0 { $rel_default } else { $declared })
         root.provenance.originator_nation = $rel.originator_nation.or(deleted())
         root.provenance.releasable_to     = $rel.releasable_to.or(deleted())
 
@@ -247,7 +253,13 @@ processor_resources:
         {"originator_nation": $rel_doc.default_originator_nation,
          "releasable_to": []}
       } else { {} }
-      let rel = $rel_doc.assets.get($src.entity_id_urn).or($rel_default)
+      # Label order (ADR-0050 s2.6): file assets[id], else file default, else the
+      # declared label the ingress lookup left in metadata, else unlabelled.
+      let declared = if meta("declared_originator") != null {
+        {"originator_nation": meta("declared_originator"),
+         "releasable_to": meta("declared_releasable").parse_json()}
+      } else { {} }
+      let rel = $rel_doc.assets.get($src.entity_id_urn).or(if $rel_default.length() > 0 { $rel_default } else { $declared })
 
       # `deleted()` on the RHS, not a placeholder value. An undeclared asset
       # leaves the FIELD ABSENT — which the encoder accepts and the projector

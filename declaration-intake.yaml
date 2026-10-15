@@ -1,0 +1,69 @@
+logger:
+  level: INFO
+  format: logfmt
+  add_timestamp: true
+
+# =============================================================================
+# declaration-intake -- transport for asset declarations (ADR-0050 s2)
+# =============================================================================
+# One HTTP route in, one Kafka topic out. The shape is validated here so a
+# malformed record never reaches the log, but every AUTHORIZATION decision
+# (who may declare, for which nation, at which edge) is made in the PEP. This
+# container is a transport, not a second gate.
+# =============================================================================
+
+input:
+  http_server:
+    address: 0.0.0.0:4198
+    path: /asset-declarations
+    allowed_verbs: [ POST ]
+
+pipeline:
+  processors:
+    - try:
+      - mapping: |
+          root = if content().length() > 8192 {
+            throw("request body exceeds the 8 KiB bound")
+          } else {
+            this
+          }
+
+      - mapping: |
+          let required = ["asset_id", "unit", "originator_nation", "declared_by", "declared_at", "source", "edge_id", "owning_tier"]
+          let missing = $required.filter(k -> this.get(k).type() != "string" || this.get(k) == "")
+          root = if $missing.length() > 0 {
+            throw("required string field missing or empty: " + $missing.join(","))
+          } else if !["declare", "expect-confirm"].contains(this.source) {
+            throw("source must be declare or expect-confirm")
+          } else if this.releasable_to.type() != "array" || this.releasable_to.any(n -> n.type() != "string") {
+            throw("releasable_to must be a list of strings")
+          } else if this.releasable_to.contains(this.originator_nation) {
+            throw("releasable_to must not include originator_nation")
+          } else if this.serial != null && this.serial.type() != "string" {
+            throw("serial must be a string or null")
+          } else if this.baseline_id != null && this.baseline_id.type() != "string" {
+            throw("baseline_id must be a string or null")
+          } else {
+            this
+          }
+          meta kafka_key = this.asset_id
+
+    - catch:
+      - log:
+          level: WARN
+          message: "declaration-intake refused: ${! error() }"
+      - mapping: |
+          meta reject_reason = error()
+
+output:
+  switch:
+    cases:
+      - check: meta("reject_reason") != null
+        output:
+          reject: '${! meta("reject_reason") }'
+      - output:
+          kafka_franz:
+            seed_brokers: [ "${REDPANDA_BROKER:redpanda-edge-01:9092}" ]
+            topic: asset-declarations
+            key: '${! meta("kafka_key") }'
+            max_in_flight: 1

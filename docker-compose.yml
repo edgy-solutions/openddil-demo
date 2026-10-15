@@ -739,6 +739,13 @@ services:
       - "9999:9999"
     environment:
       REDPANDA_BROKER: redpanda-edge-01:9092
+      # declared_label lookup (ADR-0050); dev-compose store, same creds as the rest of this file
+      PGUSER: postgres
+      PGPASSWORD: password
+      PGHOST: postgres-hq
+      PGPORT: "5432"
+      PGDATABASE: openddil
+      PGSSLMODE: disable
     volumes:
       - ./openddil-base-connect.yaml:/connect.yaml
       - ./dynamic-mappings:/mappings
@@ -758,6 +765,13 @@ services:
     image: docker.redpanda.com/redpandadata/connect:latest
     environment:
       REDPANDA_BROKER: redpanda-edge-02:9092
+      # declared_label lookup (ADR-0050); dev-compose store, same creds as the rest of this file
+      PGUSER: postgres
+      PGPASSWORD: password
+      PGHOST: postgres-hq
+      PGPORT: "5432"
+      PGDATABASE: openddil
+      PGSSLMODE: disable
     volumes:
       - ./openddil-base-connect.yaml:/connect.yaml
       - ./dynamic-mappings:/mappings
@@ -777,6 +791,13 @@ services:
     image: docker.redpanda.com/redpandadata/connect:latest
     environment:
       REDPANDA_BROKER: redpanda-edge-03:9092
+      # declared_label lookup (ADR-0050); dev-compose store, same creds as the rest of this file
+      PGUSER: postgres
+      PGPASSWORD: password
+      PGHOST: postgres-hq
+      PGPORT: "5432"
+      PGDATABASE: openddil
+      PGSSLMODE: disable
     volumes:
       - ./openddil-base-connect.yaml:/connect.yaml
       - ./dynamic-mappings:/mappings
@@ -849,6 +870,22 @@ services:
         condition: service_healthy
       toxiproxy:
         condition: service_started
+
+  # declaration-intake: transport for asset declarations (ADR-0050 s2); the
+  # PEP is the gate. Edge-01 only; the PEP posts here.
+  declaration-intake-01:
+    container_name: openddil-demo-declaration-intake-01
+    image: docker.redpanda.com/redpandadata/connect:latest
+    ports:
+      - "4198:4198"
+    environment:
+      REDPANDA_BROKER: redpanda-edge-01:9092
+    volumes:
+      - ./declaration-intake.yaml:/connect.yaml
+    command: ["--chilled", "run", "/connect.yaml"]
+    depends_on:
+      redpanda-edge-01:
+        condition: service_healthy
 
   # NOTE: the `simulator` service was removed in Phase 4b (ADR-0019 era).
   # Real ingestion goes through DIS / sim-a / proprietary feeds; the UI now

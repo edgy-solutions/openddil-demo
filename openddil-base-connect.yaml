@@ -96,6 +96,9 @@ pipeline:
                     processors:
                       - resource: "dis_kind_gate"
                       - resource: "dis_force_gate"
+                      # Declared-label lookup (ADR-0050 s2.6): sets
+                      # declared_* metadata for sim_dis_mapping; never fails.
+                      - resource: "declared_label"
                       - resource: "sim_dis_mapping"
                       - mapping: |
                           meta asset_id = this.asset.asset_id

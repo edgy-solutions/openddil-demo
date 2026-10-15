@@ -1,0 +1,50 @@
+# =============================================================================
+# declared_label -- ingress lookup of the operator-declared label (ADR-0050 s2)
+# =============================================================================
+# Reads asset_declaration for the entity and leaves two metadata keys for
+# sim_dis_mapping: declared_originator (string) and declared_releasable (JSON
+# array as a string). No row, or a failed lookup, leaves them unset, so the
+# record goes out unlabelled exactly as it does today.
+#
+# FAILURE PATH. The `catch` sits OUTSIDE `cached`, inside the branch: a lookup
+# error is therefore never stored in the cache (cached stores only successes),
+# the error flag is cleared there so the message never reaches the DLQ catch in
+# the main pipeline, and the branch result is an empty list, which labels
+# nothing. One warn line per error. A missing row IS cached (empty list) for
+# DECLARED_LABEL_TTL.
+#
+# Connection settings come from the PG* environment, never literals.
+# =============================================================================
+cache_resources:
+  - label: declared_labels
+    memory:
+      default_ttl: "${DECLARED_LABEL_TTL:10s}"
+
+processor_resources:
+  - label: declared_label
+    branch:
+      request_map: |
+        root.entity_id_urn = this.entity_id_urn
+      processors:
+        - cached:
+            cache: declared_labels
+            key: '${! this.entity_id_urn }'
+            processors:
+              - sql_select:
+                  driver: postgres
+                  dsn: "postgres://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}?sslmode=${PGSSLMODE}"
+                  table: asset_declaration
+                  columns:
+                    - originator_nation
+                    - "array_to_json(releasable_to)::text AS releasable_json"
+                  where: asset_id = $1
+                  args_mapping: 'root = [ this.entity_id_urn ]'
+        - catch:
+            - log:
+                level: WARN
+                message: "declared_label lookup failed (record goes out unlabelled): ${! error() }"
+            - mapping: 'root = []'
+      result_map: |
+        let row = if this.type() == "array" && this.length() > 0 { this.index(0) } else { null }
+        meta declared_originator = if $row != null { $row.originator_nation.string() } else { deleted() }
+        meta declared_releasable = if $row != null { $row.releasable_json.string() } else { deleted() }
