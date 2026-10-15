@@ -16,23 +16,29 @@ export function LinkChips({ counts }: { counts: LinkCounts }) {
   const label =
     `${counts.up} UP · ${counts.idle} IDLE · ${counts.down} DOWN` +
     (counts.unknown > 0 ? ` · ${counts.unknown} UNKNOWN` : '');
+  const shown = CHIPS.filter((c) => c.key !== 'unknown' || counts.unknown > 0);
   return (
-    <div className="flex gap-1.5" role="group" aria-label={label}>
-      {CHIPS.filter((c) => c.key !== 'unknown' || counts.unknown > 0).map((c) => {
+    // Equal columns, count stacked over the word: four chips (UNKNOWN only
+    // shows when > 0) must fit the card at its narrowest, which a single
+    // line of dot + count + word did not.
+    <div className={`grid ${shown.length === 4 ? 'grid-cols-4' : 'grid-cols-3'} gap-1.5`} role="group" aria-label={label}>
+      {shown.map((c) => {
         const n = counts[c.key];
         return (
           <div
             key={c.key}
             data-testid={`link-chip-${c.key}`}
             data-count={n}
-            className={`flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded bg-white/[0.03] font-mono text-[11px] text-slate-300${n === 0 ? ' opacity-[0.35]' : ''}`}
+            className={`min-w-0 flex flex-col items-center px-1 py-1.5 rounded bg-white/[0.03] font-mono text-slate-300${n === 0 ? ' opacity-[0.35]' : ''}`}
           >
-            <span
-              aria-hidden="true"
-              className={`inline-block w-[7px] h-[7px] rounded-full ${c.dot}${n > 0 ? ' shadow-[0_0_6px_currentColor]' : ''}`}
-            />
-            <span className={`text-base font-bold tabular-nums ${c.num}`}>{n}</span>
-            <span className="text-slate-400">{c.word}</span>
+            <span className="flex items-center gap-1.5">
+              <span
+                aria-hidden="true"
+                className={`inline-block w-[7px] h-[7px] rounded-full ${c.dot}${n > 0 ? ' shadow-[0_0_6px_currentColor]' : ''}`}
+              />
+              <span className={`text-base font-bold tabular-nums leading-tight ${c.num}`}>{n}</span>
+            </span>
+            <span className="text-[9px] tracking-wider text-slate-400">{c.word}</span>
           </div>
         );
       })}
