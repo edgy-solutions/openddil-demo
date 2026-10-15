@@ -234,18 +234,18 @@ function ConfigurationPosture({
   const mwo = useMemo(() => mwoComplianceByFamily(cm, fleet), [cm, fleet]);
   const baselines = useMemo(() => baselineDistribution(cm), [cm]);
   return (
-    <div className="panel shrink-0 p-3">
+    <div className="panel shrink-0 p-3" data-testid="config-posture">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">Configuration Posture</h2>
-      <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">MWO/TCTO compliance by family</div>
+      {/* Counts assets with at least one MOD_STATE_OVERDUE mod. It says
+          nothing about the rest of the baseline, so it is not labelled as
+          conformance. */}
+      <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Mods overdue by family</div>
       {mwo.length === 0 && <div className="text-xs text-slate-500 mb-2">—</div>}
       {mwo.map((m) => (
-        <div key={m.family} className="flex items-center justify-between text-xs mb-0.5">
+        <div key={m.family} className="flex items-center justify-between text-xs mb-0.5" data-testid={`mods-overdue-${m.family}`}>
           <span className="text-slate-400">{m.family}</span>
-          <span className="flex items-center gap-2">
-            <span className="text-slate-500 text-[10px]">{m.compliant}/{m.total}</span>
-            <span className={`font-bold ${m.rate >= 0.9 ? 'text-emerald-400' : m.rate >= 0.5 ? 'text-amber-400' : 'text-rose-400'}`}>
-              {Math.round(m.rate * 100)}%
-            </span>
+          <span className={`font-bold ${m.rate >= 0.9 ? 'text-emerald-400' : m.rate >= 0.5 ? 'text-amber-400' : 'text-rose-400'}`}>
+            {m.total - m.compliant}/{m.total}
           </span>
         </div>
       ))}

@@ -24,11 +24,11 @@ describe('CM status chip', () => {
 
   it('regional panel keeps the chip on one line', () => {
     render(<WorkOrders />);
-    expect(screen.getByText(/NON-COMPLIANT/).className).toContain('whitespace-nowrap');
+    expect(screen.getByText(/DEVIATES: CRITICAL/).className).toContain('whitespace-nowrap');
   });
 
   it('HQ panel keeps the chip on one line', () => {
     render(<HqWorkOrders wanActive={true} />);
-    expect(screen.getByText(/NON-COMPLIANT/).className).toContain('whitespace-nowrap');
+    expect(screen.getByText(/DEVIATES: CRITICAL/).className).toContain('whitespace-nowrap');
   });
 });

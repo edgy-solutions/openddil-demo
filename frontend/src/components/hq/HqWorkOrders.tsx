@@ -45,6 +45,7 @@ export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
           recommended_action: d.recommended_action as string,
           advisory_provenance: d.advisory_provenance ?? null,
           overall_status: row.overall_status,
+          has_baseline: !!row.baseline_id,
         })),
     )
     .sort((a, b) => (CM_RANK[b.overall_status] ?? 0) - (CM_RANK[a.overall_status] ?? 0));
@@ -78,7 +79,7 @@ export default function HqWorkOrders({ wanActive }: { wanActive: boolean }) {
                 </td>
                 <td className="text-right align-top pl-2 whitespace-nowrap">
                   {(() => {
-                    const badge = cmStatusBadge(it.overall_status);
+                    const badge = cmStatusBadge(it.overall_status, it.has_baseline);
                     return (
                       <span className={`px-1.5 py-0.5 rounded text-[9px] border whitespace-nowrap inline-block ${badge.cls}`}>
                         {badge.label}

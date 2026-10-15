@@ -29,7 +29,7 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
   const cm = useAllCmState();
   const logistics = useAllLogisticsStatus();
 
-  const cmByAsset = new Map(cm.data.map((c) => [c.asset_id, c.overall_status]));
+  const cmByAsset = new Map(cm.data.map((c) => [c.asset_id, c]));
   const sevByAsset = new Map(logistics.data.map((l) => [l.asset_id, l.overall_severity]));
 
   // Split classified fleet into hardware vs. in-flight munitions. The
@@ -95,7 +95,8 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
             </summary>
             <div className="tree-node space-y-1 py-1 mt-1">
               {assets.map((a) => {
-                const cmBadge = cmStatusBadge(cmByAsset.get(a.asset_id));
+                const cmRow = cmByAsset.get(a.asset_id);
+                const cmBadge = cmStatusBadge(cmRow?.overall_status, !!cmRow?.baseline_id);
                 const sev = sevByAsset.get(a.asset_id);
                 const callsign = assetCallsign(a);
                 return (
@@ -113,7 +114,7 @@ export default function HqDigitalTwin({ wanActive }: { wanActive: boolean }) {
                       >
                         {postureText(a.posture_status, a.posture_since, nowMs)}
                       </span>
-                      <span className={`px-1 py-px rounded-sm border ${cmBadge.cls}`}>{cmBadge.label}</span>
+                      <span className={`px-1 py-px rounded-sm border ${cmBadge.cls}`} data-testid={`cm-badge-${a.asset_id}`}>{cmBadge.label}</span>
                       <span className={`px-1 py-px rounded-sm border ${severityHeatClass(sev)}`}>{shortSeverity(sev)}</span>
                     </span>
                   </div>

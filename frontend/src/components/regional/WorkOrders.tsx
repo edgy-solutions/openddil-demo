@@ -34,6 +34,7 @@ interface ActionItem {
    *  AdvisoryProvenance is the shape; decoding lives there, not per panel. */
   advisory_provenance: any;
   overall_status: string;
+  has_baseline: boolean;
 }
 
 // Worst-first ordering by the owning asset's CM status.
@@ -69,6 +70,7 @@ export default function WorkOrders() {
         recommended_action: d.recommended_action,
         advisory_provenance: d.advisory_provenance ?? null,
         overall_status: row.overall_status,
+        has_baseline: !!row.baseline_id,
       });
     });
   }
@@ -112,7 +114,7 @@ export default function WorkOrders() {
                 </td>
                 <td className="text-right align-top pl-2 whitespace-nowrap">
                   {(() => {
-                    const badge = cmStatusBadge(it.overall_status);
+                    const badge = cmStatusBadge(it.overall_status, it.has_baseline);
                     return (
                       <span className={`px-1.5 py-0.5 rounded text-[9px] border whitespace-nowrap inline-block ${badge.cls}`}>
                         {badge.label}

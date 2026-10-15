@@ -29,23 +29,34 @@ import { AdvisoryBadge } from './AdvisoryBadge';
 // broken. Fix: "CM:" prefix on every state, plain-language plus no use
 // of the word "capable" (that word carries the functional claim).
 //
-// Amber (not red) for CONFIG_STATUS_NOT_MISSION_CAPABLE now that the
-// fusion severity rollup no longer folds CM into functional severity
-// (ADR-0026 compliance fix). A CM-only failure is a genuine DEGRADED
-// posture (operating with a records deviation is a real deferred-
-// maintenance risk) but not RED "cannot perform mission" territory.
-export function cmStatusBadge(status: string | undefined): { label: string; cls: string } {
+// The words are configuration status accounting terms: the asset's
+// as-maintained configuration either conforms to its baseline or
+// deviates from it. The stored tokens (CONFIG_STATUS_*) are unchanged;
+// the pipeline reads them by name, so only the display maps them.
+//
+// A critical discrepancy is red, not the amber of a minor one: the two
+// are different classes of deviation and must not share a colour.
+//
+// "No state" is two different facts. hasBaseline says which: an asset
+// with no baseline declared is never assessed, and one with a baseline
+// but no assessment yet has simply not reported.
+export function cmStatusBadge(
+  status: string | undefined,
+  hasBaseline = false,
+): { label: string; cls: string } {
   switch (status) {
     case 'CONFIG_STATUS_IN_COMPLIANCE':
-      return { label: 'CM: COMPLIANT', cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' };
+      return { label: 'CONFORMS', cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50' };
     case 'CONFIG_STATUS_MINOR_DISCREPANCY':
-      return { label: 'CM: NEEDS MAINTENANCE', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50' };
+      return { label: 'DEVIATES', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50' };
     case 'CONFIG_STATUS_MAJOR_DISCREPANCY':
-      return { label: 'CM: MAJOR DISCREPANCY', cls: 'bg-orange-500/20 text-orange-400 border-orange-500/50' };
+      return { label: 'DEVIATES: MAJOR', cls: 'bg-orange-500/20 text-orange-400 border-orange-500/50' };
     case 'CONFIG_STATUS_NOT_MISSION_CAPABLE':
-      return { label: 'CM: NON-COMPLIANT', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/50' };
+      return { label: 'DEVIATES: CRITICAL', cls: 'bg-rose-500/20 text-rose-400 border-rose-500/50' };
     default:
-      return { label: 'NO CM STATE', cls: 'bg-slate-700/40 text-slate-400 border-slate-600' };
+      return hasBaseline
+        ? { label: 'NO CONFIGURATION DATA', cls: 'bg-slate-700/40 text-slate-400 border-slate-600' }
+        : { label: 'NO BASELINE DECLARED', cls: 'bg-slate-700/40 text-slate-500 border-slate-700' };
   }
 }
 
@@ -118,7 +129,7 @@ export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | n
   const [expanded, setExpanded] = useState(false);
   const [expandedInstalled, setExpandedInstalled] = useState(false);
   const [expandedMods, setExpandedMods] = useState(false);
-  const badge = cmStatusBadge(cm?.overall_status);
+  const badge = cmStatusBadge(cm?.overall_status, !!cm?.baseline_id);
   const discrepancies = cm?.discrepancies ?? [];
   const manual = cm?.manual_discrepancies ?? [];
   const installed = cm?.installed ?? [];
@@ -126,26 +137,31 @@ export default function CmStateCard({ cm, isLoading = false }: { cm: CmState | n
   const totalDisc = discrepancies.length + manual.length;
 
   return (
-    <div className="panel shrink-0 p-3">
+    <div className="panel shrink-0 p-3" data-testid="cm-card">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-3 flex items-center">
-        <ShieldAlert className="w-4 h-4 mr-2" /> Configuration Management
+        <ShieldAlert className="w-4 h-4 mr-2" /> Configuration status
+        {cm?.baseline_id && (
+          <span className="ml-auto text-[10px] text-slate-500 normal-case tracking-normal" data-testid="cm-baseline">
+            {cm.baseline_id}
+          </span>
+        )}
       </h2>
 
       {/* Three states: syncing (first sync not complete) -> genuinely
           empty (synced, zero rows) -> data. The syncing state must never
           fall through to the empty copy — see SyncingNotice. */}
-      {isLoading && <SyncingNotice label="Syncing CM state…" />}
+      {isLoading && <SyncingNotice label="Syncing configuration status…" />}
 
       {!isLoading && !cm && (
         <div className="text-xs text-slate-500 border border-slate-700 bg-slate-800/50 p-2">
-          No CM state for this asset yet.
+          No baseline declared for this asset.
         </div>
       )}
 
       {!isLoading && cm && (
         <>
           <div className="flex items-center justify-between mb-2">
-            <span className={`text-xs font-bold px-2 py-0.5 rounded-sm border ${badge.cls}`}>
+            <span className={`text-xs font-bold px-2 py-0.5 rounded-sm border ${badge.cls}`} data-testid="cm-badge">
               {badge.label}
             </span>
             <span className="text-[10px] text-slate-500 uppercase">{lifecycleLabel(cm.lifecycle)}</span>

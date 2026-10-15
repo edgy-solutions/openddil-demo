@@ -28,9 +28,10 @@ import { isPostureEvent } from '../lib/posture';
 // NON_OPERATIONAL. It rides in the amber (degraded) bucket alongside the
 // other CM statuses (MAJOR / MINOR), NOT the red bucket. Red stays
 // reserved for genuine functional criticality. This keeps the alert-feed
-// coloring consistent with the CM-DEGRADED cap applied in fusion and
-// with the "CM: NON-COMPLIANT" amber badge on the maintainer card and
-// recommendations panels.
+// coloring consistent with the CM-DEGRADED cap applied in fusion. The
+// configuration status badge (cmStatusBadge) now shows a critical
+// discrepancy in red; this feed still colours it amber because the
+// severity column here mixes CM and operational values.
 function severityColors(severity: string | null): string {
   const s = (severity ?? '').toUpperCase();
   if (s.includes('CRITICAL') || s.includes('NON_OPERATIONAL')) {
