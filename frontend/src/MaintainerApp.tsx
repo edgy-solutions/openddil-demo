@@ -24,6 +24,7 @@ import LostContactBanner from './components/LostContactBanner';
 import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
+import ArrivalsPanel from './components/ArrivalsPanel';
 import CmStateCard from './components/CmStateCard';
 import { WeaponsCapabilityCard } from './components/WeaponsCapabilityCard';
 import MunitionsLoadoutCard from './components/MunitionsLoadoutCard';
@@ -600,6 +601,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             bar must be subtracted here even though MaintainerApp itself
             doesn't render it. */}
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-140px)]">
+          <ArrivalsPanel key={selectedEdge ?? ""} edgeId={selectedEdge} />
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
           {/* Phase 5: ADR-0026 operational_state surfaced per-asset.
               Sits between CmStateCard (config-management compliance) and
