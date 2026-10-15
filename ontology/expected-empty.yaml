@@ -152,6 +152,20 @@ expected_empty:
       Declared 2026-10-13, after the first pre-flight following a reset
       refused it at every tier store.
 
+  munition_track:
+    sparse: true
+    producer: munition-track
+    reason: >-
+      One row per munition in flight (ADR-0049), so an exercise with no
+      fires has none at any tier: the correct and common case, not a partial
+      deployment. DECLARING THIS PLAINLY EMPTY WOULD BE WRONG for the same
+      reason as effector_launch, and declaring it under effector-launch
+      would be wrong too: that probe reads a different consumer group, and
+      its liveness says nothing about the one that writes this table. Its
+      own group (projector-munition-track / tier-projector-munition-track-
+      <tier>) is measured by check-effector-consumer.sh --producer
+      munition-track. Declared 2026-10-15.
+
   parts_availability:
     stores: [tier]
     reason: >-
