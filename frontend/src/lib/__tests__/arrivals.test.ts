@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildDeclareBody,
+  formatArrivalsSummary,
   formatPosition,
   loadArrivals,
+  loadArrivalsSummary,
   submitDeclaration,
   type DeclareInput,
 } from '../arrivals';
@@ -104,5 +106,46 @@ describe('formatPosition', () => {
     expect(formatPosition({ lat: 1.5, lon: 2.25 })).toBe('1.5000, 2.2500');
     expect(formatPosition(null)).toBe('—');
     expect(formatPosition({ x: 1 })).toBe('—');
+  });
+});
+
+describe('loadArrivalsSummary', () => {
+  it('maps 200 to ok', async () => {
+    const edges = [{ edge_id: 'edge-01', undeclared: 0, expected: 2, overdue: 1 }];
+    expect(await loadArrivalsSummary(respond(200, { edges }))).toEqual({ kind: 'ok', data: edges });
+  });
+
+  it.each([401, 403, 404])('maps %i to absent', async (s) => {
+    expect(await loadArrivalsSummary(respond(s))).toEqual({ kind: 'absent' });
+  });
+
+  it('maps 500 to error', async () => {
+    expect((await loadArrivalsSummary(respond(500))).kind).toBe('error');
+  });
+
+  it('maps a body without edges to malformed', async () => {
+    expect(await loadArrivalsSummary(respond(200, {}))).toEqual({
+      kind: 'error', message: 'malformed arrivals summary',
+    });
+  });
+
+  it('maps a string count to malformed', async () => {
+    const edges = [{ edge_id: 'edge-01', undeclared: '1', expected: 2, overdue: 0 }];
+    expect(await loadArrivalsSummary(respond(200, { edges }))).toEqual({
+      kind: 'error', message: 'malformed arrivals summary',
+    });
+  });
+});
+
+describe('formatArrivalsSummary', () => {
+  it('has no suffix when nothing is overdue, and uses a middle dot', () => {
+    const out = formatArrivalsSummary({ edge_id: 'e', undeclared: 1, expected: 0, overdue: 0 });
+    expect(out).toBe('undeclared 1 · expected 0');
+    expect(out.charCodeAt(out.indexOf('·'))).toBe(0xb7);
+  });
+
+  it('appends the overdue suffix', () => {
+    const out = formatArrivalsSummary({ edge_id: 'e', undeclared: 0, expected: 3, overdue: 2 });
+    expect(out).toBe('undeclared 0 · expected 3 (2 overdue)');
   });
 });

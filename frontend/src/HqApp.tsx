@@ -34,6 +34,7 @@ import { deployment } from './deployment';
 import EdgeAttribution from './components/hq/EdgeAttribution';
 import { UnitMovePanels } from './components/MovePanel';
 import RegionFleetSummary from './components/hq/RegionFleetSummary';
+import ArrivalsSummary from './components/hq/ArrivalsSummary';
 import MunitionsInventory from './components/hq/MunitionsInventory';
 import {
   useAllCmState,
@@ -354,6 +355,7 @@ export default function HqApp() {
           <EdgeAttribution />
           <UnitMovePanels tierKind="hq" />
           <RegionFleetSummary />
+          <ArrivalsSummary />
           <FleetReadiness fleetSummary={regionFleet.data} />
           {/* MunitionsInventory: theater-wide effector rollup by munition
               type. Sibling to FORCE POSTURE (hardware axis) -- this is the

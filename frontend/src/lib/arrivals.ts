@@ -181,3 +181,55 @@ export function formatPosition(pos: ArrivalPosition | null | undefined): string 
   if (typeof lat !== 'number' || typeof lon !== 'number') return '—';
   return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
 }
+
+// --- HQ summary: GET /arrivals/summary -----------------------------------------
+// Counts per edge, no ids. Open to any signed-in subject, so there is no
+// role-based "absent" beyond the same 401/403/404 mapping as loadArrivals.
+export interface ArrivalsSummaryEdge {
+  edge_id: string;
+  undeclared: number;
+  expected: number;
+  overdue: number;
+}
+
+export type LoadArrivalsSummaryResult =
+  | { kind: 'ok'; data: ArrivalsSummaryEdge[] }
+  | { kind: 'absent' }
+  | { kind: 'error'; message: string };
+
+const MALFORMED_SUMMARY = 'malformed arrivals summary';
+
+export async function loadArrivalsSummary(
+  fetchFn: typeof fetch = fetch,
+): Promise<LoadArrivalsSummaryResult> {
+  let res: Response;
+  try {
+    res = await fetchFn('/arrivals/summary', { credentials: 'same-origin' });
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : 'request failed' };
+  }
+  if (res.status === 401 || res.status === 403 || res.status === 404) return { kind: 'absent' };
+  if (!res.ok) return { kind: 'error', message: `arrivals summary request failed (${res.status})` };
+  try {
+    const body = (await res.json()) as { edges?: unknown };
+    if (!body || !Array.isArray(body.edges)) return { kind: 'error', message: MALFORMED_SUMMARY };
+    for (const e of body.edges as Partial<ArrivalsSummaryEdge>[]) {
+      if (
+        !e ||
+        !Number.isFinite(e.undeclared) ||
+        !Number.isFinite(e.expected) ||
+        !Number.isFinite(e.overdue)
+      ) {
+        return { kind: 'error', message: MALFORMED_SUMMARY };
+      }
+    }
+    return { kind: 'ok', data: body.edges as ArrivalsSummaryEdge[] };
+  } catch {
+    return { kind: 'error', message: MALFORMED_SUMMARY };
+  }
+}
+
+export function formatArrivalsSummary(e: ArrivalsSummaryEdge): string {
+  const base = `undeclared ${e.undeclared} · expected ${e.expected}`;
+  return e.overdue > 0 ? `${base} (${e.overdue} overdue)` : base;
+}
