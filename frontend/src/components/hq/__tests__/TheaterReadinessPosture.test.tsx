@@ -43,7 +43,7 @@ vi.mock('@react-three/drei', () => ({
   Grid: () => null,
 }));
 
-import TheaterReadinessPosture, { FobLabel } from '../TheaterReadinessPosture';
+import TheaterReadinessPosture, { FobLabel, PostureGrid } from '../TheaterReadinessPosture';
 
 const composition = { sensors: 1, launchers: 0, facilities: 0, inflight: 0, other: 0 };
 
@@ -123,8 +123,35 @@ describe('TheaterReadinessPosture — link card', () => {
     const html = renderToStaticMarkup(<TheaterReadinessPosture />);
     mockFobs.splice(0, mockFobs.length);
     expect(html).toContain('GLOBAL LINK STATUS');
-    expect(html.replace(/<[^>]+>/g, '')).toContain('1 UP · 0 IDLE · 0 DOWN');
+    expect(html).toContain('data-testid="link-chip-up" data-count="1"');
+    expect(html).toContain('data-testid="link-chip-down" data-count="0"');
+    expect(html).toContain('aria-label="1 UP · 0 IDLE · 0 DOWN"');
+    expect(html).not.toContain('link-chip-unknown');
+    expect(html).toContain('data-testid="hq-posture-hud"');
     expect(html).not.toContain('DIRECT LINKS');
     expect(html).not.toContain('link-toggle-');
+  });
+});
+
+describe('PostureGrid', () => {
+  const r = (ready: number, degraded: number, offline: number, unknown: number) =>
+    ({ ready, degraded, offline, unknown, total: ready + degraded + offline + unknown });
+  const empty = r(0, 0, 0, 0);
+  const rollups = (sensors: ReturnType<typeof r>) =>
+    ({ sensors, launchers: r(1, 1, 0, 0), facilities: empty, inflight: empty, other: empty });
+
+  it('renders an em dash for a zero severity and no UNK column when none unknown', () => {
+    const h = renderToStaticMarkup(<PostureGrid rollups={rollups(r(3, 0, 0, 0))} />);
+    expect(h).toContain('data-col="deg" class="text-right text-slate-700">—<');
+    expect(h).toContain('data-col="rdy" class="text-right text-emerald-400">3<');
+    expect(h).not.toContain('>UNK<');
+    expect(h).not.toContain('data-col="unk"');
+    expect(h).not.toContain('posture-row-facilities');
+  });
+
+  it('adds the UNK column when any row has unknown assets', () => {
+    const h = renderToStaticMarkup(<PostureGrid rollups={rollups(r(3, 0, 0, 2))} />);
+    expect(h).toContain('>UNK<');
+    expect(h).toContain('repeat(5, 2.25rem)');
   });
 });

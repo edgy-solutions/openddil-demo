@@ -42,7 +42,7 @@ import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackMarker from '../MunitionTrackMarker';
-import { LinkSummary } from '../network/LinkSummary';
+import { LinkChips } from '../network/LinkChips';
 import {
   allLinksDown,
   linkForFob,
@@ -227,43 +227,69 @@ function buildPostureRollups(
   return rollups;
 }
 
-/** One row of the FORCE POSTURE panel: LABEL then ready/degraded/offline/
- *  unknown counts, then a "N total" summary. Only non-zero severity
- *  buckets render VISIBLE text, but each severity ALWAYS occupies its
- *  own table column so labels stay column-aligned across rows even when
- *  a row has fewer active severities than its siblings (e.g. a fully-
- *  ready SENSORS row alongside a partially-degraded LAUNCHERS row --
- *  before this the SENSORS label drifted right because there were
- *  fewer spans to justify against).
+/** EXPORTED FOR TESTS. The FORCE POSTURE grid: a header row then one row
+ *  per shown class, each followed by a thin proportional bar.
  *
- *  Rendered as <tr> to sit inside the ClassRollupTable's <table>;
- *  table-column semantics do the alignment work for free.
+ *  Column-alignment invariant: every row shares one gridTemplateColumns,
+ *  and every severity cell is always rendered (an em dash when zero), so
+ *  numbers stay in their column however many severities a row has. The UNK
+ *  column exists only when some shown row has unknown assets.
  */
-function ClassRollupLine({
-  label, rollup,
-}: {
-  label: string;
-  rollup: PostureRollup;
-}) {
+export function PostureGrid({ rollups }: { rollups: ClassRollups }) {
+  const rows: Array<{ key: string; label: string; r: PostureRollup }> = [
+    { key: 'sensors',   label: 'Sensors',   r: rollups.sensors },
+    { key: 'launchers', label: 'Launchers', r: rollups.launchers },
+  ];
+  if (rollups.facilities.total > 0) rows.push({ key: 'facilities', label: 'Facilities', r: rollups.facilities });
+  if (rollups.other.total > 0) rows.push({ key: 'other', label: 'Other', r: rollups.other });
+  const showUnk = rows.some((x) => x.r.unknown > 0);
+  const cols = ['rdy', 'deg', 'off', ...(showUnk ? (['unk'] as const) : []), 'tot'] as const;
+  const colTitle = { rdy: 'RDY', deg: 'DEG', off: 'OFF', unk: 'UNK', tot: 'TOT' } as const;
+  const colTone = {
+    rdy: 'text-emerald-400', deg: 'text-amber-400', off: 'text-rose-400',
+    unk: 'text-slate-400', tot: 'text-slate-400',
+  } as const;
+  const colValue = (r: PostureRollup, c: (typeof cols)[number]) =>
+    ({ rdy: r.ready, deg: r.degraded, off: r.offline, unk: r.unknown, tot: r.total })[c];
+  const segs = [
+    ['ready', 'bg-emerald-500'], ['degraded', 'bg-amber-500'],
+    ['offline', 'bg-rose-500'], ['unknown', 'bg-slate-500'],
+  ] as const;
   return (
-    <tr className="font-mono text-[11px] tracking-wider">
-      <td className="text-slate-500 pr-3 text-left tabular-nums">{label}</td>
-      <td className="text-right tabular-nums px-1 text-emerald-400">
-        {rollup.ready > 0 ? `${rollup.ready} READY` : ''}
-      </td>
-      <td className="text-right tabular-nums px-1 text-amber-400">
-        {rollup.degraded > 0 ? `${rollup.degraded} DEG` : ''}
-      </td>
-      <td className="text-right tabular-nums px-1 text-rose-400">
-        {rollup.offline > 0 ? `${rollup.offline} OFF` : ''}
-      </td>
-      <td className="text-right tabular-nums px-1 text-slate-400">
-        {rollup.unknown > 0 ? `${rollup.unknown} UNK` : ''}
-      </td>
-      <td className="text-right tabular-nums pl-3 text-slate-600 whitespace-nowrap">
-        {rollup.total} total
-      </td>
-    </tr>
+    <div
+      className="grid items-baseline font-mono text-[11px] tabular-nums"
+      style={{
+        gridTemplateColumns: `1fr repeat(${cols.length}, 2.25rem)`,
+        columnGap: '4px',
+        rowGap: '2px',
+      }}
+    >
+      <span />
+      {cols.map((c) => (
+        <span key={c} className="text-[10px] tracking-widest text-slate-500 text-right">{colTitle[c]}</span>
+      ))}
+      {rows.map(({ key, label, r }) => (
+        <React.Fragment key={key}>
+          <span data-testid={`posture-row-${key}`} className="text-slate-300 text-left">{label}</span>
+          {cols.map((c) => {
+            const v = colValue(r, c);
+            return c !== 'tot' && v === 0 ? (
+              <span key={c} data-col={c} className="text-right text-slate-700">—</span>
+            ) : (
+              <span key={c} data-col={c} className={`text-right ${colTone[c]}`}>{v}</span>
+            );
+          })}
+          <div
+            className="flex h-[3px] rounded-sm overflow-hidden bg-white/5 mt-0.5 mb-2"
+            style={{ gridColumn: '1 / -1' }}
+          >
+            {segs.map(([k, bg]) => r[k] > 0 && (
+              <div key={k} className={bg} style={{ flexGrow: r[k], flexBasis: 0 }} />
+            ))}
+          </div>
+        </React.Fragment>
+      ))}
+    </div>
   );
 }
 
@@ -491,7 +517,12 @@ export default function TheaterReadinessPosture() {
               : 'no FOB topology'} // {fleet.data.length} ASSET{fleet.data.length === 1 ? '' : 'S'}
           </p>
         </div>
-        <div className="text-right flex flex-col gap-2">
+        {/* The right-hand panels' border and radius (.panel: zinc-800, rounded-xl), spelled as
+            utilities: .panel is unlayered CSS, so it would beat any bg/border utility here. */}
+        <div
+          data-testid="hq-posture-hud"
+          className={`w-72 rounded-xl border bg-zinc-900/75 backdrop-blur-sm shadow-lg px-4 py-3 text-left ${severed ? 'border-rose-900' : 'border-zinc-800'}`}
+        >
           {/* GLOBAL LINK STATUS — transport-level, counted per FOB from link_status
               ⚠ THE LINK COUNT IS THE FOB COUNT. `totalLinks = metrics.length`,
               and metrics come from `deployment().fobs`. A deployment that
@@ -502,57 +533,35 @@ export default function TheaterReadinessPosture() {
               TRANSPORT: the two are unrelated, and only one of them was
               being measured. Same root as the "0 FOBS" readout beside a
               live fleet. */}
-          <div className="bg-slate-900/80 p-2 border border-slate-700">
-            <div className="text-[10px] text-slate-500 mb-1">GLOBAL LINK STATUS</div>
-            {totalLinks === 0 ? (
-              <div className="text-xs font-rajdhani text-slate-500 text-right leading-tight"
-                   title="Links are counted per FOB, from deployment().fobs. This deployment supplies no FOB topology, so there is nothing to report the status OF — which is not the same as reporting that the links are down.">
-                no FOB topology<br />configured
-              </div>
-            ) : (
-              <div className="text-xl font-bold flex items-center justify-end font-rajdhani">
-                <LinkSummary counts={linkCounts} />
-              </div>
-            )}
-          </div>
-          {/* FORCE POSTURE — split by asset_class so the commander sees
-              hardware readiness cleanly instead of one merged bucket
-              polluted by in-flight munition telemetry rows. Only the
-              non-empty classes render, so a facility-less deployment
-              reads as SENSORS+LAUNCHERS rather than SENSORS+LAUNCHERS+
-              (0 FACILITIES). IN FLIGHT is a separate ticker -- it's
-              an activity signal, not a readiness one.
+          <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">GLOBAL LINK STATUS</h2>
+          {totalLinks === 0 ? (
+            <div className="text-xs font-rajdhani text-slate-500 text-left leading-tight"
+                 title="Links are counted per FOB, from deployment().fobs. This deployment supplies no FOB topology, so there is nothing to report the status OF — which is not the same as reporting that the links are down.">
+              no FOB topology configured
+            </div>
+          ) : (
+            <LinkChips counts={linkCounts} />
+          )}
+          <div className="mt-3 pt-3 border-t border-slate-800">
+            {/* FORCE POSTURE — split by asset_class so the commander sees
+                hardware readiness cleanly instead of one merged bucket
+                polluted by in-flight munition telemetry rows. Only the
+                non-empty classes render, so a facility-less deployment
+                reads as SENSORS+LAUNCHERS rather than SENSORS+LAUNCHERS+
+                (0 FACILITIES). IN FLIGHT is a separate ticker -- it's
+                an activity signal, not a readiness one.
 
-              Full munitions inventory (per-type available/expended/
-              failed rollup) lands in the sibling MUNITIONS panel in
-              Phase 3, once we've confirmed the initial-ammo derivation
-              rule against a fresh scenario. Until then, IN FLIGHT is
-              the placeholder that at least tells the commander an
-              engagement is under way. */}
-          <div className="bg-slate-900/80 p-2 border border-slate-700">
-            <div className="text-[10px] text-slate-500 mb-1">FORCE POSTURE</div>
-            {/* Table so class labels + severity counts + totals stay
-                column-aligned across rows. Individual severity cells
-                render empty when zero (still occupy the column slot),
-                which keeps the alignment invariant regardless of how
-                many severities are active on each row -- the earlier
-                flex-justify-end layout had SENSORS drift right when
-                the row had fewer active severities than LAUNCHERS. */}
-            <table className="w-full">
-              <tbody>
-                <ClassRollupLine label="SENSORS"    rollup={rollups.sensors} />
-                <ClassRollupLine label="LAUNCHERS"  rollup={rollups.launchers} />
-                {rollups.facilities.total > 0 && (
-                  <ClassRollupLine label="FACILITIES" rollup={rollups.facilities} />
-                )}
-                {rollups.other.total > 0 && (
-                  <ClassRollupLine label="OTHER" rollup={rollups.other} />
-                )}
-              </tbody>
-            </table>
+                Full munitions inventory (per-type available/expended/
+                failed rollup) lands in the sibling MUNITIONS panel in
+                Phase 3, once we've confirmed the initial-ammo derivation
+                rule against a fresh scenario. Until then, IN FLIGHT is
+                the placeholder that at least tells the commander an
+                engagement is under way. */}
+            <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">FORCE POSTURE</h2>
+            <PostureGrid rollups={rollups} />
             {tracks.data.length > 0 && (
-              <div className="flex items-center justify-end font-mono text-[11px] tracking-wider pt-1 mt-1 border-t border-slate-700">
-                <span className="text-slate-500 mr-2">IN FLIGHT</span>
+              <div className="flex items-center justify-between font-mono text-[11px] tracking-wider pt-2 mt-1 border-t border-slate-800">
+                <span className="text-slate-500">IN FLIGHT</span>
                 <span className="text-amber-300 font-bold">{tracks.data.length}</span>
               </div>
             )}
