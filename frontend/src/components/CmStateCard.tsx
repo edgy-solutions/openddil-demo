@@ -21,7 +21,7 @@ import { AdvisoryBadge } from './AdvisoryBadge';
 
 // Labels are domain-anchored to CM (configuration/maintenance records) --
 // they must never claim FUNCTIONAL capability, because CM state and
-// operational state are orthogonal axes (ADR-0026). The previous label
+// operational state are separate axes (ADR-0035 class 6). The previous label
 // "NOT MISSION CAPABLE" for CONFIG_STATUS_NOT_MISSION_CAPABLE overclaimed
 // -- the phrase reads as a functional judgment when the underlying data
 // is records-compliance. Stakeholders saw the red "NOT MISSION CAPABLE"

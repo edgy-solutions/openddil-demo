@@ -23,7 +23,7 @@ import { isPostureEvent } from '../lib/posture';
 
 // Map a CloudEvent's best-effort severity string to a feed colour.
 //
-// ADR-0026: NOT_MISSION_CAPABLE is a CM (records-compliance) value, not
+// ADR-0035 class 6: NOT_MISSION_CAPABLE is a CM (records-compliance) value, not
 // an operational one -- operational severity uses CRITICAL /
 // NON_OPERATIONAL. It rides in the amber (degraded) bucket alongside the
 // other CM statuses (MAJOR / MINOR), NOT the red bucket. Red stays
