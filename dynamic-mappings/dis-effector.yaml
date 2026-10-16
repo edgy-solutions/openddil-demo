@@ -93,6 +93,9 @@ processor_resources:
                 {"originator_nation": $rel_doc.default_originator_nation,
                  "releasable_to": []}
               } else { {} }
+              # No declaration source here: this arm runs before the declared_label
+              # lookup, which is keyed by the record's own entity_id_urn, and a launch
+              # has none. So the launcher keeps row > default (ADR-0050 s2.6).
               let rel = $rel_doc.assets.get(this.launcher_urn).or($rel_default)
 
               # `root = this` first: every other field (event_urn, launcher_urn,

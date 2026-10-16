@@ -76,13 +76,14 @@ processor_resources:
           {"originator_nation": $rel_doc.default_originator_nation,
            "releasable_to": []}
         } else { {} }
-        # Label order (ADR-0050 s2.6): file assets[id], else file default, else the
-        # declared label the ingress lookup left in metadata, else unlabelled.
+        # Label order (ADR-0050 s2.6): the declared label the ingress lookup left in
+        # metadata, else file assets[id], else file default, else unlabelled. A
+        # default never beats a person's declaration.
         let declared = if meta("declared_originator") != null {
           {"originator_nation": meta("declared_originator"),
            "releasable_to": meta("declared_releasable").parse_json()}
         } else { {} }
-        let rel = $rel_doc.assets.get($src.entity_id_urn).or(if $rel_default.length() > 0 { $rel_default } else { $declared })
+        let rel = if $declared.length() > 0 { $declared } else { $rel_doc.assets.get($src.entity_id_urn).or($rel_default) }
         root.provenance.originator_nation = $rel.originator_nation.or(deleted())
         root.provenance.releasable_to     = $rel.releasable_to.or(deleted())
 
@@ -253,13 +254,14 @@ processor_resources:
         {"originator_nation": $rel_doc.default_originator_nation,
          "releasable_to": []}
       } else { {} }
-      # Label order (ADR-0050 s2.6): file assets[id], else file default, else the
-      # declared label the ingress lookup left in metadata, else unlabelled.
+      # Label order (ADR-0050 s2.6): the declared label the ingress lookup left in
+      # metadata, else file assets[id], else file default, else unlabelled. A
+      # default never beats a person's declaration.
       let declared = if meta("declared_originator") != null {
         {"originator_nation": meta("declared_originator"),
          "releasable_to": meta("declared_releasable").parse_json()}
       } else { {} }
-      let rel = $rel_doc.assets.get($src.entity_id_urn).or(if $rel_default.length() > 0 { $rel_default } else { $declared })
+      let rel = if $declared.length() > 0 { $declared } else { $rel_doc.assets.get($src.entity_id_urn).or($rel_default) }
 
       # `deleted()` on the RHS, not a placeholder value. An undeclared asset
       # leaves the FIELD ABSENT — which the encoder accepts and the projector

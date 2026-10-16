@@ -76,6 +76,9 @@ nations:
 
 # ADR-0029 §7 deployment default. UNSET on purpose — see the header. To use
 # it, set a nation code from `nations` above; anything else is an error.
+# Ingress label order (ADR-0050 s2.6): a person's declaration, then an `assets`
+# row below, then this default, then unlabelled. The default never beats a
+# declaration.
 default_originator_nation: null
 
 # -----------------------------------------------------------------------------
