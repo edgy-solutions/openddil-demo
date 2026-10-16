@@ -84,19 +84,26 @@ processor_resources:
               # This is that same lookup, keyed by launcher_urn instead of the
               # record's own entity_id_urn, because the record being labelled is
               # the launch, not the launcher. It must stay identical to
-              # sim-dis-mapping.yaml's copy: same no_cache read, same
-              # default_originator_nation fallback, same absent-stays-absent via
-              # `.or(deleted())`. A launch and its launcher's Entity State are
-              # the same row, so they get the same default and the same silence.
+              # sim-dis-mapping.yaml's copy: same no_cache read, same stamp fold
+              # ahead of the default_originator_nation fallback, same
+              # absent-stays-absent via `.or(deleted())`. A launch and its launcher's
+              # Entity State are the same row, so they get the same default and the same
+              # silence.
               let rel_doc = file(path: "/ontology/releasability.yaml", no_cache: true).parse_yaml()
               let rel_default = if $rel_doc.default_originator_nation != null {
                 {"originator_nation": $rel_doc.default_originator_nation,
                  "releasable_to": []}
               } else { {} }
+              let stamped = if this.provenance.stamped_nation != null {
+                {"originator_nation": this.provenance.stamped_nation, "releasable_to": []}
+              } else { {} }
+              let fallback = if $stamped.length() > 0 { $stamped } else { $rel_default }
               # No declaration source here: this arm runs before the declared_label
               # lookup, which is keyed by the record's own entity_id_urn, and a launch
-              # has none. So the launcher keeps row > default (ADR-0050 s2.6).
-              let rel = $rel_doc.assets.get(this.launcher_urn).or($rel_default)
+              # has none. So the launcher keeps row > the sidecar's nation stamp >
+              # default (ADR-0050 s2.6). The stamp is the launcher's: the sidecar writes
+              # it under provenance on a Fire or Detonation record.
+              let rel = $rel_doc.assets.get(this.launcher_urn).or($fallback)
 
               # `root = this` first: every other field (event_urn, launcher_urn,
               # provenance.edge_id/region_id, ...) must carry forward as-is, and

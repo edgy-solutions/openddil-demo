@@ -76,14 +76,20 @@ processor_resources:
           {"originator_nation": $rel_doc.default_originator_nation,
            "releasable_to": []}
         } else { {} }
+        let stamped = if $src.provenance.stamped_nation != null {
+          {"originator_nation": $src.provenance.stamped_nation, "releasable_to": []}
+        } else { {} }
+        let fallback = if $stamped.length() > 0 { $stamped } else { $rel_default }
         # Label order (ADR-0050 s2.6): the declared label the ingress lookup left in
-        # metadata, else file assets[id], else file default, else unlabelled. A
-        # default never beats a person's declaration.
+        # metadata, else file assets[id], else the nation the sidecar stamped
+        # (`provenance.stamped_nation`), else file default, else unlabelled. A stamp
+        # or a default never beats a person's declaration, and a stamp never
+        # beats a per-asset row.
         let declared = if meta("declared_originator") != null {
           {"originator_nation": meta("declared_originator"),
            "releasable_to": meta("declared_releasable").parse_json()}
         } else { {} }
-        let rel = if $declared.length() > 0 { $declared } else { $rel_doc.assets.get($src.entity_id_urn).or($rel_default) }
+        let rel = if $declared.length() > 0 { $declared } else { $rel_doc.assets.get($src.entity_id_urn).or($fallback) }
         root.provenance.originator_nation = $rel.originator_nation.or(deleted())
         root.provenance.releasable_to     = $rel.releasable_to.or(deleted())
 
@@ -254,14 +260,20 @@ processor_resources:
         {"originator_nation": $rel_doc.default_originator_nation,
          "releasable_to": []}
       } else { {} }
+      let stamped = if $src.origin_node.stamped_nation != null {
+        {"originator_nation": $src.origin_node.stamped_nation, "releasable_to": []}
+      } else { {} }
+      let fallback = if $stamped.length() > 0 { $stamped } else { $rel_default }
       # Label order (ADR-0050 s2.6): the declared label the ingress lookup left in
-      # metadata, else file assets[id], else file default, else unlabelled. A
-      # default never beats a person's declaration.
+      # metadata, else file assets[id], else the nation the sidecar stamped
+      # (`origin_node.stamped_nation`), else file default, else unlabelled. A stamp
+      # or a default never beats a person's declaration, and a stamp never
+      # beats a per-asset row.
       let declared = if meta("declared_originator") != null {
         {"originator_nation": meta("declared_originator"),
          "releasable_to": meta("declared_releasable").parse_json()}
       } else { {} }
-      let rel = if $declared.length() > 0 { $declared } else { $rel_doc.assets.get($src.entity_id_urn).or($rel_default) }
+      let rel = if $declared.length() > 0 { $declared } else { $rel_doc.assets.get($src.entity_id_urn).or($fallback) }
 
       # `deleted()` on the RHS, not a placeholder value. An undeclared asset
       # leaves the FIELD ABSENT — which the encoder accepts and the projector
