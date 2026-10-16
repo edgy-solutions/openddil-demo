@@ -1,0 +1,40 @@
+# produces.yaml -- every Kafka topic this repo's workloads can write, as templates over the workload's environment.
+# Checked against the code by tests/test_produces_manifest.py and against the chart by
+# openddil-helm scripts/check-produces-declarations.py.
+#
+# The egress image runs in three roles, one key each (the chart picks the role by command). Their topics come
+# from the config lists the chart passes (@config:<KEY>.<field>, KEY = the env var holding the file path), except
+# the gate's single-route fallback, which reads OPENDDIL_EGRESS_SINK_TOPIC.
+# The Connect keys name the pipeline file the chart mounts; the test parses that file's outputs.
+workloads:
+  egress-gate-c2:
+    image: openddil/egress
+    topics:
+      - "@config:OPENDDIL_EGRESS_ROUTES_PATH.sink_topic"
+      - "${OPENDDIL_EGRESS_SINK_TOPIC:-egress-c2-status}"
+  egress-assembler:
+    image: openddil/egress
+    topics:
+      - "@config:OPENDDIL_ASSEMBLER_CONFIG.output_topic"
+  egress-intake:
+    image: openddil/egress
+    topics:
+      - "@config:OPENDDIL_EGRESS_INTAKE_CONFIG.onward_topic"
+  connect-edge:
+    image: redpandadata/connect
+    config: openddil-base-connect.yaml
+    topics:
+      - ingress-dlq
+      - effector-events
+      - munition-tracks
+      - raw-sensor-stream
+  cm-intake:
+    image: redpandadata/connect
+    config: cm-intake.yaml
+    topics:
+      - cm-events
+  declaration-intake:
+    image: redpandadata/connect
+    config: declaration-intake.yaml
+    topics:
+      - asset-declarations

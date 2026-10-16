@@ -190,6 +190,7 @@ def run_once(
                 # why the gate decides and never re-encodes. Raises before
                 # the commit below if the broker never confirms it.
                 try:
+                    # produces: @config:OPENDDIL_EGRESS_ROUTES_PATH.sink_topic ; ${OPENDDIL_EGRESS_SINK_TOPIC:-egress-c2-status}
                     delivery.send_one(producer, route.sink_topic, msg.value(), msg.key())
                 except delivery.DeliveryFailed as exc:
                     log.error(

@@ -957,6 +957,7 @@ async def _produce_episode(
         state.route.kind, state.declarations, state.schema, cm_state, episode, picture, now,
     )
     payload = json.dumps(record, separators=(",", ":")).encode("utf-8")
+    # produces: @config:OPENDDIL_ASSEMBLER_CONFIG.output_topic
     produce(state.route.output_topic, payload, key.encode("utf-8"))
 
     is_revision = key in state.last_produced
@@ -1084,6 +1085,7 @@ async def handle_posture_message(
             if state.declarations.episode_id is not None:
                 pointer.set(record, state.declarations.key,
                             event_id_for(key, transition_id=transition.id))
+            # produces: @config:OPENDDIL_ASSEMBLER_CONFIG.output_topic
             produce(state.route.output_topic,
                     json.dumps(record, separators=(",", ":")).encode("utf-8"),
                     key.encode("utf-8"))

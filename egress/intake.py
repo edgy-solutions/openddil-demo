@@ -729,6 +729,7 @@ async def run_poll(
         if decision.allowed:
             body_bytes = json.dumps(artifact, separators=(",", ":")).encode("utf-8")
             try:
+                # produces: @config:OPENDDIL_EGRESS_INTAKE_CONFIG.onward_topic
                 produce(entry.onward_topic, body_bytes, outcome.key.encode("utf-8"))
             except delivery.DeliveryFailed as exc:
                 log.warning(
