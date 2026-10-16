@@ -48,6 +48,7 @@
 #   * openddil-demo/dynamic-mappings/asterix-cat062-mapping.yaml (ingress stamp)
 #   * openddil-logistics-sim  src/logistics_sim/releasability.py
 #   * openddil-projector      src/handlers/base.py (carry-through only)
+#   * openddil-demo/gateway/pep.py (nation registry: /arrivals, /auth/me)
 #
 # Stamped ONCE at ingress and carried, never re-derived downstream
 # (ADR-0029 §3). Services that produce DERIVED rows — fusion, cm-service —
@@ -59,11 +60,19 @@ version: 1
 # Fictional nations this deployment knows about. Declared so a typo in an
 # asset row below is a load-time error rather than a silently unmatched
 # label that nobody is entitled to see.
+#
+# `color` is the nation's identity colour in the UI (chips, legend), served
+# to the browser by the gateway at /auth/me in this file's order. Optional:
+# a nation without one renders as the "unknown nation" style. It must be a
+# QUOTED #rrggbb (an unquoted # starts a YAML comment); anything else is
+# ignored. Presentation only — it never affects who sees what.
 nations:
   ATL:
     name: Atlantia
+    color: "#38bdf8"
   BDR:
     name: Borduria
+    color: "#a78bfa"
 
 # ADR-0029 §7 deployment default. UNSET on purpose — see the header. To use
 # it, set a nation code from `nations` above; anything else is an error.

@@ -532,7 +532,8 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
                   you"; it filters nothing. The rows have already been filtered
                   by the gateway (ADR-0029 §1), and a second filter here would
                   be a second authorization decision that nobody reviewed. */}
-              <NationLegend assets={fleetForPicker} viewerNations={session.nations} />
+              <NationLegend assets={fleetForPicker} viewerNations={session.nations}
+                            registry={session.nationRegistry} />
               <div className="text-right">
                 <div className="text-xs text-slate-500 mb-1">LOCAL TIME</div>
                 <div className="text-xl font-bold text-slate-200">{clock}</div>

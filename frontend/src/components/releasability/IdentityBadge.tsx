@@ -84,10 +84,11 @@ export default function IdentityBadge() {
             </span>
           ) : (
             s.nations.map((code) => {
-              const n = nationStyle(code);
+              const n = nationStyle(code, s.nationRegistry);
               return (
                 <span key={code}
                       title={n.label}
+                      style={n.chipStyle}
                       className={`rounded border px-1 text-[10px] font-semibold
                                   uppercase ${n.chip}`}>
                   {n.code}

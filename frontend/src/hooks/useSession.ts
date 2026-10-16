@@ -35,6 +35,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { setLabeledTables } from '../lib/labeledTables';
 import { markSessionExpired } from '../lib/sessionExpiry';
+import { parseNationRegistry, type NationRegistryEntry } from '../lib/nationColor';
 
 export interface Session {
   /** Undefined while the first request is in flight — distinct from `false`,
@@ -46,6 +47,9 @@ export interface Session {
   name: string;
   /** Nations this subject may see, as decided by Topaz. */
   nations: string[];
+  /** The deployment's nation palette, in the gateway's file order. Colours
+   *  for chips and the legend only; never a filter. */
+  nationRegistry: NationRegistryEntry[];
   /** The subject's role within this tier — the SECOND axis.
    *
    *  WHICH TIER is a fact about where you logged in; WHICH ROLE is a fact
@@ -84,6 +88,7 @@ const UNKNOWN: Session = {
   username: '',
   name: '',
   nations: [],
+  nationRegistry: [],
   role: 'observer',
   policyVersion: null,
   authDisabled: false,
@@ -173,6 +178,7 @@ export function useSession(): Session {
             username: body.username ?? '',
             name: body.name ?? '',
             nations: Array.isArray(body.nations) ? body.nations : [],
+            nationRegistry: parseNationRegistry(body.nation_registry),
             role: typeof body.role === 'string' && body.role ? body.role : 'observer',
             policyVersion: body.policy_version ?? null,
             authDisabled: false,

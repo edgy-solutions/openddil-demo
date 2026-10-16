@@ -9,18 +9,20 @@
 // nation whose assets they cannot see would tell them that nation exists in
 // this deployment, which is a small leak of exactly the kind this mechanism
 // exists to prevent.
-import { nationsInFleet, isSharedWith } from '../../lib/nationColor';
+import { nationsInFleet, isSharedWith, type NationRegistryEntry } from '../../lib/nationColor';
 
 interface Props {
   assets: { originator_nation: string | null; releasable_to: string[] }[];
   /** Nations the VIEWER holds, used only to decide whether the "released to
    *  you" key is worth showing. Presentation, not filtering. */
   viewerNations?: string[];
+  /** The deployment's palette, from the session; colours come only from it. */
+  registry?: NationRegistryEntry[];
   className?: string;
 }
 
-export default function NationLegend({ assets, viewerNations = [], className = '' }: Props) {
-  const nations = nationsInFleet(assets);
+export default function NationLegend({ assets, viewerNations = [], registry = [], className = '' }: Props) {
+  const nations = nationsInFleet(assets, registry);
   if (nations.length === 0) return null;
 
   const anyShared = viewerNations.length > 0
@@ -31,7 +33,7 @@ export default function NationLegend({ assets, viewerNations = [], className = '
                      text-slate-400 ${className}`}>
       {nations.map((n) => (
         <span key={n.code} className="flex items-center gap-1">
-          <span className={`h-2 w-2 rounded-full ${n.dot}`} />
+          <span className={`h-2 w-2 rounded-full ${n.dot}`} style={n.dotStyle} />
           <span className="uppercase tracking-wide">{n.code}</span>
           <span className="text-slate-500">{n.label}</span>
         </span>

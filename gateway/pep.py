@@ -710,22 +710,59 @@ def _parse_arrivals_units(raw: str) -> list:
 ARRIVALS_UNITS = _parse_arrivals_units(os.getenv("OPENDDIL_ARRIVALS_UNITS", ""))
 
 
-def _deployment_nations() -> list[str]:
-    """The keys under `nations:` in the releasability file, re-read on every
-    call. A minimal indentation-based read of that one mapping (the PEP stays
-    stdlib-only and no YAML parser is available): the first indented key
-    line sets the key indent, deeper lines are skipped, a column-0 line ends
-    the block. An unreadable file yields no nations, so nothing is declarable."""
+def _strip_yaml_comment(line: str) -> str:
+    """`line` without a trailing `# comment`, leaving a `#` inside quotes
+    alone (a colour is the quoted "#rrggbb", which a bare split would cut)."""
+    quote = None
+    for i, ch in enumerate(line):
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i].rstrip()
+    return line.rstrip()
+
+
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+_NATION_FIELD = re.compile(r"^[\"']?(name|color)[\"']?\s*:\s*(.*)$")
+_FLOW_COMMA = re.compile(r",(?=(?:[^\"']|\"[^\"]*\"|'[^']*')*$)")
+
+
+def _set_nation_field(entry: dict, field: str, raw: str) -> None:
+    val = raw.strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+        val = val[1:-1]
+    if field == "name":
+        if val:
+            entry["name"] = val
+    elif _HEX_COLOR.match(val):
+        entry["color"] = val.lower()
+    else:
+        log.warning("nations.%s.color %r is not #rrggbb; ignored", entry["code"], val)
+
+
+def _deployment_nation_registry() -> list[dict]:
+    """The entries under `nations:` in the releasability file, in file order,
+    as {code, name, color}, re-read on every call. A minimal indentation-based
+    read of that one mapping (the PEP stays stdlib-only and no YAML parser is
+    available): the first indented key line sets the key indent, deeper lines
+    are that entry's fields, a column-0 line ends the block. Both the flow
+    form (`ATL: {name: X, color: "#rrggbb"}`) and the block form are read.
+    `color` is presentation only and must be a quoted #rrggbb; anything else
+    is logged and dropped (null), which the UI renders as an unknown nation.
+    An unreadable file yields no nations, so nothing is declarable."""
     try:
         with open(RELEASABILITY_FILE, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
     except OSError:
         return []
-    out: list[str] = []
+    out: list[dict] = []
     in_block = False
     key_indent = None
     for line in lines:
-        body = line.split("#", 1)[0].rstrip()
+        body = _strip_yaml_comment(line)
         if not body.strip():
             continue
         indent = len(body) - len(body.lstrip(" "))
@@ -737,10 +774,27 @@ def _deployment_nations() -> list[str]:
         if key_indent is None:
             key_indent = indent
         if indent == key_indent:
-            m = re.match(r"^\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\s*:", body)
-            if m:
-                out.append(m.group(1))
+            m = re.match(r"^\s*[\"']?([A-Za-z0-9_.-]+)[\"']?\s*:\s*(.*)$", body)
+            if not m:
+                continue
+            entry = {"code": m.group(1), "name": m.group(1), "color": None}
+            out.append(entry)
+            rest = m.group(2).strip()
+            if rest.startswith("{") and rest.endswith("}"):
+                for part in _FLOW_COMMA.split(rest[1:-1]):
+                    fm = _NATION_FIELD.match(part.strip())
+                    if fm:
+                        _set_nation_field(entry, fm.group(1), fm.group(2))
+        elif out:
+            fm = _NATION_FIELD.match(body.strip())
+            if fm:
+                _set_nation_field(out[-1], fm.group(1), fm.group(2))
     return out
+
+
+def _deployment_nations() -> list[str]:
+    """Just the codes from `_deployment_nation_registry()`."""
+    return [e["code"] for e in _deployment_nation_registry()]
 
 
 _BASELINE_FIELD = re.compile(r"^(platform_variant|baseline_id):[ \t]*[\"']?([^\"'#\s]+)",
@@ -2690,6 +2744,10 @@ class Pep(BaseHTTPRequestHandler):
                 "expires_at": (session or {}).get("hard_expires"),
                 "server_time": time.time(),
                 "nations": decision["allowed_nations"],
+                # THE NATION PALETTE, in file order, for the UI to colour
+                # chips and the legend from. Presentation only: a nation
+                # without a valid colour carries null and renders as unknown.
+                "nation_registry": _deployment_nation_registry(),
                 "policy_version": decision["policy_version"],
                 "corpus_version": decision["corpus_version"],
                 "role": decision["role"],
