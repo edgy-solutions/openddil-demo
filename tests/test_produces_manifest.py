@@ -36,7 +36,9 @@ import produces_manifest as pm  # noqa: E402
 MANIFEST = pm.load(ROOT / "produces.yaml")
 
 # ---- egress -------------------------------------------------------------------------------------------
-ROLES = {"egress-gate-c2": "main.py", "egress-assembler": "assembler.py", "egress-intake": "intake.py"}
+ROLES = {"egress-gate-c2": "main.py", "egress-assembler": "assembler.py", "egress-intake": "intake.py",
+         "egress-pane-api": "pane_api.py"}
+NO_PRODUCER_ROLES = {"egress-pane-api"}  # reads the store, writes no topic: its manifest key is `topics: []`
 EGRESS_ATTRS = {"send", "send_and_wait", "produce", "send_one"}
 EGRESS_NAMES = {"produce", "send_one", "send"}
 # (file, function) that take the topic as a parameter or loop variable and hand it to the producer: the sink
@@ -163,7 +165,8 @@ def _diff(got, declared, what):
 def test_egress_role_produces_exactly_its_manifest_key(key, entry):
     files = _closure(entry)
     templates, bad, sites, _ = _scan(files)
-    assert sites, f"{key}: no producer call sites found in {files}: the scan is not looking at the code"
+    assert files and (sites or key in NO_PRODUCER_ROLES), (
+        f"{key}: no producer call sites found in {files}: the scan is not looking at the code")
     assert not bad, ("unresolvable producer call sites (annotate with '# produces: <entry>'): " + ", ".join(bad))
     msg = _diff(_expand(templates), _declared(key), key)
     assert not msg, "\n".join(msg)
@@ -218,6 +221,8 @@ def test_annotations_equal_the_real_loaders(tmp_path, monkeypatch):
     field = {"egress-gate-c2": "sink_topic", "egress-assembler": "output_topic", "egress-intake": "onward_topic"}
     for key, entry in ROLES.items():
         templates, _, _, detail = _scan(_closure(entry))
+        if key not in field:
+            continue
         annotated = [d for d in detail if d[2]]
         assert annotated, f"{key}: no annotated site: this test would hold nothing"
         for name, line, _, arg in annotated:

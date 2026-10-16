@@ -20,6 +20,9 @@ workloads:
     image: openddil/egress
     topics:
       - "@config:OPENDDIL_EGRESS_INTAKE_CONFIG.onward_topic"
+  egress-pane-api:
+    image: openddil/egress
+    topics: []
   connect-edge:
     image: redpandadata/connect
     config: openddil-base-connect.yaml
