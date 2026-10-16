@@ -743,6 +743,49 @@ def _set_nation_field(entry: dict, field: str, raw: str) -> None:
         log.warning("nations.%s.color %r is not #rrggbb; ignored", entry["code"], val)
 
 
+_ASSET_KEY = re.compile(r"""^(?:"([^"]+)"|'([^']+)'|(.+?))\s*:(?:\s|$)""")
+_rows_unreadable_logged = False
+
+
+def _file_asset_ids() -> set[str]:
+    """The ids keyed under `assets:` in the releasability file, re-read on
+    every call: the per-asset rows, and only those. `default_originator_nation`
+    labels no id for this purpose, so an asset it alone labels stays
+    undeclared and declarable (ADR-0050 s2.6). Same minimal indentation read
+    as _deployment_nation_registry(); keys may be quoted, rows may be flow
+    style on one line, and `assets: {}` is none. An unreadable file yields no
+    rows and is logged once."""
+    global _rows_unreadable_logged
+    try:
+        with open(RELEASABILITY_FILE, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError as exc:
+        if not _rows_unreadable_logged:
+            _rows_unreadable_logged = True
+            log.warning("releasability file unreadable, treating as no asset rows: %s", exc)
+        return set()
+    out: set[str] = set()
+    in_block = False
+    key_indent = None
+    for line in lines:
+        body = _strip_yaml_comment(line)
+        if not body.strip():
+            continue
+        indent = len(body) - len(body.lstrip(" "))
+        if not in_block:
+            in_block = indent == 0 and body.strip() == "assets:"
+            continue
+        if indent == 0:
+            break
+        if key_indent is None:
+            key_indent = indent
+        if indent == key_indent:
+            m = _ASSET_KEY.match(body.strip())
+            if m:
+                out.add(m.group(1) or m.group(2) or m.group(3))
+    return out
+
+
 def _deployment_nation_registry() -> list[dict]:
     """The entries under `nations:` in the releasability file, in file order,
     as {code, name, color}, re-read on every call. A minimal indentation-based
@@ -1762,7 +1805,7 @@ class Pep(BaseHTTPRequestHandler):
         e = _sql_str(edge_id)
         try:
             tel = _follow_shape(
-                "telemetry_latest_state", f"edge_id = {e} AND originator_nation IS NULL",
+                "telemetry_latest_state", f"edge_id = {e}",
                 ["asset_id", "edge_id", "platform_variant", "kinematics", "last_sample_at"],
                 "")
             reg = _follow_shape("asset_registry", f"edge_id = {e}",
@@ -1793,8 +1836,9 @@ class Pep(BaseHTTPRequestHandler):
                 "due_by": r.get("due_by"), "overdue": due is not None and due < now,
             })
         undeclared = []
+        file_rows = _file_asset_ids()
         for r in sorted(tel, key=lambda r: str(r.get("asset_id"))):
-            if r.get("asset_id") in declared_ids:
+            if r.get("asset_id") in declared_ids or r.get("asset_id") in file_rows:
                 continue
             variant = r.get("platform_variant")
             undeclared.append({
@@ -1839,7 +1883,7 @@ class Pep(BaseHTTPRequestHandler):
         allowed = decision["allowed_nations"]
         try:
             tel = _follow_shape("telemetry_latest_state", "true",
-                                ["asset_id", "edge_id", "originator_nation"], "")
+                                ["asset_id", "edge_id"], "")
             decl = _follow_shape("asset_declaration", "true", ["asset_id", "edge_id"], "")
             fielding = _follow_shape(
                 "asset_fielding", compose(None, policy_predicate(allowed)),
@@ -1858,12 +1902,13 @@ class Pep(BaseHTTPRequestHandler):
             return counts.setdefault(
                 e, {"edge_id": e, "undeclared": 0, "expected": 0, "overdue": 0})
 
+        file_rows = _file_asset_ids()
         for r in tel:
             e = r.get("edge_id")
             if e is None:
                 continue
             row = edge(e)
-            if r.get("originator_nation") is None and r.get("asset_id") not in declared_ids:
+            if r.get("asset_id") not in declared_ids and r.get("asset_id") not in file_rows:
                 row["undeclared"] += 1
         for r in fielding:
             e = r.get("fielded_to")
@@ -1959,7 +2004,7 @@ class Pep(BaseHTTPRequestHandler):
         try:
             observed = _follow_shape(
                 "telemetry_latest_state",
-                f"edge_id = {e} AND asset_id = {a} AND originator_nation IS NULL",
+                f"edge_id = {e} AND asset_id = {a}",
                 ["asset_id", "edge_id", "platform_variant", "region_id"], asset_id)
             declared = _follow_shape("asset_declaration", f"asset_id = {a}",
                                      ["asset_id"], asset_id)
@@ -1968,7 +2013,7 @@ class Pep(BaseHTTPRequestHandler):
             return
         # One answer for unknown, already labelled, or already declared: this
         # route never confirms that an id exists.
-        if not observed or declared:
+        if not observed or declared or asset_id in _file_asset_ids():
             record(404, "asset is not awaiting declaration at this edge", subject)
             return
         row = observed[0]

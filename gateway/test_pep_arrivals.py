@@ -101,6 +101,8 @@ def _fake_shape(table, where, columns, default_key):
         raise state["electric_down"]
     if table == "telemetry_latest_state":
         rows = state["telemetry"]
+        if "originator_nation IS NULL" in where:
+            rows = [r for r in rows if r.get("originator_nation") is None]
         if "asset_id = " in where:
             rows = [r for r in rows if f"asset_id = '{r['asset_id']}'" in where]
         return [{k: r[k] for k in r if columns is None or k in columns} for r in rows]
@@ -145,6 +147,7 @@ def pep_url(env, monkeypatch, tmp_path):
     monkeypatch.setattr(pep, "ARRIVALS_UNITS", [{"id": "u1", "name": "Unit One"}])
     monkeypatch.setattr(pep, "ARRIVALS_OWNING_TIER", "tier-x")
     monkeypatch.setattr(pep, "RELEASABILITY_FILE", str(rel))
+    state["rel"] = rel
     monkeypatch.setattr(pep, "BASELINES_DIRS", str(bdir))
     return base
 
@@ -161,6 +164,14 @@ def _req(url, subject, body=None, method=None):
             return r.status, json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read() or b"{}")
+
+
+def _set_rows(*ids):
+    """Give the releasability file a per-asset row for each id."""
+    rel = state["rel"]
+    head = rel.read_text().split("assets:")[0]
+    rows = "".join(f'  "{i}": {{ originator_nation: ATL, releasable_to: [] }}\n' for i in ids)
+    rel.write_text(head + ("assets:\n" + rows if ids else "assets: {}\n"))
 
 
 GOOD = {"asset_id": "dis:1:1:7", "edge_id": "edge-a", "serial": None, "unit": "u1",
@@ -207,9 +218,10 @@ def test_get_shape(pep_url):
     assert by["SN-1"]["releasable_to"] == ["BDR"]
     assert body["nations"] == ["ATL", "BDR"] and body["declarable_nations"] == ["ATL"]
     assert body["baselines"] == {"SENTRY": ["SENTRY-B1"]}
-    # the fielding read carries the policy predicate; telemetry read is the null-label rows
+    # the fielding read carries the policy predicate; the telemetry read does not
+    # filter on the projected label (a default-labelled asset stays undeclared)
     reads = {t: w for t, w, _c in state["shape_reads"]}
-    assert "originator_nation IS NULL" in reads["telemetry_latest_state"]
+    assert "originator_nation" not in reads["telemetry_latest_state"]
     assert "ANY" not in reads["asset_fielding"] and "'ATL'" in reads["asset_fielding"]
 
 
@@ -219,6 +231,50 @@ def test_get_removes_correlated_serial_and_declared_id(pep_url):
     _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
     assert [x["serial"] for x in body["expected"]] == ["SN-2", "SN-3"]
     assert body["undeclared"] == []
+
+
+def test_default_labelled_asset_is_listed_and_declarable(pep_url):
+    state["telemetry"] = [dict(OBSERVED, originator_nation="ATL")]  # default-stamped
+    _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
+    assert [u["asset_id"] for u in body["undeclared"]] == ["dis:1:1:7"]
+    assert _declare(pep_url)[0] == 201
+
+
+def test_row_labelled_asset_is_refused_and_not_listed(pep_url):
+    state["telemetry"] = [dict(OBSERVED, originator_nation="ATL")]
+    _set_rows("dis:1:1:7")
+    _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
+    assert body["undeclared"] == []
+    assert _declare(pep_url)[0] == 404
+    assert state["calls"] == []
+
+
+def test_declared_default_labelled_asset_is_refused_and_not_listed(pep_url):
+    state["telemetry"] = [dict(OBSERVED, originator_nation="ATL")]
+    state["declared"] = [{"asset_id": "dis:1:1:7"}]
+    _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
+    assert body["undeclared"] == []
+    assert _declare(pep_url)[0] == 404
+
+
+def test_file_asset_ids_reader(pep_url, tmp_path, env):
+    pep = env[0]
+    f = tmp_path / "r.yaml"
+    f.write_text('nations:\n  ATL: {name: A}\nassets:\n'
+                 '  # c\n'
+                 '  "dis:1:1:1": { originator_nation: ATL, releasable_to: [] }  # t\n'
+                 "  'dis:1:1:2': { originator_nation: ATL }\n"
+                 '  dis:1:1:3: { originator_nation: BDR }\n'
+                 '  plain:\n    originator_nation: ATL\n'
+                 'default_originator_nation: BDR\n')
+    pep.RELEASABILITY_FILE = str(f)
+    assert pep._file_asset_ids() == {"dis:1:1:1", "dis:1:1:2", "dis:1:1:3", "plain"}
+    f.write_text("assets: {}\ndefault_originator_nation: ATL\n")
+    assert pep._file_asset_ids() == set()
+    f.write_text("nations: {}\n")
+    assert pep._file_asset_ids() == set()
+    pep.RELEASABILITY_FILE = str(tmp_path / "missing.yaml")
+    assert pep._file_asset_ids() == set()
 
 
 # --- POST /arrivals/declare ---------------------------------------------------
@@ -273,9 +329,9 @@ def test_refusals(pep_url, subject, over, code):
 
 def test_unknown_labelled_and_declared_ids_answer_alike(pep_url):
     unknown = _declare(pep_url, asset_id="dis:9:9:9")
-    state["telemetry"] = []  # labelled rows are not in the null-label read
+    _set_rows("dis:1:1:7")  # a file row labels it
     labelled = _declare(pep_url)
-    state["telemetry"] = [dict(OBSERVED)]
+    _set_rows()
     state["declared"] = [{"asset_id": "dis:1:1:7"}]
     declared = _declare(pep_url)
     assert {unknown[0], labelled[0], declared[0]} == {404}
@@ -321,6 +377,7 @@ def _summary_state():
         _tel("dis:9:9:1", "edge-a"), _tel("dis:9:9:2", "edge-a"),
         _tel("dis:9:9:3", "edge-a", "ATL"), _tel("dis:9:9:4", "edge-b", "ATL"),
     ]
+    _set_rows("dis:9:9:3", "dis:9:9:4")
     state["declared"] = [{"asset_id": "dis:9:9:2", "edge_id": "edge-a"}]
     state["correlated"] = [{"serial": "SN-2"}]
 
@@ -333,6 +390,13 @@ def test_summary_shape(pep_url):
         {"edge_id": "edge-a", "undeclared": 1, "expected": 2, "overdue": 1},
         {"edge_id": "edge-b", "undeclared": 0, "expected": 0, "overdue": 0},
     ]
+
+
+def test_summary_counts_default_labelled_as_undeclared(pep_url):
+    _summary_state()
+    _set_rows("dis:9:9:4")  # dis:9:9:3 is now labelled only by a default
+    _s, body = _req(pep_url + "/arrivals/summary", "op-atl")
+    assert body["edges"][0]["undeclared"] == 2
 
 
 def test_summary_carries_no_ids(pep_url):
