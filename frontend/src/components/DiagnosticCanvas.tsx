@@ -105,8 +105,8 @@ function titleForVariant(platformVariant: string | null | undefined): { title: s
 // `_Sensor` asset_id renders as SensorRadarSchematic (radar visual).
 const MRAD_VARIANTS: ReadonlySet<string> = new Set([
     'MRAD_Sensor',
-    'MRAD2_radar',     // matches the asset-id token used by customer-overlay's NLD
-                       // proprietary feed (demo:*_MRAD2_radar)
+    'MRAD2_radar',     // matches the asset-id token used by a customer
+                       // overlay's feed (demo:*_MRAD2_radar)
 ]);
 
 interface DiagnosticCanvasProps {
