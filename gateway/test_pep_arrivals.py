@@ -394,3 +394,33 @@ def test_summary_not_gated_on_ownership_or_role(pep_url, monkeypatch, env):
     monkeypatch.setattr(pep, "ARRIVALS_EDGES", frozenset({"edge-a"}))
     assert "observer" not in pep.ARRIVALS_DECLARE_ROLES
     assert _req(pep_url + "/arrivals/summary", "obs-atl")[0] == 200
+
+
+@pytest.mark.parametrize("spec,want", [
+    ("/baselines", ["/baselines"]),
+    ("/baselines:/baselines-overlay", ["/baselines", "/baselines-overlay"]),
+    ("/a:/b:/c", ["/a", "/b", "/c"]),
+    ("/a::/b", ["/a", "/b"]),
+    ("/a:", ["/a"]),
+    ("C:/a:C:/b", ["C:/a", "C:/b"]),
+    ("C:\\a:/b", ["C:\\a", "/b"]),
+    ("ab:/c", ["ab", "/c"]),
+])
+def test_split_dirs(env, spec, want):
+    assert env[0]._split_dirs(spec) == want
+
+
+def test_load_baselines_reads_every_directory(env, monkeypatch, tmp_path):
+    pep = env[0]
+    d1, d2 = tmp_path / "one", tmp_path / "two"
+    d1.mkdir()
+    d2.mkdir()
+    (d1 / "a.yaml").write_text('baseline_id: "ALPHA-B1"\nplatform_variant: "ALPHA"\n')
+    (d2 / "b.yaml").write_text('baseline_id: "BRAVO-B1"\nplatform_variant: "BRAVO"\n')
+    (d2 / "c.yaml").write_text('baseline_id: "ALPHA-B1"\nplatform_variant: "ALPHA"\n')
+    # the second entry is drive-less and rooted ("/..."), so the separator colon is
+    # followed by "/" exactly as in a POSIX list; chdir keeps it on d1's drive
+    monkeypatch.chdir(tmp_path)
+    rooted = os.path.splitdrive(d2.as_posix())[1]
+    monkeypatch.setattr(pep, "BASELINES_DIRS", f"{d1.as_posix()}:{rooted}")
+    assert pep._load_baselines() == {"ALPHA": ["ALPHA-B1"], "BRAVO": ["BRAVO-B1"]}

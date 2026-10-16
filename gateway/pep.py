@@ -747,18 +747,38 @@ _BASELINE_FIELD = re.compile(r"^(platform_variant|baseline_id):[ \t]*[\"']?([^\"
                              re.M)
 
 
+def _split_dirs(spec: str) -> list[str]:
+    """Split a baselines directory list on every ":", as the cm-service
+    loader does, so "/baselines:/baselines-overlay" yields both (the chart
+    lists a deployment's baselines layer after /baselines). One exception for
+    local runs on Windows: a colon directly after a single ASCII letter that
+    starts an entry and directly before a backslash or "/" is a drive letter
+    and stays in the entry. Entries are stripped; empty ones are dropped."""
+    out: list[str] = []
+    start = 0
+    for i, ch in enumerate(spec):
+        if ch != ":":
+            continue
+        is_drive = (i - start == 1 and spec[start].isascii() and spec[start].isalpha()
+                    and spec[i + 1:i + 2] in ("\\", "/"))
+        if is_drive:
+            continue
+        out.append(spec[start:i])
+        start = i + 1
+    out.append(spec[start:])
+    return [e.strip() for e in out if e.strip()]
+
+
 def _load_baselines() -> dict[str, list[str]]:
     """{platform_variant: [baseline_id, ...]} from every *.yaml in
-    BASELINES_DIRS (colon list). Keyed as the cm-service loader keys them:
+    BASELINES_DIRS (colon list, see _split_dirs). Keyed as the cm-service loader keys them:
     by the file's top-level `platform_variant`, naming the file's top-level
     `baseline_id`. Only those two column-0 scalars are read, with a regex
     (no YAML parser; the PEP stays stdlib-only)."""
     import glob  # noqa: PLC0415
     out: dict[str, list[str]] = {}
-    for directory in re.split(r":(?![\\/])", BASELINES_DIRS):
-        if not directory.strip():
-            continue
-        for path in sorted(glob.glob(os.path.join(directory.strip(), "*.yaml"))):
+    for directory in _split_dirs(BASELINES_DIRS):
+        for path in sorted(glob.glob(os.path.join(directory, "*.yaml"))):
             try:
                 with open(path, encoding="utf-8") as fh:
                     text = fh.read()
