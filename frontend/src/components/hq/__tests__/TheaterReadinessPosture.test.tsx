@@ -22,6 +22,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 
 const mockFobs: any[] = [];
+const mockTiers: any[] = [];
 const mockLinkStatus = vi.fn(() => ({ links: new Map(), isLoading: false, isError: false }));
 const mockLinkControl = vi.fn();
 vi.mock('../../../hooks/useLinkControl', () => ({
@@ -34,7 +35,7 @@ vi.mock('../../../hooks', () => ({
   useLinkStatus: () => mockLinkStatus(),
 }));
 vi.mock('../../../deployment', () => ({
-  deployment: () => ({ fobs: mockFobs }),
+  deployment: () => ({ fobs: mockFobs, tiers: mockTiers.length ? mockTiers : undefined }),
   edgeAttachment: () => undefined,
 }));
 vi.mock('@react-three/drei', () => ({
@@ -130,6 +131,42 @@ describe('TheaterReadinessPosture — link card', () => {
     expect(html).toContain('data-testid="hq-posture-hud"');
     expect(html).not.toContain('DIRECT LINKS');
     expect(html).not.toContain('link-toggle-');
+  });
+});
+
+describe('TheaterReadinessPosture - tier tree', () => {
+  it('chips total equals the drawn-edge count and a stray FOB is not drawn', () => {
+    const f = (edge_id: string) => ({ edge_id, region_id: 'region-a', lat: 1, lon: 1, name: edge_id });
+    mockFobs.splice(0, mockFobs.length, f('edge-a'), f('edge-b'), f('stray'));
+    mockTiers.splice(0, mockTiers.length,
+      { id: 'edge-a', parent: 'region-a', hasChildren: false },
+      { id: 'edge-b', parent: 'region-a', hasChildren: false },
+      { id: 'region-a', parent: 'root', hasChildren: true },
+    );
+    const mk = (id: string, state: string) => [id, {
+      id, link_state: state, traffic: 'none', declared_idle: false,
+      heartbeat_age_s: 1, last_heartbeat_at: null, bridge_lag: 0,
+      updated_at: new Date().toISOString(),
+    }] as const;
+    mockLinkStatus.mockReturnValue({
+      links: new Map([mk('edge-a', 'down'), mk('edge-b', 'down'), mk('region-a', 'down')]),
+      isLoading: false, isError: false,
+    });
+    mockLinkControl.mockReturnValue({
+      status: 'ready', uplink: null, children: [], set: () => {}, setToxics: () => {},
+    });
+    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
+    mockFobs.splice(0, mockFobs.length);
+    mockTiers.splice(0, mockTiers.length);
+    const counts = [...html.matchAll(/data-testid="link-chip-[a-z]+" data-count="(\d+)"/g)]
+      .map((m) => Number(m[1]));
+    const drawn = /data-testid="hq-topology" data-edge-count="(\d+)" data-node-ids="([^"]*)"/.exec(html);
+    expect(drawn).not.toBeNull();
+    expect(counts.reduce((a, b) => a + b, 0)).toBe(Number(drawn![1]));
+    expect(drawn![1]).toBe('3');
+    expect(drawn![2].split(',').sort()).toEqual(['edge-a', 'edge-b', 'region-a']);
+    expect(html).not.toContain('stray');
+    expect(html).toContain('data-testid="link-chip-unreachable" data-count="2"');
   });
 });
 

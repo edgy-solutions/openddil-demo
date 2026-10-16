@@ -44,13 +44,11 @@ import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackMarker from '../MunitionTrackMarker';
 import { LinkChips } from '../network/LinkChips';
 import {
-  allLinksDown,
-  linkForFob,
   linkStateWord,
-  summarizeLinks,
   type LinkReading,
   type LinkState,
 } from '../../lib/linkStatus';
+import { buildTheaterTopology, HQ_NODE, type EdgeState } from '../../lib/theaterTopology';
 
 // Scene scale: HQ canvas spans ~2000 units; ~400 units per deg of lat
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
@@ -332,15 +330,16 @@ const LINK_WORD_CLASS: Record<LinkState, string> = {
   unknown: 'text-slate-400',
 };
 
-const DDIL_STATUS: Record<LinkState, 'NOMINAL' | 'IDLE' | 'SEVERED' | 'UNKNOWN'> = {
+const DDIL_STATUS: Record<EdgeState, 'NOMINAL' | 'IDLE' | 'SEVERED' | 'UNKNOWN' | 'UNREACHABLE'> = {
   up: 'NOMINAL',
   idle: 'IDLE',
   down: 'SEVERED',
   unknown: 'UNKNOWN',
+  unreachable: 'UNREACHABLE',
 };
 
 export function FobLabel({
-  position, label, total, composition, attachment, link,
+  position, label, total, composition, attachment, link, unreachableVia,
 }: {
   position: [number, number, number];
   label: string;
@@ -354,9 +353,13 @@ export function FobLabel({
   attachment?: EdgeAttachment;
   /** This FOB's link reading. Absent renders as UNKNOWN, never UP. */
   link?: LinkReading;
+  /** Set when an ancestor link is down: the link then reads UNREACHABLE
+   *  through that ancestor, whatever its own row says. */
+  unreachableVia?: string;
 }) {
   const reading: LinkReading = link ?? { state: 'unknown', declaredIdle: false };
-  const word = linkStateWord(reading);
+  const word = unreachableVia ? `UNREACHABLE via ${unreachableVia}` : linkStateWord(reading);
+  const wordClass = unreachableVia ? 'text-slate-400' : LINK_WORD_CLASS[reading.state];
   // Composition pill: sensors + LAUNCHER hardware + facilities. In-flight
   // munitions surface as a smaller separate ticker (IN FLIGHT: N) so
   // they don't distort the hardware picture -- a FOB with 4 launchers
@@ -388,7 +391,7 @@ export function FobLabel({
             </span>
           )}
           <span
-            className={`ml-2 text-[9px] tracking-widest ${LINK_WORD_CLASS[reading.state]}`}
+            className={`ml-2 text-[9px] tracking-widest ${wordClass}`}
             data-link-state={word}
           >
             {word}
@@ -425,7 +428,7 @@ export function FobLabel({
 }
 
 export default function TheaterReadinessPosture() {
-  const { fobs } = deployment();
+  const { fobs, tiers } = deployment();
   const linkRows = useLinkStatus();
   // Re-evaluated on a timer so a monitor that stops writing ages out to
   // UNKNOWN without waiting for another row to arrive.
@@ -465,8 +468,31 @@ export default function TheaterReadinessPosture() {
     [fleet.data, logistics.data],
   );
 
+  // The drawn topology: the chart's tier tree when deployment.json carries
+  // one, else one link per FOB straight to HQ. Counts run over the drawn
+  // edges, each read from its own link_status row.
+  const topo = useMemo(
+    () => buildTheaterTopology(tiers, fobs, linkRows.links, nowMs),
+    [tiers, fobs, linkRows.links, nowMs],
+  );
+  const totalLinks = topo.edges.length;
+  const linkCounts = topo.counts;
+  // The panel goes red only when nothing is reachable, not on one bad link.
+  const severed = totalLinks > 0 && topo.edges.every((e) => e.state === 'down' || e.state === 'unreachable');
+  // Scene [x, z] per drawn node; HQ is the origin.
+  const nodePos = useMemo(() => {
+    const m = new Map<string, [number, number]>([[HQ_NODE, [0, 0]]]);
+    for (const n of topo.nodes) m.set(n.id, proj.project(n.lat, n.lon));
+    return m;
+  }, [topo.nodes, proj]);
+  const drawnMetrics = useMemo(
+    () => metrics.filter((m) => topo.nodes.some((n) => n.fob === m.fob)),
+    [metrics, topo.nodes],
+  );
+  const edgeById = useMemo(() => new Map(topo.edges.map((e) => [e.id, e])), [topo.edges]);
+
   const trackMarkers = useMemo(() => {
-    const fobPos = new Map(metrics.map((m) => [m.fob.edge_id, m.scenePos]));
+    const fobPos = new Map(drawnMetrics.map((m) => [m.fob.edge_id, m.scenePos]));
     const edgeByAsset = new Map(fleet.data.map((a) => [a.asset_id, a.edge_id]));
     const out: {
       track: MunitionTrack;
@@ -486,18 +512,7 @@ export default function TheaterReadinessPosture() {
       });
     }
     return out;
-  }, [tracks.data, fleet.data, metrics, proj]);
-
-  // One link per FOB, each read from its own link_status row. Counts run
-  // over the FOB list, not the pre-§A invented "17 radars."
-  const totalLinks = metrics.length;
-  const fobLinks = useMemo(
-    () => metrics.map((m) => linkForFob(linkRows.links, m.fob.edge_id, nowMs)),
-    [metrics, linkRows.links, nowMs],
-  );
-  const linkCounts = summarizeLinks(fobLinks);
-  // The panel goes red only when nothing is reachable, not on one bad link.
-  const severed = allLinksDown(fobLinks);
+  }, [tracks.data, fleet.data, drawnMetrics, proj]);
 
   return (
     <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${severed ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-theater-readiness">
@@ -536,6 +551,12 @@ export default function TheaterReadinessPosture() {
               being measured. Same root as the "0 FOBS" readout beside a
               live fleet. */}
           <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2">GLOBAL LINK STATUS</h2>
+          <span
+            hidden
+            data-testid="hq-topology"
+            data-edge-count={topo.edges.length}
+            data-node-ids={topo.nodes.map((n) => n.id).join(',')}
+          />
           {totalLinks === 0 ? (
             <div className="text-xs font-rajdhani text-slate-500 text-left leading-tight"
                  title="Links are counted per FOB, from deployment().fobs. This deployment supplies no FOB topology, so there is nothing to report the status OF — which is not the same as reporting that the links are down.">
@@ -575,7 +596,8 @@ export default function TheaterReadinessPosture() {
         <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-emerald-500"></div><span className="text-slate-300">NOMINAL LINK</span></div>
         <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-amber-500"></div><span className="text-slate-300">IDLE LINK</span></div>
         <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
-        <div className="flex items-center gap-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
+        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
+        <div className="flex items-center gap-2"><div className="w-3 h-3 border border-dashed border-slate-400"></div><span className="text-slate-300">UNREACHABLE (ANCESTOR DOWN)</span></div>
       </div>
 
       <div className="absolute inset-0 cursor-move">
@@ -647,23 +669,40 @@ export default function TheaterReadinessPosture() {
 
           <AbstractContinents />
 
-          {/* FOB hub nodes — one per deployment().fobs. */}
-          {metrics.map((m) => (
-            <LogisticsHubNode key={`hub-${m.fob.edge_id}`} position={[m.scenePos[0], 0, m.scenePos[1]]} />
-          ))}
+          {/* Tier nodes: a hub per FOB-placed tier, plus a ring on every tier
+              that rolls up children (a derived region has the ring alone). */}
+          {topo.nodes.map((n) => {
+            const [x, z] = nodePos.get(n.id)!;
+            return (
+              <React.Fragment key={`node-${n.id}`}>
+                {!n.derived && <LogisticsHubNode position={[x, 0, z]} />}
+                {n.hasChildren && (
+                  <mesh position={[x, 0.5, z]} rotation={[-Math.PI / 2, 0, 0]}>
+                    <ringGeometry args={[7, 8.5, 32]} />
+                    <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
+                  </mesh>
+                )}
+              </React.Fragment>
+            );
+          })}
 
-          {/* DDIL links from theater origin to each FOB. */}
-          {metrics.map((m, i) => (
-            <DdilNetworkLink
-              key={`link-${m.fob.edge_id}`}
-              start={new THREE.Vector3(0, 0, 0)}
-              end={new THREE.Vector3(m.scenePos[0], 0, m.scenePos[1])}
-              status={DDIL_STATUS[fobLinks[i].state]}
-            />
-          ))}
+          {/* DDIL links: each drawn tier to its parent's node (HQ = origin). */}
+          {topo.edges.map((e) => {
+            const [sx, sz] = nodePos.get(e.id)!;
+            const [ex, ez] = nodePos.get(e.to) ?? [0, 0];
+            return (
+              <DdilNetworkLink
+                key={`link-${e.id}`}
+                start={new THREE.Vector3(sx, 0, sz)}
+                end={new THREE.Vector3(ex, 0, ez)}
+                status={DDIL_STATUS[e.state]}
+                via={e.via}
+              />
+            );
+          })}
 
-          {/* Per-FOB label + composition breakdown. */}
-          {metrics.map((m, i) => (
+          {/* Per-FOB label + composition breakdown (derived tiers have no FOB). */}
+          {drawnMetrics.map((m) => (
             <FobLabel
               key={`label-${m.fob.edge_id}`}
               position={[m.scenePos[0], 0, m.scenePos[1]]}
@@ -671,9 +710,24 @@ export default function TheaterReadinessPosture() {
               total={m.total}
               composition={m.composition}
               attachment={m.attachment}
-              link={fobLinks[i]}
+              link={edgeById.get(m.fob.edge_id)?.reading}
+              unreachableVia={edgeById.get(m.fob.edge_id)?.via}
             />
           ))}
+          {topo.nodes.filter((n) => n.derived).map((n) => {
+            const [x, z] = nodePos.get(n.id)!;
+            const e = edgeById.get(n.id);
+            const word = e ? (e.via ? `UNREACHABLE via ${e.via}` : linkStateWord(e.reading)) : '';
+            return (
+              <Html key={`region-label-${n.id}`} position={[x, 0, z]} center
+                    style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
+                <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+                  <span className="text-slate-200 font-bold">{n.id}</span>
+                  {e && <span className="ml-2 text-[9px]" data-link-state={word}>{word}</span>}
+                </div>
+              </Html>
+            );
+          })}
 
           {/* In-flight munition tracks (ADR-0049): a dot at the track's projected
               position, a line to the launcher's FOB when the launcher is

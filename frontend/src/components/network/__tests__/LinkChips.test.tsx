@@ -42,3 +42,15 @@ describe('LinkChips', () => {
     }
   });
 });
+
+describe('LinkChips - unreachable', () => {
+  const html = (c: LinkCounts & { unreachable?: number }) => renderToStaticMarkup(<LinkChips counts={c} />);
+  it('shows the unreachable chip only when its count is above 0', () => {
+    const base = { up: 1, idle: 0, down: 1, unknown: 0 };
+    expect(html(base)).not.toContain('link-chip-unreachable');
+    expect(html({ ...base, unreachable: 0 })).not.toContain('link-chip-unreachable');
+    const h = html({ ...base, unreachable: 2 });
+    expect(h).toContain('data-testid="link-chip-unreachable" data-count="2"');
+    expect(h).toContain('2 UNREACHABLE');
+  });
+});

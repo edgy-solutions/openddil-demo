@@ -227,6 +227,15 @@ export interface ChildLinkEntry {
   hasChildren: boolean;
 }
 
+/** One entry of `deployment.json`'s `tiers` list (the chart's whole tier tree)
+ *  -- see `parseTiers`. `parent` is as the chart gave it: a tier id, or a
+ *  root/hq/empty value meaning "directly under HQ". */
+export interface TierEntry {
+  id: string;
+  parent: string | null;
+  hasChildren: boolean;
+}
+
 export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
@@ -283,6 +292,9 @@ export interface Deployment {
    *  case. Parsed by `parseChildLinks`. DECLARED ONLY — never inferred from
    *  an id; the chart is the only source of this list. */
   childLinks?: ChildLinkEntry[];
+  /** The chart's tier tree, when rendered. Absent => the HQ theater draws
+   *  one link per FOB straight to HQ. */
+  tiers?: TierEntry[];
   /** Declared inputs to the move panel: effector declared load, movement
    *  standards and movement units. ABSENT on an older chart that carries
    *  neither key; present (possibly with empty maps) otherwise. Parsed by
@@ -604,6 +616,37 @@ export function parseChildLinks(raw: unknown): ChildLinkEntry[] | undefined {
   return out;
 }
 
+/** Parses `deployment.json`'s `tiers` list, defensively, like
+ *  `parseChildLinks`: not an array => undefined; an entry that is not an
+ *  object, has a blank `id`, a `parent` that is neither string nor null, or a
+ *  non-boolean `hasChildren` is DROPPED with a console.warn. An empty result
+ *  is undefined (no tree). EXPORTED FOR TESTS. */
+export function parseTiers(raw: unknown): TierEntry[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: TierEntry[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') {
+      console.warn('[deployment] tiers entry dropped (not an object):', entry);
+      continue;
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.id !== 'string' || !e.id.trim()) {
+      console.warn('[deployment] tiers entry dropped (missing/invalid id):', entry);
+      continue;
+    }
+    if (e.parent !== null && e.parent !== undefined && typeof e.parent !== 'string') {
+      console.warn(`[deployment] tiers entry for "${e.id}" dropped (parent must be a string or null):`, entry);
+      continue;
+    }
+    if (typeof e.hasChildren !== 'boolean') {
+      console.warn(`[deployment] tiers entry for "${e.id}" dropped (hasChildren must be a boolean):`, entry);
+      continue;
+    }
+    out.push({ id: e.id.trim(), parent: typeof e.parent === 'string' ? e.parent.trim() : null, hasChildren: e.hasChildren });
+  }
+  return out.length ? out : undefined;
+}
+
 /** A direct child's declared shape: `rollup` (has its own children) or
  *  `leaf`. Undefined when nothing was declared for this child. */
 export function childLinkShape(id: string): 'rollup' | 'leaf' | undefined {
@@ -899,6 +942,7 @@ export async function loadDeployment(): Promise<void> {
         manualQa: parseManualQa((j as { manualQa?: unknown }).manualQa),
         edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
         childLinks: parseChildLinks((j as { childLinks?: unknown }).childLinks),
+        tiers: parseTiers((j as { tiers?: unknown }).tiers),
         moveInputs: parseMoveInputs(j),
       };
     }
