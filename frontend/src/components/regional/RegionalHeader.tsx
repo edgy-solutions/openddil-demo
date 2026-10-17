@@ -18,6 +18,10 @@ import { classifyLink } from '../../lib/linkStatus';
 import { LinkControlCaption } from '../LinkToggle';
 import { deployment, isRootTier, parentDisplay, parentTierName } from '../../deployment';
 import NetworkPopover from '../network/NetworkPopover';
+
+// The heuristics editor (TacticalRuleBuilder) is a DEMO_MOCK with no rule
+// pipeline behind it, so its button is hidden until one exists (ADR-0017).
+const SHOW_RULE_BUILDER = false;
 import { LinkSummary, PathNode, PathRow, Section, StatusStrip, Wire } from '../network/PathDiagram';
 import { TopBarPortal } from '../TopBarSlot';
 import { LinkRow, type LinkObserved } from '../network/LinkRow';
@@ -96,13 +100,15 @@ export default function RegionalHeader({ linkControl, setIsRuleEditorOpen }: Reg
 
   return (
     <TopBarPortal>
-        <button
-          onClick={() => setIsRuleEditorOpen(true)}
-          className="flex h-7 shrink-0 items-center whitespace-nowrap gap-2 bg-cyan-900/40 hover:bg-cyan-800/60 border border-cyan-700/50 text-cyan-400 px-2 rounded-sm transition-colors"
-        >
-          <Settings className="w-4 h-4" />
-          <span className="text-[10px] font-bold tracking-widest">CONFIGURE HEURISTICS</span>
-        </button>
+        {SHOW_RULE_BUILDER && (
+          <button
+            onClick={() => setIsRuleEditorOpen(true)}
+            className="flex h-7 shrink-0 items-center whitespace-nowrap gap-2 bg-cyan-900/40 hover:bg-cyan-800/60 border border-cyan-700/50 text-cyan-400 px-2 rounded-sm transition-colors"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="text-[10px] font-bold tracking-widest">CONFIGURE HEURISTICS</span>
+          </button>
+        )}
 
         {/* Real edge-buffer depth: bridge-group consumer lag on redpanda-edge */}
         <NetworkPopover

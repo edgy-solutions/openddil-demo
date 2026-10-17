@@ -174,7 +174,8 @@ describe('RegionalHeader — top-bar summary (popover closed)', () => {
     expect(html).toContain('REGIONAL↔HQ: SEVERED');
     expect(html).toContain('buffer-value');
     expect(html).toContain('UPLINK BUFFER → HQ');
-    expect(html).toContain('CONFIGURE HEURISTICS');
+    // The heuristics editor is a mock with no pipeline; its button stays hidden.
+    expect(html).not.toContain('CONFIGURE HEURISTICS');
     expect(html).not.toContain('<header');
     expect(html).not.toContain('class="panel');
   });
