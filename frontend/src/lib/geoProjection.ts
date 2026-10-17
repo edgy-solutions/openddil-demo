@@ -77,8 +77,8 @@ const WGS84_F = 1 / 298.257223563;
 const WGS84_E2 = WGS84_F * (2 - WGS84_F);
 
 /**
- * Convert an ECEF position (metres) to geodetic lat/lon in degrees.
- * Height is discarded. Iterative; converges well below 1e-9 deg.
+ * Convert an ECEF position (metres) to geodetic lat/lon in degrees plus
+ * ellipsoidal height `h` in metres. Iterative; converges well below 1e-9 deg.
  * Returns null for non-finite input or a point within 1 km of the Earth's
  * centre, where the conversion is meaningless.
  */
@@ -86,7 +86,7 @@ export function ecefToWgs84(
   x: number,
   y: number,
   z: number,
-): { lat: number; lon: number } | null {
+): { lat: number; lon: number; h: number } | null {
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
   if (Math.hypot(x, y, z) < 1000) return null;
   const p = Math.hypot(x, y);
@@ -100,5 +100,9 @@ export function ecefToWgs84(
     lat = next;
     if (done) break;
   }
-  return { lat: (lat * 180) / Math.PI, lon: (lon * 180) / Math.PI };
+  // Height: the closed form is stable away from the poles (cos) or the equator (sin).
+  const sl = Math.sin(lat);
+  const nf = WGS84_A / Math.sqrt(1 - WGS84_E2 * sl * sl);
+  const h = Math.abs(lat) < Math.PI / 4 ? p / Math.cos(lat) - nf : z / sl - nf * (1 - WGS84_E2);
+  return { lat: (lat * 180) / Math.PI, lon: (lon * 180) / Math.PI, h };
 }

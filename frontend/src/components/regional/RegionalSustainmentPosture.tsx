@@ -28,7 +28,7 @@
 //
 // Phase B remaining: per-edge labels, honesty badges, color/style tuning.
 // =============================================================================
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Html, Line, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -62,7 +62,8 @@ import { useMunitionLaunches } from '../../hooks/useEffectorLaunches';
 import { isTierVisibleIn3D, type AssetTier } from '../../lib/assetTier';
 import { makeProjection, type Projection } from '../../lib/geoProjection';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
-import MunitionTrackMarker from '../MunitionTrackMarker';
+import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
+import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 
 // Scene scale: ~80 units per degree of latitude puts a regional-sized bbox
 // (~3°) at ~240 scene units, fitting comfortably in the ~400-unit canvas
@@ -574,7 +575,7 @@ function AssetCallout({
 // DdilNetworkLink convention.
 
 const REGIONAL_AGGREGATOR_Y = 8;   // slightly elevated above FOB markers (Y=0)
-const TRACK_MARKER_Y = 6;           // in-flight track dots ride just above the ground
+const GROUND_Y = 0;                 // assets and FOB hubs sit at y = 0; tracks rise from here by height
 const HQ_MARKER_Y = 40;             // stacked above the regional aggregator
 
 function RegionalAggregatorNode({ position, label, severed }: {
@@ -826,25 +827,18 @@ export default function RegionalSustainmentPosture({
 
   // Track dots go through the same projection a fleet asset takes. The line
   // runs to the launcher only when it is rendered on this map.
-  const trackMarkers = useMemo(() => {
-    const posById = new Map(renderables.map((a) => [a.asset_id, a.position]));
-    const out: {
-      track: (typeof regionTracks)[number];
-      position: [number, number, number];
-      launcherPosition?: [number, number, number];
-    }[] = [];
-    for (const t of regionTracks) {
-      const ll = trackLatLon(t);
-      if (!ll) continue;
-      const [x, z] = proj.project(ll.lat, ll.lon);
-      out.push({
-        track: t,
-        position: [x, TRACK_MARKER_Y, z],
-        launcherPosition: t.launcherAssetId ? posById.get(t.launcherAssetId) : undefined,
-      });
-    }
-    return out;
-  }, [regionTracks, renderables, proj]);
+  const projectTrack = useCallback((t: (typeof regionTracks)[number]): Vec3 | null => {
+    const ll = trackLatLon(t);
+    if (!ll) return null;
+    const [x, z] = proj.project(ll.lat, ll.lon);
+    return [x, GROUND_Y + (ll.h / 1000) * (SCENE_SCALE_UNITS_PER_DEG / 111), z];
+  }, [proj]);
+  const launcherOf = useCallback((t: (typeof regionTracks)[number]): Vec3 | undefined => {
+    const p = t.launcherAssetId ? renderables.find((a) => a.asset_id === t.launcherAssetId)?.position : undefined;
+    return p ? [p[0], p[1], p[2]] : undefined;
+  }, [renderables]);
+  const trails = useMunitionTrails(regionTracks, projectTrack, launcherOf);
+  const trackById = useMemo(() => new Map(regionTracks.map((t) => [t.munitionAssetId, t])), [regionTracks]);
 
   const targetAsset = useMemo(
     () => renderables.find((a) => a.asset_id === selectedAssetId),
@@ -961,12 +955,14 @@ export default function RegionalSustainmentPosture({
           ))}
 
           {/* In-flight tracks: not assets, so no click, callout or list entry. */}
-          {trackMarkers.map((m) => (
-            <MunitionTrackMarker
-              key={`track-${m.track.munitionAssetId}`}
-              track={m.track}
-              position={m.position}
-              launcherPosition={m.launcherPosition}
+          {trails.map((m) => (
+            <MunitionTrackHolo
+              key={`track-${m.id}`}
+              track={trackById.get(m.id) ?? { munitionAssetId: m.id, launcherAssetId: null }}
+              trail={m.trail}
+              groundY={GROUND_Y}
+              launcher={m.launcher}
+              ending={m.ending}
             />
           ))}
 

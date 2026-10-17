@@ -21,7 +21,7 @@
 // Phase B owns: visual polish, label placement, clutter management at
 // scale, severity-breakdown styling.
 // =============================================================================
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -41,7 +41,8 @@ import {
 import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
-import MunitionTrackMarker from '../MunitionTrackMarker';
+import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
+import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import { LinkChips } from '../network/LinkChips';
 import {
   linkStateWord,
@@ -54,8 +55,9 @@ import { buildTheaterTopology, HQ_NODE, type EdgeState } from '../../lib/theater
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
 // within view at the default (0, 150, 600) camera.
 const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
-// In-flight tracks ride a little above the ground plane so they read over the grid.
-const TRACK_MARKER_Y = 6;
+// FOB markers and labels sit at y = 0; tracks are drawn against this ground plane
+// and rise from it by their ellipsoidal height (units per km = units per deg / 111).
+const HQ_GROUND_Y = 0;
 
 // Per-FOB composition breakdown, driven by the asset_class discriminator
 // (src/lib/assetClass.ts) rather than by platform_variant pattern-matching.
@@ -491,28 +493,21 @@ export default function TheaterReadinessPosture() {
   );
   const edgeById = useMemo(() => new Map(topo.edges.map((e) => [e.id, e])), [topo.edges]);
 
-  const trackMarkers = useMemo(() => {
-    const fobPos = new Map(drawnMetrics.map((m) => [m.fob.edge_id, m.scenePos]));
+  const projectTrack = useCallback((t: MunitionTrack): Vec3 | null => {
+    const ll = trackLatLon(t);
+    if (!ll) return null;
+    const [x, z] = proj.project(ll.lat, ll.lon);
+    return [x, HQ_GROUND_Y + (ll.h / 1000) * (HQ_SCENE_SCALE_UNITS_PER_DEG / 111), z];
+  }, [proj]);
+  // This map draws FOBs, not individual assets, so the launcher's FOB is its position.
+  const launcherOf = useCallback((t: MunitionTrack): Vec3 | undefined => {
     const edgeByAsset = new Map(fleet.data.map((a) => [a.asset_id, a.edge_id]));
-    const out: {
-      track: MunitionTrack;
-      position: [number, number, number];
-      launcherPosition?: [number, number, number];
-    }[] = [];
-    for (const t of tracks.data) {
-      const ll = trackLatLon(t);
-      if (!ll) continue;
-      const [x, z] = proj.project(ll.lat, ll.lon);
-      const lEdge = t.launcherAssetId ? edgeByAsset.get(t.launcherAssetId) : null;
-      const lp = lEdge ? fobPos.get(lEdge) : undefined;
-      out.push({
-        track: t,
-        position: [x, TRACK_MARKER_Y, z],
-        launcherPosition: lp ? [lp[0], 0, lp[1]] : undefined,
-      });
-    }
-    return out;
-  }, [tracks.data, fleet.data, drawnMetrics, proj]);
+    const lEdge = t.launcherAssetId ? edgeByAsset.get(t.launcherAssetId) : null;
+    const fob = lEdge ? drawnMetrics.find((m) => m.fob.edge_id === lEdge) : undefined;
+    return fob ? [fob.scenePos[0], HQ_GROUND_Y, fob.scenePos[1]] : undefined;
+  }, [fleet.data, drawnMetrics]);
+  const trails = useMunitionTrails(tracks.data, projectTrack, launcherOf);
+  const trackById = useMemo(() => new Map(tracks.data.map((t) => [t.munitionAssetId, t])), [tracks.data]);
 
   return (
     <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${severed ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-theater-readiness">
@@ -729,16 +724,17 @@ export default function TheaterReadinessPosture() {
             );
           })}
 
-          {/* In-flight munition tracks (ADR-0049): a dot at the track's projected
-              position, a line to the launcher's FOB when the launcher is
-              attributed to one. This map draws FOBs, not individual assets,
-              so the FOB is the launcher's position here. */}
-          {trackMarkers.map((m) => (
-            <MunitionTrackMarker
-              key={`track-${m.track.munitionAssetId}`}
-              track={m.track}
-              position={m.position}
-              launcherPosition={m.launcherPosition}
+          {/* In-flight munition tracks (ADR-0049): a holographic track drawn in
+              screen pixels, with a ring on the launcher's FOB when the launcher
+              is attributed to one. */}
+          {trails.map((m) => (
+            <MunitionTrackHolo
+              key={`track-${m.id}`}
+              track={trackById.get(m.id) ?? { munitionAssetId: m.id, launcherAssetId: null }}
+              trail={m.trail}
+              groundY={HQ_GROUND_Y}
+              launcher={m.launcher}
+              ending={m.ending}
             />
           ))}
 
