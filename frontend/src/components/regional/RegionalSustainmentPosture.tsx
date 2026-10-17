@@ -656,7 +656,7 @@ function CameraRig({ targetPos, isZoomed }: { targetPos: THREE.Vector3 | null, i
     if (isZoomed && targetPos) {
       camera.position.lerp(new THREE.Vector3(targetPos.x + 15, targetPos.y + 10, targetPos.z + 15), 0.05);
       if (controls) {
-        (controls as any).target.lerp(new THREE.Vector3(targetPos.x, targetPos.y + 4, targetPos.z), 0.05);
+        (controls as unknown as { target: THREE.Vector3 }).target.lerp(new THREE.Vector3(targetPos.x, targetPos.y + 4, targetPos.z), 0.05);
       }
     }
   });
@@ -664,8 +664,9 @@ function CameraRig({ targetPos, isZoomed }: { targetPos: THREE.Vector3 | null, i
 }
 
 function FogController({ isZoomed }: { isZoomed: boolean }) {
-  const { scene } = useThree();
-  useFrame(() => {
+  // The scene comes from useFrame's own state: three.js objects are mutated
+  // per frame by design, and the hook-value immutability rule does not apply.
+  useFrame(({ scene }) => {
     if (scene.fog instanceof THREE.FogExp2) {
       // Zoomed-in fog density tuned to "fade distant context, not erase it."
       // Previously 0.08 was so dense that the entire scene went dark on

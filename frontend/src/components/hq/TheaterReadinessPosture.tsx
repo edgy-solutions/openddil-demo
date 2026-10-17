@@ -21,7 +21,7 @@
 // Phase B owns: visual polish, label placement, clutter management at
 // scale, severity-breakdown styling.
 // =============================================================================
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid, Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -296,25 +296,13 @@ export function PostureGrid({ rollups }: { rollups: ClassRollups }) {
 }
 
 function AbstractContinents() {
-  // Procedural decorative terrain — unchanged from the previous pass.
-  const geoRef = useRef<THREE.PlaneGeometry>(null);
-  useMemo(() => {
-    if (geoRef.current) {
-      const pos = geoRef.current.attributes.position;
-      for (let i = 0; i < pos.count; i++) {
-        const vx = pos.getX(i);
-        const vz = pos.getZ(i);
-        let y = Math.sin(vx * 0.005) * Math.cos(vz * 0.005) * 40;
-        y += Math.sin(vx * 0.02) * Math.cos(vz * 0.02) * 15;
-        if (y < 5) y = -10;
-        pos.setY(i, y - 5);
-      }
-      geoRef.current.computeVertexNormals();
-    }
-  }, []);
+  // Flat decorative ground plane. An earlier displacement pass here never ran:
+  // it read the geometry ref inside useMemo, before the ref attached, so the
+  // plane has always rendered flat; it would also have moved vertices within
+  // the plane (PlaneGeometry has z = 0) rather than raising terrain.
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -5, 0]}>
-      <planeGeometry ref={geoRef} args={[2000, 2000, 60, 60]} />
+      <planeGeometry args={[2000, 2000, 60, 60]} />
       <meshStandardMaterial color={0x020617} metalness={0.6} roughness={0.4} flatShading={true} />
     </mesh>
   );
