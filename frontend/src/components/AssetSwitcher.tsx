@@ -7,7 +7,7 @@
 // Containers are pointer-events-none so the 3D view stays orbitable; only the
 // card and panel capture the pointer.
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronsUpDown } from 'lucide-react';
+import { AlertTriangle, ChevronsUpDown } from 'lucide-react';
 import type { FleetAsset, FleetTierMap } from '../hooks';
 import { assetLabel } from '../lib/assetLabel';
 import { isNonLiveTier, pickerLabel, tierSuffix } from '../lib/assetPicker';
@@ -19,7 +19,7 @@ interface AssetSwitcherProps {
   fleetTiers?: FleetTierMap;
   selectedAsset: string;
   setSelectedAsset: (v: string) => void;
-  /** Arrivals at the selected edge (things that are not assets yet): a badge under the identity card and a tab. */
+  /** Arrivals at the selected edge (things that are not assets yet): a count badge on the switch button and a tab. */
   arrivals?: {
     counts: { undeclared: number; expected: number; overdue: number } | null;
     unavailable: boolean;
@@ -152,6 +152,8 @@ export default function AssetSwitcher({
         counts.expected > 0 ? `${counts.expected} expected` : '',
       ].filter(Boolean).join(' · ') + (counts.overdue > 0 ? ` · ${counts.overdue} overdue` : '')
     : '';
+  const arrivalsTotal = counts ? counts.undeclared + counts.expected : 0;
+  const attention = !!counts && (counts.undeclared > 0 || counts.overdue > 0);
 
   return (
     <div ref={rootRef} className="absolute top-3 left-3 z-30 w-[300px] pointer-events-none font-mono">
@@ -171,40 +173,51 @@ export default function AssetSwitcher({
             <div className="truncate text-[10px] tracking-wider text-slate-400">{selected.platform_variant}</div>
           )}
         </div>
-        <button
-          ref={buttonRef}
-          type="button"
-          title="Switch asset (/)"
-          aria-label="Switch asset"
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          onClick={() => (open ? close() : openRef.current())}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-slate-600/70 bg-slate-900/60 text-slate-300 transition-colors hover:border-cyan-500 hover:text-cyan-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
-        >
-          <ChevronsUpDown className="h-4 w-4" />
-        </button>
-      </div>
-
-      {arrivals && counts && showArrivals && (
-        <button
-          type="button"
-          data-testid="arrivals-badge"
-          aria-label={`Arrivals: ${badgeText}`}
-          onClick={() => { setTab('arrivals'); setOpen(true); }}
-          className={`pointer-events-auto mt-1 block rounded-sm border px-1.5 py-0.5 text-[10px] tracking-wider ${
-            counts.undeclared > 0 || counts.overdue > 0
-              ? 'border-amber-700 bg-amber-900/25 text-amber-300'
-              : 'border-slate-600/70 bg-slate-900/60 text-cyan-300'
-          }`}
-        >
-          {badgeText}
-        </button>
-      )}
-      {arrivals?.unavailable && !showArrivals && (
-        <div data-testid="arrivals-unavailable" className="mt-1 text-[10px] text-slate-500">
-          arrivals unavailable
+        {/* Arrivals sit on the switch button as a notification count, not a line of
+            their own: they are about the edge, and the button is where they open.
+            Amber with the alert icon when something needs action (an undeclared
+            arrival or an overdue one); a muted count when only expected. */}
+        <div className="relative shrink-0">
+          <button
+            ref={buttonRef}
+            type="button"
+            title="Switch asset (/)"
+            aria-label="Switch asset"
+            aria-haspopup="listbox"
+            aria-expanded={open}
+            onClick={() => (open ? close() : openRef.current())}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm border border-slate-600/70 bg-slate-900/60 text-slate-300 transition-colors hover:border-cyan-500 hover:text-cyan-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500"
+          >
+            <ChevronsUpDown className="h-4 w-4" />
+          </button>
+          {arrivals && counts && showArrivals && (
+            <button
+              type="button"
+              data-testid="arrivals-badge"
+              data-attention={attention}
+              aria-label={`Arrivals: ${badgeText}`}
+              title={`Arrivals: ${badgeText}`}
+              onClick={() => { setTab('arrivals'); setOpen(true); }}
+              className={`absolute -right-2 -top-2 flex h-4 min-w-4 items-center gap-0.5 rounded-full px-1 text-[9px] font-bold leading-none tabular-nums shadow ${
+                attention
+                  ? 'bg-amber-400 text-slate-950 shadow-amber-500/40'
+                  : 'border border-slate-600 bg-slate-800 text-cyan-200'
+              }`}
+            >
+              {attention && <AlertTriangle aria-hidden className="h-2.5 w-2.5" strokeWidth={2.75} />}
+              {arrivalsTotal}
+            </button>
+          )}
+          {arrivals?.unavailable && !showArrivals && (
+            <span
+              title="arrivals unavailable"
+              className="absolute -right-1 -top-1 h-2 w-2 rounded-full border border-slate-500 bg-slate-800"
+            >
+              <span data-testid="arrivals-unavailable" className="sr-only">arrivals unavailable</span>
+            </span>
+          )}
         </div>
-      )}
+      </div>
 
       {open && (
         <div
@@ -217,7 +230,7 @@ export default function AssetSwitcher({
             <div role="tablist" className="mb-1.5 flex gap-1 text-[11px]">
               {([
                 ['fleet', 'Fleet'],
-                ['arrivals', `Arrivals ${counts.undeclared + counts.expected}`],
+                ['arrivals', `Arrivals ${arrivalsTotal}`],
               ] as const).map(([id, label]) => (
                 <button
                   key={id}
@@ -225,13 +238,19 @@ export default function AssetSwitcher({
                   type="button"
                   role="tab"
                   aria-selected={curTab === id}
+                  data-attention={id === 'arrivals' && attention ? 'true' : undefined}
                   onClick={() => setTab(id)}
-                  className={`rounded-sm border px-2 py-0.5 tracking-wider ${
-                    curTab === id
-                      ? 'border-cyan-500/60 bg-cyan-500/15 text-cyan-300'
-                      : 'border-slate-700 text-slate-400 hover:text-slate-200'
+                  className={`flex items-center gap-1 rounded-sm border px-2 py-0.5 tracking-wider ${
+                    id === 'arrivals' && attention
+                      ? curTab === id
+                        ? 'border-amber-400/70 bg-amber-500/20 text-amber-200'
+                        : 'border-amber-600/70 bg-amber-900/25 text-amber-300 hover:text-amber-200'
+                      : curTab === id
+                        ? 'border-cyan-500/60 bg-cyan-500/15 text-cyan-300'
+                        : 'border-slate-700 text-slate-400 hover:text-slate-200'
                   }`}
                 >
+                  {id === 'arrivals' && attention && <AlertTriangle aria-hidden className="h-3 w-3" />}
                   {label}
                 </button>
               ))}
