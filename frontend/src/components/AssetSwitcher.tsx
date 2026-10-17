@@ -198,7 +198,7 @@ export default function AssetSwitcher({
               aria-label={`Arrivals: ${badgeText}`}
               title={`Arrivals: ${badgeText}`}
               onClick={() => { setTab('arrivals'); setOpen(true); }}
-              className={`absolute -right-2 -top-2 flex h-4 min-w-4 items-center gap-0.5 rounded-full px-1 text-[9px] font-bold leading-none tabular-nums shadow ${
+              className={`absolute bottom-full left-1/2 mb-0.5 flex -translate-x-1/2 h-4 min-w-4 items-center gap-0.5 rounded-full px-1 text-[9px] font-bold leading-none tabular-nums shadow ${
                 attention
                   ? 'bg-amber-400 text-slate-950 shadow-amber-500/40'
                   : 'border border-slate-600 bg-slate-800 text-cyan-200'
