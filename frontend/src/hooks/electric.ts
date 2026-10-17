@@ -11,7 +11,7 @@
 // parsed objects. `num()` coerces a known-numeric field; per-table hooks
 // use it so components get clean typed data.
 // =============================================================================
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { reportShapeError, clearShapeError, classifyShapeError } from '../lib/shapeErrors';
 import { isUnlabelable } from '../lib/labeledTables';
 import { useShape } from '@electric-sql/react';
@@ -107,9 +107,12 @@ export function useTableShape<T>(
     return () => clearShapeError(table);
   }, [table, isError, error]);
 
-  const rows = (data ?? []) as Record<string, any>[];
+  // Mapped once per Electric snapshot, not per render: a fresh array on every
+  // render re-fires every effect keyed on it, and any caller that keeps state
+  // derived from it during render (useMunitionTrackFeed's hold) would loop.
+  const mapped = useMemo(() => ((data ?? []) as Record<string, any>[]).map(map), [data, map]);
   return {
-    data: rows.map(map),
+    data: mapped,
     isLoading,
     isError,
     lastSyncedAt,

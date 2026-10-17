@@ -1,10 +1,10 @@
 // useMunitionTrails -- client-side trail history for in-flight munitions.
 //
-// STOPGAP. The munition_track table is one row per munition and carries no
-// history, so each view accumulates the last few projected positions itself.
-// A browser that opens mid-flight starts with a one-point trail, and a reload
-// loses it. The durable fix is server-side history (a short array column or a
-// sample table); until then this is what feeds MunitionTrackHolo.
+// The server trail is primary: munition_track.trail_ecef carries the last
+// <=10 ECEF samples, and each view projects them with its own projector, so a
+// browser that opens mid-flight or reloads sees the full trail at once. Client
+// accumulation of the last few projected positions is the fallback for rows
+// without the column (old rows, or a projector/bundle that predates it).
 //
 // Endings come from the ledger's terminal state: a Detonation PDU
 // (entity_impact, ground_impact, detonated, other) bursts for BURST_MS; a
@@ -27,7 +27,8 @@ export interface MunitionTrailEntry {
   launcher?: Vec3;
 }
 
-type TrackInput = Pick<MunitionTrack, 'munitionAssetId'> & Partial<Pick<MunitionTrack, 'terminalState' | 'terminatedAt'>>;
+type TrackInput = Pick<MunitionTrack, 'munitionAssetId'> &
+  Partial<Pick<MunitionTrack, 'terminalState' | 'terminatedAt' | 'trailEcef' | 'ecefX' | 'ecefY' | 'ecefZ'>>;
 
 type EndingKind = 'detonation' | 'silence';
 
@@ -48,6 +49,29 @@ function endingMs(kind: EndingKind): number {
 function sameVec(a: Vec3 | undefined, b: Vec3 | undefined): boolean {
   if (!a || !b) return a === b;
   return a.every((v, i) => Math.abs(v - b[i]) <= DUP_EPS);
+}
+
+function sameTrail(a: Vec3[], b: Vec3[]): boolean {
+  return a.length === b.length && a.every((v, i) => sameVec(v, b[i]));
+}
+
+/**
+ * The server trail projected with this view's projector, or null when the row
+ * carries none. Unprojectable samples and consecutive duplicates are dropped;
+ * the current head is appended when it differs from the last sample.
+ */
+function serverTrail<T extends TrackInput>(t: T, head: Vec3 | null, project: (track: T) => Vec3 | null): Vec3[] | null {
+  const raw = t.trailEcef;
+  if (!raw || raw.length < 3 || raw.length % 3 !== 0) return null;
+  const out: Vec3[] = [];
+  for (let i = 0; i < raw.length; i += 3) {
+    const q = project({ ...t, ecefX: raw[i], ecefY: raw[i + 1], ecefZ: raw[i + 2] });
+    if (!q || !q.every(Number.isFinite)) continue;
+    if (out.length && sameVec(out[out.length - 1], q)) continue;
+    out.push(q);
+  }
+  if (head && head.every(Number.isFinite) && !(out.length && sameVec(out[out.length - 1], head))) out.push(head);
+  return out.length ? out.slice(-TRAIL_LEN) : null;
 }
 
 /**
@@ -86,6 +110,7 @@ export function nextTrails<T extends TrackInput>(
     // An ending that ran out between steps is a new flight, not a resume.
     if (old?.ending && nowMs - old.ending.atMs >= endingMs(old.ending.kind)) old = undefined;
     const p = project(t);
+    const srv = serverTrail(t, p, project);
     if (t.terminalState) {
       if (spent.has(id)) continue; // its ending ran out; the row may linger in the feed
       const kind = ENDING_KIND_BY_TERMINAL_STATE[t.terminalState] ?? 'silence';
@@ -101,26 +126,26 @@ export function nextTrails<T extends TrackInput>(
       if (nowMs - atMs >= endingMs(ending.kind)) { spent.add(id); continue; } // over: never (re)appears
       old = prior;
       const ok = !!p && p.every(Number.isFinite);
-      if (!old && !ok) continue;
+      if (!old && !ok && !srv) continue;
       const launcher = launcherOf?.(t);
       const last = old?.trail[old.trail.length - 1];
-      const grew = ok && (!last || !sameVec(last, p!));
+      const grew = srv ? !(old && sameTrail(old.trail, srv)) : ok && (!last || !sameVec(last, p!));
       if (old?.ending && !grew && sameVec(old.launcher, launcher)) {
         present.push(old);
       } else {
-        const trail = !old ? [p!] : grew ? [...old.trail, p!].slice(-TRAIL_LEN) : old.trail;
+        const trail = srv ?? (!old ? [p!] : grew ? [...old.trail, p!].slice(-TRAIL_LEN) : old.trail);
         present.push({ id, trail, ending, ...(launcher ? { launcher } : {}) });
       }
       continue;
     }
-    if (!p || !p.every(Number.isFinite)) {
+    if (!srv && (!p || !p.every(Number.isFinite))) {
       if (old) present.push(old.ending ? { ...old, ending: null } : old);
       continue;
     }
     const launcher = launcherOf?.(t);
     const last = old?.trail[old.trail.length - 1];
-    const grew = !last || !sameVec(last, p);
-    const trail = !old ? [p] : grew ? [...old.trail, p].slice(-TRAIL_LEN) : old.trail;
+    const grew = srv ? !(old && sameTrail(old.trail, srv)) : !last || !sameVec(last, p!);
+    const trail = srv ?? (!old ? [p!] : grew ? [...old.trail, p!].slice(-TRAIL_LEN) : old.trail);
     if (old && !grew && !old.ending && sameVec(old.launcher, launcher)) {
       present.push(old);
     } else {

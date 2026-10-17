@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { ENDING_KIND_BY_TERMINAL_STATE, nextTrails, TRAIL_LEN, type MunitionTrailEntry } from '../useMunitionTrails';
 import { BURST_MS, SILENCE_MS, type Vec3 } from '../../components/MunitionTrackHolo';
 
-type T = { munitionAssetId: string; p: Vec3 | null; terminalState?: string | null; terminatedAt?: string | null };
-const proj = (t: T) => t.p;
+type T = { munitionAssetId: string; p: Vec3 | null; terminalState?: string | null; terminatedAt?: string | null; trailEcef?: number[] | null; ecefX?: number | null; ecefY?: number | null; ecefZ?: number | null };
+// Samples arrive as ecef fields (like the real projector); the head is t.p.
+const proj = (t: T) => (t.ecefX != null ? ([t.ecefX, t.ecefY ?? 0, t.ecefZ ?? 0] as Vec3) : t.p);
 const tr = (id: string, p: Vec3 | null): T => ({ munitionAssetId: id, p });
 
 function run(steps: Array<{ tracks: T[]; at: number }>): MunitionTrailEntry[] {
@@ -124,5 +125,42 @@ describe('endings from the ledger', () => {
     s = nextTrails(s, [future], proj, 1_000 + BURST_MS, undefined, WALL, spent);
     expect(s).toEqual([]);
     expect(nextTrails(s, [future], proj, 1_000 + BURST_MS + 50, undefined, WALL, spent)).toEqual([]);
+  });
+});
+
+describe('nextTrails with a server trail', () => {
+  const srv = (id: string, flat: number[], head: Vec3 | null): T => ({ munitionAssetId: id, p: head, trailEcef: flat });
+
+  it('shows a 4-point trail for a first-seen track (page load)', () => {
+    const [e] = run([{ tracks: [srv('dis:9:9:1', [1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0], [4, 0, 0])], at: 0 }]);
+    expect(e.trail).toEqual([[1, 0, 0], [2, 0, 0], [3, 0, 0], [4, 0, 0]]);
+  });
+
+  it('deduplicates consecutive server samples', () => {
+    const [e] = run([{ tracks: [srv('dis:9:9:1', [1, 0, 0, 1, 0, 0, 2, 0, 0], [2, 0, 0])], at: 0 }]);
+    expect(e.trail).toEqual([[1, 0, 0], [2, 0, 0]]);
+  });
+
+  it('caps at 10 and ends at a differing head', () => {
+    const flat = Array.from({ length: 10 }, (_, i) => [i, 0, 0]).flat();
+    const [e] = run([{ tracks: [srv('dis:9:9:1', flat, [99, 0, 0])], at: 0 }]);
+    expect(e.trail).toHaveLength(10);
+    expect(e.trail[0]).toEqual([1, 0, 0]);
+    expect(e.trail[9]).toEqual([99, 0, 0]);
+  });
+
+  it('replaces the accumulated trail when a server trail appears', () => {
+    const [e] = run([
+      { tracks: [tr('dis:9:9:1', [5, 0, 0])], at: 0 },
+      { tracks: [tr('dis:9:9:1', [6, 0, 0])], at: 1 },
+      { tracks: [srv('dis:9:9:1', [1, 0, 0, 2, 0, 0, 6, 0, 0], [6, 0, 0])], at: 2 },
+    ]);
+    expect(e.trail).toEqual([[1, 0, 0], [2, 0, 0], [6, 0, 0]]);
+  });
+
+  it('keeps the server trail on a terminal row', () => {
+    const t: T = { ...srv('dis:9:9:1', [1, 0, 0, 2, 0, 0], [2, 0, 0]), terminalState: 'ground_impact', terminatedAt: new Date().toISOString() };
+    const [e] = run([{ tracks: [t], at: 0 }]);
+    expect(e.trail).toEqual([[1, 0, 0], [2, 0, 0]]);
   });
 });

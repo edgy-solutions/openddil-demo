@@ -15,6 +15,8 @@ export interface MunitionTrack {
   ecefX: number | null;
   ecefY: number | null;
   ecefZ: number | null;
+  /** Last <=10 ECEF samples, flat [x0,y0,z0,...], oldest first; null on rows that predate the column. */
+  trailEcef: number[] | null;
   firstSeenAt: string;
   lastSampleAt: string;
   lastHeardAt: string;
@@ -44,6 +46,31 @@ function nullableNum(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * trail_ecef (double precision[]) -> flat number[]. Accepts a number[], a
+ * numeric-string[] or the Postgres literal `{1.5,2,-3e+06}`. Null for null,
+ * empty, any non-finite entry, or a length that is not a multiple of 3.
+ */
+export function parseTrailEcef(raw: unknown): number[] | null {
+  let items: unknown[];
+  if (Array.isArray(raw)) items = raw;
+  else if (typeof raw === 'string') {
+    const t = raw.trim();
+    if (!t.startsWith('{') || !t.endsWith('}')) return null;
+    const inner = t.slice(1, -1).trim();
+    items = inner === '' ? [] : inner.split(',').map((x) => x.trim().replace(/^"|"$/g, ''));
+  } else return null;
+  if (items.length === 0 || items.length % 3 !== 0) return null;
+  const out: number[] = [];
+  for (const it of items) {
+    if (it === null || it === undefined || it === '' || typeof it === 'boolean') return null;
+    const n = typeof it === 'number' ? it : typeof it === 'string' ? Number(it) : Number.NaN;
+    if (!Number.isFinite(n)) return null;
+    out.push(n);
+  }
+  return out;
+}
+
 export function mapMunitionTrack(row: Record<string, unknown>): MunitionTrack {
   return {
     munitionAssetId: str(row.munition_asset_id),
@@ -53,6 +80,7 @@ export function mapMunitionTrack(row: Record<string, unknown>): MunitionTrack {
     ecefX: nullableNum(row.ecef_x),
     ecefY: nullableNum(row.ecef_y),
     ecefZ: nullableNum(row.ecef_z),
+    trailEcef: parseTrailEcef(row.trail_ecef),
     firstSeenAt: str(row.first_seen_at),
     lastSampleAt: str(row.last_sample_at),
     lastHeardAt: str(row.last_heard_at),
@@ -90,7 +118,13 @@ export function useMunitionTrackFeed(): ShapeResult<MunitionTrack> {
     return () => clearInterval(id);
   }, []);
   const sinceIso = new Date(sinceMs).toISOString();
-  return useTableShape('munition_track', mapMunitionTrack, {
+  const result = useTableShape('munition_track', mapMunitionTrack, {
     where: `terminal_state IS NULL OR terminated_at > ${sqlLiteral(sinceIso)}::timestamptz`,
   });
+  // A moved cut-off starts a new shape whose data is empty until it syncs.
+  // Hold the previous rows meanwhile so no in-flight track reads as vanished.
+  const [held, setHeld] = useState<MunitionTrack[]>([]);
+  const hold = result.isLoading && result.data.length === 0 && held.length > 0;
+  if (!hold && held !== result.data && (held.length > 0 || result.data.length > 0)) setHeld(result.data);
+  return hold ? { ...result, data: held } : result;
 }

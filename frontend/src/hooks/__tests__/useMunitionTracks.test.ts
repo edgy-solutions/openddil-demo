@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // mapMunitionTrack -- numbers, nulls and the unlabelled case.
 import { describe, expect, it, vi } from 'vitest';
-import { mapMunitionTrack } from '../useMunitionTracks';
+import { mapMunitionTrack, parseTrailEcef } from '../useMunitionTracks';
 
 const FULL = {
   munition_asset_id: 'dis:1:1:5001',
@@ -67,6 +67,67 @@ describe('mapMunitionTrack', () => {
     expect(t.terminalState).toBe('silent');
     expect(t.lateTerminal).toBe(true);
   });
+});
+
+describe('parseTrailEcef', () => {
+  it('accepts arrays and numeric strings', () => {
+    expect(parseTrailEcef([1, 2, 3, 4, 5, 6])).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(parseTrailEcef(['1', '2', '3'])).toEqual([1, 2, 3]);
+  });
+  it('accepts a Postgres literal with exponents', () => {
+    expect(parseTrailEcef('{1.5,2,-3e+06,4,5,6.25e1}')).toEqual([1.5, 2, -3e6, 4, 5, 62.5]);
+  });
+  it('returns null for null, empty, bad length and NaN', () => {
+    expect(parseTrailEcef(null)).toBeNull();
+    expect(parseTrailEcef(undefined)).toBeNull();
+    expect(parseTrailEcef('{}')).toBeNull();
+    expect(parseTrailEcef([])).toBeNull();
+    expect(parseTrailEcef([1, 2, 3, 4])).toBeNull();
+    expect(parseTrailEcef([1, 2, Number.NaN])).toBeNull();
+    expect(parseTrailEcef('{1,2,NaN}')).toBeNull();
+  });
+  it('maps through mapMunitionTrack', () => {
+    expect(mapMunitionTrack({ ...FULL, trail_ecef: '{1,2,3}' }).trailEcef).toEqual([1, 2, 3]);
+    expect(mapMunitionTrack(FULL).trailEcef).toBeNull();
+  });
+});
+
+describe('useMunitionTrackFeed hold', () => {
+  it('holds previous rows while a new shape loads, then returns empty once synced', async () => {
+    const row = mapMunitionTrack({ ...FULL, munition_asset_id: 'dis:9:9:1' });
+    let next: { data: unknown[]; isLoading: boolean; isError: boolean } = { data: [row], isLoading: false, isError: false };
+    vi.resetModules();
+    vi.doMock('../electric', () => ({
+      num: (v: unknown, f = 0) => (Number.isFinite(Number(v)) ? Number(v) : f),
+      parseTextArray: () => null,
+      sqlLiteral: (v: string) => "'" + v + "'",
+      useTableShape: () => next,
+    }));
+    const { renderHook } = await import('@testing-library/react');
+    const { useMunitionTrackFeed } = await import('../useMunitionTracks');
+    const h = renderHook(() => useMunitionTrackFeed());
+    expect(h.result.current.data).toHaveLength(1);
+    next = { data: [], isLoading: true, isError: false };
+    h.rerender();
+    expect(h.result.current.data).toHaveLength(1);
+    next = { data: [], isLoading: false, isError: false };
+    h.rerender();
+    expect(h.result.current.data).toHaveLength(0);
+    vi.doUnmock('../electric');
+  }, 30000);
+  it('returns empty on an initial load with no previous rows', async () => {
+    vi.resetModules();
+    vi.doMock('../electric', () => ({
+      num: (v: unknown, f = 0) => (Number.isFinite(Number(v)) ? Number(v) : f),
+      parseTextArray: () => null,
+      sqlLiteral: (v: string) => "'" + v + "'",
+      useTableShape: () => ({ data: [], isLoading: true, isError: false }),
+    }));
+    const { renderHook } = await import('@testing-library/react');
+    const { useMunitionTrackFeed } = await import('../useMunitionTracks');
+    expect(renderHook(() => useMunitionTrackFeed()).result.current.data).toEqual([]);
+    vi.doUnmock('../electric');
+  }, 30000);
 });
 
 describe('useMunitionTrackFeed', () => {
