@@ -20,6 +20,7 @@ import { AlertTriangle, ChevronRight } from 'lucide-react';
 import type { TacticalEvent } from '../hooks';
 import { SyncingNotice } from './SyncingNotice';
 import { isPostureEvent } from '../lib/posture';
+import { collapseRepeats, describeTransition, eventCause } from '../lib/alertFeed';
 
 // Map a CloudEvent's best-effort severity string to a feed colour.
 //
@@ -83,6 +84,7 @@ export default function AlertFeed({
   onSelectAsset?: (assetId: string) => void;
 }) {
   const events = allEvents.filter((e) => !isPostureEvent(e.type));
+  const rows = collapseRepeats(events);
   return (
     <div className="panel shrink-0 flex flex-col max-h-[280px] p-3">
       <h2 className="text-sm text-slate-400 tracking-wider uppercase mb-2 flex items-center shrink-0">
@@ -97,7 +99,10 @@ export default function AlertFeed({
             No tactical events. Awaiting CM / logistics transitions.
           </div>
         )}
-        {!isLoading && events.map((e) => {
+        {!isLoading && rows.map((row) => {
+          const e = row.event;
+          const transition = describeTransition(e);
+          const cause = eventCause(e);
           const isOtherAsset = !!selectedAssetId && !!e.subject && e.subject !== selectedAssetId;
           const isClickable = !!onSelectAsset && !!e.subject;
           const baseColors = severityColors(e.severity);
@@ -128,12 +133,32 @@ export default function AlertFeed({
                   )}
                   {shortType(e.type)}
                 </span>
-                <span className="opacity-50">[{formatTime(e.time)}]</span>
+                <span className="opacity-50">
+                  {row.count > 1 && (
+                    <span
+                      className="mr-1 px-1 border border-current rounded-sm"
+                      data-testid={`alert-repeat-${e.id}`}
+                      title={`${row.count} times since ${formatTime(row.firstTime)}`}
+                    >
+                      ×{row.count}
+                    </span>
+                  )}
+                  [{formatTime(e.time)}]
+                </span>
               </div>
               <div className="opacity-80 mt-0.5">
                 {e.subject}
-                {e.severity ? <span className="ml-2 opacity-70">— {e.severity}</span> : null}
+                {transition ? (
+                  <span className="ml-2 opacity-70">— {transition}</span>
+                ) : e.severity ? (
+                  <span className="ml-2 opacity-70">— {e.severity}</span>
+                ) : null}
               </div>
+              {cause && (
+                <div className="opacity-70 truncate" title={cause}>
+                  {cause}
+                </div>
+              )}
             </div>
           );
         })}
