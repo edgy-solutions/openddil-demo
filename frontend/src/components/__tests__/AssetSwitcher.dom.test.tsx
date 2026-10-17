@@ -178,19 +178,34 @@ describe('AssetSwitcher arrivals', () => {
     expect(screen.queryByRole('tablist')).toBeNull();
   });
 
-  it('badge text forms and amber styling', () => {
+  it('badge is a count on the switch button; amber with an icon when something needs action', () => {
     withArrivals({ undeclared: 1, expected: 2, overdue: 0 });
     const b = screen.getByTestId('arrivals-badge');
-    expect(b.textContent).toBe('1 undeclared · 2 expected');
+    expect(b.textContent).toBe('3');
     expect(b.getAttribute('aria-label')).toBe('Arrivals: 1 undeclared · 2 expected');
-    expect(b.className).toContain('text-amber-300');
+    expect(b.getAttribute('data-attention')).toBe('true');
+    expect(b.querySelector('svg')).not.toBeNull();
     cleanup();
     withArrivals({ undeclared: 0, expected: 2, overdue: 0 });
-    expect(screen.getByTestId('arrivals-badge').textContent).toBe('2 expected');
-    expect(screen.getByTestId('arrivals-badge').className).not.toContain('text-amber-300');
+    expect(screen.getByTestId('arrivals-badge').textContent).toBe('2');
+    expect(screen.getByTestId('arrivals-badge').getAttribute('data-attention')).toBe('false');
+    expect(screen.getByTestId('arrivals-badge').querySelector('svg')).toBeNull();
     cleanup();
-    withArrivals({ undeclared: 1, expected: 2, overdue: 1 });
-    expect(screen.getByTestId('arrivals-badge').textContent).toBe('1 undeclared · 2 expected · 1 overdue');
+    withArrivals({ undeclared: 0, expected: 2, overdue: 1 });
+    expect(screen.getByTestId('arrivals-badge').getAttribute('aria-label')).toBe('Arrivals: 2 expected · 1 overdue');
+    expect(screen.getByTestId('arrivals-badge').getAttribute('data-attention')).toBe('true');
+  });
+
+  it('the Arrivals tab carries the attention mark only when something needs action', () => {
+    withArrivals({ undeclared: 1, expected: 0, overdue: 0 });
+    fireEvent.keyDown(document.body, { key: '/' });
+    const tab = screen.getAllByRole('tab')[1];
+    expect(tab.getAttribute('data-attention')).toBe('true');
+    expect(tab.querySelector('svg')).not.toBeNull();
+    cleanup();
+    withArrivals({ undeclared: 0, expected: 2, overdue: 0 });
+    fireEvent.keyDown(document.body, { key: '/' });
+    expect(screen.getAllByRole('tab')[1].getAttribute('data-attention')).toBeNull();
   });
 
   it('badge opens on the Arrivals tab with the view; "/" opens on Fleet', () => {
