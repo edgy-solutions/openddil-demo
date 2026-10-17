@@ -227,6 +227,13 @@ export interface ChildLinkEntry {
   hasChildren: boolean;
 }
 
+/** Optional configured HQ location (`deployment.json`'s `hq`). */
+export interface HqLocation {
+  lat: number;
+  lon: number;
+  label?: string;
+}
+
 /** One entry of `deployment.json`'s `tiers` list (the chart's whole tier tree)
  *  -- see `parseTiers`. `parent` is as the chart gave it: a tier id, or a
  *  root/hq/empty value meaning "directly under HQ". */
@@ -295,6 +302,9 @@ export interface Deployment {
   /** The chart's tier tree, when rendered. Absent => the HQ theater draws
    *  one link per FOB straight to HQ. */
   tiers?: TierEntry[];
+  /** Where HQ sits on the HQ theater, when the chart declares it. ABSENT
+   *  means HQ is drawn at the centre of the FOBs. Parsed by `parseHq`. */
+  hq?: HqLocation;
   /** Declared inputs to the move panel: effector declared load, movement
    *  standards and movement units. ABSENT on an older chart that carries
    *  neither key; present (possibly with empty maps) otherwise. Parsed by
@@ -613,6 +623,26 @@ export function parseChildLinks(raw: unknown): ChildLinkEntry[] | undefined {
     }
     out.push({ id: e.id.trim(), hasChildren: e.hasChildren });
   }
+  return out;
+}
+
+/** Parses `deployment.json`'s `hq`, defensively: lat and lon must be finite
+ *  numbers in range, else the whole value is dropped (HQ then draws at the
+ *  FOB centre). An empty or non-string label is dropped alone. */
+export function parseHq(raw: unknown): HqLocation | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    console.warn('[deployment] hq dropped (not an object):', raw);
+    return undefined;
+  }
+  const h = raw as Record<string, unknown>;
+  if (typeof h.lat !== 'number' || !Number.isFinite(h.lat) || h.lat < -90 || h.lat > 90 ||
+      typeof h.lon !== 'number' || !Number.isFinite(h.lon) || h.lon < -180 || h.lon > 180) {
+    console.warn('[deployment] hq dropped (lat/lon must be finite numbers, lat in [-90,90], lon in [-180,180]):', raw);
+    return undefined;
+  }
+  const out: HqLocation = { lat: h.lat, lon: h.lon };
+  if (typeof h.label === 'string' && h.label.length > 0) out.label = h.label;
   return out;
 }
 
@@ -943,6 +973,7 @@ export async function loadDeployment(): Promise<void> {
         edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
         childLinks: parseChildLinks((j as { childLinks?: unknown }).childLinks),
         tiers: parseTiers((j as { tiers?: unknown }).tiers),
+        hq: parseHq((j as { hq?: unknown }).hq),
         moveInputs: parseMoveInputs(j),
       };
     }

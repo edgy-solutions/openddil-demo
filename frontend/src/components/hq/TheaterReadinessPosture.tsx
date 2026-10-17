@@ -42,6 +42,7 @@ import {
 } from '../../hooks';
 import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
+import { buildNodePos, hqLabelText, hqScenePos } from '../../lib/hqPosition';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
@@ -51,7 +52,7 @@ import {
   type LinkReading,
   type LinkState,
 } from '../../lib/linkStatus';
-import { buildTheaterTopology, HQ_NODE, type EdgeState } from '../../lib/theaterTopology';
+import { buildTheaterTopology, type EdgeState } from '../../lib/theaterTopology';
 
 // Scene scale: HQ canvas spans ~2000 units; ~400 units per deg of lat
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
@@ -420,7 +421,7 @@ export function FobLabel({
 }
 
 export default function TheaterReadinessPosture() {
-  const { fobs, tiers } = deployment();
+  const { fobs, tiers, hq } = deployment();
   const linkRows = useLinkStatus();
   // Re-evaluated on a timer so a monitor that stops writing ages out to
   // UNKNOWN without waiting for another row to arrive.
@@ -474,12 +475,12 @@ export default function TheaterReadinessPosture() {
   const linkCounts = topo.counts;
   // The panel goes red only when nothing is reachable, not on one bad link.
   const severed = totalLinks > 0 && topo.edges.every((e) => e.state === 'down' || e.state === 'unreachable');
-  // Scene [x, z] per drawn node; HQ is the origin.
-  const nodePos = useMemo(() => {
-    const m = new Map<string, [number, number]>([[HQ_NODE, [0, 0]]]);
-    for (const n of topo.nodes) m.set(n.id, proj.project(n.lat, n.lon));
-    return m;
-  }, [topo.nodes, proj]);
+  // Scene [x, z] per drawn node; HQ is at its configured location, else the origin.
+  const hqPos = useMemo(() => hqScenePos(hq, proj), [hq, proj]);
+  const nodePos = useMemo(
+    () => buildNodePos(topo.nodes, proj, hqPos),
+    [topo.nodes, proj, hqPos],
+  );
   const drawnMetrics = useMemo(
     () => metrics.filter((m) => topo.nodes.some((n) => n.fob === m.fob)),
     [metrics, topo.nodes],
@@ -563,6 +564,8 @@ export default function TheaterReadinessPosture() {
             data-testid="hq-topology"
             data-edge-count={topo.edges.length}
             data-node-ids={topo.nodes.map((n) => n.id).join(',')}
+            data-hq-pos={`${hqPos[0]},${hqPos[1]}`}
+            data-hq-label={hqLabelText(hq)}
           />
           {totalLinks === 0 ? (
             <div className="text-xs font-rajdhani text-slate-500 text-left leading-tight"
@@ -693,10 +696,24 @@ export default function TheaterReadinessPosture() {
             );
           })}
 
-          {/* DDIL links: each drawn tier to its parent's node (HQ = origin). */}
+          {/* HQ marker: always drawn, at the configured location or the FOB centre. */}
+          <LogisticsHubNode position={[hqPos[0], 0, hqPos[1]]} />
+          <mesh position={[hqPos[0], 0.5, hqPos[1]]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[7, 8.5, 32]} />
+            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
+          </mesh>
+          <Html position={[hqPos[0], 0, hqPos[1]]} center
+                style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
+            <div data-testid="hq-node-label"
+                 className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+              <span className="text-slate-200 font-bold">{hqLabelText(hq)}</span>
+            </div>
+          </Html>
+
+          {/* DDIL links: each drawn tier to its parent's node (HQ = its marker). */}
           {topo.edges.map((e) => {
             const [sx, sz] = nodePos.get(e.id)!;
-            const [ex, ez] = nodePos.get(e.to) ?? [0, 0];
+            const [ex, ez] = nodePos.get(e.to) ?? hqPos;
             return (
               <DdilNetworkLink
                 key={`link-${e.id}`}

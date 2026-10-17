@@ -23,6 +23,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 const mockFobs: any[] = [];
 const mockTiers: any[] = [];
+let mockHq: { lat: number; lon: number; label?: string } | undefined = undefined;
 const mockLinkStatus = vi.fn(() => ({ links: new Map(), isLoading: false, isError: false }));
 const mockLinkControl = vi.fn();
 vi.mock('../../../hooks/useLinkControl', () => ({
@@ -37,7 +38,7 @@ vi.mock('../../../hooks', () => ({
   useLinkStatus: () => mockLinkStatus(),
 }));
 vi.mock('../../../deployment', () => ({
-  deployment: () => ({ fobs: mockFobs, tiers: mockTiers.length ? mockTiers : undefined }),
+  deployment: () => ({ fobs: mockFobs, tiers: mockTiers.length ? mockTiers : undefined, hq: mockHq }),
   edgeAttachment: () => undefined,
 }));
 vi.mock('@react-three/drei', () => ({
@@ -46,7 +47,9 @@ vi.mock('@react-three/drei', () => ({
   Grid: () => null,
 }));
 
+import { HQ_NODE } from '../../../lib/theaterTopology';
 import TheaterReadinessPosture, { FobLabel, PostureGrid } from '../TheaterReadinessPosture';
+import { hqLabelText, hqScenePos, buildNodePos } from '../../../lib/hqPosition';
 
 const composition = { sensors: 1, launchers: 0, facilities: 0, inflight: 0, other: 0 };
 
@@ -169,6 +172,47 @@ describe('TheaterReadinessPosture - tier tree', () => {
     expect(drawn![2].split(',').sort()).toEqual(['edge-a', 'edge-b', 'region-a']);
     expect(html).not.toContain('stray');
     expect(html).toContain('data-testid="link-chip-unreachable" data-count="2"');
+  });
+});
+
+describe('TheaterReadinessPosture - HQ marker', () => {
+  const proj = { project: (lat: number, lon: number): [number, number] => [lon * 100, lat * 10] };
+  const setup = () => {
+    mockFobs.splice(0, mockFobs.length, { edge_id: 'edge-a', region_id: 'r1', lat: 1, lon: 1, name: 'f' });
+    mockTiers.splice(0, mockTiers.length,
+      { id: 'edge-a', parent: 'region-a', hasChildren: false },
+      { id: 'region-a', parent: 'root', hasChildren: true },
+    );
+    mockLinkControl.mockReturnValue({ status: 'ready', uplink: null, children: [], set: () => {}, setToxics: () => {} });
+  };
+  const teardown = () => { mockFobs.splice(0, mockFobs.length); mockTiers.splice(0, mockTiers.length); mockHq = undefined; };
+
+  it('without hq: label HQ is present and the hub is at the origin', () => {
+    setup();
+    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
+    teardown();
+    expect(html).toContain('data-hq-label="HQ"');
+    expect(hqLabelText(undefined)).toBe('HQ');
+    expect(html).toContain('data-hq-pos="0,0"');
+    expect(hqScenePos(undefined, proj)).toEqual([0, 0]);
+  });
+
+  it('with hq: label carries the name and the hub is at the projected position', () => {
+    setup();
+    mockHq = { lat: 0.5, lon: 0.5, label: 'HQ Alpha' };
+    const html = renderToStaticMarkup(<TheaterReadinessPosture />);
+    teardown();
+    expect(html).toContain('data-hq-label="HQ · HQ Alpha"');
+    expect(hqLabelText({ lat: 0.5, lon: 0.5, label: 'HQ Alpha' })).toBe('HQ · HQ Alpha');
+    expect(html).not.toContain('data-hq-pos="0,0"');
+    expect(hqScenePos({ lat: 0.5, lon: 0.5 }, proj)).toEqual([50, 5]);
+  });
+
+  it('a link whose parent is HQ ends at the configured position', () => {
+    const hqPos = hqScenePos({ lat: 0.5, lon: 0.5 }, proj);
+    const pos = buildNodePos([{ id: 'region-a', lat: 1, lon: 1 }], proj, hqPos);
+    expect(pos.get(HQ_NODE)).toEqual([50, 5]);
+    expect(pos.get('region-a')).toEqual([100, 10]);
   });
 });
 
