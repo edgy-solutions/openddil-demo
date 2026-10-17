@@ -629,6 +629,9 @@ def test_store_down_on_lookup_zero_posts_until_it_returns():
     processed = run_once(
         consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
         post=fake_post, sleep=fake_sleep, poll_timeout=1.0, counts=counts, store=store,
+        # A frozen clock: each poll takes no time, so every 1 s slice is slept
+        # in full. On the real clock the slices come up microseconds short.
+        clock=lambda: 0.0,
     )
 
     assert processed is True
@@ -662,6 +665,9 @@ def test_2xx_then_write_fails_twice_exactly_one_post():
     processed = run_once(
         consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
         post=fake_post, sleep=fake_sleep, poll_timeout=1.0, counts=counts, store=store,
+        # A frozen clock: each poll takes no time, so every 1 s slice is slept
+        # in full. On the real clock the slices come up microseconds short.
+        clock=lambda: 0.0,
     )
 
     assert processed is True
