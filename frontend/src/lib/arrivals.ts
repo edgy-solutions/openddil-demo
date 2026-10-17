@@ -233,3 +233,16 @@ export function formatArrivalsSummary(e: ArrivalsSummaryEdge): string {
   const base = `undeclared ${e.undeclared} · expected ${e.expected}`;
   return e.overdue > 0 ? `${base} (${e.overdue} overdue)` : base;
 }
+
+/** Switcher badge counts; null when there is nothing to count (not loaded / absent / error).
+ *  Overdue uses the same flag the Expected row's OVERDUE chip reads. */
+export function arrivalsCounts(
+  state: LoadArrivalsResult | undefined,
+): { undeclared: number; expected: number; overdue: number } | null {
+  if (!state || state.kind === 'absent' || state.kind === 'error') return null;
+  return {
+    undeclared: state.data.undeclared.length,
+    expected: state.data.expected.length,
+    overdue: state.data.expected.filter((x) => x.overdue).length,
+  };
+}

@@ -2,7 +2,8 @@
 // MovePanel -- the presentational component rendered per phase from fixture
 // data (renderToStaticMarkup, as in EffectorTracksCard.test.tsx).
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
 import MovePanel, { type MemberInput, type MovePanelProps } from '../MovePanel';
 import { latestEpisode, type PostureTransition } from '../../lib/movePanel';
 
@@ -58,7 +59,9 @@ function props(over: Partial<MovePanelProps> = {}): MovePanelProps {
   };
 }
 
-const html = (p: MovePanelProps) => renderToStaticMarkup(<MovePanel {...p} />);
+// Legacy assertions read sources, notes and timing, so html opens the detail; plain is the default render.
+const html = (p: MovePanelProps) => renderToStaticMarkup(<MovePanel defaultDetail {...p} />);
+const plain = (p: MovePanelProps) => renderToStaticMarkup(<MovePanel {...p} />);
 
 describe('MovePanel phases', () => {
   it('no episode: one line and nothing else', () => {
@@ -297,5 +300,59 @@ describe('MovePanel absence', () => {
     })] }));
     expect(out).toMatch(/data-testid="move-rounds"[^>]*data-remaining="absent"/);
     expect(out).toContain('no declared load for asset-1');
+  });
+});
+
+describe('MovePanel detail expander', () => {
+  afterEach(cleanup);
+  const emplaced = () => props({
+    members: [member({}, [T_MARCH, T_MOVING, T_EMPLACING, T_EMPLACED])],
+    nowMs: Date.parse('2026-10-06T12:37:16Z'),
+  });
+
+  it('default render hides concept, notes and provenance', () => {
+    const out = plain(props());
+    expect(out).not.toContain('JC3IEDM');
+    expect(out).not.toContain('readiness has no location input');
+    expect(out).not.toContain('closure is absence');
+    expect(out).not.toContain('S5000F');
+    expect(out).not.toContain('move-c1');
+    expect(out).toContain('move-detail-toggle');
+  });
+
+  it('defaultDetail render contains them', () => {
+    const out = html(emplaced());
+    expect(out).toContain('JC3IEDM');
+    expect(out).toContain('readiness has no location input');
+  });
+
+  it('shows time in state for an emplaced episode', () => {
+    const out = plain(emplaced());
+    expect(out).toMatch(/data-testid="move-in-state"[^>]*>26m 26s</);
+  });
+
+  it('settled default shows Due on emplacement and Rounds only', () => {
+    const out = plain(emplaced());
+    expect(out).toContain('Due on emplacement');
+    expect(out).toContain('data-testid="move-rounds"');
+    expect(out).not.toContain('move-emplace-time');
+    expect(out).not.toContain('move-readiness');
+    expect(out).not.toContain('move-resupply');
+  });
+
+  it('asset-kind rounds row has no asset-id prefix; unit-kind keeps it', () => {
+    const row = (out: string) => out.slice(out.indexOf('data-testid="move-rounds"'));
+    expect(row(plain(props()))).not.toContain('>asset-1 1.2.3.4');
+    expect(row(plain(props({ kind: 'unit' })))).toContain('asset-1 1.2.3.4');
+  });
+
+  it('clicking the toggle reveals the JC3IEDM line', () => {
+    render(<MovePanel {...props()} />);
+    expect(screen.queryByTestId('move-c1')).toBeNull();
+    const t = screen.getByTestId('move-detail-toggle');
+    expect(t.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(t);
+    expect(screen.getByTestId('move-c1').textContent).toContain('JC3IEDM');
+    expect(t.getAttribute('aria-expanded')).toBe('true');
   });
 });

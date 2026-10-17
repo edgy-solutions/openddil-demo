@@ -5,7 +5,8 @@
 // using the reason strings lib/movePanel.ts returns. The presentational
 // component takes already-fetched rows; the two containers below call the
 // hooks and the declared inputs.
-import { useMemo, type ReactNode } from 'react';
+import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 import {
   deferredMaintenance,
   emplaceTime,
@@ -88,6 +89,8 @@ export interface MovePanelProps {
   buffer?: EdgeBufferStatus | null;
   links?: Map<string, LinkStatusRow>;
   parts?: PartsAvailability[];
+  /** Start with the sources, notes and timing detail expanded. */
+  defaultDetail?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +113,12 @@ function fmtS(s: number): string {
 }
 
 /** Muted `source . time` tail of a value line. */
+// Provenance tails, concept lines and notes render only when the panel's detail expander is open.
+const DetailContext = createContext(false);
+
 function Prov({ source, at, tag }: { source: string; at?: string | null; tag?: string }) {
+  const detail = useContext(DetailContext);
+  if (!detail) return null;
   const parts = [source, at ? fmtT(at) : '', tag ?? ''].filter(Boolean);
   return <span className="text-[10px] text-slate-500 ml-1 break-words">{parts.join(' · ')}</span>;
 }
@@ -199,7 +207,7 @@ function Timing({
   );
 }
 
-function Rounds({ member, asOfMs, label }: { member: MemberInput; asOfMs: number; label: string }) {
+function Rounds({ member, asOfMs, label, kind }: { member: MemberInput; asOfMs: number; label: string; kind: 'asset' | 'unit' }) {
   const rows = replayLedger(member.declared, member.fires, member.resupplies, asOfMs);
   return (
     <div>
@@ -216,7 +224,7 @@ function Rounds({ member, asOfMs, label }: { member: MemberInput; asOfMs: number
           data-remaining={isAbsent(r.remaining) ? 'absent' : r.remaining.value}
           {...(isAbsent(r.remaining) ? { 'data-absent': r.remaining.absent } : {})}
         >
-          <span className="text-slate-500">{member.assetId} {r.munitionKey}</span>{' '}
+          <span className="text-slate-500">{kind === 'asset' ? r.munitionKey : `${member.assetId} ${r.munitionKey}`}</span>{' '}
           declared/fired {r.fired.value}/received {r.received.value}/remaining{' '}
           {isAbsent(r.remaining) ? <Absence reason={r.remaining.absent} /> : r.remaining.value}
           <Prov source={isAbsent(r.remaining) ? r.fired.source : r.remaining.source} at={r.fired.at} />
@@ -227,6 +235,7 @@ function Rounds({ member, asOfMs, label }: { member: MemberInput; asOfMs: number
 }
 
 function Deferred({ member, asOfMs, heading }: { member: MemberInput; asOfMs: number; heading: string }) {
+  const detail = useContext(DetailContext);
   const d = deferredMaintenance(member.discrepancies, asOfMs);
   return (
     <div>
@@ -244,7 +253,7 @@ function Deferred({ member, asOfMs, heading }: { member: MemberInput; asOfMs: nu
           <Prov source={t.concept} at={t.detectedAt} />
         </div>
       ))}
-      <div className="text-[10px] text-slate-500">{d.note}</div>
+      {detail && <div className="text-[10px] text-slate-500">{d.note}</div>}
     </div>
   );
 }
@@ -359,7 +368,8 @@ function TierView({ tierKind, buffer, member, reporting, edge, link, pos }: {
 // ---------------------------------------------------------------------------
 
 function MemberSection(props: MovePanelProps & { member: MemberInput }) {
-  const { member, tierKind, nowMs, standards, plannedMoveKm, buffer, links, parts } = props;
+  const { member, tierKind, nowMs, standards, plannedMoveKm, buffer, links, parts, kind } = props;
+  const detail = useContext(DetailContext);
   const ep = member.episode;
   if (!ep) return <Row label={member.assetId}><Absence reason="No move on record" /></Row>;
   const phase = ep.phase;
@@ -391,7 +401,7 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
 
       {(phase === 'march_ordered') && (
         <>
-          <Rounds member={member} asOfMs={nowMs} label="Rounds (now)" />
+          <Rounds kind={kind} member={member} asOfMs={nowMs} label="Rounds (now)" />
           <Heading>Fuel for the move</Heading>
           <div
             className="text-[11px] text-slate-300 break-words"
@@ -402,7 +412,7 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
               ? <Absence reason={fuel.result.absent} />
               : <>{fuel.result.value} left<Prov source={fuel.result.source} tag="overlay-declared" /></>}
           </div>
-          <div className="text-[10px] text-slate-500">{fuel.assumption}</div>
+          {detail && <div className="text-[10px] text-slate-500">{fuel.assumption}</div>}
           <Spares members={[member]} tierKind={tierKind} parts={parts ?? []} />
           <Deferred member={member} asOfMs={marchMs} heading="Deferred maintenance (as of march order)" />
           <Heading>Time to march order</Heading>
@@ -425,7 +435,7 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
 
       {frozen && (
         <>
-          <Rounds member={member} asOfMs={marchMs} label={`Rounds as of march order ${fmtT(ep.marchOrderedAt)}`} />
+          <Rounds kind={kind} member={member} asOfMs={marchMs} label={`Rounds as of march order ${fmtT(ep.marchOrderedAt)}`} />
           <Deferred member={member} asOfMs={marchMs} heading={`Deferred maintenance as of march order ${fmtT(ep.marchOrderedAt)}`} />
           <Row label="moving since">
             {ep.movingMotionSince
@@ -446,36 +456,44 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
 
       {settled && (
         <>
-          <Timing
-            testId="move-emplace-time"
-            label="emplace time"
-            measured={emplaceTime(ep)}
-            standardS={standard?.emplaceS}
-            variant={variant}
-            member={member.assetId}
-          />
-          <Row label="readiness">
-            <span
-              data-testid="move-readiness"
-              {...(isAbsent(readiness.readiness)
-                ? { 'data-absent': readiness.readiness.absent }
-                : { 'data-value': readiness.readiness.value })}
-            >
-              {maybeText(readiness.readiness, (v) => v)}
-            </span>
-          </Row>
-          <div className="text-[10px] text-slate-500">{readiness.note}</div>
+          {detail && (
+            <>
+            <Timing
+              testId="move-emplace-time"
+              label="emplace time"
+              measured={emplaceTime(ep)}
+              standardS={standard?.emplaceS}
+              variant={variant}
+              member={member.assetId}
+            />
+            <Row label="readiness">
+              <span
+                data-testid="move-readiness"
+                {...(isAbsent(readiness.readiness)
+                  ? { 'data-absent': readiness.readiness.absent }
+                  : { 'data-value': readiness.readiness.value })}
+              >
+                {maybeText(readiness.readiness, (v) => v)}
+              </span>
+            </Row>
+            <div className="text-[10px] text-slate-500">{readiness.note}</div>
+            </>
+          )}
           <Deferred member={member} asOfMs={marchMs} heading="Due on emplacement" />
-          <Heading>Resupply received since march order</Heading>
-          {resupplied.length === 0 ? (
-            <div className="text-[11px] text-slate-400">None received since march order</div>
-          ) : resupplied.map((r, i) => (
-            <div key={`${r.receivedAt}:${i}`} className="text-[11px] text-slate-300 break-words" data-testid="move-resupply" data-munition={r.munitionType}>
-              {r.munitionType} x{r.quantity} from {r.supplierAssetId ?? 'unknown supplier'} · applied to the ledger
-              <Prov source="effector_resupply" at={r.receivedAt} />
+          {detail && (
+            <div>
+            <Heading>Resupply received since march order</Heading>
+            {resupplied.length === 0 ? (
+              <div className="text-[11px] text-slate-400">None received since march order</div>
+            ) : resupplied.map((r, i) => (
+              <div key={`${r.receivedAt}:${i}`} className="text-[11px] text-slate-300 break-words" data-testid="move-resupply" data-munition={r.munitionType}>
+                {r.munitionType} x{r.quantity} from {r.supplierAssetId ?? 'unknown supplier'} · applied to the ledger
+                <Prov source="effector_resupply" at={r.receivedAt} />
+              </div>
+            ))}
             </div>
-          ))}
-          <Rounds member={member} asOfMs={nowMs} label="Rounds (now)" />
+          )}
+          <Rounds kind={kind} member={member} asOfMs={nowMs} label="Rounds (now)" />
         </>
       )}
     </div>
@@ -486,12 +504,34 @@ function MemberSection(props: MovePanelProps & { member: MemberInput }) {
 // The panel
 // ---------------------------------------------------------------------------
 
+/** Seconds-in-state anchor: the current-phase timestamp of the least advanced member episode. */
+function stateSince(members: MemberInput[]): string | null {
+  let best: Episode | null = null;
+  for (const m of members) {
+    const e = m.episode;
+    if (!e) continue;
+    if (best === null || (PHASE_RANK[e.phase] ?? 0) < (PHASE_RANK[best.phase] ?? 0)) best = e;
+  }
+  if (!best) return null;
+  switch (best.phase) {
+    case 'emplaced': return best.emplacedAt;
+    case 'emplacing': return best.emplacingAt;
+    case 'moving': return best.movingAt;
+    case 'march_ordered': return best.marchOrderedAt;
+    default: return null;
+  }
+}
+
 export default function MovePanel(props: MovePanelProps) {
   const { kind, scopeId, scopeLabel, members } = props;
+  const [detail, setDetail] = useState(props.defaultDetail ?? false);
   const phase = unitPhase(members);
+  const since = stateSince(members);
+  const sinceMs = since ? Date.parse(since) : NaN;
   const idAttr = kind === 'asset' ? { 'data-asset': scopeId } : { 'data-unit': scopeId };
   const concept = phase ? operationalStatusConcept(phase) : null;
   return (
+    <DetailContext.Provider value={detail}>
     <div
       className="panel shrink-0 p-3 min-w-0 max-h-80 overflow-y-auto overflow-x-hidden"
       data-testid="move-panel"
@@ -505,22 +545,41 @@ export default function MovePanel(props: MovePanelProps) {
             {postureLabel(normalizePosture(phase))}
           </span>
         )}
+        {phase && Number.isFinite(sinceMs) && (
+          <span data-testid="move-in-state" className="text-[11px] text-slate-300 tabular-nums">
+            {fmtS((props.nowMs - sinceMs) / 1000)}
+          </span>
+        )}
+        <button
+          type="button"
+          data-testid="move-detail-toggle"
+          aria-expanded={detail}
+          title="Show sources, notes and timing detail"
+          onClick={() => setDetail((d) => !d)}
+          className="ml-auto flex items-center gap-0.5 text-[10px] text-slate-500 hover:text-slate-300"
+        >
+          detail
+          {detail ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        </button>
       </div>
       {!phase || !concept ? (
         <div className="text-[11px] text-slate-500" data-absent="No move on record">No move on record</div>
       ) : (
         <>
-          <div
-            className="text-[11px] text-slate-300 break-words"
-            data-testid="move-c1"
-            {...(isAbsent(concept) ? { 'data-absent': concept.absent } : {})}
-          >
-            {maybeText(concept, (v) => v)}
-          </div>
+          {detail && (
+            <div
+              className="text-[11px] text-slate-300 break-words"
+              data-testid="move-c1"
+              {...(isAbsent(concept) ? { 'data-absent': concept.absent } : {})}
+            >
+              {maybeText(concept, (v) => v)}
+            </div>
+          )}
           {members.map((m) => <MemberSection key={m.assetId} {...props} member={m} />)}
         </>
       )}
     </div>
+    </DetailContext.Provider>
   );
 }
 

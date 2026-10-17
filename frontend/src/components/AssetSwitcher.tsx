@@ -6,7 +6,7 @@
 // of assets. `/` opens, Up/Down move, Enter selects, Escape closes.
 // Containers are pointer-events-none so the 3D view stays orbitable; only the
 // card and panel capture the pointer.
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronsUpDown } from 'lucide-react';
 import type { FleetAsset, FleetTierMap } from '../hooks';
 import { assetLabel } from '../lib/assetLabel';
@@ -19,6 +19,12 @@ interface AssetSwitcherProps {
   fleetTiers?: FleetTierMap;
   selectedAsset: string;
   setSelectedAsset: (v: string) => void;
+  /** Arrivals at the selected edge (things that are not assets yet): a badge under the identity card and a tab. */
+  arrivals?: {
+    counts: { undeclared: number; expected: number; overdue: number } | null;
+    unavailable: boolean;
+    view: ReactNode;
+  };
 }
 
 const DOT_CLASS: Record<AssetTier, string> = {
@@ -36,9 +42,11 @@ function isTypingTarget(t: EventTarget | null): boolean {
 }
 
 export default function AssetSwitcher({
-  fleet, fleetTiers, selectedAsset, setSelectedAsset,
+  fleet, fleetTiers, selectedAsset, setSelectedAsset, arrivals,
 }: AssetSwitcherProps) {
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<'fleet' | 'arrivals'>('fleet');
+  const arrivalsTabRef = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -47,6 +55,11 @@ export default function AssetSwitcher({
   const uid = useId();
   const listId = `${uid}-list`;
   const optId = (i: number) => `${uid}-opt-${i}`;
+
+  const counts = arrivals?.counts ?? null;
+  const showArrivals = !!counts && counts.undeclared + counts.expected > 0;
+  // Counts dropping to zero while the Arrivals tab is open falls back to Fleet.
+  const curTab = showArrivals ? tab : 'fleet';
 
   const selected = fleet.find((a) => a.asset_id === selectedAsset) ?? null;
   const selectedTier = selected ? fleetTiers?.get(selected.asset_id) : undefined;
@@ -67,6 +80,7 @@ export default function AssetSwitcher({
       setQuery('');
       const idx = fleet.findIndex((a) => a.asset_id === selectedAsset);
       setActive(idx >= 0 ? idx : 0);
+      setTab('fleet');
       setOpen(true);
     };
   }, [fleet, selectedAsset]);
@@ -81,8 +95,10 @@ export default function AssetSwitcher({
   };
 
   useEffect(() => {
-    if (open) inputRef.current?.focus();
-  }, [open]);
+    if (!open) return;
+    if (curTab === 'arrivals') arrivalsTabRef.current?.focus();
+    else inputRef.current?.focus();
+  }, [open, curTab]);
 
   // `/` opens, from anywhere that is not a text field.
   useEffect(() => {
@@ -112,6 +128,9 @@ export default function AssetSwitcher({
     if (e.key === 'Escape') {
       e.preventDefault();
       close();
+    } else if (curTab !== 'fleet') {
+      // Arrivals tab: list navigation must not hijack the ArrivalForm's inputs.
+      return;
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (filtered.length) setActive(Math.min(activeIdx + 1, filtered.length - 1));
@@ -126,6 +145,13 @@ export default function AssetSwitcher({
   };
 
   const nonLive = isNonLiveTier(selectedTier);
+
+  const badgeText = counts
+    ? [
+        counts.undeclared > 0 ? `${counts.undeclared} undeclared` : '',
+        counts.expected > 0 ? `${counts.expected} expected` : '',
+      ].filter(Boolean).join(' · ') + (counts.overdue > 0 ? ` · ${counts.overdue} overdue` : '')
+    : '';
 
   return (
     <div ref={rootRef} className="absolute top-3 left-3 z-30 w-[300px] pointer-events-none font-mono">
@@ -159,11 +185,62 @@ export default function AssetSwitcher({
         </button>
       </div>
 
+      {arrivals && counts && showArrivals && (
+        <button
+          type="button"
+          data-testid="arrivals-badge"
+          aria-label={`Arrivals: ${badgeText}`}
+          onClick={() => { setTab('arrivals'); setOpen(true); }}
+          className={`pointer-events-auto mt-1 block rounded-sm border px-1.5 py-0.5 text-[10px] tracking-wider ${
+            counts.undeclared > 0 || counts.overdue > 0
+              ? 'border-amber-700 bg-amber-900/25 text-amber-300'
+              : 'border-slate-600/70 bg-slate-900/60 text-cyan-300'
+          }`}
+        >
+          {badgeText}
+        </button>
+      )}
+      {arrivals?.unavailable && !showArrivals && (
+        <div data-testid="arrivals-unavailable" className="mt-1 text-[10px] text-slate-500">
+          arrivals unavailable
+        </div>
+      )}
+
       {open && (
         <div
           onKeyDown={onPanelKey}
-          className="pointer-events-auto mt-1 rounded-sm border border-cyan-500/20 bg-slate-950/60 p-2 backdrop-blur"
+          className={`pointer-events-auto mt-1 rounded-sm border border-cyan-500/20 bg-slate-950/60 p-2 backdrop-blur ${
+            curTab === 'arrivals' ? 'w-[380px]' : ''
+          }`}
         >
+          {showArrivals && counts && (
+            <div role="tablist" className="mb-1.5 flex gap-1 text-[11px]">
+              {([
+                ['fleet', 'Fleet'],
+                ['arrivals', `Arrivals ${counts.undeclared + counts.expected}`],
+              ] as const).map(([id, label]) => (
+                <button
+                  key={id}
+                  ref={id === 'arrivals' ? arrivalsTabRef : undefined}
+                  type="button"
+                  role="tab"
+                  aria-selected={curTab === id}
+                  onClick={() => setTab(id)}
+                  className={`rounded-sm border px-2 py-0.5 tracking-wider ${
+                    curTab === id
+                      ? 'border-cyan-500/60 bg-cyan-500/15 text-cyan-300'
+                      : 'border-slate-700 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          {curTab === 'arrivals' ? (
+            arrivals?.view
+          ) : (
+          <>
           <input
             ref={inputRef}
             type="text"
@@ -226,6 +303,8 @@ export default function AssetSwitcher({
             <span>↑↓ move · enter select</span>
             <span>esc</span>
           </div>
+          </>
+          )}
         </div>
       )}
     </div>

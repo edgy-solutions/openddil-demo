@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import AssetSwitcher from '../AssetSwitcher';
+import type { ReactNode } from 'react';
 import type { FleetAsset, FleetTierMap } from '../../hooks';
 import type { AssetTier } from '../../lib/assetTier';
 
@@ -152,5 +153,74 @@ describe('AssetSwitcher', () => {
     setup('', []);
     fireEvent.click(screen.getByRole('button', { name: 'Switch asset' }));
     expect(screen.getByText('— no assets in scope —')).toBeTruthy();
+  });
+});
+
+describe('AssetSwitcher arrivals', () => {
+  type C = { undeclared: number; expected: number; overdue: number } | null;
+  function withArrivals(counts: C, unavailable = false, view: ReactNode = <input data-testid="av-input" />) {
+    const set = vi.fn();
+    render(
+      <AssetSwitcher
+        fleet={FLEET} fleetTiers={TIERS} selectedAsset="dis:1:1:1001" setSelectedAsset={set}
+        arrivals={{ counts, unavailable, view }}
+      />,
+    );
+    return set;
+  }
+
+  it('no badge without arrivals or with 0/0', () => {
+    setup();
+    expect(screen.queryByTestId('arrivals-badge')).toBeNull();
+    cleanup();
+    withArrivals({ undeclared: 0, expected: 0, overdue: 0 });
+    expect(screen.queryByTestId('arrivals-badge')).toBeNull();
+    expect(screen.queryByRole('tablist')).toBeNull();
+  });
+
+  it('badge text forms and amber styling', () => {
+    withArrivals({ undeclared: 1, expected: 2, overdue: 0 });
+    const b = screen.getByTestId('arrivals-badge');
+    expect(b.textContent).toBe('1 undeclared · 2 expected');
+    expect(b.getAttribute('aria-label')).toBe('Arrivals: 1 undeclared · 2 expected');
+    expect(b.className).toContain('text-amber-300');
+    cleanup();
+    withArrivals({ undeclared: 0, expected: 2, overdue: 0 });
+    expect(screen.getByTestId('arrivals-badge').textContent).toBe('2 expected');
+    expect(screen.getByTestId('arrivals-badge').className).not.toContain('text-amber-300');
+    cleanup();
+    withArrivals({ undeclared: 1, expected: 2, overdue: 1 });
+    expect(screen.getByTestId('arrivals-badge').textContent).toBe('1 undeclared · 2 expected · 1 overdue');
+  });
+
+  it('badge opens on the Arrivals tab with the view; "/" opens on Fleet', () => {
+    withArrivals({ undeclared: 1, expected: 2, overdue: 0 });
+    fireEvent.click(screen.getByTestId('arrivals-badge'));
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs[0].textContent).toBe('Fleet');
+    expect(tabs[1].textContent).toBe('Arrivals 3');
+    expect(tabs[1].getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('av-input')).toBeTruthy();
+    expect(screen.queryByRole('listbox')).toBeNull();
+    fireEvent.keyDown(screen.getByTestId('av-input'), { key: 'Escape' });
+    expect(screen.queryByRole('tablist')).toBeNull();
+    fireEvent.keyDown(document.body, { key: '/' });
+    expect(screen.getAllByRole('tab')[0].getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('listbox')).toBeTruthy();
+  });
+
+  it('ArrowDown in an input inside the arrivals view does not move the fleet selection', () => {
+    const set = withArrivals({ undeclared: 1, expected: 0, overdue: 0 });
+    fireEvent.click(screen.getByTestId('arrivals-badge'));
+    const ev = fireEvent.keyDown(screen.getByTestId('av-input'), { key: 'ArrowDown' });
+    expect(ev).toBe(true);
+    fireEvent.keyDown(screen.getByTestId('av-input'), { key: 'Enter' });
+    expect(set).not.toHaveBeenCalled();
+  });
+
+  it('shows an unavailable line on error', () => {
+    withArrivals(null, true);
+    expect(screen.getByTestId('arrivals-unavailable').textContent).toBe('arrivals unavailable');
+    expect(screen.queryByTestId('arrivals-badge')).toBeNull();
   });
 });

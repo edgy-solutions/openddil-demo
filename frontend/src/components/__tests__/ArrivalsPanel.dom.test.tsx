@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import ArrivalsPanel from '../ArrivalsPanel';
+import ArrivalsPanel, { ArrivalsView } from '../ArrivalsPanel';
+import { arrivalsCounts } from '../../lib/arrivals';
 
 const DATA = {
   edge_id: 'edge-01',
@@ -159,5 +160,28 @@ describe('ArrivalsPanel partial declaration', () => {
     );
     fireEvent.click(screen.getByLabelText('Dismiss'));
     expect(screen.queryByTestId('arrivals-warning')).toBeNull();
+  });
+});
+
+describe('arrivalsCounts / ArrivalsView compact', () => {
+  afterEach(cleanup);
+  it('arrivalsCounts: null for undefined, absent, error; counts and overdue for data', () => {
+    expect(arrivalsCounts(undefined)).toBeNull();
+    expect(arrivalsCounts({ kind: 'absent' } as never)).toBeNull();
+    expect(arrivalsCounts({ kind: 'error', message: 'x' } as never)).toBeNull();
+    expect(arrivalsCounts({ kind: 'ok', data: DATA } as never)).toEqual({ undeclared: 2, expected: 2, overdue: 1 });
+  });
+
+  it('compact renders two-line rows and no heading', () => {
+    render(
+      <ArrivalsView edgeId="edge-01" state={{ kind: 'ok', data: DATA } as never} refetch={async () => {}} compact />,
+    );
+    expect(screen.queryByRole('heading')).toBeNull();
+    expect(screen.queryByTestId('arrivals-count')).toBeNull();
+    const row = screen.getByTestId('arrivals-undeclared-dis:1:1:9001');
+    expect(row.textContent).toContain('VAR-A');
+    expect(row.textContent).toContain('→');
+    expect(row.textContent).toContain('1.5000, 2.5000');
+    expect(screen.getByTestId('arrivals-panel').className).toContain('max-h-[60vh]');
   });
 });

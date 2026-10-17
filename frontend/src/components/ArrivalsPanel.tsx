@@ -5,19 +5,18 @@
 // the route is not offered to this viewer (401/403/404) or no edge is selected.
 // One inline form (a section, not a modal) declares an undeclared asset or
 // confirms it against an expected arrival. The PEP stamps who declared.
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   buildDeclareBody,
   formatPosition,
-  loadArrivals,
   submitDeclaration,
   type ArrivalsData,
   type ExpectedArrival,
   type LoadArrivalsResult,
   type UndeclaredArrival,
 } from '../lib/arrivals';
+import { useArrivals } from '../hooks/useArrivals';
 
-const POLL_MS = 10_000;
 
 const FIELD =
   'w-full bg-slate-800 text-slate-200 border border-slate-700 rounded-sm py-1 px-2 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500/50 disabled:opacity-60';
@@ -211,7 +210,33 @@ function ArrivalForm({
   );
 }
 
-function ExpectedRow({ x }: { x: ExpectedArrival }) {
+function OverdueChip({ x }: { x: ExpectedArrival }) {
+  if (!isOverdue(x)) return null;
+  return (
+    <span
+      data-testid={`arrivals-overdue-${x.serial}`}
+      className="text-[9px] font-bold tracking-wider px-1 rounded-sm border border-red-700 bg-red-900/40 text-red-400"
+    >
+      OVERDUE
+    </span>
+  );
+}
+
+// compact (the switcher's Arrivals tab, ~380px): two lines instead of the grid.
+function ExpectedRow({ x, compact }: { x: ExpectedArrival; compact?: boolean }) {
+  if (compact) {
+    return (
+      <div data-testid={`arrivals-expected-${x.serial}`} className="text-[11px] text-slate-300 py-0.5">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-mono whitespace-nowrap">{x.serial}</span>
+          <span className="truncate">{x.platform_variant ?? '—'}</span>
+          <span className="whitespace-nowrap text-slate-400">{x.unit ?? '—'}</span>
+          <span className="ml-auto shrink-0"><OverdueChip x={x} /></span>
+        </div>
+        <div className="text-[10px] text-slate-500 break-all">due {x.due_by ?? '—'}</div>
+      </div>
+    );
+  }
   return (
     <div
       data-testid={`arrivals-expected-${x.serial}`}
@@ -222,44 +247,31 @@ function ExpectedRow({ x }: { x: ExpectedArrival }) {
       <span>{x.unit ?? '—'}</span>
       <span className="flex items-center gap-1">
         {x.due_by ?? '—'}
-        {x.overdue && (
-          <span
-            data-testid={`arrivals-overdue-${x.serial}`}
-            className="text-[9px] font-bold tracking-wider px-1 rounded-sm border border-red-700 bg-red-900/40 text-red-400"
-          >
-            OVERDUE
-          </span>
-        )}
+        <OverdueChip x={x} />
       </span>
     </div>
   );
 }
 
+/** The overdue predicate ExpectedRow marks with the OVERDUE chip. */
+function isOverdue(x: ExpectedArrival): boolean {
+  return !!x.overdue;
+}
+
 // Mount with key={edgeId}: a different edge is a fresh panel (no stale rows or form).
-export default function ArrivalsPanel({ edgeId }: { edgeId: string | null }) {
-  const [state, setState] = useState<LoadArrivalsResult | undefined>(undefined);
+export function ArrivalsView({
+  edgeId,
+  state,
+  refetch,
+  compact,
+}: {
+  edgeId: string | null;
+  state: LoadArrivalsResult | undefined;
+  refetch: () => Promise<void>;
+  compact?: boolean;
+}) {
   const [target, setTarget] = useState<FormTarget | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-
-  const refetch = useCallback(async () => {
-    if (!edgeId) return;
-    setState(await loadArrivals(edgeId));
-  }, [edgeId]);
-
-  useEffect(() => {
-    if (!edgeId) return;
-    let cancelled = false;
-    const tick = () =>
-      loadArrivals(edgeId).then((r) => {
-        if (!cancelled) setState(r);
-      });
-    tick();
-    const timer = setInterval(tick, POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [edgeId]);
 
   if (!edgeId || !state || state.kind === 'absent') return null;
   if (state.kind === 'error') {
@@ -272,13 +284,18 @@ export default function ArrivalsPanel({ edgeId }: { edgeId: string | null }) {
   const data = state.data;
 
   return (
-    <div data-testid="arrivals-panel" className="panel shrink-0 p-3">
-      <div className="flex items-center justify-between mb-2">
-        <h2 className="text-sm text-slate-400 tracking-wider uppercase">Arrivals</h2>
-        <span data-testid="arrivals-count" className="text-[11px] text-slate-400 font-mono">
-          undeclared {data.undeclared.length} · expected {data.expected.length}
-        </span>
-      </div>
+    <div
+      data-testid="arrivals-panel"
+      className={compact ? 'max-h-[60vh] overflow-y-auto pr-1' : 'panel shrink-0 p-3'}
+    >
+      {!compact && (
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm text-slate-400 tracking-wider uppercase">Arrivals</h2>
+          <span data-testid="arrivals-count" className="text-[11px] text-slate-400 font-mono">
+            undeclared {data.undeclared.length} · expected {data.expected.length}
+          </span>
+        </div>
+      )}
 
       {warning && (
         <div
@@ -297,36 +314,58 @@ export default function ArrivalsPanel({ edgeId }: { edgeId: string | null }) {
         <div className="space-y-2 mb-3">
           {data.undeclared.map((u) => (
             <div key={u.asset_id} data-testid={`arrivals-undeclared-${u.asset_id}`}>
-              <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1.4fr] gap-2 text-[11px] text-slate-300">
-                <span className="font-mono">{u.asset_id}</span>
-                <span>{u.first_seen ?? '—'}</span>
-                <span>{u.last_seen ?? '—'}</span>
-                <span className={u.platform_variant === 'UNKNOWN' ? 'text-amber-400' : ''}>
-                  {u.platform_variant}
-                </span>
-                <span className="font-mono">{formatPosition(u.position)}</span>
-              </div>
-              <div className="flex flex-wrap gap-2 mt-1">
-                <button
-                  type="button"
-                  data-testid={`arrivals-declare-${u.asset_id}`}
-                  onClick={() => setTarget({ row: u, confirmSerial: null })}
-                  className="text-[10px] uppercase tracking-wider py-0.5 px-2 rounded-sm border border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-900/60"
-                >
-                  Declare
-                </button>
-                {u.candidates.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    data-testid={`arrivals-confirm-${u.asset_id}-${s}`}
-                    onClick={() => setTarget({ row: u, confirmSerial: s })}
-                    className="text-[10px] uppercase tracking-wider py-0.5 px-2 rounded-sm border border-emerald-700 bg-emerald-900/30 text-emerald-300 hover:bg-emerald-900/50"
-                  >
-                    Confirm as {s}
-                  </button>
-                ))}
-              </div>
+              {(() => {
+                const actions = (
+                  <>
+                    <button
+                      type="button"
+                      data-testid={`arrivals-declare-${u.asset_id}`}
+                      onClick={() => setTarget({ row: u, confirmSerial: null })}
+                      className="text-[10px] uppercase tracking-wider py-0.5 px-2 rounded-sm border border-cyan-700 bg-cyan-900/40 text-cyan-300 hover:bg-cyan-900/60"
+                    >
+                      Declare
+                    </button>
+                    {u.candidates.map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        data-testid={`arrivals-confirm-${u.asset_id}-${s}`}
+                        onClick={() => setTarget({ row: u, confirmSerial: s })}
+                        className="text-[10px] uppercase tracking-wider py-0.5 px-2 rounded-sm border border-emerald-700 bg-emerald-900/30 text-emerald-300 hover:bg-emerald-900/50"
+                      >
+                        Confirm as {s}
+                      </button>
+                    ))}
+                  </>
+                );
+                return compact ? (
+                  <div className="text-[11px] text-slate-300">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono whitespace-nowrap">{u.asset_id}</span>
+                      <span className={`truncate ${u.platform_variant === 'UNKNOWN' ? 'text-amber-400' : ''}`}>
+                        {u.platform_variant}
+                      </span>
+                      <span className="ml-auto flex shrink-0 flex-wrap justify-end gap-1">{actions}</span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 break-all">
+                      {u.first_seen ?? '—'} → {u.last_seen ?? '—'} · {formatPosition(u.position)}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1.4fr] gap-2 text-[11px] text-slate-300">
+                      <span className="font-mono">{u.asset_id}</span>
+                      <span>{u.first_seen ?? '—'}</span>
+                      <span>{u.last_seen ?? '—'}</span>
+                      <span className={u.platform_variant === 'UNKNOWN' ? 'text-amber-400' : ''}>
+                        {u.platform_variant}
+                      </span>
+                      <span className="font-mono">{formatPosition(u.position)}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-1">{actions}</div>
+                  </>
+                );
+              })()}
               {target?.row.asset_id === u.asset_id && (
                 <ArrivalForm
                   key={`${u.asset_id}|${target.confirmSerial ?? ''}`}
@@ -350,8 +389,13 @@ export default function ArrivalsPanel({ edgeId }: { edgeId: string | null }) {
       {data.expected.length === 0 ? (
         <div className="text-[11px] text-slate-500">Nothing expected</div>
       ) : (
-        data.expected.map((x) => <ExpectedRow key={x.serial} x={x} />)
+        data.expected.map((x) => <ExpectedRow key={x.serial} x={x} compact={compact} />)
       )}
     </div>
   );
+}
+
+export default function ArrivalsPanel({ edgeId }: { edgeId: string | null }) {
+  const { state, refetch } = useArrivals(edgeId);
+  return <ArrivalsView edgeId={edgeId} state={state} refetch={refetch} />;
 }

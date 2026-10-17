@@ -24,7 +24,9 @@ import LostContactBanner from './components/LostContactBanner';
 import TelemetryCharts from './components/TelemetryCharts';
 import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
-import ArrivalsPanel from './components/ArrivalsPanel';
+import { ArrivalsView } from './components/ArrivalsPanel';
+import { useArrivals } from './hooks/useArrivals';
+import { arrivalsCounts } from './lib/arrivals';
 import CmStateCard from './components/CmStateCard';
 import { WeaponsCapabilityCard } from './components/WeaponsCapabilityCard';
 import MunitionsLoadoutCard from './components/MunitionsLoadoutCard';
@@ -178,6 +180,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // selectedEdge is null (URL had no ?edge= AND default not yet
   // resolved), falls back to the unfiltered shape so the picker isn't
   // empty during the brief cold-start window.
+  const arrivals = useArrivals(selectedEdge);
   const fleetScoped = useFleetAssetsForEdge(selectedEdge);
   const fleetRaw = selectedEdge ? fleetScoped : fleetAll;
 
@@ -584,6 +587,19 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               fleetTiers={tiers}
               selectedAsset={selectedAssetId}
               setSelectedAsset={setSelectedAssetId}
+              arrivals={{
+                counts: arrivalsCounts(arrivals.state),
+                unavailable: arrivals.state?.kind === 'error',
+                view: (
+                  <ArrivalsView
+                    key={selectedEdge ?? ''}
+                    edgeId={selectedEdge}
+                    state={arrivals.state}
+                    refetch={arrivals.refetch}
+                    compact
+                  />
+                ),
+              }}
             />
           </div>
         </div>
@@ -602,12 +618,18 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             bar must be subtracted here even though MaintainerApp itself
             doesn't render it. */}
         <div className="col-span-1 flex flex-col gap-4 overflow-y-auto pr-2 pb-4 min-h-0 max-h-[calc(100vh-140px)]">
-          <ArrivalsPanel key={selectedEdge ?? ""} edgeId={selectedEdge} />
+          <LogisticsStatusCard
+            logistics={logiState}
+            opState={tel?.operational_state ?? null}
+            isLoading={logistics.isLoading}
+          />
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
           {/* Phase 5: ADR-0026 operational_state surfaced per-asset.
-              Sits between CmStateCard (config-management compliance) and
+              Sits after CmStateCard (config-management compliance) and
               LogisticsStatusCard (rolled-up severity from fusion) — the
-              3-axis posture is orthogonal to both. */}
+              3-axis posture is orthogonal to both. Column order: can it
+              fight (logistics, config), posture and the move, rounds,
+              then prognostics, events and inventory last. */}
           <PostureCard
             posture={tel ? { status: tel.posture_status, since: tel.posture_since } : null}
             isLoading={telemetry.isLoading}
@@ -615,15 +637,6 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
           {selectedAssetId && (
             <AssetMovePanel assetId={selectedAssetId} variant={variant} tierKind="edge" />
           )}
-          <GroundDiagnosticsCard
-            opState={tel?.operational_state ?? null}
-            isLoading={telemetry.isLoading}
-          />
-          <LogisticsStatusCard
-            logistics={logiState}
-            opState={tel?.operational_state ?? null}
-            isLoading={logistics.isLoading}
-          />
           {/* Weapons-capable card: renders nothing on non-weapons-capable
               assets (sensors, HQ, infrastructure) so the right-rail
               stays clean. Shows ammo per weapon/store with LOW/DEPLETED
@@ -638,6 +651,10 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               this one shows the derived stockpile view (max-seen
               accumulator drives the initial baseline). */}
           <MunitionsLoadoutCard assetId={selectedAssetId} />
+          <GroundDiagnosticsCard
+            opState={tel?.operational_state ?? null}
+            isLoading={telemetry.isLoading}
+          />
           {/* TelemetryCharts uses a layered data source: real sustainment
               first, else sim-derived per-element aggregates from the same
               hook the 3D drill-down reads (mradLive), else the edge's
