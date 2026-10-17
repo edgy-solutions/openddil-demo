@@ -50,6 +50,7 @@ import {
   useAllEffectorLaunches,
   useAllEffectorResupply,
   useInFlightMunitionTracks,
+  useMunitionTrackFeed,
   useEdgeBuffer,
   useLinkStatus,
   type FleetAsset,
@@ -765,6 +766,12 @@ export default function RegionalSustainmentPosture({
     [inFlightTracks.data, regionId],
   );
   const inflightCount = regionTracks.length;
+  // Trails read the feed, which also carries recently ended rows; the count above stays on in-flight.
+  const trackFeed = useMunitionTrackFeed();
+  const trailTracks = useMemo(
+    () => trackFeed.data.filter((t) => !regionId || !t.regionId || t.regionId === regionId),
+    [trackFeed.data, regionId],
+  );
 
   // 5-tier liveness map. This is a REMOTE view of the edge, so
   // COMM_LOST (stale AND severed) is a legitimate reading here -- but
@@ -827,18 +834,29 @@ export default function RegionalSustainmentPosture({
 
   // Track dots go through the same projection a fleet asset takes. The line
   // runs to the launcher only when it is rendered on this map.
-  const projectTrack = useCallback((t: (typeof regionTracks)[number]): Vec3 | null => {
+  const projectTrack = useCallback((t: (typeof trailTracks)[number]): Vec3 | null => {
     const ll = trackLatLon(t);
     if (!ll) return null;
     const [x, z] = proj.project(ll.lat, ll.lon);
     return [x, GROUND_Y + (ll.h / 1000) * (SCENE_SCALE_UNITS_PER_DEG / 111), z];
   }, [proj]);
-  const launcherOf = useCallback((t: (typeof regionTracks)[number]): Vec3 | undefined => {
+  const launcherOf = useCallback((t: (typeof trailTracks)[number]): Vec3 | undefined => {
     const p = t.launcherAssetId ? renderables.find((a) => a.asset_id === t.launcherAssetId)?.position : undefined;
     return p ? [p[0], p[1], p[2]] : undefined;
   }, [renderables]);
-  const trails = useMunitionTrails(regionTracks, projectTrack, launcherOf);
-  const trackById = useMemo(() => new Map(regionTracks.map((t) => [t.munitionAssetId, t])), [regionTracks]);
+  const trails = useMunitionTrails(trailTracks, projectTrack, launcherOf);
+  const trackById = useMemo(() => new Map(trailTracks.map((t) => [t.munitionAssetId, t])), [trailTracks]);
+  // Target: the Fire PDU's target (effector_launch, by event_urn), at that asset's drawn position.
+  const targetOf = useMemo(() => {
+    const targetByUrn = new Map<string, string>();
+    for (const l of effLaunches.data) if (l.eventUrn && l.targetAssetId) targetByUrn.set(l.eventUrn, l.targetAssetId);
+    const posById = new Map(renderables.map((a) => [a.asset_id, a.position]));
+    return (t: (typeof trailTracks)[number] | undefined): Vec3 | undefined => {
+      const id = t?.eventUrn ? targetByUrn.get(t.eventUrn) : undefined;
+      const p = id ? posById.get(id) : undefined;
+      return p ? [p[0], GROUND_Y, p[2]] : undefined;
+    };
+  }, [effLaunches.data, renderables]);
 
   const targetAsset = useMemo(
     () => renderables.find((a) => a.asset_id === selectedAssetId),
@@ -962,6 +980,7 @@ export default function RegionalSustainmentPosture({
               trail={m.trail}
               groundY={GROUND_Y}
               launcher={m.launcher}
+              target={targetOf(trackById.get(m.id))}
               ending={m.ending}
             />
           ))}

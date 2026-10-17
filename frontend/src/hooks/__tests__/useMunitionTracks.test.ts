@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // mapMunitionTrack -- numbers, nulls and the unlabelled case.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mapMunitionTrack } from '../useMunitionTracks';
 
 const FULL = {
@@ -66,5 +66,27 @@ describe('mapMunitionTrack', () => {
     const t = mapMunitionTrack({ ...FULL, terminal_state: 'silent', late_terminal: true });
     expect(t.terminalState).toBe('silent');
     expect(t.lateTerminal).toBe(true);
+  });
+});
+
+describe('useMunitionTrackFeed', () => {
+  it('asks for in-flight rows plus those ended since a fixed timestamptz literal', async () => {
+    const calls: Array<{ where?: string }> = [];
+    vi.resetModules();
+    vi.doMock('../electric', () => ({
+      num: (v: unknown, f = 0) => (Number.isFinite(Number(v)) ? Number(v) : f),
+      parseTextArray: () => null,
+      sqlLiteral: (v: string) => "'" + v.replace(/'/g, "''") + "'",
+      useTableShape: (_t: string, _m: unknown, opts: { where?: string }) => {
+        calls.push(opts);
+        return { data: [], isLoading: false, isError: false };
+      },
+    }));
+    const { renderHook } = await import('@testing-library/react');
+    const { useMunitionTrackFeed } = await import('../useMunitionTracks');
+    renderHook(() => useMunitionTrackFeed());
+    expect(calls[0].where).toContain('terminal_state IS NULL OR terminated_at >');
+    expect(calls[0].where).toMatch(/'\d{4}-\d{2}-\d{2}T[\d:.]+Z'::timestamptz$/);
+    vi.doUnmock('../electric');
   });
 });

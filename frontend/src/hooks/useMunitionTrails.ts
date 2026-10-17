@@ -6,11 +6,13 @@
 // loses it. The durable fix is server-side history (a short array column or a
 // sample table); until then this is what feeds MunitionTrackHolo.
 //
-// There is no termination event on the wire: a munition that leaves the
-// in-flight list is a lost track, never a hit. It is kept for SILENCE_MS with
-// a 'silence' ending and then dropped. No detonation is ever synthesised.
+// Endings come from the ledger's terminal state: a Detonation PDU
+// (entity_impact, ground_impact, detonated, other) bursts for BURST_MS; a
+// 'silent' sweep or a dud fades grey for SILENCE_MS and never bursts. An id
+// that vanishes from the feed with no terminal state (a reset delete, say)
+// gets the silence ending at disappearance.
 import { useEffect, useRef, useState } from 'react';
-import { SILENCE_MS, type TrackEnding, type Vec3 } from '../components/MunitionTrackHolo';
+import { BURST_MS, SILENCE_MS, type TrackEnding, type Vec3 } from '../components/MunitionTrackHolo';
 import type { MunitionTrack } from './useMunitionTracks';
 
 /** Samples kept per munition, oldest first. */
@@ -25,7 +27,23 @@ export interface MunitionTrailEntry {
   launcher?: Vec3;
 }
 
-type TrackInput = Pick<MunitionTrack, 'munitionAssetId'>;
+type TrackInput = Pick<MunitionTrack, 'munitionAssetId'> & Partial<Pick<MunitionTrack, 'terminalState' | 'terminatedAt'>>;
+
+type EndingKind = 'detonation' | 'silence';
+
+/** munition_track.terminal_state (the six CHECK values) -> how the track ends. */
+export const ENDING_KIND_BY_TERMINAL_STATE: Readonly<Record<string, EndingKind>> = {
+  entity_impact: 'detonation',
+  ground_impact: 'detonation',
+  detonated: 'detonation',
+  other: 'detonation',
+  silent: 'silence',
+  dud: 'silence',
+};
+
+function endingMs(kind: EndingKind): number {
+  return kind === 'detonation' ? BURST_MS : SILENCE_MS;
+}
 
 function sameVec(a: Vec3 | undefined, b: Vec3 | undefined): boolean {
   if (!a || !b) return a === b;
@@ -43,9 +61,12 @@ export function nextTrails<T extends TrackInput>(
   project: (track: T) => Vec3 | null,
   nowMs: number,
   launcherOf?: (track: T) => Vec3 | undefined,
+  nowWallMs: number = Date.now(),
+  spent: Set<string> = new Set(),
 ): MunitionTrailEntry[] {
   const prevById = new Map(prev.map((e) => [e.id, e]));
   const live = new Set(tracks.map((x) => x.munitionAssetId));
+  for (const id of spent) if (!live.has(id)) spent.delete(id);
   const seen = new Set<string>();
   const out: MunitionTrailEntry[] = [];
 
@@ -53,7 +74,7 @@ export function nextTrails<T extends TrackInput>(
     if (live.has(e.id)) continue; // handled below
     // Vanished: start the silence clock once, then drop at SILENCE_MS.
     if (!e.ending) out.push({ ...e, ending: { kind: 'silence', atMs: nowMs } });
-    else if (nowMs - e.ending.atMs < SILENCE_MS) out.push(e);
+    else if (nowMs - e.ending.atMs < endingMs(e.ending.kind)) out.push(e);
   }
 
   const present: MunitionTrailEntry[] = [];
@@ -63,8 +84,35 @@ export function nextTrails<T extends TrackInput>(
     seen.add(id);
     let old = prevById.get(id);
     // An ending that ran out between steps is a new flight, not a resume.
-    if (old?.ending && nowMs - old.ending.atMs >= SILENCE_MS) old = undefined;
+    if (old?.ending && nowMs - old.ending.atMs >= endingMs(old.ending.kind)) old = undefined;
     const p = project(t);
+    if (t.terminalState) {
+      if (spent.has(id)) continue; // its ending ran out; the row may linger in the feed
+      const kind = ENDING_KIND_BY_TERMINAL_STATE[t.terminalState] ?? 'silence';
+      const prior = prevById.get(id);
+      let atMs: number;
+      if (prior?.ending) atMs = prior.ending.atMs; // clock already running
+      else if (prior) atMs = nowMs; // seen in flight, now terminal: immune to clock skew
+      else {
+        const ageMs = Math.max(0, nowWallMs - Date.parse(t.terminatedAt ?? ''));
+        atMs = nowMs - (Number.isFinite(ageMs) ? ageMs : 0);
+      }
+      const ending: TrackEnding = prior?.ending ?? { kind, atMs };
+      if (nowMs - atMs >= endingMs(ending.kind)) { spent.add(id); continue; } // over: never (re)appears
+      old = prior;
+      const ok = !!p && p.every(Number.isFinite);
+      if (!old && !ok) continue;
+      const launcher = launcherOf?.(t);
+      const last = old?.trail[old.trail.length - 1];
+      const grew = ok && (!last || !sameVec(last, p!));
+      if (old?.ending && !grew && sameVec(old.launcher, launcher)) {
+        present.push(old);
+      } else {
+        const trail = !old ? [p!] : grew ? [...old.trail, p!].slice(-TRAIL_LEN) : old.trail;
+        present.push({ id, trail, ending, ...(launcher ? { launcher } : {}) });
+      }
+      continue;
+    }
     if (!p || !p.every(Number.isFinite)) {
       if (old) present.push(old.ending ? { ...old, ending: null } : old);
       continue;
@@ -104,23 +152,24 @@ export function useMunitionTrails<T extends TrackInput>(
 ): MunitionTrailEntry[] {
   const [entries, setEntries] = useState<MunitionTrailEntry[]>([]);
   const latest = useRef({ tracks, project, launcherOf });
+  const spent = useRef(new Set<string>());
   useEffect(() => {
     latest.current = { tracks, project, launcherOf };
     const step = () => {
       const l = latest.current;
-      setEntries((prev) => nextTrails(prev, l.tracks, l.project, performance.now(), l.launcherOf));
+      setEntries((prev) => nextTrails(prev, l.tracks, l.project, performance.now(), l.launcherOf, Date.now(), spent.current));
     };
     step();
   }, [tracks, project, launcherOf]);
 
   // Expire silence endings: a timer for the earliest one still running.
   useEffect(() => {
-    const ending = entries.filter((e) => e.ending).map((e) => e.ending!.atMs);
-    if (!ending.length) return undefined;
-    const wait = Math.max(0, Math.min(...ending) + SILENCE_MS - performance.now()) + 20;
+    const ends = entries.filter((e) => e.ending).map((e) => e.ending!.atMs + endingMs(e.ending!.kind));
+    if (!ends.length) return undefined;
+    const wait = Math.max(0, Math.min(...ends) - performance.now()) + 20;
     const id = setTimeout(() => {
       const l = latest.current;
-      setEntries((prev) => nextTrails(prev, l.tracks, l.project, performance.now(), l.launcherOf));
+      setEntries((prev) => nextTrails(prev, l.tracks, l.project, performance.now(), l.launcherOf, Date.now(), spent.current));
     }, wait);
     return () => clearTimeout(id);
   }, [entries]);

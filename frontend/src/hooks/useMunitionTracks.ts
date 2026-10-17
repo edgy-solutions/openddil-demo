@@ -2,7 +2,8 @@
 // Source: munition_track, filtered to terminal_state IS NULL (ADR-0049). The
 // map dot and the in-flight number read these same rows. A track is not an
 // asset: it has no fleet row, no detail view and no callout.
-import { num, parseTextArray, useTableShape, type ShapeResult } from './electric';
+import { useEffect, useState } from 'react';
+import { num, parseTextArray, sqlLiteral, useTableShape, type ShapeResult } from './electric';
 
 export interface MunitionTrack {
   munitionAssetId: string;
@@ -70,5 +71,26 @@ export function mapMunitionTrack(row: Record<string, unknown>): MunitionTrack {
 export function useInFlightMunitionTracks(): ShapeResult<MunitionTrack> {
   return useTableShape('munition_track', mapMunitionTrack, {
     where: 'terminal_state IS NULL',
+  });
+}
+
+const FEED_LEAD_MS = 10_000;
+const FEED_ADVANCE_MS = 15 * 60_000;
+
+/**
+ * In flight plus anything that ended since mount (minus 10 s), for the trail
+ * endings only. Counts and lists stay on useInFlightMunitionTracks. The cut-off
+ * is a fixed literal (Electric where clauses cannot call now()); it moves
+ * forward every 15 min so the shape stays bounded over a long session.
+ */
+export function useMunitionTrackFeed(): ShapeResult<MunitionTrack> {
+  const [sinceMs, setSinceMs] = useState(() => Date.now() - FEED_LEAD_MS);
+  useEffect(() => {
+    const id = setInterval(() => setSinceMs(Date.now() - FEED_LEAD_MS), FEED_ADVANCE_MS);
+    return () => clearInterval(id);
+  }, []);
+  const sinceIso = new Date(sinceMs).toISOString();
+  return useTableShape('munition_track', mapMunitionTrack, {
+    where: `terminal_state IS NULL OR terminated_at > ${sqlLiteral(sinceIso)}::timestamptz`,
   });
 }

@@ -27,6 +27,8 @@ vi.mock('../../../hooks/useLinkControl', () => ({
 vi.mock('../../../hooks', () => ({
   useClassifiedFleet: () => ({ data: [], isLoading: false, isError: false }),
   useInFlightMunitionTracks: () => ({ data: mockTracks, isLoading: false }),
+  useMunitionTrackFeed: () => ({ data: mockTracks, isLoading: false }),
+  useAllEffectorLaunches: () => ({ data: [], isLoading: false }),
   useAllLogisticsStatus: () => ({ data: [], isLoading: false }),
   useLinkStatus: () => ({ links: new Map(), isLoading: false, isError: false }),
 }));

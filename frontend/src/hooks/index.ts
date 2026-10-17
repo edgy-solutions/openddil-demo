@@ -92,6 +92,6 @@ export {
   type EffectorLaunchLedger,
 } from './useEffectorLaunches';
 export { useEffectorResupply, useAllEffectorResupply, type EffectorResupply } from './useEffectorResupply';
-export { useInFlightMunitionTracks, mapMunitionTrack, type MunitionTrack } from './useMunitionTracks';
+export { useInFlightMunitionTracks, useMunitionTrackFeed, mapMunitionTrack, type MunitionTrack } from './useMunitionTracks';
 export { usePartsAvailability, type PartsAvailability } from './usePartsAvailability';
 export { usePostureTransitions } from './usePostureTransitions';

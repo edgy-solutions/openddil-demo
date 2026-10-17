@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { nextTrails, TRAIL_LEN, type MunitionTrailEntry } from '../useMunitionTrails';
-import { SILENCE_MS, type Vec3 } from '../../components/MunitionTrackHolo';
+import { ENDING_KIND_BY_TERMINAL_STATE, nextTrails, TRAIL_LEN, type MunitionTrailEntry } from '../useMunitionTrails';
+import { BURST_MS, SILENCE_MS, type Vec3 } from '../../components/MunitionTrackHolo';
 
-type T = { munitionAssetId: string; p: Vec3 | null };
+type T = { munitionAssetId: string; p: Vec3 | null; terminalState?: string | null; terminatedAt?: string | null };
 const proj = (t: T) => t.p;
 const tr = (id: string, p: Vec3 | null): T => ({ munitionAssetId: id, p });
 
@@ -65,5 +65,64 @@ describe('nextTrails', () => {
     const t = [tr('dis:9:9:1', [1, 0, 0])];
     const s1 = nextTrails([], t, proj, 0);
     expect(nextTrails(s1, t, proj, 5)).toBe(s1);
+  });
+});
+
+describe('endings from the ledger', () => {
+  type TT = T & { terminalState?: string | null; terminatedAt?: string | null };
+  const term = (id: string, state: string, at: string | null = null): TT => ({
+    munitionAssetId: id, p: [1, 0, 0], terminalState: state, terminatedAt: at,
+  });
+  const flying = (id: string): TT => ({ munitionAssetId: id, p: [1, 0, 0] });
+  const WALL = Date.parse('2026-10-16T12:00:00Z');
+  const ago = (ms: number) => new Date(WALL - ms).toISOString();
+
+  it('covers exactly the six CHECK values', () => {
+    expect(Object.keys(ENDING_KIND_BY_TERMINAL_STATE).sort()).toEqual(
+      ['detonated', 'dud', 'entity_impact', 'ground_impact', 'other', 'silent'],
+    );
+  });
+
+  it('in flight then ground_impact: detonation at the arrival nowMs, gone after BURST_MS', () => {
+    let s = nextTrails([], [flying('dis:9:9:1')], proj, 100, undefined, WALL);
+    s = nextTrails(s, [term('dis:9:9:1', 'ground_impact', ago(5000))], proj, 700, undefined, WALL);
+    expect(s[0].ending).toEqual({ kind: 'detonation', atMs: 700 });
+    s = nextTrails(s, [term('dis:9:9:1', 'ground_impact', ago(5000))], proj, 700 + BURST_MS - 1, undefined, WALL);
+    expect(s).toHaveLength(1);
+    s = nextTrails(s, [term('dis:9:9:1', 'ground_impact', ago(5000))], proj, 700 + BURST_MS, undefined, WALL);
+    expect(s).toEqual([]);
+  });
+
+  it('first seen terminal 0.5 s ago: detonation with 0.5 s elapsed', () => {
+    const s = nextTrails([], [term('dis:9:9:1', 'entity_impact', ago(500))], proj, 10_000, undefined, WALL);
+    expect(s[0].ending).toEqual({ kind: 'detonation', atMs: 9_500 });
+  });
+
+  it('first seen terminal 10 s ago: never appears', () => {
+    expect(nextTrails([], [term('dis:9:9:1', 'ground_impact', ago(10_000))], proj, 10_000, undefined, WALL)).toEqual([]);
+  });
+
+  it('dud is silence, never a burst', () => {
+    const s = nextTrails([], [term('dis:9:9:1', 'dud', ago(100))], proj, 10_000, undefined, WALL);
+    expect(s[0].ending?.kind).toBe('silence');
+  });
+
+  it('silent is silence for SILENCE_MS', () => {
+    const t = term('dis:9:9:1', 'silent', ago(0));
+    let s = nextTrails([], [t], proj, 10_000, undefined, WALL);
+    expect(s[0].ending).toEqual({ kind: 'silence', atMs: 10_000 });
+    s = nextTrails(s, [t], proj, 10_000 + SILENCE_MS - 1, undefined, WALL + SILENCE_MS - 1);
+    expect(s).toHaveLength(1);
+    expect(nextTrails(s, [t], proj, 10_000 + SILENCE_MS, undefined, WALL + SILENCE_MS)).toEqual([]);
+  });
+
+  it('a row that lingers in the feed after its ending ran out does not replay (clock skew)', () => {
+    const spent = new Set<string>();
+    const future = term('dis:9:9:1', 'ground_impact', ago(-60_000)); // server clock ahead
+    let s = nextTrails([], [future], proj, 1_000, undefined, WALL, spent);
+    expect(s).toHaveLength(1);
+    s = nextTrails(s, [future], proj, 1_000 + BURST_MS, undefined, WALL, spent);
+    expect(s).toEqual([]);
+    expect(nextTrails(s, [future], proj, 1_000 + BURST_MS + 50, undefined, WALL, spent)).toEqual([]);
   });
 });

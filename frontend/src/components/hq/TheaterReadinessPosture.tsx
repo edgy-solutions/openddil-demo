@@ -35,6 +35,8 @@ import {
   useAllLogisticsStatus,
   useLinkStatus,
   useInFlightMunitionTracks,
+  useMunitionTrackFeed,
+  useAllEffectorLaunches,
   type ClassifiedFleetAsset,
   type MunitionTrack,
 } from '../../hooks';
@@ -442,6 +444,9 @@ export default function TheaterReadinessPosture() {
   const fleet = useClassifiedFleet();
   const logistics = useAllLogisticsStatus();
   const tracks = useInFlightMunitionTracks();
+  // Trails read the feed, which also carries recently ended rows; counts stay on `tracks`.
+  const trackFeed = useMunitionTrackFeed();
+  const launches = useAllEffectorLaunches();
 
   // Projection is computed once here and shared with both the FOB metrics
   // (for marker positions) and the TacticalMapUnderlay (so a deployment-
@@ -499,15 +504,34 @@ export default function TheaterReadinessPosture() {
     const [x, z] = proj.project(ll.lat, ll.lon);
     return [x, HQ_GROUND_Y + (ll.h / 1000) * (HQ_SCENE_SCALE_UNITS_PER_DEG / 111), z];
   }, [proj]);
-  // This map draws FOBs, not individual assets, so the launcher's FOB is its position.
+  // The launcher's own fleet position, projected to the ground, when it has
+  // one; otherwise its FOB (this map draws FOBs, not individual assets).
   const launcherOf = useCallback((t: MunitionTrack): Vec3 | undefined => {
+    const own = t.launcherAssetId ? fleet.data.find((a) => a.asset_id === t.launcherAssetId)?.position : null;
+    if (own) {
+      const [x, z] = proj.project(own.lat, own.lon);
+      return [x, HQ_GROUND_Y, z];
+    }
     const edgeByAsset = new Map(fleet.data.map((a) => [a.asset_id, a.edge_id]));
     const lEdge = t.launcherAssetId ? edgeByAsset.get(t.launcherAssetId) : null;
     const fob = lEdge ? drawnMetrics.find((m) => m.fob.edge_id === lEdge) : undefined;
     return fob ? [fob.scenePos[0], HQ_GROUND_Y, fob.scenePos[1]] : undefined;
-  }, [fleet.data, drawnMetrics]);
-  const trails = useMunitionTrails(tracks.data, projectTrack, launcherOf);
-  const trackById = useMemo(() => new Map(tracks.data.map((t) => [t.munitionAssetId, t])), [tracks.data]);
+  }, [fleet.data, drawnMetrics, proj]);
+  const trails = useMunitionTrails(trackFeed.data, projectTrack, launcherOf);
+  const trackById = useMemo(() => new Map(trackFeed.data.map((t) => [t.munitionAssetId, t])), [trackFeed.data]);
+  // Target: the Fire PDU's target (effector_launch, by event_urn), at that asset's fleet position.
+  const targetOf = useMemo(() => {
+    const targetByUrn = new Map<string, string>();
+    for (const l of launches.data) if (l.eventUrn && l.targetAssetId) targetByUrn.set(l.eventUrn, l.targetAssetId);
+    const posById = new Map(fleet.data.map((a) => [a.asset_id, a.position]));
+    return (t: MunitionTrack | undefined): Vec3 | undefined => {
+      const id = t?.eventUrn ? targetByUrn.get(t.eventUrn) : undefined;
+      const pos = id ? posById.get(id) : null;
+      if (!pos) return undefined;
+      const [x, z] = proj.project(pos.lat, pos.lon);
+      return [x, HQ_GROUND_Y, z];
+    };
+  }, [launches.data, fleet.data, proj]);
 
   return (
     <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${severed ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-theater-readiness">
@@ -734,6 +758,7 @@ export default function TheaterReadinessPosture() {
               trail={m.trail}
               groundY={HQ_GROUND_Y}
               launcher={m.launcher}
+              target={targetOf(trackById.get(m.id))}
               ending={m.ending}
             />
           ))}

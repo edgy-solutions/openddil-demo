@@ -28,6 +28,7 @@ vi.mock('../../../hooks', () => ({
   useAllEffectorLaunches: () => ({ data: [], isLoading: false }),
   useAllEffectorResupply: () => ({ data: [], isLoading: false }),
   useInFlightMunitionTracks: () => ({ data: mockTracks, isLoading: false }),
+  useMunitionTrackFeed: () => ({ data: mockTracks, isLoading: false }),
   useEdgeBuffer: () => ({ status: null, isError: false }),
   useLinkStatus: () => ({ links: new Map(), isLoading: false, isError: false }),
 }));
