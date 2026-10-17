@@ -109,6 +109,19 @@ function ribbonMaterial(w0: number, w1: number, color: THREE.Color, pulse = 0, d
   });
 }
 
+// The ribbon converts pixels to clip space with `res`. The same mesh can be
+// drawn into more than one viewport (the map, then the engagement inset), so
+// each draw reads the viewport it is going into.
+const vp = new THREE.Vector4();
+function fitRes(r: THREE.WebGLRenderer, _s: THREE.Scene, _c: THREE.Camera, _g: THREE.BufferGeometry, mat: THREE.Material) {
+  const u = (mat as THREE.ShaderMaterial).uniforms;
+  if (!u?.res) return;
+  r.getCurrentViewport(vp);
+  const dpr = r.getPixelRatio();
+  u.res.value.set(vp.z / dpr, vp.w / dpr);
+  (mat as THREE.ShaderMaterial).uniformsNeedUpdate = true;
+}
+
 function ribbonGeometry(pts: THREE.Vector3[], uFrom = 0): THREE.BufferGeometry {
   const n = pts.length;
   const pos: number[] = [], prev: number[] = [], next: number[] = [], side: number[] = [], u: number[] = [];
@@ -277,11 +290,11 @@ export default function MunitionTrackHolo({
   return (
     <group>
       <mesh geometry={curtainGeo} material={m.curtain} frustumCulled={false} renderOrder={5} />
-      <mesh geometry={groundGeo} material={m.ground} frustumCulled={false} renderOrder={6} />
-      <mesh geometry={trailGeo} material={m.trail} frustumCulled={false} renderOrder={7} />
-      <mesh geometry={trailGeo} material={m.core} frustumCulled={false} renderOrder={8} />
-      <mesh geometry={dropGeo} material={m.drop} frustumCulled={false} renderOrder={6} />
-      {aimGeo && <mesh geometry={aimGeo} material={m.aim} frustumCulled={false} renderOrder={6} />}
+      <mesh geometry={groundGeo} material={m.ground} onBeforeRender={fitRes} frustumCulled={false} renderOrder={6} />
+      <mesh geometry={trailGeo} material={m.trail} onBeforeRender={fitRes} frustumCulled={false} renderOrder={7} />
+      <mesh geometry={trailGeo} material={m.core} onBeforeRender={fitRes} frustumCulled={false} renderOrder={8} />
+      <mesh geometry={dropGeo} material={m.drop} onBeforeRender={fitRes} frustumCulled={false} renderOrder={6} />
+      {aimGeo && <mesh geometry={aimGeo} material={m.aim} onBeforeRender={fitRes} frustumCulled={false} renderOrder={6} />}
       <Sprite at={headGround} mat={m.foot} />
       {launcher && <Sprite at={launcher} mat={m.launch} />}
       {target && <Sprite at={target} mat={m.reticle} />}

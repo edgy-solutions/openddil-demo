@@ -46,6 +46,8 @@ import { buildNodePos, hqLabelText, hqScenePos } from '../../lib/hqPosition';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
+import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
+import { engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { LinkChips } from '../network/LinkChips';
 import {
   linkStateWord,
@@ -58,6 +60,7 @@ import { buildTheaterTopology, type EdgeState } from '../../lib/theaterTopology'
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
 // within view at the default (0, 150, 600) camera.
 const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
+const HQ_UNITS_PER_KM = HQ_SCENE_SCALE_UNITS_PER_DEG / 111;
 // FOB markers and labels sit at y = 0; tracks are drawn against this ground plane
 // and rise from it by their ellipsoidal height (units per km = units per deg / 111).
 const HQ_GROUND_Y = 0;
@@ -487,12 +490,15 @@ export default function TheaterReadinessPosture() {
   );
   const edgeById = useMemo(() => new Map(topo.edges.map((e) => [e.id, e])), [topo.edges]);
 
+  // Height is above the launcher's own altitude: FOBs sit on one ground plane,
+  // so the site elevation is not flight.
   const projectTrack = useCallback((t: MunitionTrack): Vec3 | null => {
     const ll = trackLatLon(t);
     if (!ll) return null;
     const [x, z] = proj.project(ll.lat, ll.lon);
-    return [x, HQ_GROUND_Y + (ll.h / 1000) * (HQ_SCENE_SCALE_UNITS_PER_DEG / 111), z];
-  }, [proj]);
+    const launchAlt = t.launcherAssetId ? fleet.data.find((a) => a.asset_id === t.launcherAssetId)?.position?.alt : undefined;
+    return [x, HQ_GROUND_Y + heightAboveLaunch(ll.h, launchAlt, HQ_UNITS_PER_KM), z];
+  }, [proj, fleet.data]);
   // The launcher's own fleet position, projected to the ground, when it has
   // one; otherwise its FOB (this map draws FOBs, not individual assets).
   const launcherOf = useCallback((t: MunitionTrack): Vec3 | undefined => {
@@ -521,6 +527,22 @@ export default function TheaterReadinessPosture() {
       return [x, HQ_GROUND_Y, z];
     };
   }, [launches.data, fleet.data, proj]);
+
+  // Engagement inset: the same scene framed on what is in flight, nodes as dots.
+  const insetFocus = useMemo(
+    () => engagementFocus(trails.map((m) => ({ trail: m.trail, launcher: m.launcher, target: targetOf(trackById.get(m.id)) }))),
+    [trails, targetOf, trackById],
+  );
+  const insetMarkers = useMemo<InsetMarker[]>(() => [
+    ...topo.nodes.flatMap((n) => {
+      const p = nodePos.get(n.id);
+      return p ? [{ at: [p[0], HQ_GROUND_Y, p[1]] as Vec3, color: '#22d3ee' }] : [];
+    }),
+    { at: [hqPos[0], HQ_GROUND_Y, hqPos[1]] as Vec3, color: '#10b981' },
+  ], [topo.nodes, nodePos, hqPos]);
+  const insetFrame = frameOf(insetFocus, HQ_GROUND_Y);
+  const insetLabel = `ENGAGEMENT · ${trails.filter((m) => !m.ending).length} IN FLIGHT${
+    insetFrame ? ` · GRID ${gridStepKm(insetFrame.r, HQ_UNITS_PER_KM)} KM` : ''}`;
 
   return (
     <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${severed ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-theater-readiness">
@@ -684,7 +706,7 @@ export default function TheaterReadinessPosture() {
           {topo.nodes.map((n) => {
             const [x, z] = nodePos.get(n.id)!;
             return (
-              <React.Fragment key={`node-${n.id}`}>
+              <group key={`node-${n.id}`} userData={{ insetHidden: true }}>
                 {!n.derived && <LogisticsHubNode position={[x, 0, z]} />}
                 {n.hasChildren && (
                   <mesh position={[x, 0.5, z]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -692,16 +714,18 @@ export default function TheaterReadinessPosture() {
                     <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
                   </mesh>
                 )}
-              </React.Fragment>
+              </group>
             );
           })}
 
           {/* HQ marker: always drawn, at the configured location or the FOB centre. */}
-          <LogisticsHubNode position={[hqPos[0], 0, hqPos[1]]} />
-          <mesh position={[hqPos[0], 0.5, hqPos[1]]} rotation={[-Math.PI / 2, 0, 0]}>
-            <ringGeometry args={[7, 8.5, 32]} />
-            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
-          </mesh>
+          <group userData={{ insetHidden: true }}>
+            <LogisticsHubNode position={[hqPos[0], 0, hqPos[1]]} />
+            <mesh position={[hqPos[0], 0.5, hqPos[1]]} rotation={[-Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[7, 8.5, 32]} />
+              <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
+            </mesh>
+          </group>
           <Html position={[hqPos[0], 0, hqPos[1]]} center
                 style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
             <div data-testid="hq-node-label"
@@ -775,7 +799,10 @@ export default function TheaterReadinessPosture() {
           <EffectComposer>
             <Bloom luminanceThreshold={0.2} mipmapBlur intensity={1.2} luminanceSmoothing={0.9} />
           </EffectComposer>
+          {/* After the composer (priority 2): the inset draws without bloom. */}
+          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={HQ_GROUND_Y} unitsPerKm={HQ_UNITS_PER_KM} />
         </Canvas>
+        <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} />
       </div>
 
       {severed && <div className="absolute inset-0 bg-rose-950/30 z-20 pointer-events-none"></div>}

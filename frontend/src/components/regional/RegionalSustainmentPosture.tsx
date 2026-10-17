@@ -65,11 +65,14 @@ import { makeProjection, type Projection } from '../../lib/geoProjection';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
+import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
+import { engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 
 // Scene scale: ~80 units per degree of latitude puts a regional-sized bbox
 // (~3°) at ~240 scene units, fitting comfortably in the ~400-unit canvas
 // without crowding the legend or the link source point at z=-80.
 const SCENE_SCALE_UNITS_PER_DEG = 80;
+const UNITS_PER_KM = SCENE_SCALE_UNITS_PER_DEG / 111;
 
 // Severity color tables previously lived here. Removed when AssetMarker's
 // sphereGeometry was replaced with AssetVisual (Phase 3 of the cascade
@@ -356,7 +359,7 @@ function AssetMarker({
   // click anywhere near the asset without having to land precisely on a
   // schematic mesh (especially important for thin radar-dish silhouettes).
   return (
-    <group position={position} userData={{ assetId }}>
+    <group position={position} userData={{ assetId, insetHidden: true }}>
       <mesh onClick={onClick} visible={false}>
         <sphereGeometry args={[3.5, 8, 8]} />
         <meshBasicMaterial />
@@ -472,7 +475,8 @@ function ZoomGate({ children }: { children: React.ReactNode }) {
     const next = d < LABEL_VISIBLE_DISTANCE;
     if (next !== zoomedIn) setZoomedIn(next);
   });
-  return zoomedIn ? <>{children}</> : null;
+  // Callouts and their leader lines are for the main view, not the engagement inset.
+  return zoomedIn ? <group userData={{ insetHidden: true }}>{children}</group> : null;
 }
 
 /** One callout, L-shape leader + underline.
@@ -586,7 +590,7 @@ function RegionalAggregatorNode({ position, label, severed }: {
 }) {
   const color = severed ? 0xf43f5e : 0x22d3ee;
   return (
-    <group position={position}>
+    <group position={position} userData={{ insetHidden: true }}>
       {/* Solid octahedron core — logical node visual. Octahedron is
           deliberately not a shape any FOB or platform schematic uses, so
           it reads as "different category of thing." */}
@@ -619,7 +623,7 @@ function HqMarker({ position, severed }: {
 }) {
   const color = severed ? 0xf43f5e : 0x10b981;
   return (
-    <group position={position}>
+    <group position={position} userData={{ insetHidden: true }}>
       {/* Pyramid form — distinct from FOB hubs and regional octahedron.
           Cone with 4 radial segments approximates a pyramid. */}
       <mesh>
@@ -835,12 +839,19 @@ export default function RegionalSustainmentPosture({
 
   // Track dots go through the same projection a fleet asset takes. The line
   // runs to the launcher only when it is rendered on this map.
+  // Height is above the launcher's own altitude: the map draws every asset on
+  // one ground plane, so the site elevation is not flight.
+  const altById = useMemo(
+    () => new Map(hardwareFleet.flatMap((a) => (a.position?.alt != null ? [[a.asset_id, a.position.alt] as const] : []))),
+    [hardwareFleet],
+  );
   const projectTrack = useCallback((t: (typeof trailTracks)[number]): Vec3 | null => {
     const ll = trackLatLon(t);
     if (!ll) return null;
     const [x, z] = proj.project(ll.lat, ll.lon);
-    return [x, GROUND_Y + (ll.h / 1000) * (SCENE_SCALE_UNITS_PER_DEG / 111), z];
-  }, [proj]);
+    const launchAlt = t.launcherAssetId ? altById.get(t.launcherAssetId) : undefined;
+    return [x, GROUND_Y + heightAboveLaunch(ll.h, launchAlt, UNITS_PER_KM), z];
+  }, [proj, altById]);
   const launcherOf = useCallback((t: (typeof trailTracks)[number]): Vec3 | undefined => {
     const p = t.launcherAssetId ? renderables.find((a) => a.asset_id === t.launcherAssetId)?.position : undefined;
     return p ? [p[0], p[1], p[2]] : undefined;
@@ -858,6 +869,25 @@ export default function RegionalSustainmentPosture({
       return p ? [p[0], GROUND_Y, p[2]] : undefined;
     };
   }, [effLaunches.data, renderables]);
+
+  // Engagement inset: the same scene framed on what is in flight, assets as dots.
+  const insetFocus = useMemo(
+    () => engagementFocus(trails.map((m) => ({ trail: m.trail, launcher: m.launcher, target: targetOf(trackById.get(m.id)) }))),
+    [trails, targetOf, trackById],
+  );
+  const insetMarkers = useMemo<InsetMarker[]>(() => [
+    ...regionFobs.map((fob) => {
+      const [x, z] = proj.project(fob.lat, fob.lon);
+      return { at: [x, GROUND_Y, z] as Vec3, color: '#94a3b8' };
+    }),
+    ...renderables.map((a) => ({
+      at: [a.position[0], GROUND_Y, a.position[2]] as Vec3,
+      color: a.force_id === 'FORCE_OPPOSING' ? '#fb7185' : a.force_id === 'FORCE_NEUTRAL' ? '#94a3b8' : '#22d3ee',
+    })),
+  ], [regionFobs, proj, renderables]);
+  const insetFrame = frameOf(insetFocus, GROUND_Y);
+  const insetLabel = `ENGAGEMENT · ${trails.filter((m) => !m.ending).length} IN FLIGHT${
+    insetFrame ? ` · GRID ${gridStepKm(insetFrame.r, UNITS_PER_KM)} KM` : ''}`;
 
   const targetAsset = useMemo(
     () => renderables.find((a) => a.asset_id === selectedAssetId),
@@ -951,10 +981,9 @@ export default function RegionalSustainmentPosture({
           {regionFobs.map((fob) => {
             const [x, z] = proj.project(fob.lat, fob.lon);
             return (
-              <LogisticsHubNode
-                key={`hub-${fob.edge_id}`}
-                position={[x, 0, z]}
-              />
+              <group key={`hub-${fob.edge_id}`} userData={{ insetHidden: true }}>
+                <LogisticsHubNode position={[x, 0, z]} />
+              </group>
             );
           })}
 
@@ -1064,7 +1093,9 @@ export default function RegionalSustainmentPosture({
               />
             </>
           )}
+          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={GROUND_Y} unitsPerKm={UNITS_PER_KM} renderMain />
         </Canvas>
+        <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} />
       </div>
 
       <div className="absolute bottom-4 left-4 z-10 text-[10px] font-mono text-slate-500 uppercase tracking-tighter pointer-events-none">

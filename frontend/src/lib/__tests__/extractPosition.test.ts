@@ -37,4 +37,13 @@ describe('extractPosition', () => {
     expect(extractPosition({ position: { wgs84: { latitude: m(3, 'deg'), longitude: m(4, 'deg') } } })).toEqual({ lat: 3, lon: 4 });
     expect(extractPosition({})).toBeNull();
   });
+  it('keeps a metres altitude, from wgs84 or from the ecef conversion', () => {
+    expect(extractPosition({ position: { wgs84: { lat: m(1, 'deg'), lon: m(2, 'deg'), alt: m(1650) } } }))
+      .toEqual({ lat: 1, lon: 2, alt: 1650 });
+    expect(extractPosition({ position: { ecef: { x: m(6378137 + 1700), y: m(0), z: m(0) } } })!.alt).toBeCloseTo(1700, 3);
+  });
+  it('drops an altitude that is not metres above the ellipsoid or sea level', () => {
+    expect(extractPosition({ position: { wgs84: { lat: 1, lon: 2, alt: m(1.6, 'km') } } })).toEqual({ lat: 1, lon: 2 });
+    expect(extractPosition({ position: { wgs84: { lat: 1, lon: 2, alt: m(12), altRef: 'ALT_REF_AGL' } } })).toEqual({ lat: 1, lon: 2 });
+  });
 });

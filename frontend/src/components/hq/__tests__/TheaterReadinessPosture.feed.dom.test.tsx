@@ -3,8 +3,9 @@
 // and the launch ring anchors at the launcher's own position, not its FOB.
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { mapMunitionTrack } from '../../../hooks/useMunitionTracks';
+import { trackLatLon } from '../../../lib/munitionTrackLayout';
 
 const r = 6371000 + 5000;
 const la = (10 * Math.PI) / 180;
@@ -55,7 +56,7 @@ vi.mock('../../TacticalMapUnderlay', () => ({ default: () => null }));
 
 import TheaterReadinessPosture from '../TheaterReadinessPosture';
 
-const asset = (id: string, position: { lat: number; lon: number } | null) =>
+const asset = (id: string, position: { lat: number; lon: number; alt?: number } | null) =>
   ({ asset_id: id, edge_id: 'edge-01', asset_class: 'LAUNCHER', platform_variant: 'X', position });
 const last = () => holoProps[holoProps.length - 1];
 
@@ -90,5 +91,18 @@ describe('TheaterReadinessPosture holo target and launcher', () => {
     const own = last().launcher as number[];
     expect(own[1]).toBe(0);
     expect(own[0] !== fobAnchor[0] || own[2] !== fobAnchor[2]).toBe(true);
+  });
+
+  it('frames the flight in the engagement inset while a track is in flight', () => {
+    render(<TheaterReadinessPosture />);
+    expect(screen.getByTestId('engagement-inset').textContent).toContain('1 IN FLIGHT');
+  });
+
+  it('measures track height above the launcher altitude, not the ellipsoid', () => {
+    const h = trackLatLon(flying)!.h;
+    state.fleet = [asset('dis:9:9:2', { lat: 10, lon: 20, alt: h - 2000 })];
+    render(<TheaterReadinessPosture />);
+    const trail = last().trail as number[][];
+    expect(trail[trail.length - 1][1]).toBeCloseTo(2 * (400 / 111), 6);
   });
 });

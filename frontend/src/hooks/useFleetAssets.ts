@@ -28,8 +28,10 @@ export interface FleetAsset {
   /** WGS84 position extracted from kinematics.position.wgs84. Null when
    *  the asset has no telemetry row (e.g. strike-only assets like the
    *  customer-overlay launchers). The 3D maps fall back to the assigned FOB's
-   *  coordinates in that case — see Fob in src/deployment.ts. */
-  position: { lat: number; lon: number } | null;
+   *  coordinates in that case — see Fob in src/deployment.ts. `alt` is the
+   *  ellipsoidal height in metres when the row carries one (track heights
+   *  are drawn above their launcher's). */
+  position: { lat: number; lon: number; alt?: number } | null;
   /** Phase 5 (ADR-0026): 3-axis operational posture, surfaced for the
    *  Regional 3D map's per-asset schematic rendering — schematics react
    *  to specific values (e.g. POWER_STATE_OFF dims all indicators).
@@ -60,7 +62,7 @@ export interface FleetAsset {
   posture_since: string | null;
 }
 
-export function extractPosition(kinematics: any): { lat: number; lon: number } | null {
+export function extractPosition(kinematics: any): { lat: number; lon: number; alt?: number } | null {
   // Tolerant of proto-JSON variants: camelCase from the proto encoder OR
   // short keys from compose-era hand-rolled JSON. Mirrors the projector's
   // edge_assignment.extract_wgs84 logic.
@@ -74,7 +76,11 @@ export function extractPosition(kinematics: any): { lat: number; lon: number } |
   if (lon && typeof lon === 'object' && 'value' in lon) lon = (lon as any).value;
   if (typeof lat !== 'number' || typeof lon !== 'number') return extractEcefPosition(kinematics);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return extractEcefPosition(kinematics);
-  return { lat, lon };
+  // alt is a metres Quantity (Wgs84Position.alt); one referenced to the ground
+  // is not comparable with ellipsoidal track heights, so it is left out.
+  const ref = wgs84.altRef ?? wgs84.alt_ref;
+  const alt = ref === 'ALT_REF_AGL' || ref === 4 ? null : ecefAxis(wgs84.alt ?? wgs84.altitude);
+  return alt === null ? { lat, lon } : { lat, lon, alt };
 }
 
 // ECEF-only producers: each axis is a number or {unit, value}; metres only.
@@ -86,14 +92,15 @@ function ecefAxis(v: any): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
-function extractEcefPosition(kinematics: any): { lat: number; lon: number } | null {
+function extractEcefPosition(kinematics: any): { lat: number; lon: number; alt?: number } | null {
   const ecef = kinematics?.position?.ecef;
   if (!ecef || typeof ecef !== 'object') return null;
   const x = ecefAxis(ecef.x);
   const y = ecefAxis(ecef.y);
   const z = ecefAxis(ecef.z);
   if (x === null || y === null || z === null) return null;
-  return ecefToWgs84(x, y, z);
+  const g = ecefToWgs84(x, y, z);
+  return g ? { lat: g.lat, lon: g.lon, alt: g.h } : null;
 }
 
 function mapFleetAsset(row: Record<string, any>): FleetAsset {

@@ -2,8 +2,9 @@
 // Regional map: the holo gets the Fire PDU's target at that asset's drawn position.
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { mapMunitionTrack } from '../../../hooks/useMunitionTracks';
+import { trackLatLon } from '../../../lib/munitionTrackLayout';
 
 const r = 6371000 + 5000;
 const la = (10 * Math.PI) / 180;
@@ -52,6 +53,8 @@ vi.mock('../../TacticalMapUnderlay', () => ({ default: () => null }));
 
 import RegionalSustainmentPosture from '../RegionalSustainmentPosture';
 
+const last = () => holoProps[holoProps.length - 1];
+
 const view = () => render(
   <RegionalSustainmentPosture
     regionId="r1"
@@ -61,7 +64,7 @@ const view = () => render(
     onAssetSelect={() => {}}
   />,
 );
-const asset = (id: string, position: { lat: number; lon: number } | null) => ({
+const asset = (id: string, position: { lat: number; lon: number; alt?: number } | null) => ({
   asset_id: id, platform_variant: 'GENERIC', region_id: 'r1', edge_id: 'edge-01', position,
 });
 
@@ -82,5 +85,18 @@ describe('RegionalSustainmentPosture holo target', () => {
     state.launches = [{ eventUrn: 'dis-event:9:9:7', targetAssetId: 'dis:9:9:99' }];
     view();
     expect(holoProps[holoProps.length - 1].target).toBeUndefined();
+  });
+
+  it('frames the flight in the engagement inset while a track is in flight', () => {
+    view();
+    expect(screen.getByTestId('engagement-inset').textContent).toContain('1 IN FLIGHT');
+  });
+
+  it('measures track height above the launcher altitude, not the ellipsoid', () => {
+    const h = trackLatLon(flying)!.h;
+    state.fleet = [asset('dis:9:9:2', { lat: 10, lon: 20, alt: h - 2000 })];
+    view();
+    const trail = last().trail as number[][];
+    expect(trail[trail.length - 1][1]).toBeCloseTo(2 * (80 / 111), 6);
   });
 });
