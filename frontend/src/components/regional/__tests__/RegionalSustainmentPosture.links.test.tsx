@@ -29,6 +29,7 @@ vi.mock('../../../hooks/useEffectorLaunches', () => ({
 vi.mock('../../../hooks/useLinkIndicator', () => ({
   useLinkIndicator: () => mockIndicator(),
 }));
+vi.mock('../../terrain/terrain', async (orig) => ({ ...(await orig<typeof import('../../terrain/terrain')>()), useTerrain: () => null, usePatches: () => [] }));
 vi.mock('@react-three/fiber', () => ({
   Canvas: () => null,
   useFrame: () => {},

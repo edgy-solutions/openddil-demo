@@ -63,6 +63,19 @@ export interface DeploymentMap {
   };
 }
 
+/** Where the regional map's 3D terrain gets its tiles. Every field is
+ *  optional; an absent one falls back to the public AWS Terrarium / Esri
+ *  tiles and their attribution. A URL is a template with `{z}`, `{x}` and
+ *  `{y}`. A DDIL deployment points these at tiles baked under
+ *  `/deployment-overlay/` so the map needs no internet. */
+export interface DeploymentTerrain {
+  /** Terrarium-encoded elevation tiles (PNG). */
+  elevationUrl?: string;
+  /** Satellite imagery tiles (Esri `{z}/{y}/{x}` order is the template's business). */
+  imageryUrl?: string;
+  attribution?: string;
+}
+
 /** Asset-liveness thresholds — how long can an asset stop talking
  *  before its tier degrades. All seconds. Drives the
  *  ACTIVE/DEGRADED/STALE/COMM_LOST/LOST classification in lib/assetTier
@@ -272,6 +285,8 @@ export interface Deployment {
    *  real geography under the FOBs. Absent => decorative fallback
    *  texture (`/map_base.png`) with low opacity. */
   map?: DeploymentMap;
+  /** Optional tile sources for the regional map's 3D terrain. */
+  terrain?: DeploymentTerrain;
   /** Asset-liveness thresholds (per-deployment override). Defaults to
    *  DEFAULT_LIVENESS when absent or any individual field is missing /
    *  non-finite. */
@@ -461,6 +476,19 @@ function isValidDeploymentMap(x: unknown): x is DeploymentMap {
     typeof b.lon_max === 'number' && Number.isFinite(b.lon_max) &&
     b.lat_max > b.lat_min && b.lon_max > b.lon_min
   );
+}
+
+/** EXPORTED FOR TESTS. A terrain block is accepted only when every field it
+ *  carries is well formed: a URL must be a non-empty string holding `{z}`,
+ *  `{x}` and `{y}`, attribution a non-empty string. Unknown keys are ignored.
+ *  A bad block is rejected whole (the defaults apply), not half applied. */
+export function isValidDeploymentTerrain(x: unknown): x is DeploymentTerrain {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
+  const t = x as Record<string, unknown>;
+  const tpl = (v: unknown) => v === undefined || (
+    typeof v === 'string' && v.includes('{z}') && v.includes('{x}') && v.includes('{y}'));
+  const text = (v: unknown) => v === undefined || (typeof v === 'string' && v.length > 0);
+  return tpl(t.elevationUrl) && tpl(t.imageryUrl) && text(t.attribution);
 }
 
 /** A tier config is accepted only if it is COMPLETE and INTERNALLY
@@ -956,6 +984,8 @@ export async function loadDeployment(): Promise<void> {
         logo: j.logo?.trim() || DEFAULT.logo,
         fobs: Array.isArray(j.fobs) ? j.fobs.filter(isValidFob) : DEFAULT.fobs,
         map: isValidDeploymentMap(j.map) ? j.map : undefined,
+        terrain: isValidDeploymentTerrain((j as { terrain?: unknown }).terrain)
+          ? (j as { terrain: DeploymentTerrain }).terrain : undefined,
         liveness: mergeLiveness(j.liveness),
         // ABSENT -> implicit root. PRESENT-BUT-BAD -> undefined, which the
         // app renders as a configuration error rather than as any node.

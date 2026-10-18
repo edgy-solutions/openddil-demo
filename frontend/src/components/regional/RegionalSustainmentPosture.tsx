@@ -20,22 +20,21 @@
 //     scene (rendered nowhere — the case shouldn't happen in a healthy
 //     deployment but the panel still degrades gracefully).
 //
-// Co-located assets (sensors + launchers at the same FOB lat/lon) are
-// staggered in a ring around their shared point in `buildRenderables`
-// below. Without that, ArtillerySchematic launcher pods occlude the
-// smaller SensorRadarSchematic dishes at the same point. See COLOC_*
-// constants for the bucket grain and minimum spacing.
+// Assets sit at their true positions, on the terrain when it is on and on the
+// flat ground when it is off. Symbols are scaled each frame to a constant size
+// on screen, never below true size. Co-located assets (a FOB, or a bucket of
+// nearby assets) draw as one symbol per kind until the camera is close enough
+// for them to clear each other. See lib/symbolScale.ts and lib/clusterKinds.ts.
 //
 // Phase B remaining: per-edge labels, honesty badges, color/style tuning.
 // =============================================================================
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { Html, Line, OrbitControls } from '@react-three/drei';
+import { Html, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import DdilNetworkLink from '../DdilNetworkLink';
 import AssetVisual from '../AssetVisual';
 import LogisticsHubNode from '../LogisticsHubNode';
-import TacticalMapUnderlay from '../TacticalMapUnderlay';
 import { LinkChips } from '../network/LinkChips';
 import { deployment, moveInputs, type Fob } from '../../deployment';
 import { buildMunitionsLedger } from '../../lib/munitionsLedger';
@@ -66,13 +65,20 @@ import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
-import { engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
-
-// Scene scale: ~80 units per degree of latitude puts a regional-sized bbox
-// (~3°) at ~240 scene units, fitting comfortably in the ~400-unit canvas
-// without crowding the legend or the link source point at z=-80.
-const SCENE_SCALE_UNITS_PER_DEG = 80;
-const UNITS_PER_KM = SCENE_SCALE_UNITS_PER_DEG / 111;
+import { INSET_RECT, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
+import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale';
+import { PX_R, R_TRUE, symbolRadius } from '../../lib/symbolScale';
+import { SEV_RANK, kindsOf, shouldSplit, type Kind } from '../../lib/clusterKinds';
+import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
+import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
+import { elevationCredit, resolveTerrainSource } from '../../lib/terrainTiles';
+import {
+  TerrainMesh, PatchMesh, boundsAround, usePatches, useTerrain, type PatchSpec,
+} from '../terrain/terrain';
+import { HoloPanel, HoloTerrain, type HoloOpts } from '../terrain/holo';
+import {
+  EXAGGERATIONS, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
+} from '../terrain/prefs';
 
 // Severity color tables previously lived here. Removed when AssetMarker's
 // sphereGeometry was replaced with AssetVisual (Phase 3 of the cascade
@@ -85,11 +91,16 @@ interface RenderableAsset {
    *  short-name label in place of asset_id slicing — see
    *  assetShortName below. */
   callsign: string | null;
-  /** [x, y, z] in scene units. */
+  /** [x, y, z] in scene units: the asset's true position, y on the ground. */
   position: [number, number, number];
+  /** The lat/lon behind `position` (the FOB's when homedAtFob). */
+  lat: number;
+  lon: number;
   severity: string;
   /** Drives the AssetVisual cascade. Null/empty -> UnknownPlatformBadge. */
   platform_variant: string | null;
+  /** Same as platform_variant: the name lib/clusterKinds groups by. */
+  variant: string | null;
   /** Force affiliation for the AssetVisual base ring (overrides severity
    *  color for FORCE_OPPOSING / FORCE_NEUTRAL entities). */
   force_id: string | null;
@@ -105,29 +116,21 @@ interface RenderableAsset {
    *  + opacity damping so receding assets visibly recede. LOST assets are
    *  filtered out before this struct is built. */
   tier: AssetTier;
-  /** 2026-07-14: anchor point for this asset's callout label in world
-   *  coords. Computed as position + a small outward offset (away from
-   *  the co-location bucket centroid), plus a vertical lift. For solo
-   *  assets the offset is straight up. Simple collision-avoidance by
-   *  ring geometry -- co-located assets get their labels spread on
-   *  the same ring they occupy. Leader line renders from `position`
-   *  to `label_anchor` so the operator can trace which label belongs
-   *  to which asset. */
-  label_anchor: [number, number, number];
 }
 
-// Co-location layout — the geometric stagger that prevents asset
-// schematics from stacking at FOB centroids. Constants + formulas
-// live in lib/coLocationLayout.ts so the math is unit-testable.
-// See that file + __tests__/coLocationLayout.test.ts for the
-// load-bearing arithmetic. The reads here are just selecting from
-// the policy module.
-import {
-  colocationBucketKey,
-  colocationRingRadius,
-  colocationRingSlot,
-  isFacilityVariant,
-} from '../../lib/coLocationLayout';
+/** Assets that share a place: one FOB (edge_id), or else one geometric bucket. */
+interface RenderCluster {
+  key: string;
+  /** FOB name, else its edge_id, else "GROUP n". */
+  label: string;
+  /** Sorted by variant then asset_id so the layout is stable across row reorders. */
+  members: RenderableAsset[];
+  /** Mean lat/lon of the members. */
+  lat: number;
+  lon: number;
+}
+
+import { colocationBucketKey } from '../../lib/coLocationLayout';
 import { resolveRingRadius } from '../../lib/assetGeometry';
 import { assetCallsign } from '../../lib/assetLabel';
 import { useLinkIndicator } from '../../hooks/useLinkIndicator';
@@ -138,28 +141,25 @@ import {
   type LinkReading,
 } from '../../lib/linkStatus';
 
+type GroundFn = (x: number, z: number) => number;
+
+/** The engagement inset, lifted clear of the terrain controls under it. */
+const REGIONAL_INSET_RECT = { ...INSET_RECT, y: INSET_RECT.y + 36 };
+
+/** Every asset at its true position (on `ground`), plus the clusters they bucket into. */
 function buildRenderables(
   fleet: FleetAsset[],
   logistics: LogisticsStatus[],
   fobs: Fob[],
   proj: Projection,
   tiers: FleetTierMap,
-): RenderableAsset[] {
+  ground: GroundFn,
+): { renderables: RenderableAsset[]; clusters: RenderCluster[] } {
   const fobByEdge = new Map(fobs.map((f) => [f.edge_id, f]));
   const sevByAsset = new Map(logistics.map((l) => [l.asset_id, l.overall_severity]));
 
-  // First pass — project to scene coords. Track real (x,z) per asset
-  // before applying co-location stagger, so the stagger can spread them
-  // in a ring around their shared centroid.
-  type Stage1 = {
-    asset: FleetAsset;
-    x: number;
-    z: number;
-    homed: boolean;
-    sev: string;
-    tier: AssetTier;
-  };
-  const stage1: Stage1[] = [];
+  const renderables: RenderableAsset[] = [];
+  const buckets = new Map<string, RenderableAsset[]>();
   for (const a of fleet) {
     // LOST tier: hide from the 3D scene entirely. Still in postgres /
     // still in the fleet pulldown for forensics; just out of the
@@ -184,247 +184,321 @@ function buildRenderables(
     }
     if (lat === null || lon === null) continue;
     const [x, z] = proj.project(lat, lon);
-    const sev = sevByAsset.get(a.asset_id) ?? 'LOGISTICS_SEVERITY_UNSPECIFIED';
-    stage1.push({ asset: a, x, z, homed, sev, tier });
-  }
+    const r: RenderableAsset = {
+      asset_id: a.asset_id,
+      callsign: a.callsign,
+      position: [x, ground(x, z), z],
+      lat,
+      lon,
+      severity: sevByAsset.get(a.asset_id) ?? 'LOGISTICS_SEVERITY_UNSPECIFIED',
+      platform_variant: a.platform_variant,
+      variant: a.platform_variant,
+      force_id: a.force_id,
+      homedAtFob: homed,
+      operational_state: a.operational_state,
+      tier,
+    };
+    renderables.push(r);
 
-  // Second pass — bucket assets by their edge_id (FOB attribution) when
-  // known, falling back to projected (x,z) proximity otherwise. Lays
-  // co-located groups out in a ring around the bucket centroid.
-  //
-  // Why edge-first: a FOB is a logical grouping — all assets at one
-  // base share an edge_id. Their raw projected positions can span
-  // several world units (individual launch pads, radar sites, storage
-  // buildings within the base), which is enough to fragment them
-  // across multiple geometric buckets and produce visible mesh
-  // overlap. Bucketing by edge_id merges everything at one FOB into
-  // one co-location ring, sized to spread N assets cleanly around
-  // the FOB centroid.
-  //
-  // The geometric fallback stays for assets without an edge_id
-  // (transiting / mobile / any asset the projector hasn't attributed
-  // yet). Assets with the same edge_id also merge regardless of
-  // spread — that's what fixes the dense-FOB pile-up.
-  const buckets = new Map<string, Stage1[]>();
-  for (const s of stage1) {
-    const key = s.asset.edge_id
-      ? `edge:${s.asset.edge_id}`
-      : colocationBucketKey(s.x, s.z);
+    // Bucket by edge_id (FOB attribution) when known: a FOB is a logical
+    // grouping, and its assets' raw positions can span several world units.
+    // The geometric bucket is the fallback for assets without an edge_id.
+    const key = a.edge_id ? `edge:${a.edge_id}` : colocationBucketKey(x, z);
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
       buckets.set(key, bucket);
     }
-    bucket.push(s);
+    bucket.push(r);
   }
 
-  const LABEL_LIFT = LABEL_GEOMETRY.lift;
-  const LABEL_OUTWARD = LABEL_GEOMETRY.outward;
-
-  const out: RenderableAsset[] = [];
-  for (const bucket of buckets.values()) {
-    if (bucket.length === 1) {
-      const s = bucket[0];
-      out.push({
-        asset_id: s.asset.asset_id,
-        callsign: s.asset.callsign,
-        position: [s.x, 0, s.z],
-        severity: s.sev,
-        platform_variant: s.asset.platform_variant,
-        force_id: s.asset.force_id,
-        homedAtFob: s.homed,
-        operational_state: s.asset.operational_state,
-        tier: s.tier,
-        // Solo -> label straight up from the asset. No sibling to
-        // collide with, no bucket centroid to radiate outward from.
-        label_anchor: [s.x, LABEL_LIFT, s.z],
-      });
-      continue;
-    }
-    // Stable ordering within the bucket — sort by platform_variant +
-    // asset_id so the layout doesn't shuffle when ElectricSQL reorders
-    // the shape on a row update.
-    bucket.sort((a, b) => {
-      const va = (a.asset.platform_variant ?? '') + a.asset.asset_id;
-      const vb = (b.asset.platform_variant ?? '') + b.asset.asset_id;
+  const clusters: RenderCluster[] = [];
+  let groups = 0;
+  for (const [key, members] of [...buckets.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    members.sort((a, b) => {
+      const va = (a.platform_variant ?? '') + a.asset_id;
+      const vb = (b.platform_variant ?? '') + b.asset_id;
       return va < vb ? -1 : va > vb ? 1 : 0;
     });
-    // Centroid of the bucket — the bucket key rounds to one cell but
-    // individual assets within can land slightly off-centroid; centroid is
-    // the honest "shared point" they cluster around.
-    const cx = bucket.reduce((s, b) => s + b.x, 0) / bucket.length;
-    const cz = bucket.reduce((s, b) => s + b.z, 0) / bucket.length;
-
-    // Split bucket into facility (parent) vs leaf (sensors/effectors).
-    // When a facility is present, it sits at the centroid and the other
-    // assets ring around it — matches the ORBAT hierarchy and prevents
-    // the wider facility schematic from visually overlapping ring-mates.
-    const facilities = bucket.filter((s) => isFacilityVariant(s.asset.platform_variant));
-    const others = bucket.filter((s) => !isFacilityVariant(s.asset.platform_variant));
-
-    // Facilities at centroid (rare to have more than one — multiple
-    // facilities at the same point stack visually, acceptable as it's
-    // a deployment-data anomaly).
-    for (const s of facilities) {
-      out.push({
-        asset_id: s.asset.asset_id,
-        callsign: s.asset.callsign,
-        position: [cx, 0, cz],
-        severity: s.sev,
-        platform_variant: s.asset.platform_variant,
-        force_id: s.asset.force_id,
-        homedAtFob: s.homed,
-        operational_state: s.asset.operational_state,
-        tier: s.tier,
-        // Facility label goes straight up from the centroid. There's
-        // typically only one facility per bucket, and multi-facility
-        // buckets are already treated as an anomaly (rows stack).
-        label_anchor: [cx, LABEL_LIFT, cz],
-      });
-    }
-
-    // Ring radius + per-slot positions delegated to lib/coLocationLayout.
-    // Geometry is pinned by unit tests there; comments at the
-    // declaration site describe the formula trade-offs.
-    //
-    // 2026-07-14: measure the max base-ring radius across the ring-slot
-    // assets in this bucket and pass it in. colocationRingRadius sizes
-    // the ring so adjacent ring slots' base rings can't overlap. Without
-    // this, a bucket of 4 launchers (each with a ~2.1-world-unit base
-    // ring) rendered with rings visibly touching -- operator flagged
-    // "so close they are on top of each other".
-    if (others.length === 0) continue;
-    const maxRingRadius = others.reduce(
-      (acc, s) => Math.max(acc, resolveRingRadius(s.asset.platform_variant, SCENE_ASSET_SCALE)),
-      0,
-    );
-    const radius = colocationRingRadius(
-      others.length, facilities.length > 0, maxRingRadius,
-    );
-    others.forEach((s, i) => {
-      const { x: px, z: pz } = colocationRingSlot(cx, cz, radius, i, others.length);
-      // Ring-based label offset: extend outward from centroid to
-      // asset, then a fixed distance beyond. Assets on opposite sides
-      // of the ring get labels going in opposite directions, so they
-      // don't stack in 2D screen space at typical camera angles.
-      const dx = px - cx;
-      const dz = pz - cz;
-      const dlen = Math.hypot(dx, dz) || 1;
-      const nx = dx / dlen;
-      const nz = dz / dlen;
-      out.push({
-        asset_id: s.asset.asset_id,
-        callsign: s.asset.callsign,
-        position: [px, 0, pz],
-        severity: s.sev,
-        platform_variant: s.asset.platform_variant,
-        force_id: s.asset.force_id,
-        homedAtFob: s.homed,
-        operational_state: s.asset.operational_state,
-        tier: s.tier,
-        label_anchor: [px + nx * LABEL_OUTWARD, LABEL_LIFT, pz + nz * LABEL_OUTWARD],
-      });
+    const edge = key.startsWith('edge:') ? key.slice('edge:'.length) : null;
+    const label = edge ? (fobByEdge.get(edge)?.label ?? edge) : `GROUP ${++groups}`;
+    clusters.push({
+      key,
+      label,
+      members,
+      lat: members.reduce((s, m) => s + m.lat, 0) / members.length,
+      lon: members.reduce((s, m) => s + m.lon, 0) / members.length,
     });
   }
-  return out;
+  return { renderables, clusters };
 }
 
 function Terrain() {
-  // Same procedural plane as before — visual context for the markers.
-  // No data dependency; runs once at mount.
+  // The terrain-off ground: a dark plane, with a grid on top. No data
+  // dependency; runs once at mount.
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]}>
-      <planeGeometry args={[400, 400, 30, 30]} />
-      <meshStandardMaterial color={0x0f172a} roughness={1.0} flatShading />
+    <>
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[400, 400, 30, 30]} />
+        <meshStandardMaterial color={0x0f172a} roughness={1.0} flatShading />
+      </mesh>
+      <gridHelper args={[400, 100, 0x1e293b, 0x0f172a]} position={[0, -2, 0]} />
+    </>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Symbols, drawn per frame
+// -----------------------------------------------------------------------------
+// Each asset (or each kind of a clustered group) is a group scaled every frame
+// so its base ring is PX_R pixels on screen, never smaller than true size
+// (lib/symbolScale.ts). `offsets` is where a clustered symbol is drawn relative
+// to the asset's true position; tracks read it so a flight leaves the symbol.
+
+const offsets = new Map<string, THREE.Vector3>();
+function offsetOf(id: string): THREE.Vector3 {
+  let v = offsets.get(id);
+  if (!v) {
+    v = new THREE.Vector3();
+    offsets.set(id, v);
+  }
+  return v;
+}
+
+const fovOf = (camera: THREE.Camera) => (camera as THREE.PerspectiveCamera).fov ?? 40;
+/** Scale of a model authored at ring radius resolveRingRadius(variant, 1), so its ring is the symbol radius. */
+const modelScale = (variant: string | null, rSym: number) => rSym / resolveRingRadius(variant, 1);
+
+interface CalloutInfo {
+  name: string;
+  family: string;
+  ammoText: string | null;
+  launcherDepleted: boolean;
+}
+
+function Model({ a, sev, selected }: { a: RenderableAsset; sev?: string; selected?: boolean }) {
+  return (
+    <AssetVisual
+      platformVariant={a.platform_variant}
+      severity={sev ?? a.severity}
+      forceId={a.force_id}
+      scale={1}
+      selected={selected}
+      operationalState={a.operational_state}
+      tier={a.tier}
+    />
+  );
+}
+
+/** An invisible click target of radius 1.4 symbol radii, in the model's own units, so a
+ *  small or thin model is still easy to hit. The click handler sits on the group holding
+ *  it and the model, so the model's own meshes are targets too. */
+function HitSphere({ variant }: { variant: string | null }) {
+  const r = resolveRingRadius(variant, 1);
+  return (
+    <mesh visible={false} position={[0, 0.8 * r, 0]}>
+      <sphereGeometry args={[1.4 * r, 8, 8]} />
+      <meshBasicMaterial />
     </mesh>
   );
 }
 
+/** One asset at its true position. */
 function AssetMarker({
-  assetId, position, severity, platformVariant, forceId, selected, opState, tier, onClick,
+  asset, selected, callout, onClick,
 }: {
-  assetId: string;
-  position: [number, number, number];
-  severity: string;
-  platformVariant: string | null;
-  forceId: string | null;
+  asset: RenderableAsset;
   selected: boolean;
-  opState: OperationalState;
-  tier: AssetTier;
+  callout: CalloutInfo | null;
   onClick: (e: ThreeEvent<MouseEvent>) => void;
 }) {
-  // Hit-target is an invisible sphere sized to roughly match the schematic
-  // footprint at SCENE_ASSET_SCALE (~3 units). AssetVisual renders the actual
-  // platform silhouette + severity ring; the hit-target lets the operator
-  // click anywhere near the asset without having to land precisely on a
-  // schematic mesh (especially important for thin radar-dish silhouettes).
+  const g = useRef<THREE.Group>(null);
+  const { size } = useThree();
+  const at = useMemo(() => new THREE.Vector3(...asset.position), [asset.position]);
+  useFrame(({ camera }) => {
+    if (!g.current) return;
+    g.current.scale.setScalar(
+      modelScale(asset.platform_variant, symbolRadius(camera.position.distanceTo(at), size.height, fovOf(camera))),
+    );
+    offsetOf(asset.asset_id).set(0, 0, 0);
+  });
   return (
-    <group position={position} userData={{ assetId, insetHidden: true }}>
-      <mesh onClick={onClick} visible={false}>
-        <sphereGeometry args={[3.5, 8, 8]} />
-        <meshBasicMaterial />
-      </mesh>
-      <AssetVisual
-        platformVariant={platformVariant}
-        severity={severity}
-        forceId={forceId}
-        scale={SCENE_ASSET_SCALE}
-        selected={selected}
-        operationalState={opState}
-        tier={tier}
-      />
+    <group ref={g} position={asset.position} userData={{ assetId: asset.asset_id, insetHidden: true }}>
+      <group onClick={onClick}>
+        <HitSphere variant={asset.platform_variant} />
+        <Model a={asset} selected={selected} />
+      </group>
+      {callout && (
+        <ZoomGate>
+          <AssetCallout {...callout} />
+        </ZoomGate>
+      )}
     </group>
   );
 }
 
-// Wrapping scale applied to each schematic / GLB inside an AssetVisual.
-// Schematics were authored at "single-asset close-up" scale (~5-10 units
-// across); regional view has multiple assets in a ~400-unit canvas with
-// the camera at ~150 units back. 0.3-0.4 is the starting estimate;
-// tune during visual QA.
-const SCENE_ASSET_SCALE = 0.35;
+const SEV_CHIP: Record<number, string> = {
+  0: 'border-cyan-400/60 text-cyan-200', 1: 'border-amber-400/70 text-amber-200',
+  2: 'border-rose-500/80 text-rose-200', 3: 'border-rose-500/80 text-rose-200',
+};
+function CountChip({ text, sev }: { text: string; sev: number }) {
+  return (
+    <Html center style={{ pointerEvents: 'none', transform: 'translate3d(-50%,calc(-50% - 34px),0)' }}>
+      <div className={`whitespace-nowrap rounded-full border bg-slate-900/90 px-1.5 font-mono text-[10px] font-bold ${SEV_CHIP[sev] ?? SEV_CHIP[0]}`}>
+        {text}
+      </div>
+    </Html>
+  );
+}
+
+/** A cluster's members: one symbol per kind (with a count) until they would clear each other, then each at its true position. */
+function ClusterGroup({
+  members, selectedAssetId, onSelect, calloutOf,
+}: {
+  members: RenderableAsset[];
+  selectedAssetId: string | null;
+  onSelect: (id: string, severity: string) => void;
+  calloutOf: (a: RenderableAsset) => CalloutInfo;
+}) {
+  const centroid = useMemo(() => {
+    const c = new THREE.Vector3();
+    for (const a of members) c.add(new THREE.Vector3(...a.position));
+    return c.divideScalar(members.length);
+  }, [members]);
+  // Closest pair on the ground plane. Members at one coordinate give 0 and stay clustered.
+  const minSep = useMemo(() => {
+    let m = Infinity;
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        m = Math.min(m, Math.hypot(members[i].position[0] - members[j].position[0], members[i].position[2] - members[j].position[2]));
+      }
+    }
+    return m;
+  }, [members]);
+  const [clustered, setClustered] = useState(members.length > 1);
+  const { shown, hidden } = useMemo(() => kindsOf(members), [members]);
+  const slotRefs = useRef<(THREE.Group | null)[]>([]);
+  const modelRefs = useRef<(THREE.Group | null)[]>([]);
+  const right = useMemo(() => new THREE.Vector3(), []);
+  const { size } = useThree();
+
+  useFrame(({ camera }) => {
+    if (members.length < 2) return;
+    const rSym = symbolRadius(camera.position.distanceTo(centroid), size.height, fovOf(camera));
+    // Hysteresis, so a cluster does not flicker at the boundary.
+    const next = !shouldSplit(clustered, minSep, rSym);
+    if (next !== clustered) setClustered(next);
+    if (!next) return;
+    // Kinds sit side by side, just clearing, across the screen; the "+N" chip takes the last slot.
+    right.setFromMatrixColumn(camera.matrixWorld, 0).setY(0).normalize();
+    const n = shown.length + (hidden.length ? 1 : 0);
+    const gap = 4 * rSym;
+    const at = (i: number) => centroid.clone().addScaledVector(right, (i - (n - 1) / 2) * gap);
+    // Each member's flights leave the symbol for its kind.
+    const follow = (k: Kind<RenderableAsset>, p: THREE.Vector3) => {
+      for (const a of k.members) offsetOf(a.asset_id).copy(p).sub(new THREE.Vector3(...a.position));
+    };
+    shown.forEach((k, i) => {
+      const p = at(i);
+      slotRefs.current[i]?.position.copy(p);
+      modelRefs.current[i]?.scale.setScalar(modelScale(k.variant, rSym));
+      follow(k, p);
+    });
+    if (hidden.length) {
+      const p = at(n - 1);
+      slotRefs.current[n - 1]?.position.copy(p);
+      for (const k of hidden) follow(k, p);
+    }
+  });
+
+  if (members.length > 1 && clustered) {
+    const hiddenN = hidden.reduce((n, k) => n + k.members.length, 0);
+    const hiddenSev = Math.max(0, ...hidden.map((k) => SEV_RANK[k.sev] ?? 0));
+    // Click selects the kind's first member; clicking again steps to the next.
+    const pick = (k: Kind<RenderableAsset>) => (e: ThreeEvent<MouseEvent>) => {
+      e.stopPropagation();
+      const i = k.members.findIndex((m) => m.asset_id === selectedAssetId);
+      const next = k.members[(i + 1) % k.members.length];
+      onSelect(next.asset_id, next.severity);
+    };
+    return (
+      <>
+        {shown.map((k, i) => (
+          <group
+            key={k.variant ?? ''}
+            ref={(el) => { slotRefs.current[i] = el; }}
+            position={centroid}
+            userData={{ insetHidden: true }}
+          >
+            <group ref={(el) => { modelRefs.current[i] = el; }} onClick={pick(k)}>
+              <HitSphere variant={k.variant} />
+              <Model a={k.members[0]} sev={k.sev} selected={k.members.some((m) => m.asset_id === selectedAssetId)} />
+            </group>
+            {k.members.length > 1 && <CountChip text={`×${k.members.length}`} sev={SEV_RANK[k.sev] ?? 0} />}
+          </group>
+        ))}
+        {hidden.length > 0 && (
+          <group
+            ref={(el) => { slotRefs.current[shown.length] = el; }}
+            position={centroid}
+            userData={{ insetHidden: true }}
+          >
+            <Html center style={{ pointerEvents: 'none' }}>
+              <div
+                className={`whitespace-nowrap rounded-sm border bg-slate-900/90 px-1 font-mono text-[10px] font-bold ${SEV_CHIP[hiddenSev]}`}
+                title={hidden.map((k) => `${k.variant} ×${k.members.length}`).join(', ')}
+              >
+                +{hiddenN}
+              </div>
+            </Html>
+          </group>
+        )}
+      </>
+    );
+  }
+  return (
+    <>
+      {members.map((a) => (
+        <AssetMarker
+          key={a.asset_id}
+          asset={a}
+          selected={a.asset_id === selectedAssetId}
+          callout={calloutOf(a)}
+          onClick={(e) => { e.stopPropagation(); onSelect(a.asset_id, a.severity); }}
+        />
+      ))}
+    </>
+  );
+}
+
+/** Draws its children where their launcher's symbol is drawn (a flight leaves the symbol, not the true spot). */
+function TrackAtLauncher({ launcherId, children }: { launcherId: string | null; children: React.ReactNode }) {
+  const g = useRef<THREE.Group>(null);
+  useFrame(() => {
+    const o = launcherId ? offsets.get(launcherId) : undefined;
+    if (!g.current) return;
+    if (o) g.current.position.copy(o);
+    else g.current.position.set(0, 0, 0);
+  });
+  return <group ref={g}>{children}</group>;
+}
 
 // -----------------------------------------------------------------------------
-// Per-asset callout labels (2026-07-14)
+// Per-asset callouts
 // -----------------------------------------------------------------------------
-// A tiny text label above each asset showing:
-//   * short name (last segment of the asset_id, stripped of `prop:` prefix)
-//   * platform variant
+// A small text label above each unclustered asset showing:
+//   * short name (the declared callsign, else the asset_id)
+//   * platform family
 //   * for LAUNCHER-class: current/initial ammo summed across stores
-// Rendered as an Html overlay anchored at asset.label_anchor (world coords
-// computed in buildRenderables using ring geometry), with a leader line
-// from the asset's ground position up to the anchor.
+// It is a screen-space Html overlay at the asset's ground position, lifted a
+// fixed number of pixels with a 1 px CSS leader, so it keeps its size at any
+// zoom. Clustered assets get no callout (the cluster draws kinds and counts).
 //
 // GATED on camera-zoom: labels only render when the camera is inside
-// LABEL_VISIBLE_DISTANCE from the OrbitControls target. Fleet views at
-// the default camera position see the schematics unlabeled (labels
-// would visually stack at that distance); a user who zooms in to
-// inspect a FOB sees the labels appear as they approach.
-//
-// No box / background chrome by design -- just text + a thin line.
+// LABEL_VISIBLE_DISTANCE from the OrbitControls target.
 
 const LABEL_VISIBLE_DISTANCE = 130;   // ~40% into the maxDistance=300 range
-
-// Callout label geometry. Tight to the asset per operator preference
-// (2026-07-14 iteration: earlier values pushed labels far off the
-// schematics and the L-shape leader looked disconnected).
-//   assetTop  -- Y-coord where the leader line ATTACHES to the asset.
-//                Approximates the top of the rendered schematic at
-//                SCENE_ASSET_SCALE=0.35. Line starts here, not at
-//                y=0 (the ground).
-//   lift      -- Y-coord where the label anchor sits. Just above the
-//                schematic top -- "only slightly projected above the
-//                asset."
-//   outward   -- Horizontal offset (world units) away from the bucket
-//                centroid. Spreads co-located assets' labels outward
-//                on the same ring they occupy. Tiny value because
-//                labels are tight; ring geometry does most of the
-//                collision-avoidance work.
-const LABEL_GEOMETRY = {
-  assetTop: 1.2,
-  lift:     2.4,
-  outward:  0.4,
-};
+const LEADER_PX = 28;
 
 /** Return the callout's "short name" for an asset: the declared callsign
  *  (ADR-0047: asset_id is opaque and is never split/sliced to derive a
@@ -449,14 +523,13 @@ function familyLabel(variant: string | null): string {
   return variant.replace(/_(Sensor|Interceptor|LAUNCHER)$/, '');
 }
 
+const ZoomContext = createContext(false);
+
 /** Track whether the camera is inside LABEL_VISIBLE_DISTANCE of the
  *  OrbitControls target. Runs a throttled check (~5 Hz) in useFrame
  *  so we don't set state 60 times a second; state changes only when
- *  the boolean flips.
- *
- *  Renders its children INSIDE the Three.js scene graph; returning
- *  null when zoomed out hides every downstream callout at once. */
-function ZoomGate({ children }: { children: React.ReactNode }) {
+ *  the boolean flips. Provides the answer to every ZoomGate below it. */
+function ZoomTracker({ children }: { children: React.ReactNode }) {
   const { camera, controls } = useThree() as unknown as {
     camera: THREE.Camera;
     controls: { target: THREE.Vector3 } | null;
@@ -475,87 +548,50 @@ function ZoomGate({ children }: { children: React.ReactNode }) {
     const next = d < LABEL_VISIBLE_DISTANCE;
     if (next !== zoomedIn) setZoomedIn(next);
   });
-  // Callouts and their leader lines are for the main view, not the engagement inset.
-  return zoomedIn ? <group userData={{ insetHidden: true }}>{children}</group> : null;
+  return <ZoomContext.Provider value={zoomedIn}>{children}</ZoomContext.Provider>;
 }
 
-/** One callout, L-shape leader + underline.
- *
- *  Geometry:
- *    * Leader starts at [x, LABEL_ASSET_TOP, z] (top of the schematic,
- *      NOT the ground plane) and rises to the label anchor.
- *    * Html overlay is anchored at the label anchor with its bottom-
- *      left corner sitting exactly at that world point (transform
- *      `translate(0, -100%)`). Text renders above the anchor.
- *    * A CSS border-bottom underneath the text forms the horizontal
- *      leg of the L -- runs from the anchor point out along the
- *      text baseline. That "line below text connected to the line
- *      from the asset" the operator asked for.
- *
- *  Content: `<instance> · <family>` (+ ` · <ammo>` for launchers).
- *  Sensor vs launcher is already visually clear from the schematic,
- *  so the callout only tells you WHICH instance and WHICH family.
- *
- *  pointerEvents: none so 3D clicks pass through to the AssetMarker
- *  hit-target underneath.
- */
-function AssetCallout({
-  position, labelAnchor, name, family, ammoText, launcherDepleted,
-}: {
-  position: [number, number, number];
-  labelAnchor: [number, number, number];
-  name: string;
-  family: string;
-  ammoText: string | null;
-  launcherDepleted: boolean;
-}) {
+/** Renders its children only while the camera is zoomed in (see ZoomTracker). */
+function ZoomGate({ children }: { children: React.ReactNode }) {
+  return useContext(ZoomContext) ? <>{children}</> : null;
+}
+
+/** One callout: text with an underline, and a 1 px leader down to the asset.
+ *  pointerEvents: none so 3D clicks pass through to the hit target beneath. */
+function AssetCallout({ name, family, ammoText, launcherDepleted }: CalloutInfo) {
   const ammoClass = launcherDepleted
     ? 'text-rose-400 font-bold'
     : 'text-emerald-300';
-  // Leader starts at the schematic TOP (not the ground plane) so it
-  // reads as attached to the asset, not floating out of the floor.
-  const leaderStart: [number, number, number] = [
-    position[0], LABEL_GEOMETRY.assetTop, position[2],
-  ];
   return (
-    <>
-      <Line
-        points={[leaderStart, labelAnchor]}
-        color={0x64748b}   // slate-500 -- a quiet line, not attention-grabbing
-        lineWidth={0.6}
-        transparent
-        opacity={0.75}
-      />
-      <Html
-        position={labelAnchor}
-        style={{
-          pointerEvents: 'none',
-          whiteSpace: 'nowrap',
-          // Anchor the BOTTOM-LEFT corner of the label at the world
-          // position. That places the underline (border-bottom of
-          // the text) exactly at labelAnchor's y-coordinate, so the
-          // vertical leader terminates at the same point where the
-          // horizontal underline starts -- L-shape junction.
-          transform: 'translate(0, -100%)',
-        }}
+    <Html
+      position={[0, 0, 0]}
+      style={{
+        pointerEvents: 'none',
+        whiteSpace: 'nowrap',
+        // The label's bottom-left sits LEADER_PX above the asset's ground point.
+        transform: `translate(0, calc(-100% - ${LEADER_PX}px))`,
+      }}
+    >
+      <div
+        data-testid="asset-callout"
+        className="relative font-mono text-[10px] tracking-wider leading-tight border-b border-slate-500/70 pl-1 pr-2 pb-0.5 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
       >
-        <div className="font-mono text-[10px] tracking-wider leading-tight border-b border-slate-500/70 pl-1 pr-2 pb-0.5 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
-          <span className="text-slate-100">{name}</span>
-          {family && (
-            <>
-              <span className="text-slate-500 mx-1">·</span>
-              <span className="text-slate-400">{family}</span>
-            </>
-          )}
-          {ammoText && (
-            <>
-              <span className="text-slate-500 mx-1">·</span>
-              <span className={ammoClass}>{ammoText}</span>
-            </>
-          )}
-        </div>
-      </Html>
-    </>
+        <span className="text-slate-100">{name}</span>
+        {family && (
+          <>
+            <span className="text-slate-500 mx-1">·</span>
+            <span className="text-slate-400">{family}</span>
+          </>
+        )}
+        {ammoText && (
+          <>
+            <span className="text-slate-500 mx-1">·</span>
+            <span className={ammoClass}>{ammoText}</span>
+          </>
+        )}
+        <div className="absolute left-0 top-full w-px bg-slate-500/75" style={{ height: LEADER_PX }} />
+      </div>
+    </Html>
   );
 }
 
@@ -580,7 +616,6 @@ function AssetCallout({
 // DdilNetworkLink convention.
 
 const REGIONAL_AGGREGATOR_Y = 8;   // slightly elevated above FOB markers (Y=0)
-const GROUND_Y = 0;                 // assets and FOB hubs sit at y = 0; tracks rise from here by height
 const HQ_MARKER_Y = 40;             // stacked above the regional aggregator
 
 function RegionalAggregatorNode({ position, label, severed }: {
@@ -648,21 +683,46 @@ function HqMarker({ position, severed }: {
   );
 }
 
-function CameraRig({ targetPos, isZoomed }: { targetPos: THREE.Vector3 | null, isZoomed: boolean }) {
-  const { camera, controls } = useThree();
-  useFrame(() => {
-    // Only auto-lerp when zoomed to a specific asset. When unzoomed,
-    // OrbitControls owns the camera and the user can pan/orbit/zoom freely.
-    // Earlier this branch ran every frame regardless, snapping the camera
-    // back to default and making it impossible to interact with 100+
-    // assets in the AOR. Initial camera position comes from <Canvas
-    // camera={{ position: ... }}> on first mount.
-    if (isZoomed && targetPos) {
-      camera.position.lerp(new THREE.Vector3(targetPos.x + 15, targetPos.y + 10, targetPos.z + 15), 0.05);
-      if (controls) {
-        (controls as unknown as { target: THREE.Vector3 }).target.lerp(new THREE.Vector3(targetPos.x, targetPos.y + 4, targetPos.z), 0.05);
-      }
+/** A camera move to make once: bumping `n` starts a new one. */
+interface CameraGoal { target: Vec3; pos: Vec3; n: number }
+const EASE_S = 0.8;
+
+function CameraRig({ goal }: { goal: CameraGoal | null }) {
+  const { camera, controls } = useThree() as unknown as {
+    camera: THREE.PerspectiveCamera;
+    controls: { target: THREE.Vector3; update: () => void } | null;
+  };
+  const move = useRef<{ t: number; p0: THREE.Vector3; t0: THREE.Vector3; p1: THREE.Vector3; t1: THREE.Vector3 } | null>(null);
+  const seen = useRef<number | null>(null);
+  useFrame((_, delta) => {
+    if (!controls) return;
+    // A new goal eases the camera there over EASE_S, once; after that
+    // OrbitControls owns the camera again and the user can pan/orbit/zoom
+    // freely. Initial camera position comes from <Canvas camera={{ position }}>.
+    if (goal && goal.n !== seen.current) {
+      seen.current = goal.n;
+      move.current = {
+        t: 0,
+        p0: camera.position.clone(),
+        t0: controls.target.clone(),
+        p1: new THREE.Vector3(...goal.pos),
+        t1: new THREE.Vector3(...goal.target),
+      };
     }
+    const m = move.current;
+    if (m) {
+      m.t = Math.min(1, m.t + delta / EASE_S);
+      const k = m.t * m.t * (3 - 2 * m.t);
+      camera.position.lerpVectors(m.p0, m.p1, k);
+      controls.target.lerpVectors(m.t0, m.t1, k);
+      if (m.t >= 1) move.current = null;
+    }
+    // Clip planes follow the zoom, so a 12 m vehicle and a 100 km map both hold depth.
+    const d = camera.position.distanceTo(controls.target);
+    camera.near = Math.max(1e-4, d / 300);
+    camera.far = Math.max(1000, d * 50);
+    camera.updateProjectionMatrix();
+    if (m) controls.update();
   });
   return null;
 }
@@ -687,6 +747,18 @@ function FogController({ isZoomed }: { isZoomed: boolean }) {
   return null;
 }
 
+const SNAP_DEG = 0.1;          // terrain box grid: a moving asset does not reload the DEM
+const CLUSTER_PATCH_STEP = 0.01;
+const ASSET_PATCH_STEP = 0.0005;
+const MAX_CLUSTER_PATCHES = 8;
+const MAX_ASSET_PATCHES = 32;
+const quantise = (v: number, step: number) => Number((Math.round(v / step) * step).toFixed(6));
+
+const segBtn = (active: boolean) =>
+  `px-2 py-0.5 border ${active
+    ? 'border-cyan-400/70 bg-cyan-500/20 text-cyan-200'
+    : 'border-slate-700 bg-slate-900/80 text-slate-400 hover:text-slate-200'}`;
+
 export default function RegionalSustainmentPosture({
   regionId,
   linkControl,
@@ -707,7 +779,8 @@ export default function RegionalSustainmentPosture({
 }) {
   const fleet = useFleetAssetsForRegion(regionId);
   const logistics = useAllLogisticsStatus();
-  const { fobs } = deployment();
+  const dep = deployment();
+  const { fobs } = dep;
   // Stockpile feed for the 3D asset callouts (launcher rows only).
   // Fleet-wide is fine even though this view is region-scoped -- the
   // launcher's own asset_id already filters us to just this region's
@@ -821,37 +894,76 @@ export default function RegionalSustainmentPosture({
     () => (regionId ? fobs.filter((f) => f.region_id === regionId) : fobs),
     [fobs, regionId],
   );
-  // With no FOBs, centre on the fleet itself so live assets stay on screen.
+  // With no FOBs, centre on the fleet itself so live assets stay on screen. The
+  // centre is rounded to 0.01 deg: terrain and the scene are registered to the
+  // projection, so a creeping centre would reload them on every position update.
+  const fleetPositions = useMemo(
+    () => hardwareFleet.flatMap((a) => (a.position ? [a.position] : [])),
+    [hardwareFleet],
+  );
+  const fallbackLat = fleetPositions.length
+    ? quantise(fleetPositions.reduce((s, p) => s + p.lat, 0) / fleetPositions.length, 0.01) : null;
+  const fallbackLon = fleetPositions.length
+    ? quantise(fleetPositions.reduce((s, p) => s + p.lon, 0) / fleetPositions.length, 0.01) : null;
   const proj = useMemo(
     () =>
       makeProjection(
         regionFobs,
         SCENE_SCALE_UNITS_PER_DEG,
-        hardwareFleet.flatMap((a) => (a.position ? [a.position] : [])),
+        fallbackLat === null || fallbackLon === null ? [] : [{ lat: fallbackLat, lon: fallbackLon }],
       ),
-    [regionFobs, hardwareFleet],
+    [regionFobs, fallbackLat, fallbackLon],
   );
 
-  const renderables = useMemo(
-    () => buildRenderables(hardwareFleet, logistics.data, fobs, proj, tiers),
-    [hardwareFleet, logistics.data, fobs, proj, tiers],
+  // Terrain: the controls' state, the tile source, and the box around the FOBs
+  // and every positioned asset.
+  const [prefs, setPrefs] = useState<TerrainPrefs>(loadTerrainPrefs);
+  const [holoOpen, setHoloOpen] = useState(false);
+  const updatePrefs = useCallback((patch: Partial<TerrainPrefs>) => {
+    setPrefs((cur) => {
+      const next = { ...cur, ...patch };
+      saveTerrainPrefs(next);
+      return next;
+    });
+  }, []);
+  const terrainSource = useMemo(() => resolveTerrainSource(dep.terrain), [dep.terrain]);
+  const rawBounds = terrainBounds([...regionFobs, ...fleetPositions]);
+  const bounds = rawBounds ? snapBounds(rawBounds, SNAP_DEG) : null;
+  const terrainData = useTerrain(prefs.on ? bounds : null, terrainSource, proj);
+  const terrain = prefs.on ? terrainData : null;
+  const exag = prefs.exag;
+  /** Ground height at a scene point: the terrain's, or 0 on the flat ground. */
+  const groundAt = useCallback<GroundFn>(
+    (x, z) => (terrain ? terrain.heightM(x, z) * M * exag : 0),
+    [terrain, exag],
+  );
+
+  const { renderables, clusters } = useMemo(
+    () => buildRenderables(hardwareFleet, logistics.data, fobs, proj, tiers, groundAt),
+    [hardwareFleet, logistics.data, fobs, proj, tiers, groundAt],
   );
 
   // Track dots go through the same projection a fleet asset takes. The line
   // runs to the launcher only when it is rendered on this map.
-  // Height is above the launcher's own altitude: the map draws every asset on
-  // one ground plane, so the site elevation is not flight.
+  // Height is above the launcher's own altitude: the site elevation is not
+  // flight. The track's base is the launcher's ground, so on terrain a
+  // flight rises from the hillside it was fired from.
   const altById = useMemo(
     () => new Map(hardwareFleet.flatMap((a) => (a.position?.alt != null ? [[a.asset_id, a.position.alt] as const] : []))),
     [hardwareFleet],
+  );
+  const groundById = useMemo(
+    () => new Map(renderables.map((a) => [a.asset_id, a.position[1]] as const)),
+    [renderables],
   );
   const projectTrack = useCallback((t: (typeof trailTracks)[number]): Vec3 | null => {
     const ll = trackLatLon(t);
     if (!ll) return null;
     const [x, z] = proj.project(ll.lat, ll.lon);
     const launchAlt = t.launcherAssetId ? altById.get(t.launcherAssetId) : undefined;
-    return [x, GROUND_Y + heightAboveLaunch(ll.h, launchAlt, UNITS_PER_KM), z];
-  }, [proj, altById]);
+    const base = t.launcherAssetId ? (groundById.get(t.launcherAssetId) ?? 0) : 0;
+    return [x, base + heightAboveLaunch(ll.h, launchAlt, UNITS_PER_KM), z];
+  }, [proj, altById, groundById]);
   const launcherOf = useCallback((t: (typeof trailTracks)[number]): Vec3 | undefined => {
     const p = t.launcherAssetId ? renderables.find((a) => a.asset_id === t.launcherAssetId)?.position : undefined;
     return p ? [p[0], p[1], p[2]] : undefined;
@@ -866,11 +978,14 @@ export default function RegionalSustainmentPosture({
     return (t: (typeof trailTracks)[number] | undefined): Vec3 | undefined => {
       const id = t?.eventUrn ? targetByUrn.get(t.eventUrn) : undefined;
       const p = id ? posById.get(id) : undefined;
-      return p ? [p[0], GROUND_Y, p[2]] : undefined;
+      return p ? [p[0], p[1], p[2]] : undefined;
     };
   }, [effLaunches.data, renderables]);
 
   // Engagement inset: the same scene framed on what is in flight, assets as dots.
+  // It draws no terrain (the terrain meshes are hidden from it); its ground
+  // plane sits at the first launcher's ground, with markers at their own.
+  const insetGround = trails.find((m) => m.launcher)?.launcher?.[1] ?? 0;
   const insetFocus = useMemo(
     () => engagementFocus(trails.map((m) => ({ trail: m.trail, launcher: m.launcher, target: targetOf(trackById.get(m.id)) }))),
     [trails, targetOf, trackById],
@@ -878,22 +993,112 @@ export default function RegionalSustainmentPosture({
   const insetMarkers = useMemo<InsetMarker[]>(() => [
     ...regionFobs.map((fob) => {
       const [x, z] = proj.project(fob.lat, fob.lon);
-      return { at: [x, GROUND_Y, z] as Vec3, color: '#94a3b8' };
+      return { at: [x, groundAt(x, z), z] as Vec3, color: '#94a3b8' };
     }),
     ...renderables.map((a) => ({
-      at: [a.position[0], GROUND_Y, a.position[2]] as Vec3,
+      at: [a.position[0], a.position[1], a.position[2]] as Vec3,
       color: a.force_id === 'FORCE_OPPOSING' ? '#fb7185' : a.force_id === 'FORCE_NEUTRAL' ? '#94a3b8' : '#22d3ee',
     })),
-  ], [regionFobs, proj, renderables]);
-  const insetFrame = frameOf(insetFocus, GROUND_Y);
+  ], [regionFobs, proj, renderables, groundAt]);
+  const insetFrame = frameOf(insetFocus, insetGround);
   const insetLabel = `ENGAGEMENT · ${trails.filter((m) => !m.ending).length} IN FLIGHT${
     insetFrame ? ` · GRID ${gridStepKm(insetFrame.r, UNITS_PER_KM)} KM` : ''}`;
 
-  const targetAsset = useMemo(
-    () => renderables.find((a) => a.asset_id === selectedAssetId),
-    [renderables, selectedAssetId],
+  // Callout text per asset (same name / family / ammo logic as before).
+  const calloutOf = useCallback((a: RenderableAsset): CalloutInfo => {
+    // Launcher ammo: ledger remaining/loaded, else the feed's current/max
+    // (lib/calloutAmmo.ts). Non-launchers get null, so the ammo tail just
+    // doesn't render.
+    const ammo = calloutAmmo(a.asset_id, ledger, stockpile.entries);
+    return {
+      name: assetShortName(a.asset_id, a.callsign),
+      family: familyLabel(a.platform_variant),
+      ammoText: ammo ? ammo.text : null,
+      launcherDepleted: ammo ? ammo.depleted : false,
+    };
+  }, [ledger, stockpile.entries]);
+  const handleSelect = useCallback(
+    (id: string, severity: string) => onAssetSelect(id, severity),
+    [onAssetSelect],
   );
-  const targetPos = targetAsset ? new THREE.Vector3(...targetAsset.position) : null;
+
+  // Camera presets: OVERVIEW, each FOB / group, each launch in flight.
+  const presets = useMemo<CameraPreset[]>(() => {
+    const launches = trails.flatMap((m) => {
+      if (m.ending || !m.launcher || m.trail.length === 0) return [];
+      const lid = trackById.get(m.id)?.launcherAssetId;
+      const la = lid ? renderables.find((a) => a.asset_id === lid) : undefined;
+      if (!la) return [];
+      const head = m.trail[m.trail.length - 1];
+      return [{
+        key: m.id,
+        callsign: assetShortName(la.asset_id, la.callsign),
+        launcher: m.launcher,
+        dir: [head[0] - m.launcher[0], head[2] - m.launcher[2]] as [number, number],
+      }];
+    });
+    return buildPresets({
+      points: renderables.map((a) => a.position),
+      // A FOB is always a preset; a geometric group only when it has company.
+      clusters: clusters
+        .filter((c) => c.key.startsWith('edge:') || c.members.length > 1)
+        .map((c) => ({ key: c.key, label: c.label, points: c.members.map((m) => m.position) })),
+      launches,
+    });
+  }, [renderables, clusters, trails, trackById]);
+  const overview = presets.find((p) => p.key === 'overview');
+  const sweepCenter: [number, number] = overview ? [overview.target[0], overview.target[2]] : [0, 0];
+
+  // Camera goals: a preset button, or selecting an asset, flies there once.
+  const [goal, setGoal] = useState<CameraGoal | null>(null);
+  const goalCount = useRef(0);
+  const fly = useCallback((v: { target: Vec3; pos: Vec3 }) => {
+    goalCount.current += 1;
+    setGoal({ target: v.target, pos: v.pos, n: goalCount.current });
+  }, []);
+  // The first time there is anything to frame, ease out to the overview.
+  const framedOnce = useRef(false);
+  useEffect(() => {
+    if (framedOnce.current || !overview) return;
+    framedOnce.current = true;
+    if (goalCount.current === 0) fly(overview);
+  }, [overview, fly]);
+  const renderablesRef = useRef(renderables);
+  useEffect(() => { renderablesRef.current = renderables; });
+  useEffect(() => {
+    if (!selectedAssetId) return;
+    const a = renderablesRef.current.find((r) => r.asset_id === selectedAssetId);
+    if (a) fly(assetFocus(a.position));
+  }, [selectedAssetId, fly]);
+
+  // Sharp imagery (satellite style only): z17 around each cluster, z19 at each
+  // asset with a real position. Centres are quantised so a moving asset does
+  // not reload its patch every update.
+  const patchSpecs = useMemo<PatchSpec[]>(() => {
+    if (!terrain || prefs.style !== 'sat') return [];
+    const seen = new Set<string>();
+    const out: PatchSpec[] = [];
+    const add = (lat: number, lon: number, halfKm: number, maxZoom: number) => {
+      const key = `${maxZoom}:${lat}:${lon}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      out.push({ bounds: boundsAround(lat, lon, halfKm), maxZoom });
+      return true;
+    };
+    let n = 0;
+    for (const c of clusters) {
+      if (n >= MAX_CLUSTER_PATCHES) break;
+      if (add(quantise(c.lat, CLUSTER_PATCH_STEP), quantise(c.lon, CLUSTER_PATCH_STEP), 1.2, 17)) n++;
+    }
+    n = 0;
+    for (const a of renderables) {
+      if (n >= MAX_ASSET_PATCHES) break;
+      if (a.homedAtFob) continue;
+      if (add(quantise(a.lat, ASSET_PATCH_STEP), quantise(a.lon, ASSET_PATCH_STEP), 0.1, 19)) n++;
+    }
+    return out;
+  }, [terrain, prefs.style, clusters, renderables]);
+  const patches = usePatches(patchSpecs, terrainSource);
 
   // Regional aggregator position — centroid of the region's FOBs in scene
   // coordinates. Default placement for the logical aggregator node (no
@@ -907,6 +1112,10 @@ export default function RegionalSustainmentPosture({
     const [x, z] = proj.project(lat, lon);
     return { x, z };
   }, [regionFobs, proj]);
+
+  const attribution = prefs.style === 'sat'
+    ? terrainSource.attribution
+    : elevationCredit(terrainSource.attribution);
 
   return (
     <div className="col-span-2 panel flex flex-col relative overflow-hidden">
@@ -923,6 +1132,20 @@ export default function RegionalSustainmentPosture({
               </span>
             )}
           </p>
+          {presets.length > 0 && (
+            <div data-testid="camera-presets" className="mt-2 flex max-w-xl flex-wrap gap-1 pointer-events-auto">
+              {presets.map((p) => (
+                <button
+                  key={p.key}
+                  type="button"
+                  onClick={() => fly(p)}
+                  className="border border-slate-700 bg-slate-900/80 px-2 py-0.5 font-mono text-[10px] tracking-widest text-slate-300 hover:border-emerald-500/60 hover:text-emerald-300"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {/* Same card and chips as the HQ posture HUD (TheaterReadinessPosture), same opaque
             .panel-over-page fill so it matches the right column. */}
@@ -938,7 +1161,8 @@ export default function RegionalSustainmentPosture({
         </div>
       </div>
 
-      <div className="absolute bottom-4 right-4 z-10 bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
+      {/* The link legend rises above the terrain attribution when that is showing. */}
+      <div className={`absolute ${prefs.on ? 'bottom-10' : 'bottom-4'} right-4 z-10 bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono`}>
         <div className="flex items-center gap-2 mb-2">
           <div className="w-3 h-3 bg-emerald-500"></div>
           <span className="text-slate-300">NOMINAL LINK</span>
@@ -959,92 +1183,70 @@ export default function RegionalSustainmentPosture({
           <directionalLight position={[50, 100, 50]} intensity={1.5} />
           <hemisphereLight groundColor={0x020617} intensity={0.5} />
 
-          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={10} maxPolarAngle={Math.PI / 2 - 0.1} />
+          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={0.01} maxPolarAngle={Math.PI / 2 - 0.1} />
 
-          <CameraRig targetPos={targetPos} isZoomed={!!selectedAssetId} />
+          <CameraRig goal={goal} />
           <FogController isZoomed={!!selectedAssetId} />
 
-          <gridHelper args={[400, 100, 0x1e293b, 0x0f172a]} position={[0, -2, 0]} />
-          <Terrain />
-
-          {/* Geographic context — real map under the assets when a
-              deployment.json map block is configured. Fallback decorative
-              ambient when not. Geography matters MORE at AOR scope than at
-              HQ (sensor coverage, terrain, towns), per ADR-0017's
+          {/* Ground: the real terrain when it is on and loaded, else the dark
+              plane and grid. Geography matters MORE at AOR scope than at HQ
+              (sensor coverage, terrain, towns), per ADR-0017's
               context-honesty discipline. */}
-          <TacticalMapUnderlay projection={proj} />
+          {!terrain && <Terrain />}
+          {terrain && prefs.style === 'sat' && (
+            <>
+              <TerrainMesh data={terrain} exag={exag} />
+              {patches.map((p, i) => <PatchMesh key={`${p.zoom}-${i}`} data={terrain} patch={p} exag={exag} />)}
+            </>
+          )}
+          {terrain && prefs.style === 'holo' && (
+            <HoloTerrain data={terrain} exag={exag} opts={prefs.holo} center={sweepCenter} />
+          )}
 
-          {/* FOB hub markers — endpoints for the topology lines below.
-              Without these, the per-FOB-to-aggregator lines would
-              terminate "in midair" at FOB lat/lons (where assets
-              cluster) with no visible node. */}
-          {regionFobs.map((fob) => {
-            const [x, z] = proj.project(fob.lat, fob.lon);
-            return (
-              <group key={`hub-${fob.edge_id}`} userData={{ insetHidden: true }}>
-                <LogisticsHubNode position={[x, 0, z]} />
-              </group>
-            );
-          })}
-
-          {renderables.map((a) => (
-            <AssetMarker
-              key={a.asset_id}
-              assetId={a.asset_id}
-              position={a.position}
-              severity={a.severity}
-              platformVariant={a.platform_variant}
-              forceId={a.force_id}
-              selected={a.asset_id === selectedAssetId}
-              opState={a.operational_state}
-              tier={a.tier}
-              onClick={(e) => { e.stopPropagation(); onAssetSelect(a.asset_id, a.severity); }}
-            />
-          ))}
-
-          {/* In-flight tracks: not assets, so no click, callout or list entry. */}
-          {trails.map((m) => (
-            <MunitionTrackHolo
-              key={`track-${m.id}`}
-              track={trackById.get(m.id) ?? { munitionAssetId: m.id, launcherAssetId: null }}
-              trail={m.trail}
-              groundY={GROUND_Y}
-              launcher={m.launcher}
-              target={targetOf(trackById.get(m.id))}
-              ending={m.ending}
-            />
-          ))}
-
-          {/* Per-asset callouts. ZoomGate hides ALL callouts when the
-              camera is farther than LABEL_VISIBLE_DISTANCE from the
-              orbit target -- fleet-wide unlabeled view at max zoom-out,
-              tight per-asset labels once the operator zooms in on a
-              cluster. Each callout shows: <short name> · <variant>
-              (· <ammo> for launchers). Leader line connects the label
-              to the asset schematic. */}
-          <ZoomGate>
-            {renderables.map((a) => {
-              const shortName = assetShortName(a.asset_id, a.callsign);
-              const family = familyLabel(a.platform_variant);
-              // Launcher ammo: ledger remaining/loaded, else the feed's
-              // current/max (lib/calloutAmmo.ts). Non-launchers get
-              // null, so the ammo tail just doesn't render.
-              const ammo = calloutAmmo(a.asset_id, ledger, stockpile.entries);
-              const ammoText = ammo ? ammo.text : null;
-              const depleted = ammo ? ammo.depleted : false;
+          {/* Everything standing on the ground remounts when the terrain
+              toggles, so nothing keeps a stale height. */}
+          <ZoomTracker key={terrain ? 'terrain' : 'flat'}>
+            {/* FOB hub markers — endpoints for the topology lines below.
+                Without these, the per-FOB-to-aggregator lines would
+                terminate "in midair" at FOB lat/lons (where assets
+                cluster) with no visible node. */}
+            {regionFobs.map((fob) => {
+              const [x, z] = proj.project(fob.lat, fob.lon);
               return (
-                <AssetCallout
-                  key={`callout-${a.asset_id}`}
-                  position={a.position}
-                  labelAnchor={a.label_anchor}
-                  name={shortName}
-                  family={family}
-                  ammoText={ammoText}
-                  launcherDepleted={depleted}
-                />
+                <group key={`hub-${fob.edge_id}`} userData={{ insetHidden: true }}>
+                  <LogisticsHubNode position={[x, groundAt(x, z), z]} />
+                </group>
               );
             })}
-          </ZoomGate>
+
+            {/* Per-asset callouts live in each unclustered AssetMarker, behind
+                the ZoomGate: none at the fleet-wide zoom, tight labels once the
+                operator zooms in on a cluster. Each shows: <short name> ·
+                <variant> (· <ammo> for launchers). */}
+            {clusters.map((c) => (
+              <ClusterGroup
+                key={c.key}
+                members={c.members}
+                selectedAssetId={selectedAssetId}
+                onSelect={handleSelect}
+                calloutOf={calloutOf}
+              />
+            ))}
+
+            {/* In-flight tracks: not assets, so no click, callout or list entry. */}
+            {trails.map((m) => (
+              <TrackAtLauncher key={`track-${m.id}`} launcherId={trackById.get(m.id)?.launcherAssetId ?? null}>
+                <MunitionTrackHolo
+                  track={trackById.get(m.id) ?? { munitionAssetId: m.id, launcherAssetId: null }}
+                  trail={m.trail}
+                  groundY={insetGround}
+                  launcher={m.launcher}
+                  target={targetOf(trackById.get(m.id))}
+                  ending={m.ending}
+                />
+              </TrackAtLauncher>
+            ))}
+          </ZoomTracker>
 
           {/* Topology overlay: real OpenDDIL network shape (per-FOB bridge
               -> regional aggregator -> HQ theater).
@@ -1071,7 +1273,7 @@ export default function RegionalSustainmentPosture({
                 return (
                   <DdilNetworkLink
                     key={`fob-link-${fob.edge_id}`}
-                    start={new THREE.Vector3(fx, 0, fz)}
+                    start={new THREE.Vector3(fx, groundAt(fx, fz), fz)}
                     end={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
                     status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
                   />
@@ -1093,10 +1295,93 @@ export default function RegionalSustainmentPosture({
               />
             </>
           )}
-          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={GROUND_Y} unitsPerKm={UNITS_PER_KM} renderMain />
+          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={insetGround} unitsPerKm={UNITS_PER_KM} rect={REGIONAL_INSET_RECT} renderMain />
         </Canvas>
-        <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} />
+        <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} rect={REGIONAL_INSET_RECT} />
       </div>
+
+      {/* Terrain controls, above the mouse hint. */}
+      <div
+        data-testid="terrain-controls"
+        className="absolute bottom-10 left-4 z-10 pointer-events-auto font-mono text-[10px] uppercase tracking-wider"
+      >
+        {prefs.on && prefs.style === 'holo' && holoOpen && (
+          <div data-testid="holo-panel" className="mb-1">
+            <HoloPanel opts={prefs.holo} set={(holo: HoloOpts) => updatePrefs({ holo })} />
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-3 border border-slate-700 bg-slate-900/80 px-2 py-1">
+          <button
+            type="button"
+            data-testid="terrain-toggle"
+            aria-pressed={prefs.on}
+            onClick={() => updatePrefs({ on: !prefs.on })}
+            className={segBtn(prefs.on)}
+          >
+            TERRAIN {prefs.on ? 'ON' : 'OFF'}
+          </button>
+          {prefs.on && (
+            <>
+              <div role="group" aria-label="Terrain style" className="flex">
+                <button
+                  type="button"
+                  data-testid="terrain-style-holo"
+                  aria-pressed={prefs.style === 'holo'}
+                  onClick={() => updatePrefs({ style: 'holo' as TerrainStyle })}
+                  className={segBtn(prefs.style === 'holo')}
+                >
+                  HOLO
+                </button>
+                {prefs.style === 'holo' && (
+                  <button
+                    type="button"
+                    data-testid="terrain-holo-gear"
+                    aria-label="Holo settings"
+                    aria-expanded={holoOpen}
+                    onClick={() => setHoloOpen((o) => !o)}
+                    className={segBtn(holoOpen)}
+                  >
+                    ⚙
+                  </button>
+                )}
+                <button
+                  type="button"
+                  data-testid="terrain-style-sat"
+                  aria-pressed={prefs.style === 'sat'}
+                  onClick={() => updatePrefs({ style: 'sat' as TerrainStyle })}
+                  className={segBtn(prefs.style === 'sat')}
+                >
+                  SATELLITE
+                </button>
+              </div>
+              <div role="group" aria-label="Relief exaggeration" className="flex items-center gap-1">
+                <span className="text-slate-500">RELIEF</span>
+                {EXAGGERATIONS.map((x: Exaggeration) => (
+                  <button
+                    key={x}
+                    type="button"
+                    data-testid={`terrain-relief-${x}`}
+                    aria-pressed={prefs.exag === x}
+                    onClick={() => updatePrefs({ exag: x })}
+                    className={segBtn(prefs.exag === x)}
+                  >
+                    ×{x}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {prefs.on && (
+        <div
+          data-testid="terrain-attribution"
+          className="absolute bottom-1 right-4 z-10 max-w-[60%] text-right text-[9px] font-mono text-slate-500 pointer-events-none"
+        >
+          {attribution}
+        </div>
+      )}
 
       <div className="absolute bottom-4 left-4 z-10 text-[10px] font-mono text-slate-500 uppercase tracking-tighter pointer-events-none">
         [LMB] PAN REGION • [RMB] ROTATE VIEW • [SCROLL] MAGNIFY

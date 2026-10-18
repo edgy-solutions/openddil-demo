@@ -39,6 +39,7 @@ vi.mock('../../../hooks', () => ({
 }));
 vi.mock('../../../hooks/useEffectorLaunches', () => ({ useMunitionLaunches: () => ({ data: [] }) }));
 vi.mock('../../../hooks/useLinkIndicator', () => ({ useLinkIndicator: () => 'up' }));
+vi.mock('../../terrain/terrain', async (orig) => ({ ...(await orig<typeof import('../../terrain/terrain')>()), useTerrain: () => null, usePatches: () => [] }));
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   useFrame: () => {},
@@ -49,7 +50,6 @@ vi.mock('@react-three/drei', () => ({
   Line: () => null,
   OrbitControls: () => null,
 }));
-vi.mock('../../TacticalMapUnderlay', () => ({ default: () => null }));
 
 import RegionalSustainmentPosture from '../RegionalSustainmentPosture';
 
