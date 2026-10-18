@@ -265,6 +265,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("pep")
 
+# Plain-words causes for the sign-in-could-not-continue page, keyed by
+# oidc.LoginStateError.cause. An unknown cause is shown raw (escaped).
+_LOGIN_STATE_WHY = {
+    "missing": "the sign-in cookie was missing (cookies blocked, or a "
+               "different browser or tab)",
+    "expired": "the sign-in took too long and its cookie aged out",
+    "bad_signature": "the sign-in cookie was altered",
+    "state_mismatch": "this sign-in was started in another tab",
+    "replayed": "this sign-in link was already used (Back or reload "
+                "after signing in)",
+}
+
 def _load_fault_catalog(path: str) -> dict | None:
     """The per-platform-variant catalog built by
     tools/fault_catalog/build_fault_catalog.py, or None when the route is
@@ -2704,15 +2716,33 @@ class Pep(BaseHTTPRequestHandler):
                 # The sign-in could not be continued (cookie missing, aged
                 # out, altered or already used). Nothing was refused, so this
                 # is a sign-in-again page, not the authorization refusal.
+                if oidc.get_session(self._sid()) is not None:
+                    # Back or reload onto a used callback while the browser
+                    # already holds a good session: there is nothing to
+                    # redo. Go where the sign-in was going; no new session.
+                    log.info("login state unusable (%s); session already "
+                             "valid, redirecting", exc.cause)
+                    self._send(302, b"", [
+                        ("Location", oidc.safe_next(exc.next_path)
+                         if exc.next_path else "/"),
+                        ("Set-Cookie", oidc.clear_login_cookie_header(state)),
+                        ("Cache-Control", "no-store")])
+                    return True
                 (log.warning if exc.cause == "bad_signature" else log.info)(
                     "login state unusable: %s", exc.cause)
                 again = ("/auth/login?" + urllib.parse.urlencode(
                     {"next": oidc.safe_next(exc.next_path)})
                     if exc.next_path else "/")
+                why = _LOGIN_STATE_WHY.get(exc.cause, exc.cause)
                 page = (
                     "<!doctype html><html><head><meta charset=\"utf-8\">"
-                    "<title>Login timed out</title></head><body>"
-                    "<h1>Login timed out</h1><p>Sign in again.</p>"
+                    "<title>Sign-in could not continue</title>"
+                    "<style>body{font:16px/1.5 system-ui,sans-serif;"
+                    "max-width:36em;margin:3em auto;padding:0 1em}"
+                    "code{background:#eee;padding:.1em .3em}</style>"
+                    "</head><body><h1>Sign-in could not continue</h1>"
+                    "<p><code>GET /auth/callback → 400</code></p>"
+                    f"<p>Cause: {html.escape(why)}.</p>"
                     f"<p><a href=\"{html.escape(again, quote=True)}\">"
                     "Sign in</a></p></body></html>").encode()
                 self._send(400, page, [

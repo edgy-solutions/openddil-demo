@@ -180,7 +180,8 @@ def test_callback_login_state_failure_is_not_a_denial(
     body = out["body"].decode()
     assert out["denied"] is None
     assert out["status"] == 400
-    assert "Login timed out" in body and "Sign in again." in body
+    assert "Sign-in could not continue" in body
+    assert "/auth/callback" in body and "400" in body
     for bad in ("AUTHZ DENIED", "reference", "TOPAZ", "Topaz"):
         assert bad not in body
     hdrs = dict(out["headers"])
@@ -213,3 +214,52 @@ def test_callback_token_exchange_failure_keeps_deny_path(monkeypatch, oidc):
     out = _callback(monkeypatch, oidc, state, nv)
     assert out["denied"] and "login failed" in out["denied"]
     assert "status" not in out
+
+
+# --- the page names the request and the cause; a valid session just goes on --
+def test_callback_replayed_with_valid_session_redirects(monkeypatch, oidc):
+    _, state, _, nv = _begin(oidc, "/regional?role=hq")
+    oidc.complete_login("c", state, nv)             # the first, real use
+    sid, _ = oidc.create_session({"sub": "s"}, "idt", "rt", 60)
+    before = len(oidc._sessions) if hasattr(oidc, "_sessions") else None
+    cookie = nv + "; " + oidc.cookie_header(sid).split(";", 1)[0]
+    out = _callback(monkeypatch, oidc, state, cookie)
+    assert out["status"] == 302 and out["denied"] is None
+    hdrs = dict(out["headers"])
+    assert hdrs["Location"] == "/regional?role=hq"
+    assert hdrs["Cache-Control"] == "no-store"
+    cookies = [v for k, v in out["headers"] if k == "Set-Cookie"]
+    assert len(cookies) == 1 and "Max-Age=0" in cookies[0]
+    assert not cookies[0].startswith(oidc.COOKIE_NAME + "=")
+    if before is not None:
+        assert len(oidc._sessions) == before
+
+
+def test_callback_replayed_without_session_names_request_and_cause(
+        monkeypatch, oidc):
+    _, state, _, nv = _begin(oidc)
+    oidc.complete_login("c", state, nv)
+    out = _callback(monkeypatch, oidc, state, nv)
+    body = out["body"].decode()
+    assert out["status"] == 400
+    assert "/auth/callback" in body and "400" in body
+    assert "this sign-in link was already used" in body
+    assert "Back or reload after signing in" in body
+
+
+def test_callback_state_mismatch_wording(monkeypatch, oidc):
+    _, s1, _, c1 = _begin(oidc)
+    out = _callback(monkeypatch, oidc, s1[:16] + "x" * 10, c1)
+    assert out["status"] == 400
+    assert "this sign-in was started in another tab" in out["body"].decode()
+
+
+def test_callback_unknown_cause_is_escaped(monkeypatch, oidc):
+    _, state, _, nv = _begin(oidc)
+    def boom(*a, **k):
+        raise oidc.LoginStateError("<script>x</script>", None)
+    monkeypatch.setattr(oidc, "complete_login", boom)
+    out = _callback(monkeypatch, oidc, state, nv)
+    body = out["body"].decode()
+    assert out["status"] == 400
+    assert "<script>" not in body and "&lt;script&gt;" in body
