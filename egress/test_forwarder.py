@@ -27,6 +27,7 @@ from forwarder import (  # noqa: E402
     load_forward_config,
     run_once,
 )
+from kinds import Declarations, EpisodeDecl  # noqa: E402
 
 
 def _write_config(tmp_path, entries) -> str:
@@ -492,26 +493,26 @@ class _FakeStore:
             raise RuntimeError("store unavailable")
         return self._rows.get((route, event_id))
 
-    def upsert_held(self, *, route, event_id, topic, partition, offset):
+    def upsert_held(self, *, route, event_id, topic, partition, offset, stamps=None):
         self.upsert_calls += 1
         if self.upsert_failures > 0:
             self.upsert_failures -= 1
             raise RuntimeError("store unavailable")
-        self._rows[(route, event_id)] = {"outcome": "held", "case_id": None}
+        self._rows[(route, event_id)] = {"outcome": "held", "case_id": None, **(stamps or {})}
 
-    def upsert_failed(self, *, route, event_id, topic, partition, offset):
+    def upsert_failed(self, *, route, event_id, topic, partition, offset, stamps=None):
         self.failed_calls += 1
         if self.failed_failures > 0:
             self.failed_failures -= 1
             raise RuntimeError("store unavailable")
-        self._rows[(route, event_id)] = {"outcome": "failed", "case_id": None}
+        self._rows[(route, event_id)] = {"outcome": "failed", "case_id": None, **(stamps or {})}
 
-    def upsert_delivered(self, *, route, event_id, http_status, case_id, topic, partition, offset):
+    def upsert_delivered(self, *, route, event_id, http_status, case_id, topic, partition, offset, stamps=None):
         self.upsert_calls += 1
         if self.upsert_failures > 0:
             self.upsert_failures -= 1
             raise RuntimeError("store unavailable")
-        self._rows[(route, event_id)] = {"outcome": "delivered", "case_id": case_id}
+        self._rows[(route, event_id)] = {"outcome": "delivered", "case_id": case_id, **(stamps or {})}
 
 
 def test_dedupe_second_send_is_duplicate_with_stored_case_id():
@@ -545,6 +546,65 @@ def test_dedupe_second_send_is_duplicate_with_stored_case_id():
     assert counts.get("duplicate") == 1
     assert ("duplicate", "c-1") in logged
     assert len(store._rows) == 1
+
+
+# --- episode stamps (episode_id / asset_id / component / fault_code) -------
+
+_STAMP_DECL = Declarations(
+    key="/event_id", label="/label",
+    episode=EpisodeDecl(asset="/subject", component="/what/part", fault_code="/what/code"),
+    episode_id="/episode_id",
+)
+
+
+def _deliver_one(route, record, declarations, store):
+    consumer = _FakeConsumer([_FakeMessage("sink-a", b"k1", json.dumps(record).encode())])
+    counts: dict[str, int] = {}
+    run_once(
+        consumer, routes_by_topic={"sink-a": [route]}, decode=_decode,
+        post=lambda url, data, headers: (200, json.dumps({"case_id": "case-1"}).encode()),
+        sleep=lambda d: pytest.fail("no retry expected"),
+        poll_timeout=1.0, counts=counts, store=store, log_outcome=lambda *a, **k: None,
+        declarations=declarations,
+    )
+    return counts
+
+
+def test_delivered_fault_event_stamps_all_four_columns():
+    route = _route(dedupe_field="event_id")
+    store = _FakeStore()
+    record = {"event_id": "ev-1", "episode_id": "ep-1", "subject": "asset-a",
+              "what": {"part": "comp-1", "code": "F-1"}}
+    counts = _deliver_one(route, record, {"KindA": _STAMP_DECL}, store)
+    assert counts.get("delivered") == 1
+    row = store._rows[("to-a", "ev-1")]
+    assert row["case_id"] == "case-1"
+    assert (row["episode_id"], row["asset_id"], row["component"], row["fault_code"]) == (
+        "ep-1", "asset-a", "comp-1", "F-1")
+
+
+def test_kind_without_episode_block_stamps_nulls_and_still_delivers():
+    route = _route(dedupe_field="event_id")
+    store = _FakeStore()
+    record = {"event_id": "ev-2", "subject": "asset-a"}
+    bare = Declarations(key="/event_id", label="/label")
+    for decls in ({"KindA": bare}, {}, None):
+        store._rows.clear()
+        counts = _deliver_one(route, record, decls, store)
+        assert counts.get("delivered") == 1
+        row = store._rows[("to-a", "ev-2")]
+        assert row["outcome"] == "delivered"
+        assert (row["episode_id"], row["asset_id"], row["component"], row["fault_code"]) == (None,) * 4
+
+
+def test_unresolved_pointer_stamps_null_for_that_column_only():
+    route = _route(dedupe_field="event_id")
+    store = _FakeStore()
+    record = {"event_id": "ev-3", "subject": "asset-a", "what": {"part": "comp-1"}}
+    _deliver_one(route, record, {"KindA": _STAMP_DECL}, store)
+    row = store._rows[("to-a", "ev-3")]
+    assert (row["episode_id"], row["asset_id"], row["component"], row["fault_code"]) == (
+        None, "asset-a", "comp-1", None)
 
 
 def test_held_route_zero_posts_held_row_committed():
@@ -800,7 +860,9 @@ def test_case_id_differing_from_event_id_is_counted_and_flagged_but_delivered():
     assert kw["case_id_mismatch"] is True
     assert counts["case_id_mismatch"] == 1
     assert counts["delivered"] == 1
-    assert store._rows[("to-a", "E1")] == {"outcome": "delivered", "case_id": "X"}
+    assert store._rows[("to-a", "E1")] == {
+        "outcome": "delivered", "case_id": "X",
+        "episode_id": None, "asset_id": None, "component": None, "fault_code": None}
 
 
 def test_case_id_top_level_fallback():
@@ -1079,7 +1141,7 @@ class _ResendRig:
             def lookup(self, route, event_id):
                 return rig.row
 
-            def record_resend(self, route, event_id, http_status, case_id):
+            def record_resend(self, route, event_id, http_status, case_id, stamps=None):
                 rig.events.append(("record_resend",))
                 rig.records.append((route, event_id, http_status, case_id))
                 if rig.record_exc:
@@ -1257,7 +1319,7 @@ def test_record_resend_is_an_update_never_an_insert():
     assert sql.lstrip().upper().startswith("UPDATE")
     assert "INSERT" not in sql.upper()
     assert "first_recorded_at" not in sql and "kafka_offset" not in sql
-    assert args == ("to-a", "ev-1", 200, "c-9")
+    assert args == ("to-a", "ev-1", 200, "c-9", None, None, None, None)
 
 
 def test_record_resend_zero_rows_raises():
@@ -1325,3 +1387,21 @@ def test_config_accepts_case_field(tmp_path):
     ])
     [route] = load_forward_config(path)
     assert route.case_field == "episode_id"
+
+
+def test_upsert_never_overwrites_a_stored_stamp_with_null():
+    conn = _StubConn("INSERT 0 1")
+    store = _store_with(conn)
+    store.upsert_delivered(
+        route="to-a", event_id="ev-1", http_status=200, case_id="case-1", topic="t", partition=0, offset=1,
+        stamps={"episode_id": "ep-1", "asset_id": None, "component": None, "fault_code": None})
+    [(sql, args)] = conn.calls
+    for col in ("episode_id", "asset_id", "component", "fault_code"):
+        assert f'"{col}" = COALESCE(excluded."{col}"' in sql
+    assert args[-4:] == ("ep-1", None, None, None)
+
+    conn2 = _StubConn("UPDATE 1")
+    _store_with(conn2).record_resend("to-a", "ev-1", 200, "case-1", stamps={"asset_id": "asset-a"})
+    [(sql2, args2)] = conn2.calls
+    assert 'COALESCE($6, "asset_id")' in sql2
+    assert args2[-4:] == (None, "asset-a", None, None)

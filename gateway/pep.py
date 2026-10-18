@@ -2831,6 +2831,9 @@ class Pep(BaseHTTPRequestHandler):
             self._deny("no egress pane at this tier", subject="", resource=path,
                        status=404, marker="GATEWAY REFUSED (PRE-PDP)")
             return
+        if path == "/egress/cases":
+            self._handle_egress_cases(parsed)
+            return
         if path != "/egress/decisions":
             self._deny("unknown path", subject="", resource=path, status=404)
             return
@@ -2929,6 +2932,66 @@ class Pep(BaseHTTPRequestHandler):
                         allowed_nations=decision["allowed_nations"],
                         shown=len(view["records"]), withheld=view["withheld"])
         self._send(200, json.dumps(view).encode(),
+                   [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
+
+    def _handle_egress_cases(self, parsed) -> None:
+        """Serve /egress/cases?asset_id=: the cortex cases our forwarder
+        opened for one asset. Same gate as /egress/decisions: a resolved
+        principal, a Topaz answer, and an entitled subject. The rows are ids
+        and fault codes the forwarder itself recorded, not releasability-
+        labelled records, so there is nothing for the nation filter to act
+        on; the entitlement check is the whole rule. Only a validated
+        asset_id is forwarded."""
+        path = parsed.path
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        asset_id = (params.get("asset_id") or [""])[0]
+        if not asset_id or not _ASSET_ID_RE.match(asset_id):
+            self._deny("missing or invalid asset_id", subject="", resource=path,
+                       status=400, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError as exc:
+            self._deny(str(exc), subject="", resource=f"egress:cases:{asset_id}", status=401)
+            return
+
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject,
+                       resource=f"egress:cases:{asset_id}", status=503)
+            return
+
+        if not decision["allow"]:
+            cause = ("subject not in the entitlements corpus"
+                     if not decision["subject_known"]
+                     else "subject holds no nation entitlements")
+            self._deny(cause, subject=subject, resource=f"egress:cases:{asset_id}")
+            return
+
+        url = f"{EGRESS_PANE}/cases?" + urllib.parse.urlencode({"asset_id": asset_id})
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                status = resp.status
+                raw = resp.read()
+            json.loads(raw)
+        except Exception as exc:  # noqa: BLE001 -- a transport or shape fault, not a deny
+            log.error("egress pane cases upstream error user=%s asset=%s: %s",
+                      subject, asset_id, exc)
+            self._send(502, json.dumps({"error": "egress pane unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+        if status != 200:
+            self._send(502, json.dumps({"error": "egress pane unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+        record_decision(decision_id=new_decision_id(), outcome="allow",
+                        subject=subject, resource=f"egress:cases:{asset_id}",
+                        policy_version=decision["policy_version"],
+                        corpus_version=decision["corpus_version"],
+                        allowed_nations=decision["allowed_nations"])
+        self._send(200, raw,
                    [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
 
     def _picture_reply(self, status: int, detail: str,

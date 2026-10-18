@@ -65,6 +65,8 @@ import os
 import secrets
 import signal as signal_module
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -116,6 +118,9 @@ def canonical_sha256(obj: Any) -> str:
 
 # --- configuration --------------------------------------------------------
 
+CASE_ID_PLACEHOLDER = "{case_id}"
+
+
 class IntakeConfigError(ValueError):
     """The intake config file failed to load. The message names the
     entry — the same convention `AssemblerConfigError`/`RouteError` use."""
@@ -123,10 +128,23 @@ class IntakeConfigError(ValueError):
 
 @dataclass(frozen=True)
 class PollSpec:
-    url: str
+    """Exactly one of `url` (one list URL per poll) or `case_url_template`
+    (one GET per open case per poll) is set; config validation enforces it.
+
+    Per-case mode: `case_url_template` contains `{case_id}`;
+    `cases_from_route` names the egress route whose delivered ledger rows
+    are the open cases; cases first recorded longer than `case_window_s`
+    ago are not polled; at most `max_cases_per_tick` are fetched per tick.
+    In that mode each 200 body IS one artifact (`items_pointer` "" )."""
+
+    url: str | None
     interval_s: float
     items_pointer: str  # "" = the response body itself is the list
     auth: ClientCredentials | None = None
+    case_url_template: str | None = None
+    cases_from_route: str | None = None
+    case_window_s: float = 86400.0
+    max_cases_per_tick: int = 50
 
 
 @dataclass(frozen=True)
@@ -228,8 +246,38 @@ def load_intake_config(
         if not isinstance(poll_raw, Mapping):
             raise IntakeConfigError(f"{label}: 'poll' must be an object")
         url = poll_raw.get("url")
-        if not isinstance(url, str) or not url:
-            raise IntakeConfigError(f"{label}: 'poll.url' must be a non-empty string")
+        case_url_template = poll_raw.get("case_url_template")
+        if url is not None and case_url_template is not None:
+            raise IntakeConfigError(
+                f"{label}: set exactly one of 'poll.url' and 'poll.case_url_template', not both")
+        if url is None and case_url_template is None:
+            raise IntakeConfigError(
+                f"{label}: set one of 'poll.url' or 'poll.case_url_template'; neither is set")
+        cases_from_route: str | None = None
+        case_window_s = 86400.0
+        max_cases_per_tick = 50
+        if case_url_template is None:
+            if not isinstance(url, str) or not url:
+                raise IntakeConfigError(f"{label}: 'poll.url' must be a non-empty string")
+        else:
+            if not isinstance(case_url_template, str) or CASE_ID_PLACEHOLDER not in case_url_template:
+                raise IntakeConfigError(
+                    f"{label}: 'poll.case_url_template' must be a string containing "
+                    f"{CASE_ID_PLACEHOLDER}")
+            cases_from_route = poll_raw.get("cases_from_route")
+            if not isinstance(cases_from_route, str) or not cases_from_route:
+                raise IntakeConfigError(
+                    f"{label}: 'poll.cases_from_route' must be a non-empty string "
+                    "when 'poll.case_url_template' is set")
+            case_window_s = poll_raw.get("case_window_s", 86400)
+            if (not isinstance(case_window_s, (int, float)) or isinstance(case_window_s, bool)
+                    or case_window_s <= 0):
+                raise IntakeConfigError(f"{label}: 'poll.case_window_s' must be a positive number")
+            case_window_s = float(case_window_s)
+            max_cases_per_tick = poll_raw.get("max_cases_per_tick", 50)
+            if (not isinstance(max_cases_per_tick, int) or isinstance(max_cases_per_tick, bool)
+                    or max_cases_per_tick <= 0):
+                raise IntakeConfigError(f"{label}: 'poll.max_cases_per_tick' must be an int > 0")
         interval_s = poll_raw.get("interval_s")
         if (not isinstance(interval_s, (int, float)) or isinstance(interval_s, bool)
                 or interval_s <= 0):
@@ -289,7 +337,9 @@ def load_intake_config(
         entries.append(IntakeEntry(
             name=name, source_destination=source_destination, kind=kind,
             poll=PollSpec(url=url, interval_s=float(interval_s), items_pointer=items_pointer,
-                          auth=poll_auth),
+                          auth=poll_auth, case_url_template=case_url_template,
+                          cases_from_route=cases_from_route, case_window_s=case_window_s,
+                          max_cases_per_tick=max_cases_per_tick),
             answers=AnswersSpec(topic=answers_topic, kind=answers_kind,
                                  ref_pointer=ref_pointer, id_pointer=id_pointer,
                                  provisional_timeout_s=provisional_timeout_s),
@@ -620,6 +670,7 @@ async def run_poll(
     counters: dict[str, int],
     now: datetime,
     startup_versions: Mapping[str, str] | None = None,
+    fetch_case: Callable[[str, str | None], tuple[int, Any]] | None = None,
 ) -> None:
     """One poll of `entry.poll.url`, decided and stored artifact by
     artifact. Entirely injected (`fetch`/`store`/`gate_for`/`produce`) —
@@ -633,7 +684,17 @@ async def run_poll(
     poll tries again.
 
     `startup_versions` passes straight through to `decide_artifact` — see
-    its docstring."""
+    its docstring.
+
+    An entry with `poll.case_url_template` polls per case instead: see
+    `_run_case_poll`. `fetch_case` is that mode's injected fetch."""
+    if entry.poll.case_url_template is not None:
+        await _run_case_poll(
+            entry, decl, validator, fetch_case=fetch_case, store=store, answered=answered,
+            gate_for=gate_for, produce=produce, counters=counters, now=now,
+            startup_versions=startup_versions)
+        return
+
     token: str | None = None
     if entry.poll.auth is not None:
         token = entry.poll.auth.token()
@@ -660,99 +721,235 @@ async def run_poll(
         return
 
     for artifact in items:
-        counters["polled"] = counters.get("polled", 0) + 1
-        if not isinstance(artifact, Mapping):
-            log.warning("intake entry=%s: artifact is not a JSON object, skipped", entry.name)
-            continue
+        await _process_artifact(
+            entry, decl, validator, artifact, store=store, answered=answered,
+            gate_for=gate_for, produce=produce, counters=counters, now=now,
+            startup_versions=startup_versions)
 
-        raw_key = pointer.get(artifact, decl.key, default=None)
-        existing: ExistingRecord | None = None
-        if isinstance(raw_key, str) and raw_key:
-            existing = await store.get_existing(entry.kind, raw_key)
 
-        body_sha256 = canonical_sha256(artifact)
-        same_sha = existing is not None and existing.body_sha256 == body_sha256
+async def _process_artifact(
+    entry: IntakeEntry,
+    decl: Declarations,
+    validator: Callable[[Mapping[str, Any]], str | None],
+    artifact: Any,
+    *,
+    store: "IntakeStore",
+    answered: AnsweredMap,
+    gate_for: Callable[[str], EgressGate],
+    produce: Callable[[str, bytes, bytes], None],
+    counters: dict[str, int],
+    now: datetime,
+    startup_versions: Mapping[str, str] | None = None,
+) -> None:
+    """Decide, deliver and store one fetched artifact. The one path both
+    poll modes feed: a list item and a per-case body are decided and stored
+    identically."""
+    counters["polled"] = counters.get("polled", 0) + 1
+    if not isinstance(artifact, Mapping):
+        log.warning("intake entry=%s: artifact is not a JSON object, skipped", entry.name)
+        return
 
-        # A held provisional refusal is re-decided every poll regardless of
-        # hash (module docstring, step 2) — everything else (no row, a
-        # changed body, or a same-sha row that is NOT a provisional
-        # refusal) goes through `decide_artifact` exactly as before.
-        resolving_provisional = same_sha and existing is not None and is_provisional(existing.decision)
+    raw_key = pointer.get(artifact, decl.key, default=None)
+    existing: ExistingRecord | None = None
+    if isinstance(raw_key, str) and raw_key:
+        existing = await store.get_existing(entry.kind, raw_key)
 
-        if same_sha and not resolving_provisional:
-            counters["skipped_unchanged"] = counters.get("skipped_unchanged", 0) + 1
-            continue
+    body_sha256 = canonical_sha256(artifact)
+    same_sha = existing is not None and existing.body_sha256 == body_sha256
 
-        decide_provisional_since: datetime | None = None
-        if resolving_provisional:
-            assert existing is not None
-            raw_since = existing.decision.get("provisional_since")
-            if isinstance(raw_since, str) and raw_since:
-                try:
-                    decide_provisional_since = datetime.fromisoformat(raw_since)
-                except ValueError:
-                    decide_provisional_since = existing.decided_at
-            else:
-                decide_provisional_since = existing.decided_at
+    # A held provisional refusal is re-decided every poll regardless of
+    # hash (module docstring, step 2) — everything else (no row, a
+    # changed body, or a same-sha row that is NOT a provisional
+    # refusal) goes through `decide_artifact` exactly as before.
+    resolving_provisional = same_sha and existing is not None and is_provisional(existing.decision)
 
-        try:
-            outcome = decide_artifact(
-                entry, decl, validator, artifact,
-                existing_sha256=None, answered=answered, gate_for=gate_for,
-                startup_versions=startup_versions,
-                now=now, provisional_since=decide_provisional_since,
-            )
-        except AuthzUnavailable as exc:
-            log.warning("intake entry=%s: authz unavailable, not decided: %s", entry.name, exc)
-            counters["authz_unavailable"] = counters.get("authz_unavailable", 0) + 1
-            continue
+    if same_sha and not resolving_provisional:
+        counters["skipped_unchanged"] = counters.get("skipped_unchanged", 0) + 1
+        return
 
-        if outcome.status == SKIPPED_UNCHANGED:
-            counters["skipped_unchanged"] = counters.get("skipped_unchanged", 0) + 1
-            continue
-        if outcome.status == DEFERRED:
-            counters["deferred"] = counters.get("deferred", 0) + 1
-            continue
-
-        decision = outcome.decision
-        assert decision is not None  # DECIDED always carries one
-
-        if resolving_provisional and is_provisional(decision.as_json()):
-            # Still unknown, still within its timeout: held, not re-logged,
-            # not re-stored — the stored row already says `provisional`.
-            counters["held_provisional"] = counters.get("held_provisional", 0) + 1
-            continue
-
-        log.info("INTAKE_DECISION %s", json.dumps(decision.as_json(), sort_keys=True))
-        counters["decided"] = counters.get("decided", 0) + 1
-
-        if decision.allowed:
-            body_bytes = json.dumps(artifact, separators=(",", ":")).encode("utf-8")
+    decide_provisional_since: datetime | None = None
+    if resolving_provisional:
+        assert existing is not None
+        raw_since = existing.decision.get("provisional_since")
+        if isinstance(raw_since, str) and raw_since:
             try:
-                # produces: @config:OPENDDIL_EGRESS_INTAKE_CONFIG.onward_topic
-                produce(entry.onward_topic, body_bytes, outcome.key.encode("utf-8"))
-            except delivery.DeliveryFailed as exc:
-                log.warning(
-                    "intake entry=%s: delivery failed, not stored: %s", entry.name, exc)
-                counters["delivery_failed"] = counters.get("delivery_failed", 0) + 1
-                continue
-            counters["admitted"] = counters.get("admitted", 0) + 1
+                decide_provisional_since = datetime.fromisoformat(raw_since)
+            except ValueError:
+                decide_provisional_since = existing.decided_at
         else:
-            prefix = "provisional" if decision.provisional else "refused"
-            counter_key = f"{prefix}:{decision.reason}"
-            counters[counter_key] = counters.get(counter_key, 0) + 1
+            decide_provisional_since = existing.decided_at
 
-        if resolving_provisional:
-            counters["resolved_provisional"] = counters.get("resolved_provisional", 0) + 1
-
-        await store.upsert(
-            kind=entry.kind, key=outcome.key,
-            originator_nation=outcome.label.originator_nation if outcome.label else None,
-            releasable_to=list(outcome.label.releasable_to) if outcome.label else [],
-            owning_tier=outcome.owning_tier or "",
-            body=dict(artifact), body_sha256=outcome.body_sha256 or "",
-            decision=decision.as_json(), decided_at=now,
+    try:
+        outcome = decide_artifact(
+            entry, decl, validator, artifact,
+            existing_sha256=None, answered=answered, gate_for=gate_for,
+            startup_versions=startup_versions,
+            now=now, provisional_since=decide_provisional_since,
         )
+    except AuthzUnavailable as exc:
+        log.warning("intake entry=%s: authz unavailable, not decided: %s", entry.name, exc)
+        counters["authz_unavailable"] = counters.get("authz_unavailable", 0) + 1
+        return
+
+    if outcome.status == SKIPPED_UNCHANGED:
+        counters["skipped_unchanged"] = counters.get("skipped_unchanged", 0) + 1
+        return
+    if outcome.status == DEFERRED:
+        counters["deferred"] = counters.get("deferred", 0) + 1
+        return
+
+    decision = outcome.decision
+    assert decision is not None  # DECIDED always carries one
+
+    if resolving_provisional and is_provisional(decision.as_json()):
+        # Still unknown, still within its timeout: held, not re-logged,
+        # not re-stored — the stored row already says `provisional`.
+        counters["held_provisional"] = counters.get("held_provisional", 0) + 1
+        return
+
+    log.info("INTAKE_DECISION %s", json.dumps(decision.as_json(), sort_keys=True))
+    counters["decided"] = counters.get("decided", 0) + 1
+
+    if decision.allowed:
+        body_bytes = json.dumps(artifact, separators=(",", ":")).encode("utf-8")
+        try:
+            # produces: @config:OPENDDIL_EGRESS_INTAKE_CONFIG.onward_topic
+            produce(entry.onward_topic, body_bytes, outcome.key.encode("utf-8"))
+        except delivery.DeliveryFailed as exc:
+            log.warning(
+                "intake entry=%s: delivery failed, not stored: %s", entry.name, exc)
+            counters["delivery_failed"] = counters.get("delivery_failed", 0) + 1
+            return
+        counters["admitted"] = counters.get("admitted", 0) + 1
+    else:
+        prefix = "provisional" if decision.provisional else "refused"
+        counter_key = f"{prefix}:{decision.reason}"
+        counters[counter_key] = counters.get(counter_key, 0) + 1
+
+    if resolving_provisional:
+        counters["resolved_provisional"] = counters.get("resolved_provisional", 0) + 1
+
+    await store.upsert(
+        kind=entry.kind, key=outcome.key,
+        originator_nation=outcome.label.originator_nation if outcome.label else None,
+        releasable_to=list(outcome.label.releasable_to) if outcome.label else [],
+        owning_tier=outcome.owning_tier or "",
+        body=dict(artifact), body_sha256=outcome.body_sha256 or "",
+        decision=decision.as_json(), decided_at=now,
+    )
+
+
+def _case_is_final(decisions: Any) -> bool:
+    """A case is settled when some stored intake row answering it is final:
+    admitted, or refused non-provisionally (the `is_provisional` notion; a
+    legacy row without the key counts as provisional there, so it is not
+    final here either)."""
+    for decision in decisions or ():
+        if not isinstance(decision, Mapping):
+            continue
+        if decision.get("allowed") is True or not is_provisional(decision):
+            return True
+    return False
+
+
+# Per-entry position in the oldest-first open-case list, so successive ticks
+# walk the whole list when it is longer than `max_cases_per_tick`.
+_CASE_CURSORS: dict[str, int] = {}
+
+
+async def _run_case_poll(
+    entry: IntakeEntry,
+    decl: Declarations,
+    validator: Callable[[Mapping[str, Any]], str | None],
+    *,
+    fetch_case: Callable[[str, str | None], tuple[int, Any]] | None,
+    store: "IntakeStore",
+    answered: AnsweredMap,
+    gate_for: Callable[[str], EgressGate],
+    produce: Callable[[str, bytes, bytes], None],
+    counters: dict[str, int],
+    now: datetime,
+    startup_versions: Mapping[str, str] | None = None,
+) -> None:
+    """One per-case tick: GET `case_url_template` once per open case, under
+    the same token and `no_credential` skip as the list mode.
+
+    Open = a delivered ledger row of `cases_from_route`, with a case id,
+    first recorded inside `case_window_s`, that has no FINAL intake row for
+    this entry's kind answering it. At most `max_cases_per_tick`, taken
+    round-robin from the oldest-first list (oldest first on the first tick);
+    the rest are counted in `cases_deferred`. A 404 means no action
+    yet (`case_no_action`, quiet); a 200 body is one artifact, decided and
+    stored by `_process_artifact`; any other status or a network error is
+    `case_fetch_failed`, with one WARNING for the whole tick."""
+    fetch_case = fetch_case or http_fetch_status
+    template = entry.poll.case_url_template
+    assert template is not None and entry.poll.cases_from_route is not None
+
+    token: str | None = None
+    if entry.poll.auth is not None:
+        token = entry.poll.auth.token()
+        if token is None:
+            counters["no_credential"] = counters.get("no_credential", 0) + 1
+            log.warning(
+                "intake poll skipped entry=%s url=%s: no_credential", entry.name, template)
+            return
+
+    try:
+        cases = await store.open_cases(
+            entry.poll.cases_from_route, entry.kind,
+            since=now - timedelta(seconds=entry.poll.case_window_s))
+    except Exception as exc:  # noqa: BLE001 — a store failure is a WARNING, never fatal
+        log.warning("intake case read failed entry=%s: %s", entry.name, exc)
+        return
+
+    open_cases = [c for c in cases if not _case_is_final(c.decisions)]
+    open_cases.sort(key=lambda c: c.first_recorded_at)
+    # Round-robin over the open set: a cap that always took the oldest would
+    # starve every newer case while more than the cap stayed open.
+    start = _CASE_CURSORS.get(entry.name, 0) % len(open_cases) if open_cases else 0
+    rotated = open_cases[start:] + open_cases[:start]
+    chosen = rotated[: entry.poll.max_cases_per_tick]
+    _CASE_CURSORS[entry.name] = start + len(chosen)
+    deferred = len(open_cases) - len(chosen)
+    if deferred:
+        counters["cases_deferred"] = counters.get("cases_deferred", 0) + deferred
+
+    no_action = 0
+    failures: list[str] = []
+    for case in chosen:
+        url = template.replace(CASE_ID_PLACEHOLDER, urllib.parse.quote(case.case_id, safe=""))
+        try:
+            status, payload = fetch_case(url, token)
+        except Exception as exc:  # noqa: BLE001
+            counters["case_fetch_failed"] = counters.get("case_fetch_failed", 0) + 1
+            failures.append(str(exc))
+            continue
+        if status == 404:
+            counters["case_no_action"] = counters.get("case_no_action", 0) + 1
+            no_action += 1
+            continue
+        if status != 200:
+            counters["case_fetch_failed"] = counters.get("case_fetch_failed", 0) + 1
+            failures.append(f"HTTP {status}")
+            continue
+        artifact = pointer.get(payload, entry.poll.items_pointer, default=None)
+        if not isinstance(artifact, Mapping):
+            counters["case_fetch_failed"] = counters.get("case_fetch_failed", 0) + 1
+            failures.append(f"items_pointer {entry.poll.items_pointer!r} did not resolve to an object")
+            continue
+        await _process_artifact(
+            entry, decl, validator, artifact, store=store, answered=answered,
+            gate_for=gate_for, produce=produce, counters=counters, now=now,
+            startup_versions=startup_versions)
+
+    if failures:
+        log.warning(
+            "intake case poll entry=%s: %d of %d case fetches failed (first: %s)",
+            entry.name, len(failures), len(chosen), failures[0])
+    log.info(
+        "intake case poll entry=%s open=%d fetched=%d no_action=%d failed=%d deferred=%d",
+        entry.name, len(open_cases), len(chosen), no_action, len(failures), deferred)
 
 
 def log_counters(name: str, counters: Mapping[str, int]) -> None:
@@ -808,6 +1005,21 @@ def http_fetch(url: str, token: str | None = None, *, timeout: float = 10.0) -> 
         return json.loads(resp.read().decode("utf-8"))
 
 
+def http_fetch_status(url: str, token: str | None = None, *, timeout: float = 10.0) -> tuple[int, Any]:
+    """GET `url` and return `(status, parsed JSON body)`. Unlike
+    `http_fetch`, an HTTP error status is RETURNED (with a `None` body), not
+    raised, so a caller can tell a 404 ("nothing yet") from an outage. A
+    network error still raises."""
+    req = urllib.request.Request(url, method="GET")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return exc.code, None
+
+
 def _make_produce(producer) -> Callable[[str, bytes, bytes], None]:
     def produce(topic: str, value: bytes, key: bytes) -> None:
         delivery.send_one(producer, topic, value, key)
@@ -823,6 +1035,17 @@ class ExistingRecord:
     body_sha256: str
     decision: dict
     decided_at: datetime
+
+
+@dataclass(frozen=True)
+class CaseRow:
+    """One delivered ledger row that opened a case, with the decisions of
+    every `intake_records` row of the entry's kind that answers it.
+    `decisions` is what `_case_is_final` reads."""
+
+    case_id: str
+    first_recorded_at: datetime
+    decisions: tuple[dict, ...] = ()
 
 
 class IntakeStore:
@@ -852,6 +1075,43 @@ class IntakeStore:
             decision = json.loads(decision)
         return ExistingRecord(
             body_sha256=row["body_sha256"], decision=decision, decided_at=row["decided_at"])
+
+    async def open_cases(self, route: str, kind: str, *, since: datetime) -> list[CaseRow]:
+        """Delivered ledger rows of `route` with a case id, first recorded at
+        or after `since`, each with the stored decisions of `kind` intake
+        rows that answer it. An intake row stores the ACTION's key as its
+        key; the link to the case is `decision.answered_id`, the value the
+        action's `answers.ref_pointer` read, so that is matched against the
+        ledger row's case_id, episode_id and event_id."""
+        import asyncpg  # noqa: PLC0415
+        conn = await asyncpg.connect(self._dsn)
+        try:
+            rows = await conn.fetch(
+                """
+                SELECT d."case_id", d."first_recorded_at",
+                       COALESCE(
+                           (SELECT jsonb_agg(r."decision") FROM intake_records r
+                            WHERE r."kind" = $2
+                              AND r."decision"->>'answered_id' IN (d."case_id", d."episode_id", d."event_id")),
+                           '[]'::jsonb) AS decisions
+                FROM "egress_delivered_events" d
+                WHERE d."route" = $1 AND d."outcome" = 'delivered'
+                  AND d."case_id" IS NOT NULL AND d."first_recorded_at" >= $3
+                ORDER BY d."first_recorded_at" ASC
+                """,
+                route, kind, since,
+            )
+        finally:
+            await conn.close()
+        out = []
+        for row in rows:
+            decisions = row["decisions"]
+            if isinstance(decisions, str):
+                decisions = json.loads(decisions)
+            out.append(CaseRow(
+                case_id=row["case_id"], first_recorded_at=row["first_recorded_at"],
+                decisions=tuple(decisions or ())))
+        return out
 
     async def upsert(
         self, *, kind: str, key: str, originator_nation: str | None,
@@ -1060,7 +1320,11 @@ async def _main_async() -> int:
         wanted_topics = sorted(
             {e.answers.topic for e in entries} | {e.onward_topic for e in entries})
         require_topics(admin, wanted_topics)
-        await require_tables(store_dsn, ["intake_records"])
+        await require_tables(
+            store_dsn,
+            ["intake_records"]
+            + (["egress_delivered_events"]
+               if any(e.poll.case_url_template for e in entries) else []))
 
     # Registry versions, loaded unconditionally before any entry starts
     # polling — see gate.py's `load_registry_versions`. Probed against the

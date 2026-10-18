@@ -254,3 +254,35 @@ def test_invalid_kind_is_denied_before_the_pane_is_asked(pep_url, bad_kind):
     assert code == 400
     assert body["cause"] == "invalid kind"
     assert state["pane_calls"] == 0
+
+
+# --- /egress/cases: same gate as /egress/decisions ---------------------------
+
+CQ = "/egress/cases?asset_id=asset-a"
+
+
+def test_cases_entitled_viewer_reaches_the_pane_with_only_asset_id(pep_url):
+    code, _, headers = _get(pep_url + CQ + "&where=1%3D1", "op.atl")
+    assert code == 200
+    assert state["pane_query"] == "/cases?asset_id=asset-a"
+    assert headers.get("Cache-Control") == "no-store"
+
+
+def test_cases_no_subject_is_401_unknown_is_403_pdp_down_is_503(pep_url):
+    for subject, want in ((None, 401), ("stranger", 403), ("pdp-down", 503)):
+        code, _, _ = _get(pep_url + CQ, subject)
+        assert code == want
+    assert state["pane_calls"] == 0
+
+
+@pytest.mark.parametrize("q", ["", "?asset_id=", "?asset_id=has%20space"])
+def test_cases_bad_asset_id_is_400_before_the_pane_is_asked(pep_url, q):
+    code, _, _ = _get(pep_url + "/egress/cases" + q, "op.atl")
+    assert code == 400
+    assert state["pane_calls"] == 0
+
+
+def test_cases_no_pane_at_this_tier_is_404(pep_factory):
+    start, _ = pep_factory
+    code, _, _ = _get(start("") + CQ, "op.atl")
+    assert code == 404

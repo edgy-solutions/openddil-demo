@@ -286,3 +286,91 @@ def test_gate_refusal_of_an_intake_admitted_row_is_attributed_to_gate(monkeypatc
     assert rec["allowed"] is False
     assert rec["refused_by"] == "gate"
     assert rec["provisional"] is False
+
+
+# --- GET /cases?asset_id= ---------------------------------------------------
+
+import datetime  # noqa: E402
+import json  # noqa: E402
+import threading  # noqa: E402
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+from http.server import ThreadingHTTPServer  # noqa: E402
+
+
+class _ConnStub:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+        self.closed = False
+
+    async def fetch(self, sql, *args):
+        self.calls.append((sql, args))
+        return self.rows
+
+    async def close(self):
+        self.closed = True
+
+
+def _serve(monkeypatch, rows):
+    conn = _ConnStub(rows)
+
+    async def fake_connect(dsn):
+        return conn
+
+    monkeypatch.setattr(pane_api.asyncpg, "connect", fake_connect)
+    monkeypatch.setattr(pane_api, "store_dsn_from_env", lambda: "postgres://unused")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), pane_api.PaneApi)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return conn, server
+
+
+def _get(server, path):
+    url = f"http://127.0.0.1:{server.server_address[1]}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+def test_cases_query_parameters_and_shape(monkeypatch):
+    row = {
+        "route": "route-x", "case_id": "case-1", "episode_id": "ep-1", "event_id": "ev-1",
+        "asset_id": "asset-a", "component": "comp-1", "fault_code": "F-1",
+        "first_recorded_at": datetime.datetime(2026, 10, 17, 1, 2, 3, tzinfo=datetime.timezone.utc),
+    }
+    conn, server = _serve(monkeypatch, [row])
+    try:
+        status, body = _get(server, "/cases?asset_id=asset-a")
+    finally:
+        server.shutdown()
+    assert status == 200
+    assert body == {"cases": [{
+        "route": "route-x", "case_id": "case-1", "episode_id": "ep-1", "event_id": "ev-1",
+        "asset_id": "asset-a", "component": "comp-1", "fault_code": "F-1",
+        "delivered_at": "2026-10-17T01:02:03+00:00",
+    }]}
+    [(sql, args)] = conn.calls
+    assert args == ("asset-a", 50)
+    assert "'delivered'" in sql and '"case_id" IS NOT NULL' in sql and '"asset_id" = $1' in sql
+    assert 'ORDER BY "first_recorded_at" DESC LIMIT $2' in sql
+    assert conn.closed
+
+
+def test_cases_missing_or_empty_asset_id_is_400(monkeypatch):
+    conn, server = _serve(monkeypatch, [])
+    try:
+        assert _get(server, "/cases")[0] == 400
+        assert _get(server, "/cases?asset_id=")[0] == 400
+    finally:
+        server.shutdown()
+    assert conn.calls == []
+
+
+def test_cases_unknown_asset_is_200_with_empty_list(monkeypatch):
+    _, server = _serve(monkeypatch, [])
+    try:
+        assert _get(server, "/cases?asset_id=asset-none") == (200, {"cases": []})
+    finally:
+        server.shutdown()

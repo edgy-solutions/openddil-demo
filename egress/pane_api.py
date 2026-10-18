@@ -190,6 +190,41 @@ async def _fetch_records_by_kind(kind: str) -> list[dict[str, Any]]:
     ]
 
 
+CASES_LIMIT = 50
+
+
+async def _fetch_cases(asset_id: str) -> list[dict[str, Any]]:
+    """The cortex cases our forwarder opened for one asset: delivered ledger
+    rows that carry a case_id, newest first, at most CASES_LIMIT. The four
+    episode columns are NULL on rows recorded before they existed, so such
+    a row never matches an asset and is simply absent."""
+    conn = await asyncpg.connect(store_dsn_from_env())
+    try:
+        rows = await conn.fetch(
+            'SELECT "route", "case_id", "episode_id", "event_id", "asset_id", '
+            '"component", "fault_code", "first_recorded_at" '
+            'FROM "egress_delivered_events" '
+            "WHERE \"outcome\" = 'delivered' AND \"case_id\" IS NOT NULL "
+            'AND "asset_id" = $1 ORDER BY "first_recorded_at" DESC LIMIT $2',
+            asset_id, CASES_LIMIT,
+        )
+    finally:
+        await conn.close()
+    return [
+        {
+            "route": row["route"],
+            "case_id": row["case_id"],
+            "episode_id": row["episode_id"],
+            "event_id": row["event_id"],
+            "asset_id": row["asset_id"],
+            "component": row["component"],
+            "fault_code": row["fault_code"],
+            "delivered_at": row["first_recorded_at"].isoformat(),
+        }
+        for row in rows
+    ]
+
+
 def build_decisions(destination: str, kind: str | None = None) -> dict[str, Any]:
     """One destination's whole answer, decided record by record through the
     real gate. Raises `AuthzUnavailable` when the PDP could not be asked at
@@ -316,10 +351,27 @@ class PaneApi(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _get_cases(self, parsed) -> None:
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        asset_id = (params.get("asset_id") or [""])[0]
+        if not asset_id:
+            self._send_json(400, {"error": "asset_id required"})
+            return
+        try:
+            cases = asyncio.run(_fetch_cases(asset_id))
+        except Exception as exc:  # noqa: BLE001 — a 500 with a body beats a hang
+            log.exception("unhandled error building /cases asset_id=%s", asset_id)
+            self._send_json(500, {"error": "internal_error", "detail": str(exc)})
+            return
+        self._send_json(200, {"cases": cases})
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/healthz":
             self._send_json(200, {"status": "ok"})
+            return
+        if parsed.path == "/cases":
+            self._get_cases(parsed)
             return
         if parsed.path != "/decisions":
             self._send_json(404, {"error": "unknown path"})
@@ -360,7 +412,8 @@ def main() -> None:
     # single request — a missing one would otherwise surface as a 500 on
     # the first `/decisions` call instead of a named startup refusal.
     asyncio.run(require_tables(
-        store_dsn_from_env(), ["asset_logistics_status", "intake_records"]))
+        store_dsn_from_env(),
+        ["asset_logistics_status", "intake_records", "egress_delivered_events"]))
     log.info("egress pane-api listening on :%s", LISTEN_PORT)
     ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), PaneApi).serve_forever()
 

@@ -89,6 +89,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
+import pointer
 from client_credentials import ClientCredentials, parse_auth
 from startup import require_tables, require_topics, store_dsn_from_env
 
@@ -306,6 +307,37 @@ def _default_post(url: str, data: bytes, headers: Mapping[str, str]) -> tuple[in
         raise OSError(str(exc.reason)) from exc
 
 
+STAMP_COLUMNS = ("episode_id", "asset_id", "component", "fault_code")
+
+
+def episode_stamps(declarations: Any, record: Any) -> dict[str, str | None]:
+    """The four episode columns for one record, read through the kind's
+    declared pointers. A kind with no declarations, no `episode` block, no
+    `episode_id` pointer, or a pointer that does not resolve to a non-empty
+    string gives NULL (None) for that column: never a guess, never a reason
+    to refuse a delivery."""
+    out: dict[str, str | None] = {c: None for c in STAMP_COLUMNS}
+    if declarations is None or not isinstance(record, Mapping):
+        return out
+
+    def read(ptr: str | None) -> str | None:
+        if not ptr:
+            return None
+        try:
+            value = pointer.get(record, ptr, None)
+        except pointer.PointerError:
+            return None
+        return value if isinstance(value, str) and value else None
+
+    out["episode_id"] = read(getattr(declarations, "episode_id", None))
+    episode = getattr(declarations, "episode", None)
+    if episode is not None:
+        out["asset_id"] = read(episode.asset)
+        out["component"] = read(episode.component)
+        out["fault_code"] = read(episode.fault_code)
+    return out
+
+
 class DeliveredStore:
     """Synchronous cover over `egress_delivered_events`, for a process that
     is otherwise plain blocking code (see the module docstring on why
@@ -351,43 +383,54 @@ class DeliveredStore:
 
     def upsert_held(
         self, *, route: str, event_id: str, topic: str | None, partition: int | None, offset: int | None,
+        stamps: Mapping[str, str | None] | None = None,
     ) -> None:
         self._upsert(
             route=route, event_id=event_id, outcome="held", http_status=None, case_id=None,
-            topic=topic, partition=partition, offset=offset,
+            topic=topic, partition=partition, offset=offset, stamps=stamps,
         )
 
     def upsert_failed(
         self, *, route: str, event_id: str, topic: str | None, partition: int | None, offset: int | None,
+        stamps: Mapping[str, str | None] | None = None,
     ) -> None:
         """Record that a record's retries were exhausted AND its `held`
         write failed. A `delivered` row is never downgraded to this (see
         `_upsert`)."""
         self._upsert(
             route=route, event_id=event_id, outcome="failed", http_status=None, case_id=None,
-            topic=topic, partition=partition, offset=offset,
+            topic=topic, partition=partition, offset=offset, stamps=stamps,
         )
 
     def upsert_delivered(
         self, *, route: str, event_id: str, http_status: int, case_id: str | None,
         topic: str | None, partition: int | None, offset: int | None,
+        stamps: Mapping[str, str | None] | None = None,
     ) -> None:
         self._upsert(
             route=route, event_id=event_id, outcome="delivered", http_status=http_status, case_id=case_id,
-            topic=topic, partition=partition, offset=offset,
+            topic=topic, partition=partition, offset=offset, stamps=stamps,
         )
 
-    def record_resend(self, route: str, event_id: str, http_status: int, case_id: str | None) -> None:
+    def record_resend(
+        self, route: str, event_id: str, http_status: int, case_id: str | None,
+        stamps: Mapping[str, str | None] | None = None,
+    ) -> None:
         """An operator re-send reached the destination: update the row this
         side already holds. `first_recorded_at`, topic, partition and
         offset are left as they were. Never an INSERT -- a re-send only
-        re-sends what was recorded -- so no matching row raises."""
+        re-sends what was recorded -- so no matching row raises. A stamp
+        that resolves to NULL never overwrites a stored value."""
+        st = stamps or {}
         async def _exec(conn):
             result = await conn.execute(
                 'UPDATE "egress_delivered_events" SET "outcome" = \'delivered\','
-                ' "http_status" = $3, "case_id" = $4, "recorded_at" = now()'
+                ' "http_status" = $3, "case_id" = $4, "recorded_at" = now(),'
+                ' "episode_id" = COALESCE($5, "episode_id"), "asset_id" = COALESCE($6, "asset_id"),'
+                ' "component" = COALESCE($7, "component"), "fault_code" = COALESCE($8, "fault_code")'
                 ' WHERE "route" = $1 AND "event_id" = $2',
                 route, event_id, http_status, case_id,
+                st.get("episode_id"), st.get("asset_id"), st.get("component"), st.get("fault_code"),
             )
             if str(result).rsplit(" ", 1)[-1] == "0":
                 raise RuntimeError(f"no ledger row for route={route} event_id={event_id}")
@@ -396,7 +439,9 @@ class DeliveredStore:
     def _upsert(
         self, *, route: str, event_id: str, outcome: str, http_status: int | None, case_id: str | None,
         topic: str | None, partition: int | None, offset: int | None,
+        stamps: Mapping[str, str | None] | None = None,
     ) -> None:
+        st = stamps or {}
         # A 'delivered' row is never downgraded to 'held' or 'failed': the caller's own
         # ordering already guarantees this (a 'delivered' row short-circuits
         # as `duplicate` before the held branch is ever reached), and the
@@ -407,8 +452,9 @@ class DeliveredStore:
                 """
                 INSERT INTO "egress_delivered_events" (
                     "route", "event_id", "outcome", "http_status", "case_id",
-                    "topic", "partition", "kafka_offset", "first_recorded_at", "recorded_at")
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
+                    "topic", "partition", "kafka_offset", "first_recorded_at", "recorded_at",
+                    "episode_id", "asset_id", "component", "fault_code")
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), $9, $10, $11, $12)
                 ON CONFLICT ("route", "event_id") DO UPDATE SET
                     "outcome" = excluded."outcome",
                     "http_status" = excluded."http_status",
@@ -416,10 +462,15 @@ class DeliveredStore:
                     "topic" = excluded."topic",
                     "partition" = excluded."partition",
                     "kafka_offset" = excluded."kafka_offset",
-                    "recorded_at" = excluded."recorded_at"
+                    "recorded_at" = excluded."recorded_at",
+                    "episode_id" = COALESCE(excluded."episode_id", "egress_delivered_events"."episode_id"),
+                    "asset_id" = COALESCE(excluded."asset_id", "egress_delivered_events"."asset_id"),
+                    "component" = COALESCE(excluded."component", "egress_delivered_events"."component"),
+                    "fault_code" = COALESCE(excluded."fault_code", "egress_delivered_events"."fault_code")
                 WHERE "egress_delivered_events"."outcome" != 'delivered' OR excluded."outcome" = 'delivered'
                 """,
                 route, event_id, outcome, http_status, case_id, topic, partition, offset,
+                st.get("episode_id"), st.get("asset_id"), st.get("component"), st.get("fault_code"),
             )
         self._call(_exec)
 
@@ -602,6 +653,7 @@ def _deliver(
     offset: int | None = None,
     clock: Callable[[], float] = time.monotonic,
     retry_max_s: float = RETRY_MAX_S,
+    declarations: Mapping[str, Any] | None = None,
 ) -> str | None:
     """Deliver one record to one route. Returns `"abandoned"` (the partition
     was revoked mid-wait: do not commit), `"exhausted"` (the retry budget
@@ -613,7 +665,7 @@ def _deliver(
         _deliver_inner(
             route, key, record, post=post, wait=wait, read_token=read_token, counts=counts,
             log_outcome=log_outcome, store=store, topic=topic, partition=partition, offset=offset,
-            clock=clock, retry_max_s=retry_max_s,
+            clock=clock, retry_max_s=retry_max_s, declarations=declarations,
         )
     except _Abandoned:
         _bump(counts, "abandoned")
@@ -629,14 +681,16 @@ def _deliver(
                   " (the destination had already accepted it)" if exc.after_delivery else "")
         log_outcome(route.name, key, route.kind, None, "exhausted")
         if route.dedupe_field is not None and not exc.after_delivery:
+            stamps = episode_stamps((declarations or {}).get(route.kind), record)
             try:
-                store.upsert_held(route=route.name, event_id=event_id, topic=topic, partition=partition, offset=offset)
+                store.upsert_held(route=route.name, event_id=event_id, topic=topic, partition=partition,
+                                  offset=offset, stamps=stamps)
             except Exception as store_exc:  # noqa: BLE001
                 log.error("exhausted record NOT recorded held (route=%s event_id=%s): %s",
                           route.name, event_id, store_exc)
                 try:
                     store.upsert_failed(route=route.name, event_id=event_id, topic=topic,
-                                        partition=partition, offset=offset)
+                                        partition=partition, offset=offset, stamps=stamps)
                 except Exception as failed_exc:  # noqa: BLE001
                     _bump(counts, "undelivered_declared")
                     log.error("declared-undelivered route=%s key=%s event_id=%s topic=%s partition=%s offset=%s: %s",
@@ -665,6 +719,7 @@ def _deliver_inner(
     offset: int | None,
     clock: Callable[[], float],
     retry_max_s: float,
+    declarations: Mapping[str, Any] | None = None,
 ) -> None:
     """Deliver one record to one route, blocking and retrying with backoff
     until a terminal outcome (held, duplicate, no_event_id, delivered or
@@ -676,6 +731,7 @@ def _deliver_inner(
     `partition`/`offset` are the sink message's own position, carried
     through only so a dedupe route's stored row can record them.
     """
+    stamps = episode_stamps((declarations or {}).get(route.kind), record)
     event_id: str | None = None
     if route.dedupe_field is not None:
         raw_event_id = record.get(route.dedupe_field)
@@ -715,7 +771,8 @@ def _deliver_inner(
         if route.held:
             if route.dedupe_field is not None:
                 try:
-                    store.upsert_held(route=route.name, event_id=event_id, topic=topic, partition=partition, offset=offset)
+                    store.upsert_held(route=route.name, event_id=event_id, topic=topic, partition=partition,
+                                      offset=offset, stamps=stamps)
                 except Exception as exc:  # noqa: BLE001 — any store failure here
                     log.warning("delivered-events store unavailable (route=%s): %s", route.name, exc)
                     _bump(counts, "store_unavailable")
@@ -778,7 +835,7 @@ def _deliver_inner(
                     try:
                         store.upsert_delivered(
                             route=route.name, event_id=event_id, http_status=status, case_id=case_id,
-                            topic=topic, partition=partition, offset=offset,
+                            topic=topic, partition=partition, offset=offset, stamps=stamps,
                         )
                         break
                     except Exception as exc:  # noqa: BLE001 — any store failure here
@@ -829,6 +886,7 @@ def run_once(
     flight: InFlight | None = None,
     clock: Callable[[], float] = time.monotonic,
     retry_max_s: float = RETRY_MAX_S,
+    declarations: Mapping[str, Any] | None = None,
 ) -> bool:
     """Poll once. Decode once; hand the record to every configured entry
     whose sink topic matches, each delivered (and retried) in turn; commit
@@ -875,7 +933,7 @@ def run_once(
                     route, key, record, post=post, wait=wait,
                     read_token=read_token, counts=counts, log_outcome=log_outcome,
                     store=store, topic=msg.topic(), partition=msg.partition(), offset=msg.offset(),
-                    clock=clock, retry_max_s=retry_max_s,
+                    clock=clock, retry_max_s=retry_max_s, declarations=declarations,
                 )
                 if outcome == "abandoned":
                     return True  # not committed: the next owner replays it
@@ -937,6 +995,7 @@ def resend_once(
     store: DeliveredStore | None,
     read_token: Callable[[str], str | None],
     audit: Callable[[Mapping[str, Any]], None],
+    declarations: Mapping[str, Any] | None = None,
 ) -> int:
     """Send one recorded event to one route again, on an operator's say-so.
     Returns the exit code: 0 sent and recorded, 1 the send failed, 2 refused
@@ -1025,10 +1084,28 @@ def resend_once(
     if case_id is not None and case_id != _expected_case_id(route, record, event_id):
         extra["case_id_mismatch"] = True
     try:
-        store.record_resend(route.name, event_id, status, case_id)
+        store.record_resend(route.name, event_id, status, case_id,
+                           stamps=episode_stamps((declarations or {}).get(route.kind), record))
     except Exception:  # noqa: BLE001 — the destination HAS it; say so
         return finish(3, line("operator_resend_unrecorded", status, **extra))
     return finish(0, line("operator_resend", status, **extra))
+
+
+KINDS_DIR = Path(os.getenv(
+    "OPENDDIL_EGRESS_KINDS_DIR", str(Path(__file__).parent / "kind-schemas")))
+
+
+def _load_declarations() -> dict[str, Any]:
+    """The kinds' `x-openddil` declarations, for the episode stamps. A
+    missing or unreadable directory gives no declarations (every stamp
+    NULL): the stamps are a convenience for readers of the ledger and never
+    a reason to stop delivering."""
+    try:
+        from kinds import load_declarations  # noqa: PLC0415
+        return load_declarations(KINDS_DIR) if KINDS_DIR.is_dir() else {}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("kind declarations not loaded; episode stamps will be NULL: %s", exc)
+        return {}
 
 
 def resend_main(argv: list[str]) -> int:
@@ -1063,6 +1140,7 @@ def resend_main(argv: list[str]) -> int:
         routes, route_name=args.route, event_id=args.event_id, reason=args.reason, key=args.key,
         record=record, post=_default_post, store=DeliveredStore(store_dsn_from_env()),
         read_token=_default_read_token, audit=_default_audit,
+        declarations=_load_declarations(),
     )
 
 
@@ -1100,6 +1178,7 @@ def main() -> int:
         if any(route.dedupe_field is not None for route in routes):
             asyncio.run(require_tables(store_dsn_from_env(), ["egress_delivered_events"]))
 
+    declarations = _load_declarations()
     store = DeliveredStore(store_dsn_from_env()) if any(route.dedupe_field is not None for route in routes) else None
 
     signal.signal(signal.SIGTERM, _stop)
@@ -1126,7 +1205,7 @@ def main() -> int:
             run_once(
                 consumer, routes_by_topic=routes_by_topic, decode=_decode,
                 post=_default_post, sleep=time.sleep, poll_timeout=POLL_TIMEOUT,
-                counts=counts, store=store, flight=flight,
+                counts=counts, store=store, flight=flight, declarations=declarations,
             )
             now = time.monotonic()
             if now - last_counter_log >= COUNTER_LOG_INTERVAL_S:
