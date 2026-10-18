@@ -27,10 +27,12 @@
 import { useState } from 'react';
 import { BookOpen, Send } from 'lucide-react';
 import DemoMockBanner from './DemoMockBanner';
-import { deployment } from '../deployment';
+import { cortexBaseUrl, deployment } from '../deployment';
 import {
   askManualQuestion,
+  CORTEX_ASK_MAX_CHARS,
   citationsInScope,
+  cortexAskUrl,
   type AskResult,
   type Citation,
 } from '../lib/manualQa';
@@ -70,6 +72,14 @@ export default function ManualQuestionPanel({
   const [hidden, setHidden] = useState(false);
 
   const handleAsk = async () => {
+    const cortex = cortexBaseUrl();
+    if (cortex) {
+      // The question opens in cortex under the person's own sign-in; nothing
+      // goes to /manual/ask. Null = empty or over the limit: refuse.
+      const url = cortexAskUrl(cortex, question);
+      if (url) window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
     if (!assetId || asking || scope.length === 0 || question.trim().length === 0) return;
     setAsking(true);
     try {
@@ -97,7 +107,8 @@ export default function ManualQuestionPanel({
       onAsk={handleAsk}
       asking={asking}
       result={result}
-      stubBanner={deployment().manualQa?.stub !== false}
+      stubBanner={cortexBaseUrl() ? false : deployment().manualQa?.stub !== false}
+      cortex={cortexBaseUrl() !== undefined}
     />
   );
 }
@@ -115,6 +126,8 @@ export interface ManualQuestionPanelViewProps {
   asking: boolean;
   result: AskResult | null;
   stubBanner: boolean;
+  /** cortex is configured: submit opens cortex's ask route in a new tab. */
+  cortex?: boolean;
 }
 
 function chipLabel(dmc: string, scopeLabels?: Record<string, string>): string {
@@ -142,8 +155,10 @@ export function ManualQuestionPanelView({
   asking,
   result,
   stubBanner,
+  cortex = false,
 }: ManualQuestionPanelViewProps) {
   const variant = platformVariant ?? 'this asset';
+  const tooLong = cortex && question.trim().length > CORTEX_ASK_MAX_CHARS;
 
   // THE ONLY PATH TO RENDERING ANSWER TEXT. Re-checked here against `scope`
   // regardless of what `result.kind` claims, so a citation naming a dmc
@@ -185,7 +200,7 @@ export function ManualQuestionPanelView({
             <textarea
               value={question}
               onChange={(e) => onQuestionChange(e.target.value)}
-              maxLength={MAX_QUESTION_LENGTH}
+              maxLength={cortex ? undefined : MAX_QUESTION_LENGTH}
               rows={2}
               className="w-full bg-slate-800 text-slate-200 border border-slate-700 rounded-sm py-1.5 px-2 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500/50 resize-none"
               placeholder="Ask about this asset's fault isolation…"
@@ -193,11 +208,21 @@ export function ManualQuestionPanelView({
             <button
               type="button"
               onClick={onAsk}
-              disabled={asking || question.trim().length === 0}
+              disabled={asking || question.trim().length === 0 || tooLong}
               className="w-full flex items-center justify-center gap-1.5 text-xs font-bold uppercase tracking-wider py-1.5 rounded-sm border border-cyan-700 bg-cyan-900/40 text-cyan-300 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-cyan-900/60 transition-colors"
             >
-              <Send className="w-3.5 h-3.5" /> {asking ? 'Asking…' : 'Ask'}
+              <Send className="w-3.5 h-3.5" /> {cortex ? 'Ask in cortex' : asking ? 'Asking…' : 'Ask'}
             </button>
+            {cortex && tooLong && (
+              <div className="text-[11px] text-rose-400" role="alert">
+                Too long for cortex ({question.trim().length} of {CORTEX_ASK_MAX_CHARS} characters). Shorten the question.
+              </div>
+            )}
+            {cortex && !tooLong && (
+              <div className="text-[11px] text-slate-500">
+                The question opens in cortex under your own sign-in.
+              </div>
+            )}
           </div>
 
           {renderableAnswer && (

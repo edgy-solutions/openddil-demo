@@ -243,6 +243,11 @@ export interface TierEntry {
   hasChildren: boolean;
 }
 
+export interface CortexConfig {
+  /** http(s) origin of cortex, trailing slash stripped. */
+  baseUrl: string;
+}
+
 export interface Deployment {
   /** Nav-bar text and document.title. */
   title: string;
@@ -264,6 +269,9 @@ export interface Deployment {
    *  the panel's own 404 handling); it only ever affects whether the
    *  DemoMockBanner shows. */
   manualQa?: ManualQaConfig;
+  /** The cortex deployment this UI links to. ABSENT means no cortex UI
+   *  anywhere (the OSS and work default). Parsed by `parseCortex`. */
+  cortex?: CortexConfig;
   /** Optional FOB list — populated by a deployment overlay. The 3D maps
    *  use this to place edge markers and to home positionless assets.
    *  Empty in the OSS default; the maps render an empty theater. */
@@ -832,6 +840,30 @@ export function __setMoveInputsForTest(m: MoveInputs | undefined): void {
   active = { ...active, moveInputs: m };
 }
 
+/** Parses `deployment.json`'s `cortex`. Anything but `{baseUrl}` with an
+ *  http(s) string is treated as absent, with one console.warn. A trailing
+ *  slash is stripped. EXPORTED FOR TESTS. */
+export function parseCortex(raw: unknown): CortexConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const baseUrl = (raw as { baseUrl?: unknown }).baseUrl;
+  if (typeof baseUrl !== 'string' || !/^https?:\/\//.test(baseUrl)) {
+    console.warn('[deployment] cortex dropped: baseUrl must be a string starting with http:// or https://');
+    return undefined;
+  }
+  return { baseUrl: baseUrl.replace(/\/+$/, '') };
+}
+
+/** The configured cortex base URL, or undefined when cortex is not
+ *  configured (in which case no cortex UI is drawn). */
+export function cortexBaseUrl(): string | undefined {
+  return active.cortex?.baseUrl;
+}
+
+/** TEST SEAM. Sets or clears the cortex config. */
+export function __setCortexForTest(baseUrl: string | undefined): void {
+  active = { ...active, cortex: baseUrl === undefined ? undefined : { baseUrl } };
+}
+
 export function parseManualQa(raw: unknown): ManualQaConfig | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const stub = (raw as Record<string, unknown>).stub;
@@ -970,6 +1002,7 @@ export async function loadDeployment(): Promise<void> {
         ),
         egressPane: parseEgressPane((j as { egressPane?: unknown }).egressPane),
         manualQa: parseManualQa((j as { manualQa?: unknown }).manualQa),
+        cortex: parseCortex((j as { cortex?: unknown }).cortex),
         edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
         childLinks: parseChildLinks((j as { childLinks?: unknown }).childLinks),
         tiers: parseTiers((j as { tiers?: unknown }).tiers),

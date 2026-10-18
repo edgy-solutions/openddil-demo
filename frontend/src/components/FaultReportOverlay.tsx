@@ -10,6 +10,8 @@ import { useEffect, useState } from 'react';
 import { Wrench } from 'lucide-react';
 import BitDiscrepancyCard from './BitDiscrepancyCard';
 import FaultReportForm from './FaultReportForm';
+import CortexApprovalLink from './CortexApprovalLink';
+import { useCortexCases } from '../hooks/useCortexCases';
 
 export interface BitDiscrepancy {
   /** component|fault_code, identifies the discrepancy across renders. */
@@ -23,13 +25,17 @@ interface FaultReportOverlayProps {
   assetId: string | null | undefined;
   components: string[];
   bit: BitDiscrepancy | null;
+  /** Faults on this asset's fault card (manual discrepancies); each may get
+   *  an "Approve in cortex" link once cortex holds a case for it. */
+  faults?: { component: string; faultCode: string }[];
 }
 
 // Inner cards (.panel) are opaque with a large radius; inside the glass sheet
 // they become transparent and square so the sheet is the only frame.
 const GLASS_INNER = '[&_.panel]:bg-transparent! [&_.panel]:border-0! [&_.panel]:shadow-none! [&_.panel]:rounded-none! [&_.panel]:p-0!';
 
-export default function FaultReportOverlay({ assetId, components, bit }: FaultReportOverlayProps) {
+export default function FaultReportOverlay({ assetId, components, bit, faults = [] }: FaultReportOverlayProps) {
+  const cortexCases = useCortexCases(assetId);
   const [open, setOpen] = useState(false);
   const [prefill, setPrefill] = useState<{ component: string; code: string } | null>(null);
   // Key of the last BIT discrepancy this viewer filed, so the card can say
@@ -52,6 +58,11 @@ export default function FaultReportOverlay({ assetId, components, bit }: FaultRe
 
   return (
     <div className="absolute bottom-3 right-3 z-20 w-[300px] flex flex-col items-end gap-2 pointer-events-none">
+      {faults.map((f) => (
+        <div key={`${f.component}|${f.faultCode}`} className="pointer-events-auto" data-testid="fault-card-cortex">
+          <CortexApprovalLink cases={cortexCases} faultCode={f.faultCode} component={f.component} />
+        </div>
+      ))}
       {bit && (
         <div className="pointer-events-auto w-full rounded-sm border border-amber-700/60 bg-slate-950/60 backdrop-blur p-2 [&_.panel]:bg-transparent! [&_.panel]:border-0! [&_.panel]:shadow-none! [&_.panel]:rounded-none! [&_.panel]:p-0!">
           <BitDiscrepancyCard

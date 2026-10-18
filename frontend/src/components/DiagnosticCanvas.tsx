@@ -247,6 +247,9 @@ export default function DiagnosticCanvas({
         <FaultReportOverlay
             assetId={assetId}
             components={componentOptions(cm.data[0])}
+            faults={(cm.data[0]?.manual_discrepancies ?? [])
+                .filter((d) => typeof d?.fault_code === 'string')
+                .map((d) => ({ component: String(d.component ?? ''), faultCode: d.fault_code }))}
             bit={
                 bitEntry && bitEntryKey
                     ? {

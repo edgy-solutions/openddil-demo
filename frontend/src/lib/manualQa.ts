@@ -174,3 +174,15 @@ export function shouldRenderAnswer(
 ): result is { kind: 'answered'; answer: string; citations: Citation[] } {
   return result.kind === 'answered' && citationsInScope(result.citations, scope);
 }
+
+/** Longest question cortex's ask route takes. Over this the panel refuses;
+ *  it never truncates, because a truncated question is a different question. */
+export const CORTEX_ASK_MAX_CHARS = 4000;
+
+/** The cortex ask link for a question, or null when the text is empty or
+ *  over CORTEX_ASK_MAX_CHARS (after trim). */
+export function cortexAskUrl(baseUrl: string, question: string): string | null {
+  const text = question.trim();
+  if (text.length === 0 || text.length > CORTEX_ASK_MAX_CHARS) return null;
+  return `${baseUrl}/ask?q=${encodeURIComponent(text)}`;
+}

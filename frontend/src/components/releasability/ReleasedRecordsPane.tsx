@@ -134,6 +134,82 @@ function Cell({ value }: { value: unknown }) {
   );
 }
 
+export interface ApprovalStep {
+  step: number;
+  role: string;
+  approver_sub: string;
+  decision: 'approved' | 'rejected';
+  decided_at: string;
+}
+
+/** Reads `body.approval_chain` generically (it is a list, not a configured
+ *  pointer). Returns the readable steps sorted by `step` and the count of
+ *  entries skipped as malformed, or null when the body has no non-empty
+ *  chain. Never throws. */
+function readApprovalChain(
+  body: unknown,
+): { steps: ApprovalStep[]; unreadable: number } | null {
+  const chain = resolvePointer(body, '/approval_chain');
+  if (!Array.isArray(chain) || chain.length === 0) return null;
+  const steps: ApprovalStep[] = [];
+  let unreadable = 0;
+  for (const e of chain) {
+    if (
+      isPlainObject(e)
+      && typeof e.step === 'number' && Number.isFinite(e.step)
+      && typeof e.role === 'string'
+      && typeof e.approver_sub === 'string'
+      && (e.decision === 'approved' || e.decision === 'rejected')
+      && typeof e.decided_at === 'string'
+    ) {
+      steps.push({
+        step: e.step, role: e.role, approver_sub: e.approver_sub,
+        decision: e.decision, decided_at: e.decided_at,
+      });
+    } else {
+      unreadable += 1;
+    }
+  }
+  steps.sort((a, b) => a.step - b.step);
+  return { steps, unreadable };
+}
+
+/** The approval chain under a row, one line per step:
+ *  step · role · approver_sub · decision · decided_at. `decided_at` is shown
+ *  verbatim, as every other cell in this pane is. */
+function ApprovalChain({ chain }: { chain: { steps: ApprovalStep[]; unreadable: number } }) {
+  return (
+    <ul className="space-y-0.5 text-[11px] text-slate-400" data-testid="approval-chain">
+      {chain.steps.map((s, i) => (
+        <li key={i} className="whitespace-nowrap" data-testid="approval-chain-step">
+          <span className="text-slate-300">{s.step}</span>
+          <span className="text-slate-600"> · </span>
+          <span>{s.role}</span>
+          <span className="text-slate-600"> · </span>
+          <span>{s.approver_sub}</span>
+          <span className="text-slate-600"> · </span>
+          <span
+            className={
+              s.decision === 'approved'
+                ? 'rounded border border-emerald-800/70 bg-emerald-950/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-emerald-300'
+                : 'rounded border border-rose-900/70 bg-rose-950/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-rose-300'
+            }
+          >
+            {s.decision}
+          </span>
+          <span className="text-slate-600"> · </span>
+          <span>{s.decided_at}</span>
+        </li>
+      ))}
+      {chain.unreadable > 0 && (
+        <li className="text-amber-300" data-testid="approval-chain-unreadable">
+          {chain.unreadable} {chain.unreadable === 1 ? 'entry' : 'entries'} unreadable
+        </li>
+      )}
+    </ul>
+  );
+}
+
 function tallyRefusals(records: DecisionRecord[]): [string, number][] {
   const counts = new Map<string, number>();
   for (const r of records) {
@@ -227,6 +303,7 @@ export function ReleasedRecordsView({
                 const ident = figure ? resolvePointer(r.body, figure.applicationStructureIdentPointer) : undefined;
                 const safeIcn = isSafeIcn(icn) ? icn : null;
                 const isOpen = safeIcn !== null && openKey === rowKey;
+                const chain = readApprovalChain(r.body);
                 return (
                   <Fragment key={rowKey}>
                     <tr className="border-t border-slate-800 align-top hover:bg-slate-800/30">
@@ -262,6 +339,13 @@ export function ReleasedRecordsView({
                         </td>
                       )}
                     </tr>
+                    {chain && (
+                      <tr>
+                        <td colSpan={columns.length + (figure ? 3 : 2)} className="pb-2 pl-4">
+                          <ApprovalChain chain={chain} />
+                        </td>
+                      </tr>
+                    )}
                     {isOpen && safeIcn !== null && (
                       <tr>
                         <td colSpan={columns.length + 3} className="pb-2">

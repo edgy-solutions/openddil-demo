@@ -21,6 +21,7 @@
 // the PEP stamps that from the session. fault_code may be empty ("Not
 // listed" — the fault isn't in the manual, or the variant has none at all).
 import { useEffect, useState } from 'react';
+import { cortexBaseUrl } from '../deployment';
 import { ChevronDown, Wrench, X } from 'lucide-react';
 import {
   codeOptionsFor,
@@ -269,6 +270,11 @@ export function FaultReportFormView({
         {outcome?.kind === 'success' && (
           <div className="text-[11px] text-emerald-400">
             Reported (event {outcome.eventId.slice(0, 8)})
+          </div>
+        )}
+        {outcome?.kind === 'success' && cortexBaseUrl() && (
+          <div className="text-[11px] text-slate-400" data-testid="cortex-approval-note">
+            Approval opens in cortex once the report reaches it; the link appears on the fault card.
           </div>
         )}
         {outcome?.kind === 'error' && (
