@@ -17,7 +17,7 @@
 //   - launch ring at the launcher and a reticle at the target when known;
 //   - endings that differ: a burst and ground shock on detonation, a hollow
 //     ring and grey fade on silence (the track was lost, not the target hit).
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
@@ -33,6 +33,10 @@ const LOST = new THREE.Color('#94a3b8');
 /** How long each ending plays before the component draws nothing. */
 export const BURST_MS = 1400;
 export const SILENCE_MS = 3500;
+
+/** Past this many tracks the callers stop drawing curtains. They are the first
+ *  thing dropped under load: a transparent sheet per track, fragment-heavy. */
+export const CURTAIN_MAX_TRACKS = 12;
 
 // Pixel sizes (CSS px). Exported so a test can see that nothing is in scene units.
 export const HEAD_PX = 22;
@@ -76,8 +80,21 @@ function spriteMaterial(shape: number) {
   });
 }
 
+// A replaced or unmounted geometry is disposed, or its GPU buffers leak.
+function useDispose(geo: THREE.BufferGeometry | null) {
+  useEffect(() => () => geo?.dispose(), [geo]);
+}
+
+// Same coordinates, same array: callers hand in fresh literals every render and
+// the geometry memos below are keyed on the reference.
+function useStableVec(v: Vec3 | undefined): Vec3 | undefined {
+  const x = v?.[0], y = v?.[1], z = v?.[2];
+  return useMemo(() => (x === undefined ? undefined : [x, y as number, z as number]), [x, y, z]);
+}
+
 function Sprite({ at, mat }: { at: Vec3; mat: THREE.ShaderMaterial }) {
   const geo = useMemo(() => new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(at, 3)), [at]);
+  useDispose(geo);
   return <points geometry={geo} material={mat} frustumCulled={false} renderOrder={10} />;
 }
 
@@ -264,32 +281,43 @@ export interface MunitionTrackHoloProps {
   launcher?: Vec3;
   target?: Vec3;
   ending?: TrackEnding;
+  /** Draw the altitude curtain (default true). */
+  curtain?: boolean;
 }
 
 export default function MunitionTrackHolo({
-  track, trail, groundY, launcher, target, ending,
+  track, trail, groundY, launcher: launcherIn, target: targetIn, ending, curtain = true,
 }: MunitionTrackHoloProps) {
   const { size, gl } = useThree();
-  const head = trail[trail.length - 1];
-  const headGround: Vec3 = [head[0], groundY, head[2]];
+  const last = trail[trail.length - 1];
+  const head = useStableVec(last) as Vec3;
+  const headGround = useStableVec([last[0], groundY, last[2]]) as Vec3;
+  const launcher = useStableVec(launcherIn);
+  const target = useStableVec(targetIn);
 
   const path = useMemo(() => smoothPath(trail), [trail]);
   const groundPath = useMemo(() => path.map((p) => new THREE.Vector3(p.x, groundY, p.z)), [path, groundY]);
   const trailGeo = useMemo(() => ribbonGeometry(path), [path]);
   const groundGeo = useMemo(() => ribbonGeometry(groundPath, 0.2), [groundPath]);
-  const curtainGeo = useMemo(() => curtainGeometry(path, groundY), [path, groundY]);
-  const dropGeo = useMemo(() => ribbonGeometry([new THREE.Vector3(...headGround), new THREE.Vector3(...head)], 0.5), [head, groundY]); // eslint-disable-line react-hooks/exhaustive-deps
+  const curtainGeo = useMemo(() => (curtain ? curtainGeometry(path, groundY) : null), [curtain, path, groundY]);
+  const dropGeo = useMemo(() => ribbonGeometry([new THREE.Vector3(...headGround), new THREE.Vector3(...head)], 0.5), [head, headGround]);
   const aimGeo = useMemo(
     () => (target ? ribbonGeometry([new THREE.Vector3(...head), new THREE.Vector3(...target)], 0) : null),
     [head, target],
   );
 
   const m = useMemo(() => makeMaterials(), []);
+  useDispose(trailGeo);
+  useDispose(groundGeo);
+  useDispose(curtainGeo);
+  useDispose(dropGeo);
+  useDispose(aimGeo);
+  useEffect(() => () => { for (const mat of Object.values(m)) mat.dispose(); }, [m]);
   useFrame(({ clock }) => tick(m, clock.getElapsedTime(), gl.getPixelRatio(), size.width, size.height, ending));
 
   return (
     <group>
-      <mesh geometry={curtainGeo} material={m.curtain} frustumCulled={false} renderOrder={5} />
+      {curtainGeo && <mesh geometry={curtainGeo} material={m.curtain} frustumCulled={false} renderOrder={5} />}
       <mesh geometry={groundGeo} material={m.ground} onBeforeRender={fitRes} frustumCulled={false} renderOrder={6} />
       <mesh geometry={trailGeo} material={m.trail} onBeforeRender={fitRes} frustumCulled={false} renderOrder={7} />
       <mesh geometry={trailGeo} material={m.core} onBeforeRender={fitRes} frustumCulled={false} renderOrder={8} />

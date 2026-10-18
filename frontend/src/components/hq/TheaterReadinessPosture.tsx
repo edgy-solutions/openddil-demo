@@ -44,7 +44,7 @@ import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
 import { buildNodePos, hqLabelText, hqScenePos } from '../../lib/hqPosition';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
-import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
+import MunitionTrackHolo, { CURTAIN_MAX_TRACKS, type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
 import { engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
@@ -789,6 +789,7 @@ export default function TheaterReadinessPosture() {
               launcher={m.launcher}
               target={targetOf(trackById.get(m.id))}
               ending={m.ending}
+              curtain={trails.length <= CURTAIN_MAX_TRACKS}
             />
           ))}
 

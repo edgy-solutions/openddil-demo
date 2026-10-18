@@ -63,7 +63,7 @@ import { useMunitionLaunches } from '../../hooks/useEffectorLaunches';
 import { isTierVisibleIn3D, type AssetTier } from '../../lib/assetTier';
 import { makeProjection, type Projection } from '../../lib/geoProjection';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
-import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
+import MunitionTrackHolo, { CURTAIN_MAX_TRACKS, type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
 import { engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
@@ -1012,6 +1012,7 @@ export default function RegionalSustainmentPosture({
               launcher={m.launcher}
               target={targetOf(trackById.get(m.id))}
               ending={m.ending}
+              curtain={trails.length <= CURTAIN_MAX_TRACKS}
             />
           ))}
 

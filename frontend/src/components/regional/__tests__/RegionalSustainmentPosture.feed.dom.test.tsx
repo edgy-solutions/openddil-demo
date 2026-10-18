@@ -22,6 +22,7 @@ const holoProps: Array<Record<string, unknown>> = [];
 const state = { fleet: [] as unknown[], launches: [] as unknown[] };
 
 vi.mock('../../MunitionTrackHolo', () => ({
+  CURTAIN_MAX_TRACKS: 12,
   default: (p: Record<string, unknown>) => { holoProps.push(p); return null; },
 }));
 vi.mock('../../../hooks', () => ({
