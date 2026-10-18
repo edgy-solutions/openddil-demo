@@ -26,6 +26,7 @@
 // so it is stated once, at the root, and nothing else renders.
 import { deployment } from '../deployment';
 import { loginHref } from '../lib/loginHref';
+import type { SessionError as SessionErrorInfo } from '../hooks/useSession';
 
 export function SignedOut() {
   // The overlay's logo when a deployment sets one; the OpenDDIL mark
@@ -86,6 +87,45 @@ export function CheckingSession() {
     <div className="h-screen w-screen bg-slate-950 text-slate-600 font-mono
                     flex items-center justify-center text-xs tracking-widest">
       <span className="animate-pulse">CHECKING SESSION…</span>
+    </div>
+  );
+}
+
+// =============================================================================
+// SessionError — /auth/me never answered, so the session is still unknown
+// =============================================================================
+// The initial check retried and every attempt failed. Saying "checking" any
+// longer would be the same absence-as-something-else as "Syncing…" on a 401,
+// so this names the request that failed and offers the two things an
+// operator can do about it. The hook keeps re-checking underneath, so this
+// screen clears itself if the gateway comes back.
+export function SessionError({ error }: { error: SessionErrorInfo }) {
+  const outcome = error.status === null ? 'network error' : String(error.status);
+  return (
+    <div className="h-screen w-screen bg-slate-950 text-slate-300 font-mono
+                    flex flex-col items-center justify-center gap-4 px-6 text-center">
+      <div className="font-orbitron tracking-widest text-cyan-400 text-lg">
+        Could not confirm your session
+      </div>
+      <div className="text-xs text-slate-400">
+        <div>{error.method} {error.path} → {outcome}</div>
+        <div className="mt-1 text-slate-500">after {error.attempts} attempts</div>
+        <div className="mt-1 max-w-md break-words text-slate-500">{error.detail}</div>
+      </div>
+      <div className="flex items-center gap-4">
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="rounded-sm border border-cyan-700/60 bg-cyan-500/10 px-6 py-2
+                     text-xs font-bold tracking-widest text-cyan-300
+                     hover:bg-cyan-500/20 transition-colors"
+        >
+          Retry
+        </button>
+        <a href={loginHref()} className="text-xs text-cyan-400 underline">
+          Sign in again
+        </a>
+      </div>
     </div>
   );
 }

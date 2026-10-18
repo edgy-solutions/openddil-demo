@@ -4,7 +4,7 @@ import type { TierConfig } from './deployment';
 import { Wrench, Server, Building2 } from 'lucide-react';
 import { deployment } from './deployment';
 import { useSession } from './hooks/useSession';
-import { SignedOut, CheckingSession } from './components/SignedOut';
+import { SignedOut, CheckingSession, SessionError } from './components/SignedOut';
 import { SessionExpired } from './components/SessionExpired';
 import { useSessionExpired } from './lib/sessionExpiry';
 import IdentityBadge from './components/releasability/IdentityBadge';
@@ -198,6 +198,7 @@ function Root() {
   //   authDisabled  there is nothing to sign in to. Not the same as signed
   //              out, and offering a sign-in button here would be a lie.
   if (!session.authDisabled) {
+    if (session.sessionError) return <SessionError error={session.sessionError} />;
     if (session.authenticated === undefined) return <CheckingSession />;
     if (session.authenticated === false) return <SignedOut />;
   }

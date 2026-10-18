@@ -35,6 +35,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { setLabeledTables } from '../lib/labeledTables';
 import { markSessionExpired } from '../lib/sessionExpiry';
+import { recordFailedRequest } from '../lib/lastFailedRequest';
 import { parseNationRegistry, type NationRegistryEntry } from '../lib/nationColor';
 
 export interface Session {
@@ -80,6 +81,21 @@ export interface Session {
    *  clock shifts the computed deadline by exactly the skew and no more —
    *  the gap between the two server-reported numbers is clock-agnostic. */
   expiresAt: number | null;
+  /** The INITIAL /auth/me failed on every attempt (the gateway is down or
+   *  erroring), so the session is still unknown. `authenticated` stays
+   *  undefined; this names the request so the page can too. Null in UNKNOWN
+   *  and on any answer. */
+  sessionError: SessionError | null;
+}
+
+export interface SessionError {
+  method: 'GET';
+  path: '/auth/me';
+  /** HTTP status, or null for a network error. */
+  status: number | null;
+  detail: string;
+  attempts: number;
+  at: number;
 }
 
 const UNKNOWN: Session = {
@@ -93,9 +109,26 @@ const UNKNOWN: Session = {
   policyVersion: null,
   authDisabled: false,
   expiresAt: null,
+  sessionError: null,
 };
 
-// Re-check while authenticated, both to catch expiry between user-initiated
+// The initial check retries on a transient failure (network error, bad
+// body, 5xx) after these delays, so one dropped request does not strand the
+// page on "checking session" — 6 attempts in all. 401 and 404 are answers
+// and never retry.
+export const SESSION_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 8000];
+
+class AuthMeFailure extends Error {
+  status: number | null;
+  detail: string;
+  constructor(status: number | null, detail: string) {
+    super(detail);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+// Re-check while authenticated (or while the initial check is in error), both to catch expiry between user-initiated
 // requests and to keep traffic flowing during idle periods — the PEP's own
 // lead-time refresh (REFRESH_LEAD_S) only has a chance to run on a request
 // that actually arrives before the deadline.
@@ -109,6 +142,7 @@ export function useSession(): Session {
     let cancelled = false;
     let intervalId: ReturnType<typeof setInterval> | undefined;
     let deadlineId: ReturnType<typeof setTimeout> | undefined;
+    let retryId: ReturnType<typeof setTimeout> | undefined;
 
     function stopPolling() {
       if (intervalId !== undefined) {
@@ -137,7 +171,7 @@ export function useSession(): Session {
       if (!cancelled) setSession(next);
     }
 
-    function checkOnce(isInitial: boolean) {
+    function checkOnce(isInitial: boolean, attempt = 1) {
       fetch('/auth/me', { credentials: 'same-origin' })
         .then(async (res) => {
           if (cancelled) return;
@@ -163,7 +197,11 @@ export function useSession(): Session {
           // ending. Its body may still be JSON, without `authenticated`;
           // read as a session it would sign a live viewer out, so it takes
           // the failed-fetch path below instead.
-          if (!res.ok) throw new Error(`/auth/me ${res.status}`);
+          if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new AuthMeFailure(
+              res.status, (res.statusText || text).slice(0, 120) || `HTTP ${res.status}`);
+          }
           const body = await res.json();
           // The gateway's own list of partitionable tables, cached so the
           // shared shape client can explain a refusal with the same fact
@@ -183,18 +221,41 @@ export function useSession(): Session {
             policyVersion: body.policy_version ?? null,
             authDisabled: false,
             expiresAt,
+            sessionError: null,
           });
           armDeadline(expiresAt);
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           // A failed /auth/me — on the FIRST check or a re-check — is NOT a
           // reason to claim the user is logged out or expired: that would
           // render a sign-in prompt, or unmount the screen, over a working
           // session every time the network hiccuped. On a re-check, leave
           // the current session and its already-armed deadline exactly as
-          // they are. On the first check only, fall back to the unknown
-          // state so the page doesn't hang there forever.
-          if (isInitial && !cancelled) commit(UNKNOWN);
+          // they are. On the first check, retry; when the retries run out,
+          // stay unknown but carry the failed request so the page can name
+          // it instead of saying "checking" forever.
+          if (cancelled) return;
+          const failure = err instanceof AuthMeFailure
+            ? err
+            : new AuthMeFailure(null, (err instanceof Error ? err.message : String(err)).slice(0, 120));
+          const at = Date.now();
+          recordFailedRequest({
+            method: 'GET', path: '/auth/me', status: failure.status, detail: failure.detail, at,
+          });
+          if (!isInitial) return;
+          if (attempt <= SESSION_RETRY_DELAYS_MS.length) {
+            retryId = setTimeout(
+              () => checkOnce(true, attempt + 1), SESSION_RETRY_DELAYS_MS[attempt - 1]);
+            return;
+          }
+          commit({
+            ...UNKNOWN,
+            sessionError: {
+              method: 'GET', path: '/auth/me', status: failure.status,
+              detail: failure.detail,
+              attempts: SESSION_RETRY_DELAYS_MS.length + 1, at,
+            },
+          });
         });
     }
 
@@ -202,13 +263,17 @@ export function useSession(): Session {
     intervalId = setInterval(() => {
       if (cancelled) return;
       const current = sessionRef.current;
-      if (current.authenticated && !current.authDisabled) checkOnce(false);
+      // While the initial check has given up (sessionError), keep trying so
+      // the app recovers by itself when the gateway does.
+      if (current.sessionError) checkOnce(true, SESSION_RETRY_DELAYS_MS.length + 1);
+      else if (current.authenticated && !current.authDisabled) checkOnce(false);
     }, RECHECK_MS);
 
     return () => {
       cancelled = true;
       stopPolling();
       if (deadlineId !== undefined) clearTimeout(deadlineId);
+      if (retryId !== undefined) clearTimeout(retryId);
     };
   }, []);
 

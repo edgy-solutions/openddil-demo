@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import Root from './Root.tsx'
+import AppErrorBoundary from './components/AppErrorBoundary'
 import { loadDeployment } from './deployment'
 
 // Apply optional deployment config (title + favicon) before the first
@@ -9,7 +10,9 @@ import { loadDeployment } from './deployment'
 loadDeployment().finally(() => {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
-      <Root />
+      <AppErrorBoundary>
+        <Root />
+      </AppErrorBoundary>
     </StrictMode>,
   )
 })
