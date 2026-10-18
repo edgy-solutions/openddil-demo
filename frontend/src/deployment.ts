@@ -246,6 +246,9 @@ export interface TierEntry {
 export interface CortexConfig {
   /** http(s) origin of cortex, trailing slash stripped. */
   baseUrl: string;
+  /** Optional cortex-recognised broker marker appended to the links
+   *  (`idp=<value>`). Absent means no marker. */
+  idp?: string;
 }
 
 export interface Deployment {
@@ -850,7 +853,13 @@ export function parseCortex(raw: unknown): CortexConfig | undefined {
     console.warn('[deployment] cortex dropped: baseUrl must be a string starting with http:// or https://');
     return undefined;
   }
-  return { baseUrl: baseUrl.replace(/\/+$/, '') };
+  const out: CortexConfig = { baseUrl: baseUrl.replace(/\/+$/, '') };
+  const idp = (raw as { idp?: unknown }).idp;
+  if (idp !== undefined && idp !== null) {
+    if (typeof idp === 'string' && /^[a-z0-9][a-z0-9-]{0,62}$/.test(idp)) out.idp = idp;
+    else console.warn('[deployment] cortex idp dropped: must match ^[a-z0-9][a-z0-9-]{0,62}$');
+  }
+  return out;
 }
 
 /** The configured cortex base URL, or undefined when cortex is not
@@ -859,9 +868,17 @@ export function cortexBaseUrl(): string | undefined {
   return active.cortex?.baseUrl;
 }
 
+/** The configured cortex idp marker, or undefined for none. */
+export function cortexIdp(): string | undefined {
+  return active.cortex?.idp;
+}
+
 /** TEST SEAM. Sets or clears the cortex config. */
-export function __setCortexForTest(baseUrl: string | undefined): void {
-  active = { ...active, cortex: baseUrl === undefined ? undefined : { baseUrl } };
+export function __setCortexForTest(baseUrl: string | undefined, idp?: string): void {
+  active = {
+    ...active,
+    cortex: baseUrl === undefined ? undefined : idp === undefined ? { baseUrl } : { baseUrl, idp },
+  };
 }
 
 export function parseManualQa(raw: unknown): ManualQaConfig | undefined {

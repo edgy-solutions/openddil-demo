@@ -101,6 +101,79 @@ describe('B2 Approve in cortex', () => {
   });
 });
 
+describe('C1 idp marker', () => {
+  const faults = [{ component: 'comp-1', faultCode: 'F-1' }];
+  const overlay = <FaultReportOverlay assetId="asset-a" components={[]} bit={null} faults={faults} />;
+  const type = (text: string) =>
+    fireEvent.change(screen.getByPlaceholderText(/Ask about this asset/), { target: { value: text } });
+  const panel = <ManualQuestionPanel assetId="asset-a" platformVariant="v" scope={['dmc-1']} />;
+
+  it('parseCortex keeps a valid idp, drops an invalid one with one warn', () => {
+    expect(parseCortex({ baseUrl: BASE, idp: 'example-idp' })).toEqual({ baseUrl: BASE, idp: 'example-idp' });
+    expect(console.warn).not.toHaveBeenCalled();
+    expect(parseCortex({ baseUrl: BASE, idp: 'Bad_IDP' })).toEqual({ baseUrl: BASE });
+    expect(console.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('idp set: both exact URLs carry it', async () => {
+    __setCortexForTest(BASE, 'example-idp');
+    stubFetch(ok([row()]));
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    const { unmount } = render(overlay);
+    const a = await screen.findByText('Approve in cortex');
+    expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/case-1?idp=example-idp`);
+    unmount();
+    render(panel);
+    type('why & how?');
+    fireEvent.click(screen.getByText('Ask in cortex'));
+    expect(open).toHaveBeenCalledWith(
+      `${BASE}/ask?q=why%20%26%20how%3F&idp=example-idp`, '_blank', 'noopener,noreferrer',
+    );
+  });
+
+  it('idp absent: both exact URLs unchanged', async () => {
+    __setCortexForTest(BASE);
+    stubFetch(ok([row()]));
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    const { unmount } = render(overlay);
+    const a = await screen.findByText('Approve in cortex');
+    expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/case-1`);
+    unmount();
+    render(panel);
+    type('why & how?');
+    fireEvent.click(screen.getByText('Ask in cortex'));
+    expect(open).toHaveBeenCalledWith(`${BASE}/ask?q=why%20%26%20how%3F`, '_blank', 'noopener,noreferrer');
+  });
+
+  it('invalid idp is dropped: links without it, one warn', async () => {
+    const cfg = parseCortex({ baseUrl: BASE, idp: 'Bad_IDP' })!;
+    __setCortexForTest(cfg.baseUrl, cfg.idp);
+    stubFetch(ok([row()]));
+    render(overlay);
+    const a = await screen.findByText('Approve in cortex');
+    expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/case-1`);
+    expect(console.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('513-char case id draws no link (one warn across polls); 512 draws one', async () => {
+    __setCortexForTest(BASE);
+    stubFetch(ok([row({ case_id: 'a'.repeat(513) })]));
+    const { rerender, unmount } = render(overlay);
+    await act(async () => {});
+    rerender(<FaultReportOverlay assetId="asset-a" components={[]} bit={null} faults={[...faults]} />);
+    await act(async () => {});
+    expect(screen.queryByText('Approve in cortex')).toBeNull();
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    unmount();
+    stubFetch(ok([row({ case_id: 'b'.repeat(512) })]));
+    render(overlay);
+    const a = await screen.findByText('Approve in cortex');
+    expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/${'b'.repeat(512)}`);
+  });
+});
+
 describe('B3 question panel', () => {
   const panel = <ManualQuestionPanel assetId="asset-a" platformVariant="v" scope={['dmc-1']} />;
   const type = (text: string) =>

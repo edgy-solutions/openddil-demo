@@ -27,7 +27,7 @@
 import { useState } from 'react';
 import { BookOpen, Send } from 'lucide-react';
 import DemoMockBanner from './DemoMockBanner';
-import { cortexBaseUrl, deployment } from '../deployment';
+import { cortexBaseUrl, cortexIdp, deployment } from '../deployment';
 import {
   askManualQuestion,
   CORTEX_ASK_MAX_CHARS,
@@ -76,7 +76,7 @@ export default function ManualQuestionPanel({
     if (cortex) {
       // The question opens in cortex under the person's own sign-in; nothing
       // goes to /manual/ask. Null = empty or over the limit: refuse.
-      const url = cortexAskUrl(cortex, question);
+      const url = cortexAskUrl(cortex, question, cortexIdp());
       if (url) window.open(url, '_blank', 'noopener,noreferrer');
       return;
     }

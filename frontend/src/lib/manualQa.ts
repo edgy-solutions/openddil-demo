@@ -181,8 +181,9 @@ export const CORTEX_ASK_MAX_CHARS = 4000;
 
 /** The cortex ask link for a question, or null when the text is empty or
  *  over CORTEX_ASK_MAX_CHARS (after trim). */
-export function cortexAskUrl(baseUrl: string, question: string): string | null {
+export function cortexAskUrl(baseUrl: string, question: string, idp?: string): string | null {
   const text = question.trim();
   if (text.length === 0 || text.length > CORTEX_ASK_MAX_CHARS) return null;
-  return `${baseUrl}/ask?q=${encodeURIComponent(text)}`;
+  const url = `${baseUrl}/ask?q=${encodeURIComponent(text)}`;
+  return idp ? `${url}&idp=${encodeURIComponent(idp)}` : url;
 }
