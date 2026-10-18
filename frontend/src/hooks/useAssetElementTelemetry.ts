@@ -127,8 +127,10 @@ export function useAssetElementTelemetry(assetId: string | null | undefined): {
       // TODO: report to ElectricSQL upstream; remove this workaround when
       // patched. Other hooks (useCmState, useCapabilityState, etc.) use
       // the same pattern but on smaller rows so haven't tripped this yet.
-      ? { where: `asset_id LIKE ${sqlLiteral(assetId)}` }
-      : { where: '1=0' }, // no asset selected -> empty result, hook still safe
+      // fromNow: 5MB rows rewritten every ~20s; start at the head. The current
+      // row arrives with the next rewrite, about 20 s.
+      ? { where: `asset_id LIKE ${sqlLiteral(assetId)}`, fromNow: true }
+      : { where: '1=0', fromNow: true }, // no asset selected -> empty result, hook still safe
   );
 
   const row = shape.data?.[0];

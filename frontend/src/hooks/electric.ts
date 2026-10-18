@@ -67,6 +67,14 @@ export function sqlLiteral(v: string): string {
 interface TableShapeOptions {
   /** Complete SQL WHERE clause, e.g. `asset_id = 'dis:1:1:4773'`. */
   where?: string;
+  /**
+   * Start at the live head (`log: 'changes_only'` + `offset: 'now'`) and never
+   * replay the shape's history. Rows appear with the first change after
+   * subscribe, so use it only for tables rewritten often enough that this wait
+   * is acceptable. No snapshot is taken, because the gateway does not pass
+   * Electric's subset snapshot params.
+   */
+  fromNow?: boolean;
 }
 
 /**
@@ -78,12 +86,15 @@ export function useTableShape<T>(
   map: (row: Record<string, any>) => T,
   opts: TableShapeOptions = {},
 ): ShapeResult<T> {
+  const fromNow = opts.fromNow === true;
   const { data, isLoading, isError, lastSyncedAt, error } = useShape({
     url: ELECTRIC_URL,
     params: {
       table,
       ...(opts.where ? { where: opts.where } : {}),
     },
+    // log is a top-level stream option; a params.log is ignored by the client.
+    ...(fromNow ? { log: 'changes_only' as const, offset: 'now' as const } : {}),
   });
 
   // A FAILED FEED IS NOT AN EMPTY ONE, and this is the only place that
