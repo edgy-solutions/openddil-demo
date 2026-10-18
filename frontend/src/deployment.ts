@@ -249,6 +249,11 @@ export interface CortexConfig {
   /** Optional cortex-recognised broker marker appended to the links
    *  (`idp=<value>`). Absent means no marker. */
   idp?: string;
+  /** Visible text of the fault card's case link. Absent means the
+   *  component's default. Never names a system. */
+  caseLinkLabel?: string;
+  /** Display name of the destination, shown only in the link's tooltip. */
+  displayName?: string;
 }
 
 export interface Deployment {
@@ -859,6 +864,20 @@ export function parseCortex(raw: unknown): CortexConfig | undefined {
     if (typeof idp === 'string' && /^[a-z0-9][a-z0-9-]{0,62}$/.test(idp)) out.idp = idp;
     else console.warn('[deployment] cortex idp dropped: must match ^[a-z0-9][a-z0-9-]{0,62}$');
   }
+  const label = (raw as { caseLinkLabel?: unknown }).caseLinkLabel;
+  if (label !== undefined && label !== null) {
+    const t = typeof label === 'string' ? label.trim() : '';
+    // eslint-disable-next-line no-control-regex
+    if (/^[^\x00-\x1f\x7f]{1,48}$/.test(t)) out.caseLinkLabel = t;
+    else console.warn('[deployment] cortex caseLinkLabel dropped: must be 1-48 characters, no control characters');
+  }
+  const dn = (raw as { displayName?: unknown }).displayName;
+  if (dn !== undefined && dn !== null) {
+    const t = typeof dn === 'string' ? dn.trim() : '';
+    // eslint-disable-next-line no-control-regex
+    if (/^[^\x00-\x1f\x7f]{1,64}$/.test(t)) out.displayName = t;
+    else console.warn('[deployment] cortex displayName dropped: must be 1-64 characters, no control characters');
+  }
   return out;
 }
 
@@ -873,11 +892,25 @@ export function cortexIdp(): string | undefined {
   return active.cortex?.idp;
 }
 
+/** The configured case-link label, or undefined for the default. */
+export function cortexCaseLinkLabel(): string | undefined {
+  return active.cortex?.caseLinkLabel;
+}
+
+/** The configured destination display name (tooltip only), or undefined. */
+export function cortexDisplayName(): string | undefined {
+  return active.cortex?.displayName;
+}
+
 /** TEST SEAM. Sets or clears the cortex config. */
-export function __setCortexForTest(baseUrl: string | undefined, idp?: string): void {
+export function __setCortexForTest(
+  baseUrl: string | undefined,
+  idp?: string,
+  extra?: { caseLinkLabel?: string; displayName?: string },
+): void {
   active = {
     ...active,
-    cortex: baseUrl === undefined ? undefined : idp === undefined ? { baseUrl } : { baseUrl, idp },
+    cortex: baseUrl === undefined ? undefined : { baseUrl, ...(idp === undefined ? {} : { idp }), ...extra },
   };
 }
 

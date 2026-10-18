@@ -49,7 +49,7 @@ describe('B1 parseCortex', () => {
   });
 });
 
-describe('B2 Approve in cortex', () => {
+describe('B2 Open maintenance case', () => {
   const faults = [{ component: 'comp-1', faultCode: 'F-1' }];
   const overlay = <FaultReportOverlay assetId="asset-a" components={[]} bit={null} faults={faults} />;
 
@@ -57,7 +57,7 @@ describe('B2 Approve in cortex', () => {
     __setCortexForTest(BASE);
     const fn = stubFetch(ok([row({ case_id: 'case 1/x', event_id: 'evt-9' })]));
     render(overlay);
-    const a = await screen.findByText('Approve in cortex');
+    const a = await screen.findByText('Open maintenance case');
     const link = a.closest('a')!;
     expect(link.getAttribute('href')).toBe(`${BASE}/case/case%201%2Fx`);
     expect(link.getAttribute('target')).toBe('_blank');
@@ -65,11 +65,36 @@ describe('B2 Approve in cortex', () => {
     expect(String(fn.mock.calls[0][0])).toBe('/egress/cases?asset_id=asset-a');
   });
 
+  it('configured label replaces the default', async () => {
+    __setCortexForTest(BASE, undefined, { caseLinkLabel: 'Review case' });
+    stubFetch(ok([row()]));
+    render(overlay);
+    const a = await screen.findByText('Review case');
+    expect(a.closest('a')).not.toBeNull();
+    expect(screen.queryByText('Open maintenance case')).toBeNull();
+  });
+
+  it('tooltip uses displayName, label stays generic', async () => {
+    __setCortexForTest(BASE, undefined, { displayName: 'Example Case System' });
+    stubFetch(ok([row()]));
+    render(overlay);
+    const a = await screen.findByText('Open maintenance case');
+    expect(a.closest('a')!.getAttribute('title')).toBe('Opens in Example Case System');
+  });
+
+  it('tooltip falls back to the host', async () => {
+    __setCortexForTest(BASE);
+    stubFetch(ok([row()]));
+    render(overlay);
+    const a = await screen.findByText('Open maintenance case');
+    expect(a.closest('a')!.getAttribute('title')).toBe('Opens in cortex.example.test');
+  });
+
   it('uses the newest delivered_at when several match', async () => {
     __setCortexForTest(BASE);
     stubFetch(ok([row({ case_id: 'old' }), row({ case_id: 'new', delivered_at: '2026-10-17T11:00:00Z' })]));
     render(overlay);
-    const a = await screen.findByText('Approve in cortex');
+    const a = await screen.findByText('Open maintenance case');
     expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/new`);
   });
 
@@ -79,7 +104,7 @@ describe('B2 Approve in cortex', () => {
     render(overlay);
     await waitFor(() => expect(fn).toHaveBeenCalled());
     await act(async () => {});
-    expect(screen.queryByText('Approve in cortex')).toBeNull();
+    expect(screen.queryByText('Open maintenance case')).toBeNull();
   });
 
   it('a fetch rejection draws no link and warns once', async () => {
@@ -88,7 +113,7 @@ describe('B2 Approve in cortex', () => {
     render(overlay);
     await waitFor(() => expect(fn).toHaveBeenCalled());
     await act(async () => {});
-    expect(screen.queryByText('Approve in cortex')).toBeNull();
+    expect(screen.queryByText('Open maintenance case')).toBeNull();
     expect(console.warn).toHaveBeenCalledTimes(1);
   });
 
@@ -97,7 +122,25 @@ describe('B2 Approve in cortex', () => {
     render(overlay);
     await act(async () => {});
     expect(fn).not.toHaveBeenCalled();
-    expect(screen.queryByText('Approve in cortex')).toBeNull();
+    expect(screen.queryByText('Open maintenance case')).toBeNull();
+  });
+});
+
+describe('B1b parseCortex label and displayName', () => {
+  it('keeps valid values, trimmed', () => {
+    expect(parseCortex({ baseUrl: BASE, caseLinkLabel: ' Review case ', displayName: 'Example System' }))
+      .toEqual({ baseUrl: BASE, caseLinkLabel: 'Review case', displayName: 'Example System' });
+  });
+  it('drops a 49-char label, keeps baseUrl', () => {
+    expect(parseCortex({ baseUrl: BASE, caseLinkLabel: 'x'.repeat(49) })).toEqual({ baseUrl: BASE });
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('cortex caseLinkLabel dropped'));
+  });
+  it('drops a label with a control character', () => {
+    expect(parseCortex({ baseUrl: BASE, caseLinkLabel: 'bad\u0007label' })).toEqual({ baseUrl: BASE });
+  });
+  it('drops a non-string displayName', () => {
+    expect(parseCortex({ baseUrl: BASE, displayName: 42 })).toEqual({ baseUrl: BASE });
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('cortex displayName dropped'));
   });
 });
 
@@ -121,7 +164,7 @@ describe('C1 idp marker', () => {
     const open = vi.fn();
     vi.stubGlobal('open', open);
     const { unmount } = render(overlay);
-    const a = await screen.findByText('Approve in cortex');
+    const a = await screen.findByText('Open maintenance case');
     expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/case-1?idp=example-idp`);
     unmount();
     render(panel);
@@ -138,7 +181,7 @@ describe('C1 idp marker', () => {
     const open = vi.fn();
     vi.stubGlobal('open', open);
     const { unmount } = render(overlay);
-    const a = await screen.findByText('Approve in cortex');
+    const a = await screen.findByText('Open maintenance case');
     expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/case-1`);
     unmount();
     render(panel);
@@ -152,7 +195,7 @@ describe('C1 idp marker', () => {
     __setCortexForTest(cfg.baseUrl, cfg.idp);
     stubFetch(ok([row()]));
     render(overlay);
-    const a = await screen.findByText('Approve in cortex');
+    const a = await screen.findByText('Open maintenance case');
     expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/case-1`);
     expect(console.warn).toHaveBeenCalledTimes(1);
   });
@@ -164,12 +207,12 @@ describe('C1 idp marker', () => {
     await act(async () => {});
     rerender(<FaultReportOverlay assetId="asset-a" components={[]} bit={null} faults={[...faults]} />);
     await act(async () => {});
-    expect(screen.queryByText('Approve in cortex')).toBeNull();
+    expect(screen.queryByText('Open maintenance case')).toBeNull();
     expect(console.warn).toHaveBeenCalledTimes(1);
     unmount();
     stubFetch(ok([row({ case_id: 'b'.repeat(512) })]));
     render(overlay);
-    const a = await screen.findByText('Approve in cortex');
+    const a = await screen.findByText('Open maintenance case');
     expect(a.closest('a')!.getAttribute('href')).toBe(`${BASE}/case/${'b'.repeat(512)}`);
   });
 });

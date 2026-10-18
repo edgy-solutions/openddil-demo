@@ -26,7 +26,7 @@ interface FaultReportOverlayProps {
   components: string[];
   bit: BitDiscrepancy | null;
   /** Faults on this asset's fault card (manual discrepancies); each may get
-   *  an "Approve in cortex" link once cortex holds a case for it. */
+   *  an "Open maintenance case" link once cortex holds a case for it. */
   faults?: { component: string; faultCode: string }[];
 }
 
