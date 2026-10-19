@@ -35,13 +35,13 @@ vi.mock('@react-three/postprocessing', () => ({ EffectComposer: () => null, Bloo
 vi.mock('../../TacticalMapUnderlay', () => ({ default: () => null }));
 // Terrain stays off the network: no tile or land-file fetches from an HQ test.
 vi.mock('../../terrain/theater', () => ({
-  useTheaterTerrain: () => ({ theater: null, surround: null, mask: { theater: null, surround: null }, rect: null, groundY: () => 0 }),
+  useTheaterTerrain: () => ({ theater: null, surround: null, mask: { theater: {}, surround: null }, rect: null, failed: false, groundY: () => 0 }),
   TheaterTerrain: () => null,
 }));
 
 import TheaterReadinessPosture from '../TheaterReadinessPosture';
 import { HQ_TERRAIN_PREFS_KEY } from '../../terrain/prefs';
-import { DEFAULT_TERRAIN_SOURCE, elevationCredit } from '../../../lib/terrainTiles';
+import { TERRAIN_DEFAULTS } from '../../../lib/terrainTiles';
 
 const stored = () => JSON.parse(localStorage.getItem(HQ_TERRAIN_PREFS_KEY)!);
 
@@ -82,14 +82,18 @@ describe('TheaterReadinessPosture terrain controls', () => {
     expect(screen.getByTestId('hq-terrain-exag-20').getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('shows the full credit on satellite and the elevation credit on holo, plus the coastline', () => {
+  it('labels the second style button RELIEF by default', () => {
     render(<TheaterReadinessPosture />);
-    const sat = screen.getByTestId('hq-terrain-attribution').textContent!;
-    expect(sat).toBe(`${DEFAULT_TERRAIN_SOURCE.attribution} · Coastline: Natural Earth`);
+    expect(screen.getByTestId('hq-terrain-style-sat').textContent).toBe('RELIEF');
+  });
+
+  it('shows the elevation and coastline credits, one line each, in both styles', () => {
+    render(<TheaterReadinessPosture />);
+    const lines = () => Array.from(screen.getByTestId('hq-terrain-attribution').children).map((c) => c.textContent);
+    const want = [TERRAIN_DEFAULTS.credits.elevation, TERRAIN_DEFAULTS.credits.land];
+    expect(lines()).toEqual(want);
     fireEvent.click(screen.getByTestId('hq-terrain-style-holo'));
-    const holo = screen.getByTestId('hq-terrain-attribution').textContent!;
-    expect(holo).toBe(`${elevationCredit(DEFAULT_TERRAIN_SOURCE.attribution)} · Coastline: Natural Earth`);
-    expect(holo).not.toContain('Esri');
+    expect(lines()).toEqual(want);
   });
 
   it('shows no controls and no credit without FOBs', () => {

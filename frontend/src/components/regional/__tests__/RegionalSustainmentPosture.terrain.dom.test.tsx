@@ -19,7 +19,7 @@ vi.mock('../../../hooks', () => ({
 }));
 vi.mock('../../../hooks/useEffectorLaunches', () => ({ useMunitionLaunches: () => ({ data: [] }) }));
 vi.mock('../../../hooks/useLinkIndicator', () => ({ useLinkIndicator: () => 'up' }));
-vi.mock('../../terrain/terrain', async (orig) => ({ ...(await orig<typeof import('../../terrain/terrain')>()), useTerrain: () => null, usePatches: () => [] }));
+vi.mock('../../terrain/terrain', async (orig) => ({ ...(await orig<typeof import('../../terrain/terrain')>()), useTerrain: () => ({ data: null, failed: false }), usePatches: () => [] }));
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   useFrame: () => {},
@@ -56,6 +56,14 @@ describe('RegionalSustainmentPosture terrain controls', () => {
     expect(screen.getByTestId('terrain-style-sat')).toBeTruthy();
     expect(screen.getByTestId('terrain-relief-5')).toBeTruthy();
     expect(screen.getByTestId('terrain-attribution')).toBeTruthy();
+  });
+
+  it('labels the second style button RELIEF by default and shows only the elevation credit', () => {
+    view();
+    expect(screen.getByTestId('terrain-style-sat').textContent).toBe('RELIEF');
+    const lines = Array.from(screen.getByTestId('terrain-attribution').children).map((c) => c.textContent);
+    expect(lines).toEqual(['Elevation: Terrain Tiles (AWS / Mapzen)']);
+    expect(screen.getByTestId('terrain-attribution').textContent).not.toMatch(/imagery/i);
   });
 
   it('hides HOLO and SATELLITE when terrain is off, and remembers it', () => {

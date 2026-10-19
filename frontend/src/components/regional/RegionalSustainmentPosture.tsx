@@ -72,7 +72,7 @@ import { symbolRadius } from '../../lib/symbolScale';
 import { SEV_RANK, kindsOf, shouldSplit, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
-import { elevationCredit, resolveTerrainSource } from '../../lib/terrainTiles';
+import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
 import {
   TerrainMesh, PatchMesh, boundsAround, usePatches, useTerrain, type PatchSpec,
 } from '../terrain/terrain';
@@ -80,7 +80,7 @@ import { HoloPanel, HoloTerrain, type HoloOpts } from '../terrain/holo';
 import {
   EXAGGERATIONS, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
 } from '../terrain/prefs';
-import { segBtn } from '../terrain/segBtn';
+import { segBtn, styleLabel } from '../terrain/segBtn';
 
 // Severity color tables previously lived here. Removed when AssetMarker's
 // sphereGeometry was replaced with AssetVisual (Phase 3 of the cascade
@@ -926,7 +926,9 @@ export default function RegionalSustainmentPosture({
   const terrainSource = useMemo(() => resolveTerrainSource(dep.terrain), [dep.terrain]);
   const rawBounds = terrainBounds([...regionFobs, ...fleetPositions]);
   const bounds = rawBounds ? snapBounds(rawBounds, SNAP_DEG) : null;
-  const terrainData = useTerrain(prefs.on ? bounds : null, terrainSource, proj);
+  // The slate relief is dark: lift it to read under the scene.
+  const reliefGain = terrainSource.reliefPalette === 'slate' ? 1.6 : 1;
+  const { data: terrainData, failed: terrainFailed } = useTerrain(prefs.on ? bounds : null, terrainSource, proj, reliefGain);
   const terrain = prefs.on ? terrainData : null;
   const exag = prefs.exag;
   /** Ground height at a scene point: the terrain's, or 0 on the flat ground. */
@@ -1072,7 +1074,7 @@ export default function RegionalSustainmentPosture({
   // asset with a real position. Centres are quantised so a moving asset does
   // not reload its patch every update.
   const patchSpecs = useMemo<PatchSpec[]>(() => {
-    if (!terrain || prefs.style !== 'sat') return [];
+    if (!terrain || prefs.style !== 'sat' || terrainSource.patchImageryUrl === '') return [];
     const seen = new Set<string>();
     const out: PatchSpec[] = [];
     const add = (lat: number, lon: number, halfKm: number, maxZoom: number) => {
@@ -1094,7 +1096,7 @@ export default function RegionalSustainmentPosture({
       if (add(quantise(a.lat, ASSET_PATCH_STEP), quantise(a.lon, ASSET_PATCH_STEP), 0.1, 19)) n++;
     }
     return out;
-  }, [terrain, prefs.style, clusters, renderables]);
+  }, [terrain, prefs.style, terrainSource.patchImageryUrl, clusters, renderables]);
   const patches = usePatches(patchSpecs, terrainSource);
 
   // Regional aggregator position — centroid of the region's FOBs in scene
@@ -1110,9 +1112,11 @@ export default function RegionalSustainmentPosture({
     return { x, z };
   }, [regionFobs, proj]);
 
-  const attribution = prefs.style === 'sat'
-    ? terrainSource.attribution
-    : elevationCredit(terrainSource.attribution);
+  const credits = terrainFailed ? ['Terrain data unavailable'] : creditLines(terrainSource, {
+    style: prefs.style,
+    landMask: terrainSource.basemap === 'relief' && prefs.style === 'sat' && !!terrain?.masked,
+    water: !!terrain?.water,
+  });
 
   return (
     <div className="col-span-2 panel flex flex-col relative overflow-hidden">
@@ -1351,7 +1355,7 @@ export default function RegionalSustainmentPosture({
                   onClick={() => updatePrefs({ style: 'sat' as TerrainStyle })}
                   className={segBtn(prefs.style === 'sat')}
                 >
-                  SATELLITE
+                  {styleLabel(terrainSource.basemap)}
                 </button>
               </div>
               <div role="group" aria-label="Relief exaggeration" className="flex items-center gap-1">
@@ -1379,7 +1383,7 @@ export default function RegionalSustainmentPosture({
           data-testid="terrain-attribution"
           className="absolute bottom-1 right-4 z-10 max-w-[60%] text-right text-[9px] font-mono text-slate-500 pointer-events-none"
         >
-          {attribution}
+          {credits.map((l) => <div key={l}>{l}</div>)}
         </div>
       )}
 

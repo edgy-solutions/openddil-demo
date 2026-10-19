@@ -1,23 +1,26 @@
-// Real 3D terrain for the regional scene: a Terrarium DEM heightfield, with
-// optional satellite imagery draped on it, registered with the scene projection.
+// Real 3D terrain for the regional scene: a Terrarium DEM heightfield with a basemap
+// draped on it, registered with the scene projection.
 //
-// Tile sources come from `deployment().terrain` (elevationUrl, imageryUrl,
-// attribution), falling back to the public AWS Terrarium and Esri tiles. A DDIL
-// deployment points these at tiles baked under `/deployment-overlay/`, so the map
-// needs no internet.
+// The basemap is a provider (`deployment().terrain.basemap`, see lib/terrainTiles): the
+// default `relief` is a hillshaded elevation tint with the coast from Natural Earth and
+// optional packaged OSM water, built from the DEM alone; `imagery` and `licensed` drape
+// packaged or deployment-supplied tiles. Tiles are packaged under
+// `/deployment-overlay/` and nothing is fetched from the internet unless the
+// deployment's config turns `network` on.
 import { useEffect, useMemo, useState } from 'react';
 import '@react-three/fiber'; // JSX intrinsics for mesh
 import * as THREE from 'three';
 import type { Projection } from '../../lib/geoProjection';
 import { M, SCENE_SCALE_UNITS_PER_DEG } from '../../lib/sceneScale';
 import type { Bounds } from '../../lib/terrainBounds';
+import { reliefMask } from '../../lib/landMask';
+import { reliefCanvas, reliefTexture } from '../../lib/relief';
 import {
-  DEFAULT_TERRAIN_SOURCE, decodeTerrarium, fitZoom, latToTileY, lonToTileX, tileUrl, type TerrainSource,
+  decodeTerrarium, fitZoom, latToTileY, lonToTileX, tileUrl, type TerrainSource,
 } from '../../lib/terrainTiles';
 
 export type { Bounds } from '../../lib/terrainBounds';
 export type { TerrainSource } from '../../lib/terrainTiles';
-export const ATTRIBUTION = DEFAULT_TERRAIN_SOURCE.attribution;
 
 export type TerrainData = {
   bounds: Bounds;
@@ -27,7 +30,11 @@ export type TerrainData = {
   heightM: (x: number, z: number) => number;
   /** As heightM, but unclamped: polders and sea floor keep their negative heights. */
   rawM: (x: number, z: number) => number;
-  texture: THREE.Texture; // imagery cropped exactly to bounds, SRGBColorSpace, anisotropy 8
+  texture: THREE.Texture; // basemap (relief or imagery) cropped exactly to bounds, SRGBColorSpace, anisotropy 8
+  /** True when the OSM water file was used for the relief mask (for its credit). */
+  water: boolean;
+  /** True when a land or water mask was drawn into the relief (for the coastline credit). */
+  masked: boolean;
 };
 
 const MAX_INFLIGHT = 8;
@@ -51,7 +58,7 @@ async function pool(tasks: (() => Promise<void>)[], limit: number) {
   await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
 }
 
-type Mosaic = { canvas: HTMLCanvasElement; x0: number; y0: number; z: number };
+type Mosaic = { canvas: HTMLCanvasElement; x0: number; y0: number; z: number; loaded: number };
 
 async function mosaic(b: Bounds, z: number, template: string, fill: string): Promise<Mosaic> {
   const x0 = Math.floor(lonToTileX(b.west, z));
@@ -66,17 +73,18 @@ async function mosaic(b: Bounds, z: number, template: string, fill: string): Pro
     ctx.fillStyle = fill;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
+  let loaded = 0;
   const tasks: (() => Promise<void>)[] = [];
   for (let ty = y0; ty <= y1; ty++) {
     for (let tx = x0; tx <= x1; tx++) {
       tasks.push(async () => {
         const img = await loadImage(tileUrl(template, z, tx, ty));
-        if (img) ctx.drawImage(img, (tx - x0) * 256, (ty - y0) * 256);
+        if (img) { ctx.drawImage(img, (tx - x0) * 256, (ty - y0) * 256); loaded++; }
       });
     }
   }
   await pool(tasks, MAX_INFLIGHT);
-  return { canvas, x0, y0, z };
+  return { canvas, x0, y0, z, loaded };
 }
 
 // Crop a mosaic to the exact bounds in mercator pixel space.
@@ -96,16 +104,20 @@ function crop(m: Mosaic, b: Bounds): HTMLCanvasElement {
 }
 
 export async function loadTerrain(
-  b: Bounds, proj: Projection, source: TerrainSource = DEFAULT_TERRAIN_SOURCE,
-  opts: { demZoom?: number; imgZoom?: number } = {},
+  b: Bounds, proj: Projection, source: TerrainSource,
+  opts: { demZoom?: number; imgZoom?: number; reliefGain?: number } = {},
 ): Promise<TerrainData> {
   // A large region drops to a coarser DEM zoom so the mosaic stays under 4096 px.
   const demZoom = opts.demZoom ?? fitZoom(b, 11);
-  const imgZoom = opts.imgZoom ?? fitZoom(b, 14);
-  const [dem, img] = await Promise.all([
-    mosaic(b, demZoom, source.elevationUrl, ''),
-    mosaic(b, imgZoom, source.imageryUrl, '#000'),
-  ]);
+  const relief = source.basemap === 'relief';
+  const baseZoom = Math.min(opts.imgZoom ?? fitZoom(b, 14), relief ? 13 : source.imageryMaxZoom);
+  const demP = mosaic(b, demZoom, source.elevationUrl, '');
+  // Relief is built from a DEM mosaic (the heightfield's own when the zoom matches); imagery has its own.
+  const baseP = relief
+    ? (baseZoom === demZoom ? demP : mosaic(b, baseZoom, source.elevationUrl, ''))
+    : mosaic(b, baseZoom, source.imageryUrl, '#000');
+  const [dem, base] = await Promise.all([demP, baseP]);
+  if (dem.loaded === 0) throw new Error('no elevation tiles');
 
   // DEM grid, row 0 = north, native pixel spacing
   const demCrop = crop(dem, b);
@@ -144,33 +156,47 @@ export async function loadTerrain(
   };
   const heightM = (x: number, z: number): number => Math.max(rawM(x, z), 0);
 
-  const texture = new THREE.CanvasTexture(crop(img, b));
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
-  return { bounds: b, proj, heightM, rawM, texture };
+  let texture: THREE.Texture;
+  let water = false, masked = false;
+  if (relief) {
+    const rc = crop(base, b);
+    const m = await reliefMask(b, rc.width, rc.height, source);
+    water = !!m?.water; masked = !!m;
+    texture = reliefTexture(reliefCanvas(rc, b, baseZoom, m?.canvas ?? null, source.reliefPalette, opts.reliefGain ?? 1));
+  } else {
+    texture = new THREE.CanvasTexture(crop(base, b));
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = 8;
+  }
+  return { bounds: b, proj, heightM, rawM, texture, water, masked };
 }
 
 /** Load terrain for `b` (null = none). Reloads when the box, the tile source or the projection centre changes. */
-export function useTerrain(b: Bounds | null, source: TerrainSource, proj: Projection): TerrainData | null {
+export function useTerrain(
+  b: Bounds | null, source: TerrainSource, proj: Projection, reliefGain = 1,
+): { data: TerrainData | null; failed: boolean } {
   const [data, setData] = useState<TerrainData | null>(null);
-  const { elevationUrl, imageryUrl } = source;
+  const [failed, setFailed] = useState(false);
+  const { elevationUrl, imageryUrl, landUrl, lakesUrl, waterUrl, basemap, reliefPalette, imageryMaxZoom } = source;
   const { lat, lon } = proj.center;
   const south = b?.south, west = b?.west, north = b?.north, east = b?.east;
   useEffect(() => {
     if (south === undefined || west === undefined || north === undefined || east === undefined) {
       setData(null);
+      setFailed(false);
       return;
     }
     let live = true;
-    loadTerrain({ south, west, north, east }, proj, { elevationUrl, imageryUrl, attribution: '', landUrl: '', lakesUrl: '' })
+    setFailed(false);
+    loadTerrain({ south, west, north, east }, proj, source, { reliefGain })
       .then((d) => { if (live) setData(d); else d.texture.dispose(); })
-      .catch((e) => console.error('terrain load failed', e));
+      .catch((e) => { console.warn('terrain unavailable', e); if (live) { setData(null); setFailed(true); } });
     return () => { live = false; };
-    // proj is keyed by its centre: only that and the fixed scale define it.
+    // proj is keyed by its centre, and source by the fields below: only those define them.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [south, west, north, east, elevationUrl, imageryUrl, lat, lon]);
+  }, [south, west, north, east, elevationUrl, imageryUrl, landUrl, lakesUrl, waterUrl, basemap, reliefPalette, imageryMaxZoom, reliefGain, lat, lon]);
   useEffect(() => () => data?.texture.dispose(), [data]);
-  return data;
+  return { data, failed };
 }
 
 /** A grid draped on the heightfield over `b`, with mercator-correct UVs (v = 1 at north). */
@@ -258,9 +284,9 @@ function feather(c: HTMLCanvasElement, frac: number) {
 
 export type Patch = { bounds: Bounds; texture: THREE.Texture; zoom: number };
 /** High-resolution imagery for a small area (up to z18+, ~0.4 m/px at 53°N), feathered at the edges. */
-export async function loadPatch(b: Bounds, source: TerrainSource = DEFAULT_TERRAIN_SOURCE, maxZoom = 18): Promise<Patch> {
-  const zoom = fitZoom(b, maxZoom);
-  const c = crop(await mosaic(b, zoom, source.imageryUrl, '#000'), b);
+export async function loadPatch(b: Bounds, source: TerrainSource, maxZoom = 18): Promise<Patch> {
+  const zoom = fitZoom(b, Math.min(maxZoom, source.patchMaxZoom));
+  const c = crop(await mosaic(b, zoom, source.patchImageryUrl, '#000'), b);
   feather(c, 0.1);
   const texture = new THREE.CanvasTexture(c);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -272,18 +298,21 @@ export type PatchSpec = { bounds: Bounds; maxZoom: number };
 export function usePatches(list: PatchSpec[], source: TerrainSource): Patch[] {
   const [patches, setPatches] = useState<Patch[]>([]);
   const key = JSON.stringify(list);
-  const { elevationUrl, imageryUrl } = source;
+  const { patchImageryUrl, patchMaxZoom } = source;
   useEffect(() => {
     let live = true;
+    if (!patchImageryUrl) { setPatches([]); return; }
     const specs: PatchSpec[] = JSON.parse(key);
     // Each patch appears as soon as it is ready.
     for (const { bounds, maxZoom } of specs) {
-      loadPatch(bounds, { elevationUrl, imageryUrl, attribution: '', landUrl: '', lakesUrl: '' }, maxZoom)
+      loadPatch(bounds, source, maxZoom)
         .then((p) => { if (live) setPatches((ps) => [...ps, p]); else p.texture.dispose(); })
         .catch((e) => console.error('patch load failed', e));
     }
     return () => { live = false; setPatches([]); };
-  }, [key, elevationUrl, imageryUrl]);
+    // source is read by the two fields above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, patchImageryUrl, patchMaxZoom]);
   return patches;
 }
 

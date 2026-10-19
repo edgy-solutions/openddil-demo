@@ -63,21 +63,32 @@ export interface DeploymentMap {
   };
 }
 
-/** Where the regional map's 3D terrain gets its tiles. Every field is
- *  optional; an absent one falls back to the public AWS Terrarium / Esri
- *  tiles and their attribution. A URL is a template with `{z}`, `{x}` and
- *  `{y}`. A DDIL deployment points these at tiles baked under
- *  `/deployment-overlay/` so the map needs no internet. */
+/** The basemap provider and tile sources for the 3D terrain. Every field is
+ *  optional; an absent one takes the packaged default (relief basemap, no
+ *  network, data under `/deployment-overlay/`). A tile URL is a template with
+ *  `{z}`, `{x}` and `{y}`. A remote URL is refused unless `network` is true. */
 export interface DeploymentTerrain {
+  /** `relief` (default), `imagery` (packaged open imagery) or `licensed` (deployment-supplied tile source). */
+  basemap?: 'relief' | 'imagery' | 'licensed';
+  /** Allow remote URLs. Default false. */
+  network?: boolean;
   /** Terrarium-encoded elevation tiles (PNG). */
   elevationUrl?: string;
-  /** Satellite imagery tiles (Esri `{z}/{y}/{x}` order is the template's business). */
+  /** Base imagery tiles, for the imagery and licensed basemaps. */
   imageryUrl?: string;
-  attribution?: string;
-  /** Natural Earth land TopoJSON (the HQ map's coastline). */
+  /** Close-up imagery patches. */
+  patchImageryUrl?: string;
+  imageryMaxZoom?: number;
+  patchMaxZoom?: number;
+  /** Natural Earth land TopoJSON (the coastline). */
   landUrl?: string;
   /** Natural Earth lakes TopoJSON, cut out of the land mask. */
   lakesUrl?: string;
+  /** OSM-derived sea polygons (GeoJSON or TopoJSON), used in place of the land file. */
+  waterUrl?: string;
+  reliefPalette?: 'sand' | 'slate';
+  /** Credit line per source, shown on the map. */
+  credits?: { elevation?: string; imagery?: string; patchImagery?: string; land?: string; water?: string };
 }
 
 /** Asset-liveness thresholds — how long can an asset stop talking
@@ -305,7 +316,7 @@ export interface Deployment {
    *  real geography under the FOBs. Absent => decorative fallback
    *  texture (`/map_base.png`) with low opacity. */
   map?: DeploymentMap;
-  /** Optional tile sources for the regional map's 3D terrain. */
+  /** Tile sources and basemap provider for both maps' 3D terrain. */
   terrain?: DeploymentTerrain;
   /** Asset-liveness thresholds (per-deployment override). Defaults to
    *  DEFAULT_LIVENESS when absent or any individual field is missing /
@@ -499,8 +510,10 @@ function isValidDeploymentMap(x: unknown): x is DeploymentMap {
 }
 
 /** EXPORTED FOR TESTS. A terrain block is accepted only when every field it
- *  carries is well formed: a URL must be a non-empty string holding `{z}`,
- *  `{x}` and `{y}`, attribution, land and lakes URL non-empty strings. Unknown keys are ignored.
+ *  carries is well formed: basemap and palette one of their values, network a
+ *  boolean, a tile URL a non-empty string holding `{z}`, `{x}` and `{y}`, land,
+ *  lakes and water URLs non-empty strings, zooms integers 0..22, credits a plain
+ *  object whose known keys are non-empty strings. Unknown keys are ignored.
  *  A bad block is rejected whole (the defaults apply), not half applied. */
 export function isValidDeploymentTerrain(x: unknown): x is DeploymentTerrain {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
@@ -508,7 +521,16 @@ export function isValidDeploymentTerrain(x: unknown): x is DeploymentTerrain {
   const tpl = (v: unknown) => v === undefined || (
     typeof v === 'string' && v.includes('{z}') && v.includes('{x}') && v.includes('{y}'));
   const text = (v: unknown) => v === undefined || (typeof v === 'string' && v.length > 0);
-  return tpl(t.elevationUrl) && tpl(t.imageryUrl) && text(t.attribution) && text(t.landUrl) && text(t.lakesUrl);
+  const oneOf = (v: unknown, ok: string[]) => v === undefined || (typeof v === 'string' && ok.includes(v));
+  const zoom = (v: unknown) => v === undefined || (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 22);
+  const credits = (v: unknown) => v === undefined || (
+    !!v && typeof v === 'object' && !Array.isArray(v) &&
+    ['elevation', 'imagery', 'patchImagery', 'land', 'water'].every((k) => text((v as Record<string, unknown>)[k])));
+  return oneOf(t.basemap, ['relief', 'imagery', 'licensed']) && oneOf(t.reliefPalette, ['sand', 'slate']) &&
+    (t.network === undefined || typeof t.network === 'boolean') &&
+    tpl(t.elevationUrl) && tpl(t.imageryUrl) && tpl(t.patchImageryUrl) &&
+    text(t.landUrl) && text(t.lakesUrl) && text(t.waterUrl) &&
+    zoom(t.imageryMaxZoom) && zoom(t.patchMaxZoom) && credits(t.credits);
 }
 
 /** A tier config is accepted only if it is COMPLETE and INTERNALLY
