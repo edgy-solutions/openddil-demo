@@ -9,12 +9,16 @@
 // is used, so it polls only "while the HQ view is
 // mounted" — polling stops the moment this unmounts.
 import { useEffect, useRef, useState } from 'react';
-import { createExerciseControlController, type ExerciseControlState } from '../lib/exerciseControl';
+import {
+  createExerciseControlController, type ExerciseControlState, type ResetConfirmBody,
+  type ResetPreflightView,
+} from '../lib/exerciseControl';
 
 const POLL_INTERVAL_MS = 5000;
 
 export interface UseExerciseControlResult extends ExerciseControlState {
-  runOp(op: string): void;
+  runOp(op: string, body?: ResetConfirmBody): void;
+  resetPreflight(): Promise<ResetPreflightView>;
 }
 
 export function useExerciseControl(): UseExerciseControlResult {
@@ -34,6 +38,7 @@ export function useExerciseControl(): UseExerciseControlResult {
 
   return {
     ...state,
-    runOp: (op: string) => { void controllerRef.current.runOp(op); },
+    runOp: (op: string, body?: ResetConfirmBody) => { void controllerRef.current.runOp(op, body); },
+    resetPreflight: () => controllerRef.current.resetPreflight(),
   };
 }

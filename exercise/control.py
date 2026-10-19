@@ -414,6 +414,13 @@ RESET_COMPONENT = "exercise-reset"
 REQUESTED_BY_ANNOTATION = "openddil.io/requested-by"
 RESET_SUBJECT_ENV = "RESTART_SUBJECT"
 RESET_SUBJECT_PREFIX = "reset-job:"
+RESET_CONFIRM_ENV = "RESET_CONFIRM_CANCEL_OPEN"
+CONFIRMED_OPEN_ANNOTATION = "openddil.io/confirmed-open"
+RESET_BODY_MAX_BYTES = 1024
+RESET_BODY_KEYS = frozenset({"confirm_cancel_open", "seen_open"})
+DEFAULT_RESET_MAX_OPEN = 300
+PREFLIGHT_TIMEOUT_S = 10.0
+PREFLIGHT_SQL = "select count(*) as n from sys_invocation where status <> 'completed'"
 SUBJECT_RE = re.compile(r"[A-Za-z0-9._@:-]{1,96}")
 DEFAULT_SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
 KUBE_API_TIMEOUT_S = 5.0
@@ -562,8 +569,13 @@ class ResetJobLauncher:
         newest = max(items, key=lambda j: (j.get("metadata") or {}).get("creationTimestamp") or "")
         return _job_summary(newest)
 
-    def launch(self, subject: str) -> tuple[str, str | None]:
-        """("running", existing job name) or ("created", new job name)."""
+    def launch(self, subject: str,
+               confirmed_open: int | None = None) -> tuple[str, str | None]:
+        """("running", existing job name) or ("created", new job name).
+
+        confirmed_open is not None -> the operator confirmed cancelling the
+        open Restate work they were shown: the reset container gets
+        RESET_CONFIRM_CANCEL_OPEN=1 and the Job an annotation with the count."""
         if not SUBJECT_RE.fullmatch(subject):
             raise InvalidSubject(subject[:96])
         with self._launch_lock:
@@ -575,8 +587,102 @@ class ResetJobLauncher:
                 if isinstance(entry, dict) and entry.get("name") == RESET_SUBJECT_ENV:
                     entry["value"] = RESET_SUBJECT_PREFIX + subject
             job["metadata"].setdefault("annotations", {})[REQUESTED_BY_ANNOTATION] = subject
+            if confirmed_open is not None:
+                container = job["spec"]["template"]["spec"]["containers"][0]
+                container["env"] = [e for e in container["env"]
+                                    if not (isinstance(e, dict) and e.get("name") == RESET_CONFIRM_ENV)]
+                container["env"].append({"name": RESET_CONFIRM_ENV, "value": "1"})
+                job["metadata"]["annotations"][CONFIRMED_OPEN_ANNOTATION] = str(confirmed_open)
             created = self._request("POST", self._jobs_path(), job)
             return "created", (created.get("metadata") or {}).get("name")
+
+
+# --- reset pre-flight: open Restate invocations --------------------------------
+
+def parse_restate_admin_urls(raw: str) -> list[tuple[str, str]]:
+    """"name=url,name=url" -> [(name, url)]; blank entries are skipped."""
+    out: list[tuple[str, str]] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        name, sep, url = part.partition("=")
+        if not sep or not name.strip() or not url.strip():
+            raise AdapterConfigError(f"EXERCISE_RESTATE_ADMIN_URLS entry {part[:60]!r} is not name=url")
+        out.append((name.strip(), url.strip()))
+    return out
+
+
+def _short(text: str) -> str:
+    return " ".join(str(text).split())[:120]
+
+
+def count_open(url: str, timeout: float = PREFLIGHT_TIMEOUT_S) -> int:
+    """Open (non-completed) invocations on one Restate runtime; raises on any fault."""
+    req = urllib.request.Request(
+        url.rstrip("/") + "/query", data=json.dumps({"query": PREFLIGHT_SQL}).encode("utf-8"),
+        method="POST", headers={"content-type": "application/json", "accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 -- chart-set URL
+        data = json.loads(resp.read(65536))
+    n = data["rows"][0]["n"]
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise ValueError("count is not a non-negative integer")
+    return n
+
+
+def reset_preflight(runtimes: list[tuple[str, str]], limit: int,
+                    timeout: float = PREFLIGHT_TIMEOUT_S) -> dict[str, Any]:
+    """Queries every runtime in parallel (one thread each, `timeout` per call)."""
+    results: list[dict[str, Any]] = [{"name": n, "open": None, "error": None} for n, _ in runtimes]
+
+    def work(i: int, url: str) -> None:
+        try:
+            results[i]["open"] = count_open(url, timeout)
+        except urllib.error.HTTPError as exc:
+            results[i]["error"] = _short(f"HTTP {exc.code}")
+        except Exception as exc:  # noqa: BLE001 -- any fault is "unreadable"
+            results[i]["error"] = _short(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=work, args=(i, url), daemon=True)
+               for i, (_, url) in enumerate(runtimes)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout + 5)
+    for r in results:
+        if r["open"] is None and r["error"] is None:
+            r["error"] = "no answer"
+    over = [r["name"] for r in results if r["open"] is not None and r["open"] > limit]
+    return {
+        "limit": limit,
+        "runtimes": results,
+        "over": over,
+        "open_over": sum(r["open"] for r in results if r["name"] in over),
+        "needs_confirmation": bool(over),
+        "unreadable": any(r["open"] is None for r in results),
+    }
+
+
+def parse_reset_body(raw: bytes) -> tuple[dict[str, Any] | None, str | None]:
+    """(confirmation|None, error). An empty body is a plain reset. The body is a
+    JSON object with only confirm_cancel_open (bool) and seen_open (int >= 0)."""
+    if not raw.strip():
+        return None, None
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None, "body is not JSON"
+    if not isinstance(body, dict):
+        return None, "body must be a JSON object"
+    if set(body) - RESET_BODY_KEYS:
+        return None, "unknown key in body"
+    flag = body.get("confirm_cancel_open", False)
+    seen = body.get("seen_open", 0)
+    if not isinstance(flag, bool):
+        return None, "confirm_cancel_open must be a boolean"
+    if isinstance(seen, bool) or not isinstance(seen, int) or seen < 0:
+        return None, "seen_open must be a non-negative integer"
+    return {"confirm_cancel_open": flag, "seen_open": seen}, None
 
 
 # --- app state: adapter, last command, reset record ----------------------------
@@ -589,8 +695,12 @@ class AppState:
     def __init__(self, adapter: dict[str, Any], store: RateStore, reset_record_file: str | None,
                  restart_max_zero_age_s: float = DEFAULT_RESTART_MAX_ZERO_AGE_S,
                  reset_launcher: ResetJobLauncher | None = None,
-                 sequences: dict[str, dict[str, Any]] | None = None):
+                 sequences: dict[str, dict[str, Any]] | None = None,
+                 restate_admin: list[tuple[str, str]] | None = None,
+                 reset_max_open: int = DEFAULT_RESET_MAX_OPEN):
         self.adapter = adapter
+        self.restate_admin = restate_admin or []
+        self.reset_max_open = reset_max_open
         self.sequences = sequences or {}
         # Latest sequence run record; mutated by the run thread under _lock.
         self.sequence_run: dict[str, Any] | None = None
@@ -895,6 +1005,9 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                     "sequence": app.get_sequence_run(),
                 })
                 return
+            if self.path == "/exercise/reset/preflight" and app.reset_launcher is not None:
+                self._send_json(200, reset_preflight(app.restate_admin, app.reset_max_open))
+                return
             self._send_json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
@@ -904,8 +1017,20 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                 return
             op = self.path[len("/exercise/op/"):]
             if op == "reset" and app.reset_launcher is not None:
-                self._drain()
-                self._handle_reset()
+                try:
+                    length = int(self.headers.get("Content-Length", 0) or 0)
+                except ValueError:
+                    length = RESET_BODY_MAX_BYTES + 1
+                if length < 0 or length > RESET_BODY_MAX_BYTES:
+                    self.close_connection = True
+                    self._send_json(400, {"error": "invalid body"})
+                    return
+                raw = self.rfile.read(length) if length else b""
+                confirm, err = parse_reset_body(raw)
+                if err is not None:
+                    self._send_json(400, {"error": "invalid body", "detail": err})
+                    return
+                self._handle_reset(confirm)
                 return
             if op in app.sequences:
                 self._drain()
@@ -988,7 +1113,7 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                 record = app.start_sequence(name, subject)
             self._send_json(202, record)
 
-        def _handle_reset(self) -> None:
+        def _handle_reset(self, confirm: dict[str, Any] | None = None) -> None:
             # The simulator is quieted through the adapter (pause) before the
             # reset Job is created; a failed pause refuses the reset rather
             # than resetting under a running simulator. No adapter call is
@@ -1028,7 +1153,9 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                             "reason": "pause_failed", "pause": pause})
                         return
                 try:
-                    outcome, job = app.reset_launcher.launch(subject)
+                    confirmed = (confirm["seen_open"]
+                                 if confirm is not None and confirm["confirm_cancel_open"] else None)
+                    outcome, job = app.reset_launcher.launch(subject, confirmed)
                 except InvalidSubject:
                     self._send_json(400, {"error": "invalid subject"})
                     return
@@ -1104,10 +1231,21 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 1
 
+    try:
+        restate_admin = parse_restate_admin_urls(os.getenv("EXERCISE_RESTATE_ADMIN_URLS", ""))
+        reset_max_open = int(os.getenv("EXERCISE_RESET_MAX_OPEN", str(DEFAULT_RESET_MAX_OPEN)))
+        if reset_max_open < 0:
+            raise ValueError("EXERCISE_RESET_MAX_OPEN must be >= 0")
+    except (AdapterConfigError, ValueError) as exc:
+        print(f"EXERCISE_RESTATE_ADMIN_URLS / EXERCISE_RESET_MAX_OPEN invalid: {exc}",
+              file=sys.stderr)
+        return 2
+
     store = RateStore(sources=sources, window=window, min_rate=min_rate)
     app = AppState(adapter=adapter, store=store, reset_record_file=reset_record_file,
                    restart_max_zero_age_s=max_zero_age,
-                   reset_launcher=reset_launcher, sequences=sequences)
+                   reset_launcher=reset_launcher, sequences=sequences,
+                   restate_admin=restate_admin, reset_max_open=reset_max_open)
 
     stop_event = threading.Event()
     scraper = threading.Thread(target=scrape_loop, args=(store, scrape_interval, stop_event),

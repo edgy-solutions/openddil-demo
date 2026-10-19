@@ -15,6 +15,7 @@ import { ExercisePopupView, pillState, type ExercisePopupViewProps } from '../Ex
 import type {
   ExerciseActivity, ExerciseLastCommand, ExerciseResetJob, ExerciseSequence, ExerciseSequenceRun,
 } from '../../../lib/exerciseControl';
+import type { ResetPreflight, ResetPreflightView } from '../../../lib/exerciseControl';
 
 const BASE: ExercisePopupViewProps = {
   kind: 'ok',
@@ -433,5 +434,66 @@ describe('ExercisePopupView sequences', () => {
       lastCommand: { op: 'warm_up', at: '2026-10-13T00:00:00Z', status: 202, error: null, subject: 'supervisor.1', sequence: true },
     });
     expect(html).toContain('warm_up started by supervisor.1 at 2026-10-13T00:00:00Z (sequence)');
+  });
+});
+
+describe('ExercisePopupView reset confirm: open Restate work', () => {
+  const RJ = {
+    available: true, mode: 'quick', latest: null, error: null, may_press: true,
+  } as unknown as ExerciseResetJob;
+  const render = (resetPreflight: ResetPreflightView) =>
+    renderToStaticMarkup(
+      <ExercisePopupView
+        {...BASE} open={true} resetJob={RJ} pendingConfirmOp="reset" resetPreflight={resetPreflight}
+      />,
+    );
+  const PF = (over: Partial<ResetPreflight>): ResetPreflight => ({
+    limit: 300,
+    runtimes: [{ name: 'rt-a', open: 40, error: null }, { name: 'rt-b', open: 2, error: null }],
+    over: [], open_over: 0, needs_confirmation: false, unreadable: false, ...over,
+  });
+
+  it('loading: counting line, no confirm button yet, cancel still there', () => {
+    const html = render({ kind: 'loading' });
+    expect(html).toContain('Counting open Restate work…');
+    expect(html).not.toContain('data-testid="exercise-confirm"');
+    expect(html).toContain('cancel');
+  });
+
+  it('under the limit: the existing confirm plus the count line', () => {
+    const html = render({ kind: 'ready', preflight: PF({}) });
+    expect(html).toContain('Quick reset: pause the exercise and clear its data');
+    expect(html).toContain('Open Restate invocations: 42 (limit 300)');
+    expect(html).toContain('>yes</button>');
+    expect(html).not.toContain('open invocations and reset');
+  });
+
+  it('over the limit: per-runtime counts, the cancel button and the bounded-time line', () => {
+    const pf = PF({
+      runtimes: [{ name: 'rt-a', open: 412, error: null }, { name: 'rt-b', open: 2, error: null }],
+      over: ['rt-a'], open_over: 412, needs_confirmation: true,
+    });
+    const html = render({ kind: 'ready', preflight: pf });
+    expect(html).toContain('Cancel 412 open invocations and reset');
+    expect(html).toContain('rt-a: 412 open (limit 300)');
+    expect(html).not.toContain('rt-b: 2 open');
+    expect(html).toContain('bounded in time');
+    expect(html).toContain('halts with the count left');
+    expect(html).not.toContain('>yes</button>');
+  });
+
+  it('unavailable: the warning and the plain confirm', () => {
+    const html = render({ kind: 'unavailable' });
+    expect(html).toContain('Restate count unavailable — the reset may stop at its pre-flight');
+    expect(html).toContain('>yes</button>');
+    expect(html).not.toContain('open invocations and reset');
+  });
+
+  it('other ops keep their confirm and show no Restate line', () => {
+    const html = renderToStaticMarkup(
+      <ExercisePopupView {...BASE} open={true} pendingConfirmOp="stop" resetPreflight={{ kind: 'loading' }} />,
+    );
+    expect(html).toContain('Confirm stop?');
+    expect(html).not.toContain('Restate');
   });
 });

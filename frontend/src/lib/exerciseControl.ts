@@ -14,6 +14,45 @@
 // from PDU rate — never from `last_command`. This controller carries both
 // fields through untouched and never cross-reads one into the other.
 const EXERCISE_STATUS_URL = '/exercise/status';
+const RESET_PREFLIGHT_URL = '/exercise/reset/preflight';
+
+/** GET /exercise/reset/preflight: open Restate invocations per runtime. */
+export interface ResetPreflightRuntime {
+  name: string;
+  open: number | null;
+  error: string | null;
+}
+
+export interface ResetPreflight {
+  limit: number;
+  runtimes: ResetPreflightRuntime[];
+  over: string[];
+  open_over: number;
+  needs_confirmation: boolean;
+  unreadable: boolean;
+}
+
+/** What the confirm step knows about the open work. `unavailable` covers a
+ *  403/5xx/transport fault and a count that could not be read on every
+ *  runtime: the reset may then stop at its own pre-flight. */
+export type ResetPreflightView =
+  | { kind: 'loading' }
+  | { kind: 'ready'; preflight: ResetPreflight }
+  | { kind: 'unavailable' };
+
+export interface ResetConfirmBody {
+  confirm_cancel_open: true;
+  seen_open: number;
+}
+
+/** The body the reset POST carries: ONLY when the operator was shown a count
+ *  over the limit. Every other state sends a plain reset (no body). */
+export function resetConfirmBody(view: ResetPreflightView | null): ResetConfirmBody | undefined {
+  if (!view || view.kind !== 'ready') return undefined;
+  const pf = view.preflight;
+  if (pf.unreadable || !pf.needs_confirmation) return undefined;
+  return { confirm_cancel_open: true, seen_open: pf.open_over };
+}
 
 export type ExerciseActivityState = 'running' | 'paused' | 'unknown';
 
@@ -152,7 +191,9 @@ export interface ExerciseControlController {
   /** POST /exercise/op/<op>. The gateway's own response IS the new
    *  last_command — folded into state immediately so the popup need not
    *  wait for the next poll to show what was just sent. */
-  runOp(op: string): Promise<void>;
+  runOp(op: string, body?: ResetConfirmBody): Promise<void>;
+  /** One GET /exercise/reset/preflight, folded into a view; never throws. */
+  resetPreflight(): Promise<ResetPreflightView>;
   subscribe(fn: () => void): () => void;
 }
 
@@ -191,11 +232,29 @@ export function createExerciseControlController(
     }
   }
 
-  async function runOp(op: string): Promise<void> {
+  async function resetPreflight(): Promise<ResetPreflightView> {
+    try {
+      const res = await fetchImpl(RESET_PREFLIGHT_URL, { credentials: 'same-origin' });
+      if (!res.ok) return { kind: 'unavailable' };
+      const doc = (await res.json()) as ResetPreflight;
+      if (!doc || !Array.isArray(doc.runtimes) || typeof doc.limit !== 'number') {
+        return { kind: 'unavailable' };
+      }
+      if (doc.unreadable) return { kind: 'unavailable' };
+      return { kind: 'ready', preflight: doc };
+    } catch {
+      return { kind: 'unavailable' };
+    }
+  }
+
+  async function runOp(op: string, confirmBody?: ResetConfirmBody): Promise<void> {
     try {
       const res = await fetchImpl(`/exercise/op/${encodeURIComponent(op)}`, {
         method: 'POST',
         credentials: 'same-origin',
+        ...(confirmBody
+          ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(confirmBody) }
+          : {}),
       });
       const isSequence = (state.status?.sequences ?? []).some((q) => q.name === op);
       if ((op === 'reset' || isSequence) && res.status === 403) {
@@ -262,6 +321,7 @@ export function createExerciseControlController(
     },
     poll,
     runOp,
+    resetPreflight,
     subscribe(fn: () => void) {
       listeners.add(fn);
       return () => { listeners.delete(fn); };

@@ -6,7 +6,7 @@
 // never cross-read, never inferred from each other.
 import { describe, expect, it, vi } from 'vitest';
 import {
-  createExerciseControlController, type ExerciseSequenceRun, type ExerciseStatusBody,
+  createExerciseControlController, resetConfirmBody, type ExerciseSequenceRun, type ExerciseStatusBody,
 } from '../exerciseControl';
 
 const PAUSED_STATUS: ExerciseStatusBody = {
@@ -258,5 +258,58 @@ describe('createExerciseControlController', () => {
       expect(c.getState().refusal).toBe('sequence_running');
       expect(c.getState().status?.last_command).toEqual(PAUSED_STATUS.last_command);
     });
+  });
+});
+
+describe('reset pre-flight and the confirmation body', () => {
+  const PF = (over: object) => ({
+    limit: 300,
+    runtimes: [{ name: 'rt-a', open: 412, error: null }],
+    over: ['rt-a'], open_over: 412, needs_confirmation: true, unreadable: false, ...over,
+  });
+  const preflightFrom = async (res: Response | Error) => {
+    const fetchImpl = vi.fn();
+    if (res instanceof Error) fetchImpl.mockRejectedValueOnce(res);
+    else fetchImpl.mockResolvedValueOnce(res);
+    const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+    return { view: await c.resetPreflight(), fetchImpl };
+  };
+
+  it('resetPreflight() GETs the pre-flight path and returns ready', async () => {
+    const { view, fetchImpl } = await preflightFrom(new Response(JSON.stringify(PF({})), { status: 200 }));
+    expect(fetchImpl.mock.calls[0][0]).toBe('/exercise/reset/preflight');
+    expect(view.kind).toBe('ready');
+  });
+
+  it.each([
+    ['403', new Response('{}', { status: 403 })],
+    ['500', new Response('{}', { status: 500 })],
+    ['unreadable', new Response(JSON.stringify(PF({ unreadable: true })), { status: 200 })],
+    ['malformed', new Response('{"x":1}', { status: 200 })],
+    ['transport', new Error('down')],
+  ])('resetPreflight() %s -> unavailable', async (_n, res) => {
+    const { view } = await preflightFrom(res as Response | Error);
+    expect(view).toEqual({ kind: 'unavailable' });
+  });
+
+  it('the body is built only for a ready, over-limit, fully-read pre-flight', () => {
+    const ready = (o: object) => ({ kind: 'ready' as const, preflight: PF(o) });
+    expect(resetConfirmBody(ready({}))).toEqual({ confirm_cancel_open: true, seen_open: 412 });
+    expect(resetConfirmBody(ready({ needs_confirmation: false, over: [], open_over: 0 }))).toBeUndefined();
+    expect(resetConfirmBody(ready({ unreadable: true }))).toBeUndefined();
+    expect(resetConfirmBody({ kind: 'unavailable' })).toBeUndefined();
+    expect(resetConfirmBody({ kind: 'loading' })).toBeUndefined();
+    expect(resetConfirmBody(null)).toBeUndefined();
+  });
+
+  it('runOp(reset) sends the JSON body only when given one', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 202 }));
+    const c = createExerciseControlController(fetchImpl as unknown as typeof fetch);
+    await c.runOp('reset');
+    await c.runOp('reset', { confirm_cancel_open: true, seen_open: 412 });
+    const calls = fetchImpl.mock.calls as unknown as [string, RequestInit][];
+    expect(calls[0][1].body).toBeUndefined();
+    expect(calls[1][1].body).toBe(JSON.stringify({ confirm_cancel_open: true, seen_open: 412 }));
+    expect(calls[1][0]).toBe('/exercise/op/reset');
   });
 });

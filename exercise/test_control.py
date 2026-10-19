@@ -1229,3 +1229,133 @@ def test_s8_main_refuses_a_bad_sequences_file(monkeypatch, tmp_path):
     monkeypatch.setenv("EXERCISE_SEQUENCES_FILE", str(_seq_file(tmp_path, {"Bad": GOOD_SEQ})))
     monkeypatch.delenv("EXERCISE_RESET_JOB_FILE", raising=False)
     assert control.main() == 1
+
+
+# =============================================================================
+# Reset pre-flight and the confirmed cancel
+# =============================================================================
+
+restate = {"counts": {}, "queries": []}
+
+
+class FakeRestate(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        restate["queries"].append({"path": self.path, "body": json.loads(self.rfile.read(length)),
+                                   "accept": self.headers.get("accept"),
+                                   "ctype": self.headers.get("content-type")})
+        name = self.path.split("/")[1]
+        val = restate["counts"].get(name)
+        if val == "boom":
+            out, code = b"x" * 500, 500
+        elif val == "junk":
+            out, code = b"not json", 200
+        else:
+            out, code = json.dumps({"rows": [{"n": val}]}).encode(), 200
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+@pytest.fixture
+def papp(kapp):
+    url, app_state = kapp
+    srv = _serve(FakeRestate)
+    restate.update(counts={}, queries=[])
+    base = f"http://127.0.0.1:{srv.server_port}"
+    # path prefix carries the synthetic runtime name; the stub routes on it.
+    app_state.restate_admin = [("rt-a", base + "/rt-a"), ("rt-b", base + "/rt-b")]
+    app_state.reset_max_open = 300
+    yield url, app_state
+    srv.shutdown()
+
+
+def _post_body(url, body, subject="sup@x", raw=None):
+    data = raw if raw is not None else json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header(control.SUBJECT_HEADER, subject)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def _job_env(posted):
+    return posted["body"]["spec"]["template"]["spec"]["containers"][0]["env"]
+
+
+def test_preflight_under_limit(papp):
+    url, _ = papp
+    restate["counts"] = {"rt-a": 3, "rt-b": 300}
+    code, body = _get(url + "/exercise/reset/preflight")
+    assert code == 200
+    assert body == {"limit": 300, "runtimes": [{"name": "rt-a", "open": 3, "error": None},
+                                               {"name": "rt-b", "open": 300, "error": None}],
+                    "over": [], "open_over": 0, "needs_confirmation": False, "unreadable": False}
+    q = restate["queries"][0]
+    assert q["body"] == {"query": "select count(*) as n from sys_invocation where status <> 'completed'"}
+    assert q["path"].endswith("/query") and q["accept"] == "application/json"
+
+
+def test_preflight_over_limit_sums_only_runtimes_over(papp):
+    url, _ = papp
+    restate["counts"] = {"rt-a": 301, "rt-b": 40}
+    _, body = _get(url + "/exercise/reset/preflight")
+    assert body["over"] == ["rt-a"] and body["open_over"] == 301
+    assert body["needs_confirmation"] is True and body["unreadable"] is False
+
+
+def test_preflight_one_unreadable_and_error_is_short(papp):
+    url, _ = papp
+    restate["counts"] = {"rt-a": "boom", "rt-b": 500}
+    _, body = _get(url + "/exercise/reset/preflight")
+    a, b = body["runtimes"]
+    assert a["open"] is None and a["error"] and len(a["error"]) <= 120 and "xxxx" not in a["error"]
+    assert b["open"] == 500
+    assert body["unreadable"] is True and body["over"] == ["rt-b"]
+    assert body["needs_confirmation"] is True and body["open_over"] == 500
+    restate["counts"] = {"rt-a": "junk", "rt-b": 1}
+    _, body = _get(url + "/exercise/reset/preflight")
+    assert body["runtimes"][0]["open"] is None and body["unreadable"] is True
+
+
+def test_reset_with_confirm_sets_env_and_annotation(papp):
+    url, _ = papp
+    code, body = _post_body(url + "/exercise/op/reset",
+                            {"confirm_cancel_open": True, "seen_open": 412})
+    assert code == 202
+    posted = kube["posts"][0]
+    assert {"name": "RESET_CONFIRM_CANCEL_OPEN", "value": "1"} in _job_env(posted)
+    assert posted["body"]["metadata"]["annotations"]["openddil.io/confirmed-open"] == "412"
+
+
+@pytest.mark.parametrize("body", [None, {}, {"confirm_cancel_open": False, "seen_open": 9}])
+def test_reset_without_confirm_is_the_plain_job(papp, body):
+    url, _ = papp
+    code, _b = _post_body(url + "/exercise/op/reset", body, raw=b"" if body is None else None)
+    assert code == 202
+    posted = kube["posts"][0]
+    assert all(e["name"] != "RESET_CONFIRM_CANCEL_OPEN" for e in _job_env(posted))
+    assert "openddil.io/confirmed-open" not in posted["body"]["metadata"]["annotations"]
+
+
+@pytest.mark.parametrize("raw", [
+    b"[1]", b"7", b"not json",
+    b'{"confirm_cancel_open": "yes", "seen_open": 1}',
+    b'{"confirm_cancel_open": true, "seen_open": -1}',
+    b'{"confirm_cancel_open": true, "seen_open": 1.5}',
+    b'{"confirm_cancel_open": true, "seen_open": true}',
+    b'{"confirm_cancel_open": true, "seen_open": 1, "extra": 1}',
+    b'{"confirm_cancel_open": true, "seen_open": 1, "pad": "' + b"a" * 1100 + b'"}',
+])
+def test_reset_invalid_body_is_400_no_pause_no_job(papp, raw):
+    url, app_state = papp
+    code, _b = _post_body(url + "/exercise/op/reset", None, raw=raw)
+    assert code == 400
+    assert kube["posts"] == [] and state["adapter_calls"] == []
+    assert app_state.get_last_command() is None

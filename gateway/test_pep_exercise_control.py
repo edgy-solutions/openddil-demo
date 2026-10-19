@@ -469,3 +469,68 @@ def test_status_with_reset_job_only_is_annotated_as_before(pep_url):
         assert json.loads(body) == {"reset_job": {"state": "idle", "may_press": False}}
     finally:
         state["body"] = ORIGINAL_BODY
+
+
+# --- reset pre-flight and the reset's confirmation body ---------------------
+
+PREFLIGHT_DOC = (b'{"limit": 300, "runtimes": [{"name": "rt-a", "open": 5, "error": null}], '
+                 b'"over": [], "open_over": 0, "needs_confirmation": false, "unreadable": false}')
+
+
+def test_preflight_non_supervisor_is_403_zero_calls(pep_url):
+    code, body = _get(pep_url + "/exercise/reset/preflight", "operator.1")
+    assert code == 403
+    assert json.loads(body)["reason"] == RESET_REFUSAL
+    assert state["calls"] == []
+
+
+def test_preflight_unknown_subject_is_403_zero_calls(pep_url):
+    code, _ = _get(pep_url + "/exercise/reset/preflight", "nobody.9")
+    assert code == 403 and state["calls"] == []
+
+
+def test_preflight_supervisor_is_forwarded_and_relayed(pep_url):
+    state["body"] = PREFLIGHT_DOC
+    try:
+        code, body = _get(pep_url + "/exercise/reset/preflight", "supervisor.1")
+    finally:
+        state["body"] = ORIGINAL_BODY
+    assert code == 200 and body == PREFLIGHT_DOC
+    assert len(state["calls"]) == 1
+    call = state["calls"][0]
+    assert (call["method"], call["path"]) == ("GET", "/exercise/reset/preflight")
+    assert call["subject_header"] == "supervisor.1"
+
+
+def test_reset_body_is_forwarded_verbatim(pep_url):
+    state["status"] = 202
+    raw = b'{"confirm_cancel_open": true, "seen_open": 412}'
+    code, _ = _post(pep_url + "/exercise/op/reset", "supervisor.1", raw)
+    assert code == 202
+    assert len(state["calls"]) == 1 and state["calls"][0]["body"] == raw
+
+
+@pytest.mark.parametrize("raw", [
+    b"[1]", b"not json",
+    b'{"confirm_cancel_open": "yes"}',
+    b'{"confirm_cancel_open": true, "seen_open": -3}',
+    b'{"confirm_cancel_open": true, "seen_open": true}',
+    b'{"confirm_cancel_open": true, "other": 1}',
+    b'{"confirm_cancel_open": true, "seen_open": 1, "pad": "' + b"a" * 1100 + b'"}',
+])
+def test_reset_invalid_body_is_400_not_forwarded(pep_url, raw):
+    code, _ = _post(pep_url + "/exercise/op/reset", "supervisor.1", raw)
+    assert code == 400
+    assert state["calls"] == []
+
+
+def test_reset_body_from_non_supervisor_is_403_not_400(pep_url):
+    code, _ = _post(pep_url + "/exercise/op/reset", "operator.1", b"not json")
+    assert code == 403 and state["calls"] == []
+
+
+def test_non_reset_op_still_forwards_no_body(pep_url):
+    code, _ = _post(pep_url + "/exercise/op/pause", "supervisor.1",
+                    b'{"confirm_cancel_open": true, "seen_open": 1}')
+    assert code == 200
+    assert len(state["calls"]) == 1 and state["calls"][0]["body"] == b""

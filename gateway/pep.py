@@ -682,6 +682,29 @@ def _parse_roles_csv(raw: str) -> frozenset:
 EXERCISE_OPEN_OPS = frozenset({"pause", "resume", "stop", "restart", "run"})
 # Roles that may press a gated exercise action (name kept for the env var).
 EXERCISE_RESET_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_EXERCISE_RESET_ROLES", "supervisor"))
+# The reset's optional JSON body (the operator's confirmation to cancel open
+# Restate work). Same rules as exercise/control.py, which validates again.
+EXERCISE_RESET_BODY_MAX = 1024
+EXERCISE_RESET_BODY_KEYS = frozenset({"confirm_cancel_open", "seen_open"})
+EXERCISE_PREFLIGHT_PATH = "/exercise/reset/preflight"
+EXERCISE_PREFLIGHT_TIMEOUT_S = 20.0
+
+
+def _valid_reset_body(raw: bytes) -> bool:
+    if not raw.strip():
+        return True
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return False
+    if not isinstance(body, dict) or set(body) - EXERCISE_RESET_BODY_KEYS:
+        return False
+    flag = body.get("confirm_cancel_open", False)
+    seen = body.get("seen_open", 0)
+    return (isinstance(flag, bool)
+            and isinstance(seen, int) and not isinstance(seen, bool) and seen >= 0)
+
+
 EXERCISE_RESET_REFUSAL = ("Restart exercise needs the supervisor login: it destroys "
                           "exercise state and takes about 13 minutes.")
 
@@ -2562,7 +2585,7 @@ class Pep(BaseHTTPRequestHandler):
         path = parsed.path
         op: str | None = None
         if method == "GET":
-            if path != "/exercise/status":
+            if path not in ("/exercise/status", EXERCISE_PREFLIGHT_PATH):
                 self._deny("unknown path", subject="", resource=path, status=404,
                            marker="GATEWAY REFUSED (PRE-PDP)")
                 return
@@ -2585,7 +2608,22 @@ class Pep(BaseHTTPRequestHandler):
                        resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
             return
 
-        if method == "POST":
+        reset_body = b""
+        reset_body_ok = True
+        if method == "POST" and op == "reset":
+            # The reset alone forwards the client's body (the confirmation to
+            # cancel open Restate work), validated below once the caller is
+            # known. Over the cap: not read, the connection is closed.
+            length = self._content_length()
+            if length > EXERCISE_RESET_BODY_MAX or length < 0:
+                reset_body_ok = False
+                self.close_connection = True
+            elif length:
+                try:
+                    reset_body = self.rfile.read(length)
+                except Exception:  # noqa: BLE001 -- treated as an invalid body
+                    reset_body_ok = False
+        elif method == "POST":
             # The client's own body is never forwarded -- exercise/control.py
             # takes the op from the path and the body from the adapter
             # file, not from the caller. Drained so a kept-alive socket
@@ -2634,17 +2672,38 @@ class Pep(BaseHTTPRequestHandler):
                        [("Content-Type", "application/json")])
             return
 
+        # The reset pre-flight is gated exactly like the reset itself.
+        if method == "GET" and path == EXERCISE_PREFLIGHT_PATH and not may_reset:
+            log.warning("EXERCISE RESET PREFLIGHT REFUSED subject=%s role=%s", subject, role)
+            self._send(403, json.dumps({"error": "forbidden",
+                                        "reason": EXERCISE_RESET_REFUSAL}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        if op == "reset" and not (reset_body_ok and _valid_reset_body(reset_body)):
+            self._send(400, json.dumps({"error": "invalid body"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
         # Step: forward, to exercise/control.py's own HTTP surface alone.
         # `X-OpenDDIL-Subject` is set from THIS session, always -- any
         # client-sent value on the incoming request was never read above
         # and is overwritten here, never trusted.
-        url = (EXERCISE_CONTROL_URL + "/exercise/status" if method == "GET"
+        url = (EXERCISE_CONTROL_URL + path if method == "GET"
                else EXERCISE_CONTROL_URL + "/exercise/op/" + op)
+        headers = {SUBJECT_HEADER: subject}
+        if op == "reset" and reset_body.strip():
+            headers["Content-Type"] = "application/json"
         req = urllib.request.Request(
-            url, data=(b"" if method == "POST" else None),
-            headers={SUBJECT_HEADER: subject}, method=method,
+            url, data=(reset_body if op == "reset" else b"" if method == "POST" else None),
+            headers=headers, method=method,
         )
-        timeout = EXERCISE_OP_TIMEOUT_S if method == "POST" else EXERCISE_STATUS_TIMEOUT_S
+        if method == "POST":
+            timeout = EXERCISE_OP_TIMEOUT_S
+        elif path == EXERCISE_PREFLIGHT_PATH:
+            timeout = EXERCISE_PREFLIGHT_TIMEOUT_S
+        else:
+            timeout = EXERCISE_STATUS_TIMEOUT_S
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 upstream_status = resp.status

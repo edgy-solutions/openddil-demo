@@ -21,6 +21,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useExerciseControl } from '../../hooks/useExerciseControl';
+import { resetConfirmBody, type ResetPreflightView } from '../../lib/exerciseControl';
 import type {
   ExerciseActivity, ExerciseLastCommand, ExerciseReset, ExerciseResetJob, ExerciseSequence,
   ExerciseSequenceRun, ExerciseSequenceStep,
@@ -91,6 +92,8 @@ export interface ExercisePopupViewProps {
   rootRef?: Ref<HTMLDivElement>;
   pillRef?: Ref<HTMLButtonElement>;
   pendingConfirmOp: string | null;
+  /** Pre-flight of the pending reset; null when no reset confirm is pending. */
+  resetPreflight?: ResetPreflightView | null;
   onOpClick: (op: string) => void;
   onConfirm: () => void;
   onCancelConfirm: () => void;
@@ -173,9 +176,41 @@ function SequenceRunPanel({ run }: { run: ExerciseSequenceRun }) {
   );
 }
 
+function ResetPreflightNote({ view }: { view: ResetPreflightView | null }) {
+  if (!view || view.kind === 'loading') {
+    return <div className="mt-0.5" data-testid="exercise-preflight">Counting open Restate work…</div>;
+  }
+  if (view.kind === 'unavailable') {
+    return (
+      <div className="mt-0.5" data-testid="exercise-preflight">
+        Restate count unavailable — the reset may stop at its pre-flight
+      </div>
+    );
+  }
+  const pf = view.preflight;
+  if (pf.needs_confirmation) {
+    return (
+      <div className="mt-0.5" data-testid="exercise-preflight">
+        {pf.runtimes.filter((r) => pf.over.includes(r.name)).map((r) => (
+          <div key={r.name}>{r.name}: {r.open} open (limit {pf.limit})</div>
+        ))}
+        <div>
+          The cancel is bounded in time; if it runs out the reset halts with the count left.
+        </div>
+      </div>
+    );
+  }
+  const total = pf.runtimes.reduce((n, r) => n + (r.open ?? 0), 0);
+  return (
+    <div className="mt-0.5" data-testid="exercise-preflight">
+      Open Restate invocations: {total} (limit {pf.limit})
+    </div>
+  );
+}
+
 export function ExercisePopupView({
   kind, ops, activity, lastCommand, reset, resetJob, sequences, sequence, refusal, stale, open, onToggleOpen,
-  onClose, rootRef, pillRef, pendingConfirmOp, onOpClick, onConfirm, onCancelConfirm,
+  onClose, rootRef, pillRef, pendingConfirmOp, resetPreflight, onOpClick, onConfirm, onCancelConfirm,
 }: ExercisePopupViewProps) {
   const popId = useId();
   if (kind === 'absent' || kind === 'loading') return null;
@@ -189,6 +224,9 @@ export function ExercisePopupView({
   const sequenceList = sequences ?? [];
   const sequenceRunning = sequence?.state === 'running';
   const pendingSequence = sequenceList.find((q) => q.name === pendingConfirmOp);
+  const resetLoading = pendingConfirmOp === 'reset' && resetPreflight?.kind === 'loading';
+  const overBody = pendingConfirmOp === 'reset' ? resetConfirmBody(resetPreflight ?? null) : undefined;
+  const overLimit = overBody && resetPreflight?.kind === 'ready' ? resetPreflight.preflight : null;
 
   const ps: PillState = forbidden
     ? { icon: CircleHelp, word: 'EXERCISE', tone: 'neutral' }
@@ -349,8 +387,13 @@ export function ExercisePopupView({
                   : pendingSequence
                     ? `${pendingSequence.label}: run the sequence? It changes the exercise for every viewer.`
                     : `Confirm ${pendingConfirmOp}?`}
-                <button type="button" onClick={onConfirm} className="ml-2 underline">yes</button>
+                {!resetLoading && (
+                  <button type="button" onClick={onConfirm} className="ml-2 underline" data-testid="exercise-confirm">
+                    {overLimit ? `Cancel ${overLimit.open_over} open invocations and reset` : 'yes'}
+                  </button>
+                )}
                 <button type="button" onClick={onCancelConfirm} className="ml-2 underline">cancel</button>
+                {pendingConfirmOp === 'reset' && resetPreflight && <ResetPreflightNote view={resetPreflight} />}
               </div>
             )}
 
@@ -375,15 +418,19 @@ export function ExercisePopupView({
 }
 
 export default function ExercisePopup() {
-  const { kind, status, stale, refusal, runOp } = useExerciseControl();
+  const { kind, status, stale, refusal, runOp, resetPreflight } = useExerciseControl();
   const [open, setOpen] = useState(false);
   const [pendingConfirmOp, setPendingConfirmOp] = useState<string | null>(null);
+  const [preflight, setPreflight] = useState<ResetPreflightView | null>(null);
+  const preflightSeq = useRef(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const pillRef = useRef<HTMLButtonElement>(null);
 
   const close = useCallback(() => {
     setOpen(false);
     setPendingConfirmOp(null);
+    setPreflight(null);
+    preflightSeq.current += 1;
   }, []);
 
   useEffect(() => {
@@ -407,14 +454,35 @@ export default function ExercisePopup() {
   function handleOpClick(op: string): void {
     if (CONFIRM_OPS.has(op) || (status?.sequences ?? []).some((q) => q.name === op)) {
       setPendingConfirmOp(op);
+      if (op === 'reset') {
+        // Count the open Restate work first; a late answer for an earlier
+        // press (or a cancelled confirm) is dropped.
+        const seq = ++preflightSeq.current;
+        setPreflight({ kind: 'loading' });
+        void resetPreflight().then((view) => {
+          if (preflightSeq.current === seq) setPreflight(view);
+        });
+      }
       return;
     }
     runOp(op);
   }
 
   function handleConfirm(): void {
-    if (pendingConfirmOp) runOp(pendingConfirmOp);
+    if (pendingConfirmOp === 'reset') {
+      runOp('reset', resetConfirmBody(preflight));
+    } else if (pendingConfirmOp) {
+      runOp(pendingConfirmOp);
+    }
     setPendingConfirmOp(null);
+    setPreflight(null);
+    preflightSeq.current += 1;
+  }
+
+  function handleCancelConfirm(): void {
+    setPendingConfirmOp(null);
+    setPreflight(null);
+    preflightSeq.current += 1;
   }
 
   return (
@@ -435,9 +503,10 @@ export default function ExercisePopup() {
       rootRef={rootRef}
       pillRef={pillRef}
       pendingConfirmOp={pendingConfirmOp}
+      resetPreflight={preflight}
       onOpClick={handleOpClick}
       onConfirm={handleConfirm}
-      onCancelConfirm={() => setPendingConfirmOp(null)}
+      onCancelConfirm={handleCancelConfirm}
     />
   );
 }
