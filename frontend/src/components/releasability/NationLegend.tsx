@@ -18,19 +18,22 @@ interface Props {
   viewerNations?: string[];
   /** The deployment's palette, from the session; colours come only from it. */
   registry?: NationRegistryEntry[];
+  /** When set, the legend is a labelled block (label over keys) that lines up
+   *  with a stat beside it, with a divider on its right. */
+  title?: string;
   className?: string;
 }
 
-export default function NationLegend({ assets, viewerNations = [], registry = [], className = '' }: Props) {
+export default function NationLegend({ assets, viewerNations = [], registry = [], title, className = '' }: Props) {
   const nations = nationsInFleet(assets, registry);
   if (nations.length === 0) return null;
 
   const anyShared = viewerNations.length > 0
     && assets.some((a) => isSharedWith(a, viewerNations));
 
-  return (
-    <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]
-                     text-slate-400 ${className}`}>
+  const keys = (
+    <div className={`flex flex-wrap items-center gap-x-3 gap-y-1
+                     ${title ? 'min-h-7 justify-end text-[11px]' : `text-[10px] ${className}`} text-slate-400`}>
       {nations.map((n) => (
         <span key={n.code} className="flex items-center gap-1">
           <span className={`h-2 w-2 rounded-full ${n.dot}`} style={n.dotStyle} />
@@ -50,6 +53,14 @@ export default function NationLegend({ assets, viewerNations = [], registry = []
           <span className="text-slate-500">released to you by another nation</span>
         </span>
       )}
+    </div>
+  );
+
+  if (!title) return keys;
+  return (
+    <div data-testid="nation-legend" className={`text-right border-r border-slate-700 pr-4 ${className}`}>
+      <div className="text-xs text-slate-500 mb-1">{title}</div>
+      {keys}
     </div>
   );
 }

@@ -536,7 +536,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
                   by the gateway (ADR-0029 §1), and a second filter here would
                   be a second authorization decision that nobody reviewed. */}
               <NationLegend assets={fleetForPicker} viewerNations={session.nations}
-                            registry={session.nationRegistry} />
+                            registry={session.nationRegistry} title="NATIONS" />
               <div className="text-right">
                 <div className="text-xs text-slate-500 mb-1">LOCAL TIME</div>
                 <div className="text-xl font-bold text-slate-200">{clock}</div>
