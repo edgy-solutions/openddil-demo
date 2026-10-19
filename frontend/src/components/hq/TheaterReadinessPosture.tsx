@@ -33,8 +33,8 @@ import { TheaterTerrain, useTheaterTerrain } from '../terrain/theater';
 import {
   EXAGGERATIONS, loadHqTerrainPrefs, saveHqTerrainPrefs, type Exaggeration, type HqTerrainPrefs,
 } from '../terrain/prefs';
-import { segBtn } from '../terrain/segBtn';
-import { elevationCredit, resolveTerrainSource } from '../../lib/terrainTiles';
+import { segBtn, styleLabel } from '../terrain/segBtn';
+import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
 import { deployment, edgeAttachment, type Fob, type EdgeAttachment } from '../../deployment';
 import {
   useClassifiedFleet,
@@ -475,9 +475,13 @@ export default function TheaterReadinessPosture() {
     points: terrainPoints, projection: proj, source: terrainSource, style: tp.style, exag: tp.exag, on: terrainOn,
   });
   const { groundY } = terrain;
-  const attribution = (tp.style === 'sat'
-    ? terrainSource.attribution
-    : elevationCredit(terrainSource.attribution)) + ' · Coastline: Natural Earth';
+  // A failed theater load falls back to the terrain-off scene; the credit says so.
+  const terrainShown = terrainOn && !terrain.failed;
+  const credits = terrain.failed ? ['Terrain data unavailable'] : creditLines(terrainSource, {
+    style: tp.style,
+    landMask: terrain.mask.theater !== null || terrain.mask.surround !== null,
+    water: !!terrain.theater?.water,
+  });
 
   const metrics = useMemo(
     () => buildFobMetrics(fobs, fleet.data, logistics.data, tracks.data, HQ_SCENE_SCALE_UNITS_PER_DEG),
@@ -709,7 +713,7 @@ export default function TheaterReadinessPosture() {
                     onClick={() => updateTp({ style: 'sat' })}
                     className={segBtn(tp.style === 'sat')}
                   >
-                    SATELLITE
+                    {styleLabel(terrainSource.basemap)}
                   </button>
                 </div>
                 <div role="group" aria-label="Relief exaggeration" className="flex items-center gap-1">
@@ -737,7 +741,7 @@ export default function TheaterReadinessPosture() {
           data-testid="hq-terrain-attribution"
           className="absolute bottom-1 right-4 z-10 max-w-[60%] text-right text-[9px] font-mono text-slate-500 pointer-events-none"
         >
-          {attribution}
+          {credits.map((l) => <div key={l}>{l}</div>)}
         </div>
       )}
 
@@ -773,7 +777,7 @@ export default function TheaterReadinessPosture() {
           <OrbitControls enableDamping dampingFactor={0.05} maxDistance={1200} minDistance={200} maxPolarAngle={Math.PI / 2 - 0.1} target={[0, 0, 0]} />
 
           {/* Flat-ground decoration gives way to the terrain. */}
-          {!terrainOn && (<>
+          {!terrainShown && (<>
             <Grid
               position={[0, -2, 0]}
               args={[2000, 2000]}
@@ -906,7 +910,7 @@ export default function TheaterReadinessPosture() {
           ))}
 
           <React.Suspense fallback={null}>
-            {terrainOn
+            {terrainShown
               ? <TheaterTerrain data={terrain} style={tp.style} exag={tp.exag} />
               : <TacticalMapUnderlay projection={proj} />}
           </React.Suspense>

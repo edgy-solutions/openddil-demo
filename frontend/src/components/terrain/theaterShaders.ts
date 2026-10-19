@@ -26,7 +26,7 @@ void main() {
   float m = smoothstep(-60.0, 400.0, sd);
   vec3 col = texture2D(uMap, vUv).rgb * vec3(0.66, 0.71, 0.77);
   col *= 0.6 + 0.4 * max(dot(normalize(vN), normalize(vec3(0.4, 1.0, 0.4))), 0.0);
-  // One flat sea colour from the land mask: Esri's sea tone changes between zooms,
+  // One flat sea colour from the land mask: a tile source's sea tone can change between zooms,
   // which showed as a box edge offshore between the two layers.
   float land = smoothstep(0.35, 0.65, texture2D(uMask, vUv).r);
   col = mix(vec3(0.035, 0.06, 0.095), col, land);

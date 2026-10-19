@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeLand, drawMask, mercatorV, type Ring, type Topology } from '../landMask';
+import { decodeLand, decodeRings, drawMask, mercatorV, type Ring, type Topology } from '../landMask';
 
 // Scale 1, translate (10, 20). Arc 0: (10,20) (12,20) (12,22). Arc 1: (12,22) (10,22) (10,20).
 // Arc 2 stands alone at (15,25).
@@ -96,5 +96,28 @@ describe('drawMask', () => {
     drawMask(ctx, b, 100, 100, [square(2, 45)], []);
     expect(log.fills).toHaveLength(1);
     expect(log.fills[0].style).toBe('#fff');
+  });
+});
+
+describe('decodeRings', () => {
+  const sq: Ring = [[0, 0], [1, 0], [1, 1], [0, 0]];
+  const hole: Ring = [[0.2, 0.2], [0.4, 0.2], [0.4, 0.4], [0.2, 0.2]];
+  it('reads GeoJSON Polygon and MultiPolygon, in a FeatureCollection or bare', () => {
+    const fc = {
+      type: 'FeatureCollection',
+      features: [
+        { type: 'Feature', geometry: { type: 'Polygon', coordinates: [sq, hole] } },
+        { type: 'Feature', geometry: { type: 'MultiPolygon', coordinates: [[sq], [hole]] } },
+      ],
+    };
+    expect(decodeRings(fc)).toEqual([sq, hole, sq, hole]);
+    expect(decodeRings({ type: 'Polygon', coordinates: [sq] })).toEqual([sq]);
+  });
+  it('ignores non-polygon features', () => {
+    expect(decodeRings({ type: 'Feature', geometry: { type: 'Point', coordinates: [0, 0] } })).toEqual([]);
+  });
+  it('reads TopoJSON as decodeLand does', () => {
+    const t = topo({ land: { type: 'Polygon', arcs: [[0, 1]] } });
+    expect(decodeRings(t)).toEqual(decodeLand(t));
   });
 });

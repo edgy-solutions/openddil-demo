@@ -50,19 +50,67 @@ export function mercatorV(lat: number, b: Bounds): number {
   return 1 - (latToTileY(lat, 0) - yN) / (latToTileY(b.south, 0) - yN);
 }
 
-// One fetch and decode per URL; a failure is dropped so the next call retries.
+interface GeoGeometry { type: string; coordinates?: unknown; geometries?: GeoGeometry[]; geometry?: GeoGeometry; features?: GeoGeometry[] }
+
+/** Every ring of every Polygon and MultiPolygon in a GeoJSON object (Feature, FeatureCollection, geometry) or a TopoJSON topology, as [lon, lat]. */
+export function decodeRings(json: unknown): Ring[] {
+  const j = json as Topology & GeoGeometry;
+  if (j && j.transform && j.arcs) return decodeLand(j);
+  const rings: Ring[] = [];
+  const walk = (g: GeoGeometry | undefined) => {
+    if (!g) return;
+    if (g.type === 'FeatureCollection') g.features?.forEach(walk);
+    else if (g.type === 'Feature') walk(g.geometry);
+    else if (g.type === 'GeometryCollection') g.geometries?.forEach(walk);
+    else if (g.type === 'Polygon') (g.coordinates as Ring[]).forEach((r) => rings.push(r));
+    else if (g.type === 'MultiPolygon') (g.coordinates as Ring[][]).forEach((p) => p.forEach((r) => rings.push(r)));
+  };
+  walk(j);
+  return rings;
+}
+
+// One fetch and decode per URL (shared by the HQ and regional layers); a failure is dropped so the next call retries.
 const cache = new Map<string, Promise<Ring[]>>();
 function rings(url: string): Promise<Ring[]> {
   let p = cache.get(url);
   if (!p) {
-    p = fetch(url).then((r) => r.json() as Promise<Topology>).then(decodeLand);
+    p = fetch(url).then((r) => { if (r.ok === false) throw new Error(`${r.status} ${url}`); return r.json(); }).then(decodeRings);
     p.catch(() => cache.delete(url));
     cache.set(url, p);
   }
   return p;
 }
 
+// Each ring's bbox, computed once.
+type Box = { west: number; south: number; east: number; north: number };
+const boxes = new WeakMap<Ring, Box>();
+function boxOf(r: Ring): Box {
+  let q = boxes.get(r);
+  if (!q) {
+    q = { west: Infinity, south: Infinity, east: -Infinity, north: -Infinity };
+    for (const [lon, lat] of r) { q.west = Math.min(q.west, lon); q.east = Math.max(q.east, lon); q.south = Math.min(q.south, lat); q.north = Math.max(q.north, lat); }
+    boxes.set(r, q);
+  }
+  return q;
+}
+
 let lakesWarned = false;
+
+function fillRings(ctx: CanvasRenderingContext2D, b: Bounds, w: number, h: number, rs: Ring[], color: string) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (const r of rs) {
+    const q = boxOf(r);
+    if (q.east < b.west || q.west > b.east || q.north < b.south || q.south > b.north) continue;
+    r.forEach(([lon, lat], i) => {
+      const x = ((lon - b.west) / (b.east - b.west)) * w;
+      const y = (1 - mercatorV(lat, b)) * h;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+  }
+  ctx.fill('evenodd');
+}
 
 /** Draws the mask: black sea, land rings white, then lake rings black (one evenodd path each,
  *  rings outside `b` skipped), Web-Mercator in y, ~1.5 px blur. */
@@ -72,24 +120,37 @@ export function drawMask(
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, w, h);
   ctx.filter = 'blur(1.5px)';
-  const fillRings = (rs: Ring[], color: string) => {
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    for (const r of rs) {
-      let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity;
-      for (const [lon, lat] of r) { west = Math.min(west, lon); east = Math.max(east, lon); south = Math.min(south, lat); north = Math.max(north, lat); }
-      if (east < b.west || west > b.east || north < b.south || south > b.north) continue;
-      r.forEach(([lon, lat], i) => {
-        const x = ((lon - b.west) / (b.east - b.west)) * w;
-        const y = (1 - mercatorV(lat, b)) * h;
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.closePath();
-    }
-    ctx.fill('evenodd');
-  };
-  fillRings(land, '#fff');
-  if (lakes.length) fillRings(lakes, '#000');
+  fillRings(ctx, b, w, h, land, '#fff');
+  if (lakes.length) fillRings(ctx, b, w, h, lakes, '#000');
+}
+
+/** As drawMask, from sea polygons: all white, the water rings black, then lakes black. */
+export function drawWaterMask(
+  ctx: CanvasRenderingContext2D, b: Bounds, w: number, h: number, water: Ring[], lakes: Ring[],
+): void {
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.filter = 'blur(1.5px)';
+  fillRings(ctx, b, w, h, water, '#000');
+  if (lakes.length) fillRings(ctx, b, w, h, lakes, '#000');
+}
+
+/** A `w` x `h` land/water mask canvas (white land) over `b` for the relief. The water file, when it loads,
+ *  replaces the land file; a missing one falls back to land and lakes, and a missing land file to no mask. */
+export async function reliefMask(
+  b: Bounds, w: number, h: number, urls: { landUrl: string; lakesUrl: string; waterUrl: string },
+): Promise<{ canvas: HTMLCanvasElement; water: boolean } | null> {
+  const lakes = urls.lakesUrl ? await rings(urls.lakesUrl).catch(() => [] as Ring[]) : [];
+  let water: Ring[] | null = null;
+  if (urls.waterUrl) water = await rings(urls.waterUrl).catch(() => null);
+  const land = water || !urls.landUrl ? null : await rings(urls.landUrl).catch(() => null);
+  if (!water && !land) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  if (water) drawWaterMask(ctx, b, w, h, water, lakes); else drawMask(ctx, b, w, h, land!, lakes);
+  return { canvas, water: !!water };
 }
 
 /** White = land, black = sea and lakes, over `b`. Null when the land file can't be had: the shaders then treat everything as land.
