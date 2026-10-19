@@ -236,3 +236,35 @@ def test_validator_returns_the_name_of_the_first_refused(pep_module):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_upstream_shape_carries_compaction_exactly_once(pep_module):
+    pep, base = pep_module
+    assert _get(base, "table=t&offset=-1")[0] == 200
+    (up,) = SEEN
+    assert up["experimental_compaction"] == ["true"]
+
+
+def test_client_compaction_param_is_dropped_and_peps_true_is_sent(pep_module):
+    pep, base = pep_module
+    assert _get(base, "table=t&offset=-1&experimental_compaction=false")[0] == 200
+    (up,) = SEEN
+    assert up["experimental_compaction"] == ["true"]
+
+
+def test_compaction_off_omits_the_param(pep_module, monkeypatch):
+    pep, base = pep_module
+    monkeypatch.setattr(pep, "ELECTRIC_COMPACTION", False)
+    assert _get(base, "table=t&offset=-1")[0] == 200
+    (up,) = SEEN
+    assert "experimental_compaction" not in up
+
+
+def test_follow_shape_upstream_carries_compaction(pep_module, monkeypatch):
+    pep, _base = pep_module
+    pep._follow_shape("t", "true", None, "id")
+    assert SEEN and all(u["experimental_compaction"] == ["true"] for u in SEEN)
+    SEEN.clear()
+    monkeypatch.setattr(pep, "ELECTRIC_COMPACTION", False)
+    pep._follow_shape("t", "true", None, "id")
+    assert SEEN and all("experimental_compaction" not in u for u in SEEN)

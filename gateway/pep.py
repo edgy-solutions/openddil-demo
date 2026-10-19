@@ -77,6 +77,18 @@ import oidc
 
 # --- configuration ----------------------------------------------------------
 ELECTRIC = os.environ["OPENDDIL_ELECTRIC_URL"].rstrip("/")
+
+# Every shape the PEP opens upstream is created with compaction. Electric
+# (1.6.2) keeps a shape's change log forever unless the shape was created
+# with the request parameter experimental_compaction=true; it is per shape,
+# runs about every 10 minutes, keeps the last 2 complete chunks and merges
+# older entries by key. Without it a fleet shape's log grows with uptime and
+# every cold offset=-1 client replays all of it (lab: 3.1 GB, ~4 min before
+# HQ showed the fleet). Subquery shapes reject the flag; the policy clauses
+# here are plain predicates and no frontend `where` uses a subquery. Off
+# ("false"/"0") restores the unbounded log. A client-sent value is dropped.
+ELECTRIC_COMPACTION = os.environ.get(
+    "OPENDDIL_ELECTRIC_COMPACTION", "true").strip().lower() not in ("false", "0")
 TOPAZ = os.environ["OPENDDIL_TOPAZ_URL"].rstrip("/")
 LISTEN_PORT = int(os.getenv("OPENDDIL_PEP_PORT", "8080"))
 SUBJECT_HEADER = os.getenv("OPENDDIL_SUBJECT_HEADER", "X-OpenDDIL-Subject")
@@ -1085,6 +1097,8 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
     base_params = {"table": table, "where": where}
     if columns:
         base_params["columns"] = ",".join(columns)
+    if ELECTRIC_COMPACTION:
+        base_params["experimental_compaction"] = "true"
     deadline = time.monotonic() + 10
     handle: str | None = None
     offset: str | None = None
@@ -3371,6 +3385,8 @@ class Pep(BaseHTTPRequestHandler):
         if (policy_clause and not subset_where_sent
                 and any(n.startswith("subset__") for n, _ in narrowing)):
             upstream_params.append(("subset__where", policy_clause))
+        if ELECTRIC_COMPACTION:
+            upstream_params.append(("experimental_compaction", "true"))
         url = f"{ELECTRIC}{parsed.path}?" + urllib.parse.urlencode(upstream_params)
 
         # The body is STREAMED, not buffered: `resp` stays open across the
