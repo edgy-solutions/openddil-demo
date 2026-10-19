@@ -72,7 +72,8 @@ import { symbolRadius, worldPerPx } from '../../lib/symbolScale';
 import { separate } from '../../lib/separate';
 import { AGG_PX, FOB_PX, HQ_PX, markerScale, regionExtent, topologyHeights } from '../../lib/topologyMarkers';
 import { SEV_RANK, fogDensity, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
-import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
+import { assetFocus, buildPresets, controlsMaxDistance, type CameraPreset } from '../../lib/mapPresets';
+import { formatKm, framedRect, planTopology, resolveSites } from '../../lib/regionalSites';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
 import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
 import {
@@ -409,6 +410,27 @@ function CountChip({ text, sev }: { text: string; sev: number }) {
       <Html center style={{ pointerEvents: 'none', transform: 'translate3d(-50%,calc(-50% - 34px),0)' }}>
         <div ref={el} className={`whitespace-nowrap rounded-full border bg-slate-900/90 px-1.5 font-mono text-[10px] font-bold ${SEV_CHIP[sev] ?? SEV_CHIP[0]}`}>
           {text}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+/** The off-map HQ marker: a plate at the map border giving the distance and bearing; a button when it can open HQ. */
+function HqChip({ km, bearing, onOpen }: { km: number; bearing: number; onOpen?: () => void }) {
+  const { g, el } = useFogFade();
+  const text = `HQ · ${formatKm(km)} →`;
+  const name = `HQ, ${formatKm(km)}, bearing ${Math.round(bearing)}°`;
+  const cls = 'whitespace-nowrap rounded-sm bg-slate-950/75 px-1.5 py-0.5 font-mono text-[10px] text-slate-300';
+  return (
+    <group ref={g}>
+      <Html center style={{ pointerEvents: onOpen ? 'auto' : 'none' }}>
+        <div ref={el}>
+          {onOpen ? (
+            <button type="button" data-testid="hq-chip" title={name} aria-label={name} onClick={onOpen} className={`${cls} cursor-pointer hover:text-emerald-300`}>{text}</button>
+          ) : (
+            <span data-testid="hq-chip" title={name} aria-label={name} className={cls}>{text}</span>
+          )}
         </div>
       </Html>
     </group>
@@ -797,10 +819,14 @@ function ScreenSized({ radius, px, children }: { radius: number; px: number; chi
   return <group ref={ref}>{children}</group>;
 }
 
-function RegionalAggregatorNode({ position, label, severed }: {
+function RegionalAggregatorNode({ position, label, kicker = 'REGIONAL AGGREGATOR', severed, grounded }: {
   position: [number, number, number];
   label: string;
+  /** The small line above the label; "REGIONAL � HQ" when HQ shares the regional node's site. */
+  kicker?: string;
   severed: boolean;
+  /** Lift the meshes so their base sits on the group origin (a node standing on the ground). */
+  grounded?: boolean;
 }) {
   const color = severed ? 0xf43f5e : 0x22d3ee;
   return (
@@ -809,6 +835,7 @@ function RegionalAggregatorNode({ position, label, severed }: {
           deliberately not a shape any FOB or platform schematic uses, so
           it reads as "different category of thing." */}
       <ScreenSized radius={4.5} px={AGG_PX}>
+       <group position={[0, grounded ? 4.5 : 0, 0]}>
         <mesh>
           <octahedronGeometry args={[3.5, 0]} />
           <meshBasicMaterial color={color} transparent opacity={0.65} />
@@ -824,18 +851,22 @@ function RegionalAggregatorNode({ position, label, severed }: {
           style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
         >
           <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
-            <div className="text-[9px] text-slate-400">REGIONAL AGGREGATOR</div>
+            <div className="text-[9px] text-slate-400">{kicker}</div>
             <div className="text-slate-200 font-bold">{label}</div>
           </div>
         </Html>
+       </group>
       </ScreenSized>
     </group>
   );
 }
 
-function HqMarker({ position, severed }: {
+function HqMarker({ position, severed, grounded, label = 'HQ THEATER' }: {
   position: [number, number, number];
   severed: boolean;
+  /** Lift the meshes so their base sits on the group origin. */
+  grounded?: boolean;
+  label?: string;
 }) {
   const color = severed ? 0xf43f5e : 0x10b981;
   return (
@@ -843,6 +874,7 @@ function HqMarker({ position, severed }: {
       {/* Pyramid form — distinct from FOB hubs and regional octahedron.
           Cone with 4 radial segments approximates a pyramid. */}
       <ScreenSized radius={5.5} px={HQ_PX}>
+       <group position={[0, grounded ? 5.25 : 0, 0]}>
         <mesh>
           <coneGeometry args={[5, 10, 4]} />
           <meshBasicMaterial color={color} transparent opacity={0.7} />
@@ -858,9 +890,10 @@ function HqMarker({ position, severed }: {
         >
           <div className="font-mono text-[10px] tracking-widest text-emerald-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
             <div className="text-[9px] text-slate-400">UP-CHAIN</div>
-            <div className="text-slate-200 font-bold">HQ THEATER</div>
+            <div className="text-slate-200 font-bold">{label}</div>
           </div>
         </Html>
+       </group>
       </ScreenSized>
     </group>
   );
@@ -869,6 +902,15 @@ function HqMarker({ position, severed }: {
 /** A camera move to make once: bumping `n` starts a new one. */
 interface CameraGoal { target: Vec3; pos: Vec3; n: number }
 const EASE_S = 0.8;
+
+/** Reports the pane's width / height (to 0.05) so the overview can fit a narrow pane. */
+function AspectReporter({ onAspect }: { onAspect: (a: number) => void }) {
+  const size = useThree((s) => s.size);
+  useEffect(() => {
+    if (size.height > 0) onAspect(Math.round((size.width / size.height) * 20) / 20);
+  }, [size.width, size.height, onAspect]);
+  return null;
+}
 
 function CameraRig({ goal }: { goal: CameraGoal | null }) {
   const { camera, controls } = useThree() as unknown as {
@@ -936,7 +978,10 @@ export default function RegionalSustainmentPosture({
   aorAssetCount,
   selectedAssetId,
   onAssetSelect,
+  onOpenHq,
 }: {
+  /** Opens the HQ view (the shell only); the off-map HQ chip is a button when set. */
+  onOpenHq?: () => void;
   /** Active region pulldown selection; assets and projection are scoped to
    *  this region. Null = no region picked yet (cold start). */
   regionId: string | null;
@@ -1195,6 +1240,42 @@ export default function RegionalSustainmentPosture({
     [onAssetSelect],
   );
 
+  // Where the regional node and HQ sit: the sites plan, or the abstract fallback.
+  const sites = useMemo(() => resolveSites(dep, regionId), [dep, regionId]);
+  const plan = useMemo(() => {
+    const regionalXZ = sites.regional ? proj.project(sites.regional.lat, sites.regional.lon) as [number, number] : null;
+    const rect = framedRect([
+      ...regionFobs.map((f) => proj.project(f.lat, f.lon) as [number, number]),
+      ...(regionalXZ ? [regionalXZ] : []),
+      ...renderables.map((a) => [a.position[0], a.position[2]] as [number, number]),
+    ]);
+    return planTopology({
+      regionId: regionId ?? '',
+      regional: sites.regional,
+      hq: sites.hq,
+      project: (lat, lon) => proj.project(lat, lon) as [number, number],
+      rect,
+    });
+  }, [sites, proj, regionFobs, renderables, regionId]);
+  // The FOB hubs and the regional node frame the overview, not just the assets.
+  const framePoints = useMemo<Vec3[]>(() => {
+    const pts: Vec3[] = regionFobs.map((f) => {
+      const [x, z] = proj.project(f.lat, f.lon);
+      return [x, groundAt(x, z), z];
+    });
+    if (plan.kind === 'sites') {
+      pts.push([plan.regional.x, groundAt(plan.regional.x, plan.regional.z), plan.regional.z]);
+      // The HQ chip sits on the padded rect's border; keep it inside the overview.
+      const h = plan.hq;
+      if (h.mode === 'offmap') pts.push([h.exit[0], groundAt(h.exit[0], h.exit[1]), h.exit[1]]);
+      else if (h.mode === 'onmap') pts.push([h.x, groundAt(h.x, h.z), h.z]);
+    }
+    return pts;
+  }, [regionFobs, proj, plan, groundAt]);
+  const [aspect, setAspect] = useState(1.6);
+  // The FOB whose edge preset was last chosen: its hub is emphasised, the other FOB links dim.
+  const [focusEdge, setFocusEdge] = useState<string | null>(null);
+
   // Camera presets: OVERVIEW, each FOB / group, each launch in flight.
   const presets = useMemo<CameraPreset[]>(() => {
     const launches = trails.flatMap((m) => {
@@ -1212,13 +1293,15 @@ export default function RegionalSustainmentPosture({
     });
     return buildPresets({
       points: renderables.map((a) => a.position),
+      framePoints,
+      aspect,
       // A FOB is always a preset; a geometric group only when it has company.
       clusters: clusters
         .filter((c) => c.key.startsWith('edge:') || c.members.length > 1)
         .map((c) => ({ key: c.key, label: c.label, points: c.members.map((m) => m.position) })),
       launches,
     });
-  }, [renderables, clusters, trails, trackById]);
+  }, [renderables, clusters, trails, trackById, framePoints, aspect]);
   const overview = presets.find((p) => p.key === 'overview');
   const sweepCenter: [number, number] = overview ? [overview.target[0], overview.target[2]] : [0, 0];
 
@@ -1309,7 +1392,7 @@ export default function RegionalSustainmentPosture({
                 <button
                   key={p.key}
                   type="button"
-                  onClick={() => fly(p)}
+                  onClick={() => { fly(p); setFocusEdge(p.key.startsWith('edge:') ? p.key.slice('edge:'.length) : null); }}
                   className="border border-slate-700 bg-slate-900/80 px-2 py-0.5 font-mono text-[10px] tracking-widest text-slate-300 hover:border-emerald-500/60 hover:text-emerald-300"
                 >
                   {p.label}
@@ -1354,8 +1437,9 @@ export default function RegionalSustainmentPosture({
           <directionalLight position={[50, 100, 50]} intensity={1.5} />
           <hemisphereLight groundColor={0x020617} intensity={0.5} />
 
-          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={0.01} maxPolarAngle={Math.PI / 2 - 0.1} zoomToCursor />
+          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={controlsMaxDistance(presets)} minDistance={0.01} maxPolarAngle={Math.PI / 2 - 0.1} zoomToCursor />
 
+          <AspectReporter onAspect={setAspect} />
           <CameraRig goal={goal} />
           <FogController isZoomed={!!selectedAssetId} />
 
@@ -1388,8 +1472,14 @@ export default function RegionalSustainmentPosture({
               const [x, z] = proj.project(fob.lat, fob.lon);
               return (
                 <group key={`hub-${fob.edge_id}`} position={[x, groundAt(x, z), z]} userData={{ insetHidden: true }}>
-                  <ScreenSized radius={4.7} px={FOB_PX}>
+                  <ScreenSized radius={4.7} px={focusEdge === fob.edge_id ? FOB_PX * 1.25 : FOB_PX}>
                     <LogisticsHubNode position={[0, 0, 0]} />
+                    {focusEdge === fob.edge_id && (
+                      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.05, 0]}>
+                        <ringGeometry args={[5.4, 6.2, 40]} />
+                        <meshBasicMaterial color="#10b981" transparent opacity={0.9} side={THREE.DoubleSide} />
+                      </mesh>
+                    )}
                   </ScreenSized>
                 </group>
               );
@@ -1442,7 +1532,7 @@ export default function RegionalSustainmentPosture({
               header uses, so severance toggling is consistent across
               the view. Future: per-edge bridge health would let each
               FOB->aggregator line carry its own state independently. */}
-          {regionalCentroid && topo && (
+          {plan.kind === 'fallback' && regionalCentroid && topo && (
             <>
               {regionFobs.map((fob) => {
                 const [fx, fz] = proj.project(fob.lat, fob.lon);
@@ -1452,6 +1542,7 @@ export default function RegionalSustainmentPosture({
                     start={new THREE.Vector3(fx, groundAt(fx, fz), fz)}
                     end={new THREE.Vector3(regionalCentroid.x, topo.aggY, regionalCentroid.z)}
                     status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
+                    dim={focusEdge !== null && focusEdge !== fob.edge_id}
                   />
                 );
               })}
@@ -1471,6 +1562,71 @@ export default function RegionalSustainmentPosture({
               />
             </>
           )}
+          {plan.kind === 'sites' && (() => {
+            const status = uplinkUp ? 'NOMINAL' : 'SEVERED';
+            const node = plan.regional;
+            const nodeG = groundAt(node.x, node.z);
+            const nodeV = new THREE.Vector3(node.x, nodeG, node.z);
+            const hq = plan.hq;
+            const kicker = hq.mode === 'colocated' ? 'REGIONAL · HQ' : undefined;
+            return (
+              <>
+                {regionFobs.map((fob) => {
+                  const [fx, fz] = proj.project(fob.lat, fob.lon);
+                  return (
+                    <DdilNetworkLink
+                      key={`fob-link-${fob.edge_id}`}
+                      start={new THREE.Vector3(fx, groundAt(fx, fz), fz)}
+                      end={nodeV}
+                      groundY={groundAt}
+                      status={status}
+                      dim={focusEdge !== null && focusEdge !== fob.edge_id}
+                    />
+                  );
+                })}
+                <RegionalAggregatorNode position={[node.x, nodeG, node.z]} label={node.label} kicker={kicker} severed={!uplinkUp} grounded />
+                {hq.mode === 'abstract' && topo && (
+                  <>
+                    <DdilNetworkLink
+                      start={nodeV}
+                      end={new THREE.Vector3(node.x, nodeG + (topo.hqY - topo.aggY), node.z)}
+                      status={status}
+                    />
+                    <HqMarker position={[node.x, nodeG + (topo.hqY - topo.aggY), node.z]} severed={!uplinkUp} />
+                  </>
+                )}
+                {hq.mode === 'onmap' && (
+                  <>
+                    <DdilNetworkLink
+                      start={nodeV}
+                      end={new THREE.Vector3(hq.x, groundAt(hq.x, hq.z), hq.z)}
+                      groundY={groundAt}
+                      status={status}
+                    />
+                    <HqMarker
+                      position={[hq.x, groundAt(hq.x, hq.z), hq.z]}
+                      severed={!uplinkUp}
+                      grounded
+                      label={sites.hq?.label ?? 'HQ'}
+                    />
+                  </>
+                )}
+                {hq.mode === 'offmap' && (
+                  <>
+                    <DdilNetworkLink
+                      start={nodeV}
+                      end={new THREE.Vector3(hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1])}
+                      groundY={groundAt}
+                      status={status}
+                    />
+                    <group position={[hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1]]}>
+                      <HqChip km={hq.km} bearing={hq.bearing} onOpen={onOpenHq} />
+                    </group>
+                  </>
+                )}
+              </>
+            );
+          })()}
           <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={insetGround} unitsPerKm={UNITS_PER_KM} rect={REGIONAL_INSET_RECT} renderMain />
         </Canvas>
         <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} rect={REGIONAL_INSET_RECT} />

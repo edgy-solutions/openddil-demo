@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { parseHq } from '../deployment';
+import { parseHq, parseTiers } from '../deployment';
 
 describe('parseHq', () => {
   afterEach(() => vi.restoreAllMocks());
@@ -27,5 +27,26 @@ describe('parseHq', () => {
     const w = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(parseHq(raw)).toBeUndefined();
     expect(w).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('parseTiers site fields', () => {
+  afterEach(() => vi.restoreAllMocks());
+  const base = { id: 'r1', parent: null, hasChildren: true };
+
+  it('keeps valid lat/lon and label', () => {
+    expect(parseTiers([{ ...base, lat: 10, lon: 20, label: 'Node One' }])).toEqual([
+      { ...base, lat: 10, lon: 20, label: 'Node One' },
+    ]);
+  });
+  it('drops the coords, not the entry, when invalid', () => {
+    const w = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(parseTiers([{ ...base, lat: 91, lon: 20 }])).toEqual([base]);
+    expect(parseTiers([{ ...base, lat: 10 }])).toEqual([base]);
+    expect(w).toHaveBeenCalledTimes(2);
+  });
+  it('drops an empty or non-string label', () => {
+    expect(parseTiers([{ ...base, label: '' }])).toEqual([base]);
+    expect(parseTiers([{ ...base, label: 5 }])).toEqual([base]);
   });
 });

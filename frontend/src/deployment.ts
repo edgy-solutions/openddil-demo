@@ -269,6 +269,10 @@ export interface TierEntry {
   id: string;
   parent: string | null;
   hasChildren: boolean;
+  /** Provisional site fields: both present or both absent. */
+  lat?: number;
+  lon?: number;
+  label?: string;
 }
 
 export interface Deployment {
@@ -726,7 +730,18 @@ export function parseTiers(raw: unknown): TierEntry[] | undefined {
       console.warn(`[deployment] tiers entry for "${e.id}" dropped (hasChildren must be a boolean):`, entry);
       continue;
     }
-    out.push({ id: e.id.trim(), parent: typeof e.parent === 'string' ? e.parent.trim() : null, hasChildren: e.hasChildren });
+    const t: TierEntry = { id: e.id.trim(), parent: typeof e.parent === 'string' ? e.parent.trim() : null, hasChildren: e.hasChildren };
+    if (e.lat !== undefined || e.lon !== undefined) {
+      if (typeof e.lat === 'number' && Number.isFinite(e.lat) && e.lat >= -90 && e.lat <= 90 &&
+          typeof e.lon === 'number' && Number.isFinite(e.lon) && e.lon >= -180 && e.lon <= 180) {
+        t.lat = e.lat;
+        t.lon = e.lon;
+      } else {
+        console.warn(`[deployment] tiers entry for "${t.id}" lost its coordinates (lat/lon must be finite, in range):`, entry);
+      }
+    }
+    if (typeof e.label === 'string' && e.label.length > 0) t.label = e.label;
+    out.push(t);
   }
   return out.length ? out : undefined;
 }

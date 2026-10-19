@@ -50,20 +50,22 @@ import HqApp from './HqApp';
 
 interface Props {
   tier: TierConfig;
+  /** Shell only: opens the HQ view. Passed to the regional map's off-map HQ chip. */
+  onOpenHq?: () => void;
 }
 
-function instance(tier: TierConfig) {
+function instance(tier: TierConfig, onOpenHq?: () => void) {
   switch (instanceForShape(tier)) {
     case 'leaf':
       return <MaintainerApp tierScopeValue={tier.scope?.value ?? null} />;
     case 'intermediate':
-      return <RegionalApp tierScopeValue={tier.scope?.value ?? null} />;
+      return <RegionalApp tierScopeValue={tier.scope?.value ?? null} onOpenHq={onOpenHq} />;
     case 'root':
       return <HqApp />;
   }
 }
 
-export default function TierApp({ tier }: Props) {
+export default function TierApp({ tier, onOpenHq }: Props) {
   // WHETHER THIS SCREEN MAY CLAIM TO BE THE NODE IT SHOWS is decided here,
   // once, from the tier being rendered versus the tier this deployment
   // serves — and never by a header inferring it from which component it is.
@@ -73,7 +75,7 @@ export default function TierApp({ tier }: Props) {
   // endpoints. See lib/thisNode.
   return (
     <ThisNodeProvider tier={tier}>
-      {instance(tier)}
+      {instance(tier, onOpenHq)}
     </ThisNodeProvider>
   );
 }
