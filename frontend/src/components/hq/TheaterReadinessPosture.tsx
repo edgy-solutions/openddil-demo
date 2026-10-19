@@ -53,7 +53,7 @@ import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
-import { clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
+import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { LinkChips } from '../network/LinkChips';
 import {
   linkStateWord,
@@ -66,6 +66,8 @@ import { buildTheaterTopology, type EdgeState } from '../../lib/theaterTopology'
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
 // within view at the default (0, 150, 600) camera.
 const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
+/** The engagement inset, lifted clear of the terrain controls under it. */
+const HQ_INSET_RECT = { ...INSET_RECT, y: INSET_RECT.y + 36 };
 // Markers sit on the terrain (y = 0 with terrain off); tracks rise from their
 // launcher's ground by their ellipsoidal height (units per km = units per deg / 111).
 const HQ_UNITS_PER_KM = HQ_SCENE_SCALE_UNITS_PER_DEG / 111;
@@ -656,12 +658,24 @@ export default function TheaterReadinessPosture() {
         </div>
       </div>
 
-      {/* Bottom-right (the engagement inset is bottom-left): terrain controls, the link legend, the credit. */}
-      <div className="absolute bottom-4 right-4 z-10 flex flex-col items-end gap-1">
-        {terrainAvailable && (
+      {/* Placed like regional: the engagement inset is bottom-left with the terrain controls under it;
+          bottom-right is the link legend (lifted above the credit when terrain is on) and the credit. */}
+      <div className={`absolute ${terrainOn ? 'bottom-10' : 'bottom-4'} right-4 z-10`}>
+        <div className="bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-emerald-500"></div><span className="text-slate-300">NOMINAL LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-amber-500"></div><span className="text-slate-300">IDLE LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-3 border border-dashed border-slate-400"></div><span className="text-slate-300">UNREACHABLE (ANCESTOR DOWN)</span></div>
+        </div>
+      </div>
+      {terrainAvailable && (
+        <div
+          data-testid="hq-terrain-controls"
+          className="absolute bottom-10 left-4 z-10 pointer-events-auto font-mono text-[10px] uppercase tracking-wider"
+        >
           <div
-            data-testid="hq-terrain-controls"
-            className="pointer-events-auto flex flex-wrap items-center justify-end gap-3 border border-slate-700 bg-slate-900/80 px-2 py-1 font-mono text-[10px] uppercase tracking-wider"
+            className="flex flex-wrap items-center gap-3 border border-slate-700 bg-slate-900/80 px-2 py-1 font-mono text-[10px] uppercase tracking-wider"
           >
             <button
               type="button"
@@ -712,23 +726,16 @@ export default function TheaterReadinessPosture() {
               </>
             )}
           </div>
-        )}
-        <div className="bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
-          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-emerald-500"></div><span className="text-slate-300">NOMINAL LINK</span></div>
-          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-amber-500"></div><span className="text-slate-300">IDLE LINK</span></div>
-          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
-          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
-          <div className="flex items-center gap-2"><div className="w-3 h-3 border border-dashed border-slate-400"></div><span className="text-slate-300">UNREACHABLE (ANCESTOR DOWN)</span></div>
         </div>
-        {terrainOn && (
-          <div
-            data-testid="hq-terrain-attribution"
-            className="max-w-[28rem] text-right text-[9px] font-mono text-slate-500 pointer-events-none"
-          >
-            {attribution}
-          </div>
-        )}
-      </div>
+      )}
+      {terrainOn && (
+        <div
+          data-testid="hq-terrain-attribution"
+          className="absolute bottom-1 right-4 z-10 max-w-[60%] text-right text-[9px] font-mono text-slate-500 pointer-events-none"
+        >
+          {attribution}
+        </div>
+      )}
 
       <div className="absolute inset-0 cursor-move">
         {/* Camera far plane lifted from default 2000 → 8000. AbstractContinents
@@ -904,9 +911,9 @@ export default function TheaterReadinessPosture() {
             <Bloom luminanceThreshold={0.2} mipmapBlur intensity={1.2} luminanceSmoothing={0.9} />
           </EffectComposer>
           {/* After the composer (priority 2): the inset draws without bloom. */}
-          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={insetGround} unitsPerKm={HQ_UNITS_PER_KM} />
+          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={insetGround} unitsPerKm={HQ_UNITS_PER_KM} rect={terrainAvailable ? HQ_INSET_RECT : INSET_RECT} />
         </Canvas>
-        <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} />
+        <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} rect={terrainAvailable ? HQ_INSET_RECT : INSET_RECT} />
       </div>
 
       {severed && <div className="absolute inset-0 bg-rose-950/30 z-20 pointer-events-none"></div>}
