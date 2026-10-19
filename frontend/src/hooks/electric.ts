@@ -28,6 +28,10 @@ export const ELECTRIC_URL = new URL(
   window.location.origin,
 ).toString();
 
+/** Shape-creation param so Electric compacts the log; same as ELECTRIC_COMPACTION in gateway/pep.py
+ *  (the gateway sets it itself; this covers deployments without the PEP in front). */
+export const COMPACTION_PARAMS = { experimental_compaction: 'true' } as const;
+
 /** Uniform return shape for every OpenDDIL shape hook. */
 export interface ShapeResult<T> {
   data: T[];
@@ -91,6 +95,7 @@ export function useTableShape<T>(
     url: ELECTRIC_URL,
     params: {
       table,
+      ...COMPACTION_PARAMS,
       ...(opts.where ? { where: opts.where } : {}),
     },
     // log is a top-level stream option; a params.log is ignored by the client.

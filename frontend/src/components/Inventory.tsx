@@ -1,7 +1,7 @@
 import { useShape } from '@electric-sql/react';
 import { AlertTriangle, WifiOff, Package } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import { ELECTRIC_URL, num } from '../hooks';
+import { ELECTRIC_URL, COMPACTION_PARAMS, num } from '../hooks';
 
 function InitialLoadSpinner() {
   return (
@@ -113,6 +113,7 @@ export default function Inventory({ assetId }: { assetId?: string }) {
     url: ELECTRIC_URL,
     params: {
       table: 'inventory_items',
+      ...COMPACTION_PARAMS,
       ...(assetId ? { where: `asset_id = '${assetId.replace(/'/g, "''")}'` } : {}),
     },
   });
