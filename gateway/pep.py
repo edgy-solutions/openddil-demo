@@ -1410,6 +1410,95 @@ def _apply_link_toxics(proxy_name: str, toxics: dict, subject: str = "") -> tupl
 # --- the proxy --------------------------------------------------------------
 PASSTHROUGH_PARAMS = {"table", "offset", "handle", "live", "cursor", "columns", "replica"}
 
+# --- Electric's narrowing parameters: a validated allowlist -------------------
+# `log` and `subset__*` only NARROW what a shape returns (fewer messages, a
+# page of the snapshot) and never widen it, PROVIDED each is validated by name
+# and type here and anything else is refused. Dropping them silently (as the
+# plain passthrough above does) made every shape run log=full upstream and gave
+# a client requestSnapshot no subset at all; passing them blind would let a
+# structured expression or an unbounded value reach Electric unexamined.
+#
+# Refused with 400, not dropped: a client that sent `subset__limit=1e3` and
+# got the full snapshot back would believe it had been honoured. Other unknown
+# parameters (expired_handle, cache busters) ARE still dropped, because the
+# Electric client sends them unprompted.
+#
+# `subset__where` is validated only for length here (it is SQL, like `where`);
+# the handler COMPOSES it with the policy clause exactly as it does `where`.
+# Electric ANDs the shape's where with the subset's, but the subset must not
+# depend on that alone, so the policy travels inside the subset too.
+_IDENT = r"[a-z_][a-z0-9_]{0,62}"
+_ORDER_TERM_RE = re.compile(
+    rf'(?:{_IDENT}|"{_IDENT}")(?:\s+(?i:asc|desc))?(?:\s+(?i:nulls)\s+(?i:first|last))?')
+_PARAM_KEY_RE = re.compile(r"[1-9][0-9]{0,2}")
+_SUBSET_NAMES = ("subset__limit", "subset__offset", "subset__order_by",
+                 "subset__where", "subset__params")
+
+
+def _int_in(value: str, lo: int, hi: int) -> bool:
+    # [0-9] and not \d: \d admits non-ASCII digits that int() also accepts.
+    return re.fullmatch(r"[0-9]{1,8}", value) is not None and lo <= int(value) <= hi
+
+
+def _order_by_ok(value: str) -> bool:
+    # Unquoted or quoted identifiers are lowercase-only: an uppercase name is
+    # refused rather than guessed at (Postgres would fold it, a quoted one not).
+    if len(value) > 512:
+        return False
+    terms = value.split(",")
+    return len(terms) <= 8 and all(_ORDER_TERM_RE.fullmatch(t.strip()) for t in terms)
+
+
+def _subset_params_ok(value: str) -> bool:
+    if len(value) > 4096:
+        return False
+
+    def _no_constant(_c):  # NaN / Infinity are not JSON
+        raise ValueError
+
+    try:
+        doc = json.loads(value, parse_constant=_no_constant)
+    except ValueError:
+        return False
+
+    def scalar(v) -> bool:
+        return v is None or isinstance(v, (str, int, float, bool))
+
+    if isinstance(doc, dict):
+        return all(_PARAM_KEY_RE.fullmatch(k) and scalar(v) for k, v in doc.items())
+    return isinstance(doc, list) and all(scalar(v) for v in doc)
+
+
+_SUBSET_CHECKS = {
+    "subset__limit": lambda v: _int_in(v, 1, 10000),
+    "subset__offset": lambda v: _int_in(v, 0, 1000000),
+    "subset__order_by": _order_by_ok,
+    "subset__where": lambda v: len(v) <= 4096,
+    "subset__params": _subset_params_ok,
+}
+
+
+def narrowing_params(params: dict[str, list[str]]) -> "list[tuple[str, str]] | str":
+    """The (name, value) pairs to send upstream for `log` and `subset__*`, or
+    the NAME of the first parameter refused. Never returns a value, so a caller
+    cannot echo a hostile one. `subset__where` is returned raw; the caller
+    composes it with the policy clause."""
+    out: list[tuple[str, str]] = []
+    for name, values in params.items():
+        if name == "log":
+            check = lambda v: v in ("full", "changes_only")  # noqa: E731
+        elif name.startswith("subset__"):
+            check = _SUBSET_CHECKS.get(name)
+            if check is None:
+                return name
+        else:
+            continue
+        if len(values) != 1 or not check(values[0]):
+            return name
+        out.append((name, values[0]))
+    return out
+
+
 
 def _shape_slot(params: dict[str, list[str]]) -> threading.BoundedSemaphore:
     """Which bound a transfer counts against -- see MAX_INFLIGHT_LIVE. A
@@ -3195,6 +3284,15 @@ class Pep(BaseHTTPRequestHandler):
                        subject=subject, resource=table)
             return
 
+        # Electric's narrowing parameters, validated by name and type. See
+        # narrowing_params. Refused BEFORE anything is forwarded.
+        narrowing = narrowing_params(params)
+        if isinstance(narrowing, str):
+            self._deny(f"shape parameter refused: {narrowing}", subject=subject,
+                       resource=table, status=400,
+                       marker="GATEWAY REFUSED (MALFORMED PARAMETER)")
+            return
+
         upstream_params = [(k, v) for k, vs in params.items()
                            if k in PASSTHROUGH_PARAMS for v in vs]
         # ONLY WHEN THERE IS ONE. Appending the parameter unconditionally
@@ -3205,6 +3303,15 @@ class Pep(BaseHTTPRequestHandler):
         # that looked identical from the panel.
         if where:
             upstream_params.append(("where", where))
+        subset_where_sent = False
+        for name, value in narrowing:
+            if name == "subset__where" and policy_clause:
+                value = compose(value, policy_clause)
+            subset_where_sent = subset_where_sent or name == "subset__where"
+            upstream_params.append((name, value))
+        if (policy_clause and not subset_where_sent
+                and any(n.startswith("subset__") for n, _ in narrowing)):
+            upstream_params.append(("subset__where", policy_clause))
         url = f"{ELECTRIC}{parsed.path}?" + urllib.parse.urlencode(upstream_params)
 
         # The body is STREAMED, not buffered: `resp` stays open across the
