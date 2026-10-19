@@ -139,7 +139,7 @@ function DemoShell({ title, logo }: { title: string; logo: string }) {
             root's store, where scoping is the operator's job through the
             in-view pickers rather than a property of the instance. */}
         {view === 'maintainer' && <TopBarSlotProvider value={slotEl}><TierApp tier={SHELL_LEAF} /></TopBarSlotProvider>}
-        {view === 'regional' && <TopBarSlotProvider value={slotEl}><TierApp tier={SHELL_INTERMEDIATE} /></TopBarSlotProvider>}
+        {view === 'regional' && <TopBarSlotProvider value={slotEl}><TierApp tier={SHELL_INTERMEDIATE} onOpenHq={() => setView('hq')} /></TopBarSlotProvider>}
         {view === 'hq' && <TopBarSlotProvider value={slotEl}><TierApp tier={SHELL_ROOT} /></TopBarSlotProvider>}
       </div>
     </div>

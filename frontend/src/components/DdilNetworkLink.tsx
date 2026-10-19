@@ -17,9 +17,11 @@ interface DdilNetworkLinkProps {
   via?: string;
   /** Ground height at (x, z). When given, the link arcs over the ground instead of running straight. */
   groundY?: (x: number, z: number) => number;
+  /** Draw the line at 0.35 of its usual opacity (another link has the focus). */
+  dim?: boolean;
 }
 
-export default function DdilNetworkLink({ start, end, status, via, groundY }: DdilNetworkLinkProps) {
+export default function DdilNetworkLink({ start, end, status, via, groundY, dim }: DdilNetworkLinkProps) {
   const bufferRingRef = useRef<THREE.Mesh>(null);
   
   const points = useMemo(
@@ -56,7 +58,7 @@ export default function DdilNetworkLink({ start, end, status, via, groundY }: Dd
         dashSize={5}
         gapSize={5}
         transparent
-        opacity={status === 'SEVERED' ? 1 : 0.6}
+        opacity={(status === 'SEVERED' ? 1 : 0.6) * (dim ? 0.35 : 1)}
       />
       
       {status === 'UNREACHABLE' && (

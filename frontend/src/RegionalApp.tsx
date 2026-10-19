@@ -303,9 +303,9 @@ function WearTrends({ row }: { row: RegionWearTrends | undefined }) {
 /** The tier's own scope, when this instance is a tier node's UI rather than
  *  the demo shell. Null in the shell, where the operator picks a scope
  *  instead of being one. */
-interface TierScopedProps { tierScopeValue?: string | null }
+interface TierScopedProps { tierScopeValue?: string | null; onOpenHq?: () => void }
 
-export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) {
+export default function RegionalApp({ tierScopeValue = null, onOpenHq }: TierScopedProps) {
   // Sourced from the proxy's own state (hooks/useLinkControl), not
   // invented client-side -- see MaintainerApp for the same change. One
   // listing covers this hub's own uplink and its direct children's.
@@ -489,6 +489,7 @@ export default function RegionalApp({ tierScopeValue = null }: TierScopedProps) 
 
       <main className="flex-1 grid grid-cols-3 grid-rows-[minmax(0,1fr)] gap-4 p-4 pt-2 overflow-hidden min-h-0">
         <RegionalSustainmentPosture
+          onOpenHq={onOpenHq}
           regionId={selectedRegion}
           linkControl={linkControl}
           aorAssetCount={fleet.data.length}

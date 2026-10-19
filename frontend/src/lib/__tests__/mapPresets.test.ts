@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assetFocus, buildPresets, launchView, type Vec3 } from '../mapPresets';
+import { assetFocus, buildPresets, controlsMaxDistance, launchView, type Vec3 } from '../mapPresets';
 
 const pts: Vec3[] = [[0, 0, 0], [10, 0, 0], [10, 0, 6]];
 const dist = (p: { target: Vec3; pos: Vec3 }) =>
@@ -27,7 +27,36 @@ describe('buildPresets', () => {
     const near = buildPresets({ points: pts, clusters: [], launches: [] })[0];
     const far = buildPresets({ points: [[0, 0, 0], [5000, 0, 0]], clusters: [], launches: [] })[0];
     expect(dist(far)).toBeGreaterThan(dist(near));
-    expect(dist(far)).toBeLessThanOrEqual(300);
+    expect(dist(far)).toBeLessThanOrEqual(900);
+  });
+  it('a wide overview may pass 280 but never 900; a cluster still clamps at 280', () => {
+    const wide: Vec3[] = [[0, 0, 0], [200, 0, 0]];
+    expect(dist(buildPresets({ points: wide, clusters: [], launches: [] })[0])).toBeGreaterThan(280);
+    const huge: Vec3[] = [[0, 0, 0], [50000, 0, 0]];
+    expect(dist(buildPresets({ points: huge, clusters: [], launches: [] })[0])).toBeCloseTo(900, 6);
+    const ps = buildPresets({ points: wide, clusters: [{ key: 'edge:a', label: 'A', points: huge }], launches: [] });
+    expect(dist(ps[1])).toBeCloseTo(280, 6);
+  });
+  it('a portrait pane backs the overview off by the aspect ratio', () => {
+    const a = [[0, 0, 0], [20, 0, 0]] as Vec3[];
+    const tall = dist(buildPresets({ points: a, aspect: 0.5, clusters: [], launches: [] })[0]);
+    const wide = dist(buildPresets({ points: a, aspect: 2, clusters: [], launches: [] })[0]);
+    expect(tall).toBeCloseTo(2 * wide, 6);
+  });
+  it('controlsMaxDistance is 300 without an overview, else 1.15x the overview distance (min 300)', () => {
+    expect(controlsMaxDistance([])).toBe(300);
+    const near = buildPresets({ points: pts, clusters: [], launches: [] });
+    expect(controlsMaxDistance(near)).toBe(300);
+    const far = buildPresets({ points: [[0, 0, 0], [800, 0, 0]], clusters: [], launches: [] });
+    expect(controlsMaxDistance(far)).toBeCloseTo(1.15 * dist(far[0]), 6);
+  });
+  it('framePoints widen the overview and leave the clusters alone', () => {
+    const cl = [{ key: 'edge:a', label: 'FOB A', points: [[0, 0, 0], [0.1, 0, 0]] as Vec3[] }];
+    const base = buildPresets({ points: pts, clusters: cl, launches: [] });
+    const wide = buildPresets({ points: pts, framePoints: [[100, 0, 0]], clusters: cl, launches: [] });
+    expect(dist(wide[0])).toBeGreaterThan(dist(base[0]));
+    expect(wide[0].target[0]).toBeGreaterThan(base[0].target[0]);
+    expect(wide[1]).toEqual(base[1]);
   });
   it('a single point still frames at a minimum distance', () => {
     const [o] = buildPresets({ points: [[1, 2, 3]], clusters: [], launches: [] });

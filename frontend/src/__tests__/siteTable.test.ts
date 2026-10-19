@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseSiteTable, parseSiteTableText, selectForTier, type SiteTable } from '../siteTable';
-import { IMPLICIT_ROOT, deployment, loadDeployment, type TierConfig } from '../deployment';
+import { IMPLICIT_ROOT, deployment, loadDeployment, parseTiers, type TierConfig } from '../deployment';
 
 // Fictional stub: the same file as the example bundle.
 const STUB = `
@@ -228,5 +228,12 @@ describe('loadDeployment - site table', () => {
     const d = deployment();
     expect(d.siteTableError).toBeNull();
     expect(d.fobs).toEqual([]);
+  });
+});
+
+describe('positions never come from deployment.json tiers', () => {
+  it('parseTiers drops lat/lon/label on an entry', () => {
+    expect(parseTiers([{ id: 'r1', parent: null, hasChildren: true, lat: 10, lon: 20, label: 'Node One' }]))
+      .toEqual([{ id: 'r1', parent: null, hasChildren: true }]);
   });
 });
