@@ -74,6 +74,8 @@ export interface DeploymentTerrain {
   /** Satellite imagery tiles (Esri `{z}/{y}/{x}` order is the template's business). */
   imageryUrl?: string;
   attribution?: string;
+  /** Natural Earth land TopoJSON (the HQ map's coastline). */
+  landUrl?: string;
 }
 
 /** Asset-liveness thresholds — how long can an asset stop talking
@@ -480,7 +482,7 @@ function isValidDeploymentMap(x: unknown): x is DeploymentMap {
 
 /** EXPORTED FOR TESTS. A terrain block is accepted only when every field it
  *  carries is well formed: a URL must be a non-empty string holding `{z}`,
- *  `{x}` and `{y}`, attribution a non-empty string. Unknown keys are ignored.
+ *  `{x}` and `{y}`, attribution and land URL non-empty strings. Unknown keys are ignored.
  *  A bad block is rejected whole (the defaults apply), not half applied. */
 export function isValidDeploymentTerrain(x: unknown): x is DeploymentTerrain {
   if (!x || typeof x !== 'object' || Array.isArray(x)) return false;
@@ -488,7 +490,7 @@ export function isValidDeploymentTerrain(x: unknown): x is DeploymentTerrain {
   const tpl = (v: unknown) => v === undefined || (
     typeof v === 'string' && v.includes('{z}') && v.includes('{x}') && v.includes('{y}'));
   const text = (v: unknown) => v === undefined || (typeof v === 'string' && v.length > 0);
-  return tpl(t.elevationUrl) && tpl(t.imageryUrl) && text(t.attribution);
+  return tpl(t.elevationUrl) && tpl(t.imageryUrl) && text(t.attribution) && text(t.landUrl);
 }
 
 /** A tier config is accepted only if it is COMPLETE and INTERNALLY

@@ -2,6 +2,7 @@ import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
+import { linkArc } from '../lib/linkArc';
 
 // NOMINAL up, IDLE up with no traffic (amber, solid), SEVERED down, UNKNOWN not
 // measured (slate, dashed), UNREACHABLE an ancestor link is down so this one cannot
@@ -14,12 +15,23 @@ interface DdilNetworkLinkProps {
   status: 'NOMINAL' | 'SEVERED' | 'IDLE' | 'UNKNOWN' | 'UNREACHABLE';
   /** For UNREACHABLE: the nearest down ancestor, named in the label. */
   via?: string;
+  /** Ground height at (x, z). When given, the link arcs over the ground instead of running straight. */
+  groundY?: (x: number, z: number) => number;
 }
 
-export default function DdilNetworkLink({ start, end, status, via }: DdilNetworkLinkProps) {
+export default function DdilNetworkLink({ start, end, status, via, groundY }: DdilNetworkLinkProps) {
   const bufferRingRef = useRef<THREE.Mesh>(null);
   
-  const points = useMemo(() => [start, end], [start, end]);
+  const points = useMemo(
+    () => groundY
+      ? linkArc(start.toArray(), end.toArray(), groundY).map(([x, y, z]) => new THREE.Vector3(x, y, z))
+      : [start, end],
+    [start, end, groundY],
+  );
+  const mid = useMemo(
+    () => (groundY ? points[points.length >> 1] : start.clone().lerp(end, 0.5)),
+    [groundY, points, start, end],
+  );
   
   const color = LINK_COLOR[status];
   const dashed = status === 'SEVERED' || status === 'UNKNOWN' || status === 'UNREACHABLE';
@@ -48,7 +60,7 @@ export default function DdilNetworkLink({ start, end, status, via }: DdilNetwork
       />
       
       {status === 'UNREACHABLE' && (
-        <Html position={start.clone().lerp(end, 0.5)} center style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}>
+        <Html position={mid} center style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}>
           <span className="font-mono text-[9px] tracking-widest text-slate-400 bg-slate-900/80 px-1">
             unreachable via {via ?? 'ancestor'}
           </span>

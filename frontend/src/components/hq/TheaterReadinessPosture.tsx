@@ -29,6 +29,12 @@ import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
+import { TheaterTerrain, useTheaterTerrain } from '../terrain/theater';
+import {
+  EXAGGERATIONS, loadHqTerrainPrefs, saveHqTerrainPrefs, type Exaggeration, type HqTerrainPrefs,
+} from '../terrain/prefs';
+import { segBtn } from '../terrain/segBtn';
+import { elevationCredit, resolveTerrainSource } from '../../lib/terrainTiles';
 import { deployment, edgeAttachment, type Fob, type EdgeAttachment } from '../../deployment';
 import {
   useClassifiedFleet,
@@ -424,7 +430,8 @@ export function FobLabel({
 }
 
 export default function TheaterReadinessPosture() {
-  const { fobs, tiers, hq } = deployment();
+  const dep = deployment();
+  const { fobs, tiers, hq } = dep;
   const linkRows = useLinkStatus();
   // Re-evaluated on a timer so a monitor that stops writing ages out to
   // UNKNOWN without waiting for another row to arrive.
@@ -447,6 +454,28 @@ export default function TheaterReadinessPosture() {
     () => makeProjection(fobs, HQ_SCENE_SCALE_UNITS_PER_DEG),
     [fobs],
   );
+
+  // Terrain: the controls' state, the tile source, and the box around the FOBs
+  // (and the HQ, if it is configured). With no FOBs there is nothing to frame.
+  const [tp, setTp] = useState<HqTerrainPrefs>(loadHqTerrainPrefs);
+  const updateTp = useCallback((patch: Partial<HqTerrainPrefs>) => {
+    setTp((prev) => {
+      const next = { ...prev, ...patch };
+      saveHqTerrainPrefs(next);
+      return next;
+    });
+  }, []);
+  const terrainSource = useMemo(() => resolveTerrainSource(dep.terrain), [dep.terrain]);
+  const terrainPoints = useMemo(() => (hq ? [...fobs, hq] : fobs), [fobs, hq]);
+  const terrainAvailable = fobs.length > 0;
+  const terrainOn = terrainAvailable && tp.on;
+  const terrain = useTheaterTerrain({
+    points: terrainPoints, projection: proj, source: terrainSource, style: tp.style, exag: tp.exag, on: terrainOn,
+  });
+  const { groundY } = terrain;
+  const attribution = (tp.style === 'sat'
+    ? terrainSource.attribution
+    : elevationCredit(terrainSource.attribution)) + ' · Coastline: Natural Earth';
 
   const metrics = useMemo(
     () => buildFobMetrics(fobs, fleet.data, logistics.data, tracks.data, HQ_SCENE_SCALE_UNITS_PER_DEG),
@@ -624,12 +653,78 @@ export default function TheaterReadinessPosture() {
         </div>
       </div>
 
-      <div className="absolute bottom-4 right-4 z-10 bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
-        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-emerald-500"></div><span className="text-slate-300">NOMINAL LINK</span></div>
-        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-amber-500"></div><span className="text-slate-300">IDLE LINK</span></div>
-        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
-        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
-        <div className="flex items-center gap-2"><div className="w-3 h-3 border border-dashed border-slate-400"></div><span className="text-slate-300">UNREACHABLE (ANCESTOR DOWN)</span></div>
+      {/* Bottom-right (the engagement inset is bottom-left): terrain controls, the link legend, the credit. */}
+      <div className="absolute bottom-4 right-4 z-10 flex flex-col items-end gap-1">
+        {terrainAvailable && (
+          <div
+            data-testid="hq-terrain-controls"
+            className="pointer-events-auto flex flex-wrap items-center justify-end gap-3 border border-slate-700 bg-slate-900/80 px-2 py-1 font-mono text-[10px] uppercase tracking-wider"
+          >
+            <button
+              type="button"
+              data-testid="hq-terrain-toggle"
+              aria-pressed={tp.on}
+              onClick={() => updateTp({ on: !tp.on })}
+              className={segBtn(tp.on)}
+            >
+              TERRAIN {tp.on ? 'ON' : 'OFF'}
+            </button>
+            {tp.on && (
+              <>
+                <div role="group" aria-label="Terrain style" className="flex">
+                  <button
+                    type="button"
+                    data-testid="hq-terrain-style-holo"
+                    aria-pressed={tp.style === 'holo'}
+                    onClick={() => updateTp({ style: 'holo' })}
+                    className={segBtn(tp.style === 'holo')}
+                  >
+                    HOLO
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="hq-terrain-style-sat"
+                    aria-pressed={tp.style === 'sat'}
+                    onClick={() => updateTp({ style: 'sat' })}
+                    className={segBtn(tp.style === 'sat')}
+                  >
+                    SATELLITE
+                  </button>
+                </div>
+                <div role="group" aria-label="Relief exaggeration" className="flex items-center gap-1">
+                  <span className="text-slate-500">RELIEF</span>
+                  {EXAGGERATIONS.map((x: Exaggeration) => (
+                    <button
+                      key={x}
+                      type="button"
+                      data-testid={`hq-terrain-exag-${x}`}
+                      aria-pressed={tp.exag === x}
+                      onClick={() => updateTp({ exag: x })}
+                      className={segBtn(tp.exag === x)}
+                    >
+                      ×{x}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        <div className="bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-emerald-500"></div><span className="text-slate-300">NOMINAL LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-amber-500"></div><span className="text-slate-300">IDLE LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-3 border border-dashed border-slate-400"></div><span className="text-slate-300">UNREACHABLE (ANCESTOR DOWN)</span></div>
+        </div>
+        {terrainOn && (
+          <div
+            data-testid="hq-terrain-attribution"
+            className="max-w-[28rem] text-right text-[9px] font-mono text-slate-500 pointer-events-none"
+          >
+            {attribution}
+          </div>
+        )}
       </div>
 
       <div className="absolute inset-0 cursor-move">
@@ -663,43 +758,46 @@ export default function TheaterReadinessPosture() {
 
           <OrbitControls enableDamping dampingFactor={0.05} maxDistance={1200} minDistance={200} maxPolarAngle={Math.PI / 2 - 0.1} target={[0, 0, 0]} />
 
-          <Grid
-            position={[0, -2, 0]}
-            args={[2000, 2000]}
-            cellSize={20}
-            cellThickness={0.5}
-            sectionSize={100}
-            sectionThickness={1.5}
-            cellColor="#22d3ee"
-            sectionColor="#10b981"
-            /* drei's Grid fadeDistance is the camera-distance over which
-             * the grid lines fade to transparent (default 100). Earlier
-             * fadeDistance=1500 meant the grid was nearly invisible when
-             * the user zoomed out to OrbitControls maxDistance=1200 — the
-             * fade factor at that distance was (1500-1200)/1500 = 0.2,
-             * leaving only 20% of the grid intensity. Combined with the
-             * AbstractContinents clipping past the camera far plane,
-             * this read as "scene blanks on zoom-out." 5000 keeps the
-             * grid visible at any camera position the OrbitControls
-             * permits. */
-            fadeDistance={5000}
-          />
+          {/* Flat-ground decoration gives way to the terrain. */}
+          {!terrainOn && (<>
+            <Grid
+              position={[0, -2, 0]}
+              args={[2000, 2000]}
+              cellSize={20}
+              cellThickness={0.5}
+              sectionSize={100}
+              sectionThickness={1.5}
+              cellColor="#22d3ee"
+              sectionColor="#10b981"
+              /* drei's Grid fadeDistance is the camera-distance over which
+               * the grid lines fade to transparent (default 100). Earlier
+               * fadeDistance=1500 meant the grid was nearly invisible when
+               * the user zoomed out to OrbitControls maxDistance=1200 — the
+               * fade factor at that distance was (1500-1200)/1500 = 0.2,
+               * leaving only 20% of the grid intensity. Combined with the
+               * AbstractContinents clipping past the camera far plane,
+               * this read as "scene blanks on zoom-out." 5000 keeps the
+               * grid visible at any camera position the OrbitControls
+               * permits. */
+              fadeDistance={5000}
+            />
 
-          {/* Concentric rings — visual scale reference, unchanged. */}
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
-            <ringGeometry args={[200, 202, 64]} />
-            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.15} side={THREE.DoubleSide} />
-          </mesh>
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
-            <ringGeometry args={[400, 404, 64]} />
-            <meshBasicMaterial color={0x10b981} transparent opacity={0.1} side={THREE.DoubleSide} />
-          </mesh>
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
-            <ringGeometry args={[600, 606, 64]} />
-            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.05} side={THREE.DoubleSide} />
-          </mesh>
+            {/* Concentric rings — visual scale reference, unchanged. */}
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+              <ringGeometry args={[200, 202, 64]} />
+              <meshBasicMaterial color={0x22d3ee} transparent opacity={0.15} side={THREE.DoubleSide} />
+            </mesh>
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+              <ringGeometry args={[400, 404, 64]} />
+              <meshBasicMaterial color={0x10b981} transparent opacity={0.1} side={THREE.DoubleSide} />
+            </mesh>
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+              <ringGeometry args={[600, 606, 64]} />
+              <meshBasicMaterial color={0x22d3ee} transparent opacity={0.05} side={THREE.DoubleSide} />
+            </mesh>
 
-          <AbstractContinents />
+            <AbstractContinents />
+          </>)}
 
           {/* Tier nodes: a hub per FOB-placed tier, plus a ring on every tier
               that rolls up children (a derived region has the ring alone). */}
@@ -707,9 +805,9 @@ export default function TheaterReadinessPosture() {
             const [x, z] = nodePos.get(n.id)!;
             return (
               <group key={`node-${n.id}`} userData={{ insetHidden: true }}>
-                {!n.derived && <LogisticsHubNode position={[x, 0, z]} />}
+                {!n.derived && <LogisticsHubNode position={[x, groundY(x, z), z]} />}
                 {n.hasChildren && (
-                  <mesh position={[x, 0.5, z]} rotation={[-Math.PI / 2, 0, 0]}>
+                  <mesh position={[x, groundY(x, z) + 0.5, z]} rotation={[-Math.PI / 2, 0, 0]}>
                     <ringGeometry args={[7, 8.5, 32]} />
                     <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
                   </mesh>
@@ -720,13 +818,13 @@ export default function TheaterReadinessPosture() {
 
           {/* HQ marker: always drawn, at the configured location or the FOB centre. */}
           <group userData={{ insetHidden: true }}>
-            <LogisticsHubNode position={[hqPos[0], 0, hqPos[1]]} />
-            <mesh position={[hqPos[0], 0.5, hqPos[1]]} rotation={[-Math.PI / 2, 0, 0]}>
+            <LogisticsHubNode position={[hqPos[0], groundY(hqPos[0], hqPos[1]), hqPos[1]]} />
+            <mesh position={[hqPos[0], groundY(hqPos[0], hqPos[1]) + 0.5, hqPos[1]]} rotation={[-Math.PI / 2, 0, 0]}>
               <ringGeometry args={[7, 8.5, 32]} />
               <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
             </mesh>
           </group>
-          <Html position={[hqPos[0], 0, hqPos[1]]} center
+          <Html position={[hqPos[0], groundY(hqPos[0], hqPos[1]), hqPos[1]]} center
                 style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
             <div data-testid="hq-node-label"
                  className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
@@ -741,10 +839,11 @@ export default function TheaterReadinessPosture() {
             return (
               <DdilNetworkLink
                 key={`link-${e.id}`}
-                start={new THREE.Vector3(sx, 0, sz)}
-                end={new THREE.Vector3(ex, 0, ez)}
+                start={new THREE.Vector3(sx, groundY(sx, sz), sz)}
+                end={new THREE.Vector3(ex, groundY(ex, ez), ez)}
                 status={DDIL_STATUS[e.state]}
                 via={e.via}
+                groundY={groundY}
               />
             );
           })}
@@ -753,7 +852,7 @@ export default function TheaterReadinessPosture() {
           {drawnMetrics.map((m) => (
             <FobLabel
               key={`label-${m.fob.edge_id}`}
-              position={[m.scenePos[0], 0, m.scenePos[1]]}
+              position={[m.scenePos[0], groundY(m.scenePos[0], m.scenePos[1]), m.scenePos[1]]}
               label={m.fob.label || m.fob.edge_id}
               total={m.total}
               composition={m.composition}
@@ -767,7 +866,7 @@ export default function TheaterReadinessPosture() {
             const e = edgeById.get(n.id);
             const word = e ? (e.via ? `UNREACHABLE via ${e.via}` : linkStateWord(e.reading)) : '';
             return (
-              <Html key={`region-label-${n.id}`} position={[x, 0, z]} center
+              <Html key={`region-label-${n.id}`} position={[x, groundY(x, z), z]} center
                     style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
                 <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
                   <span className="text-slate-200 font-bold">{n.id}</span>
@@ -793,7 +892,9 @@ export default function TheaterReadinessPosture() {
           ))}
 
           <React.Suspense fallback={null}>
-            <TacticalMapUnderlay projection={proj} />
+            {terrainOn
+              ? <TheaterTerrain data={terrain} style={tp.style} exag={tp.exag} />
+              : <TacticalMapUnderlay projection={proj} />}
           </React.Suspense>
 
           <EffectComposer>

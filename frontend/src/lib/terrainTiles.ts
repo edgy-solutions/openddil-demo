@@ -34,12 +34,14 @@ export function tileUrl(template: string, z: number, x: number, y: number): stri
 }
 
 /** Where terrain tiles come from: URL templates and the credit line to show. */
-export interface TerrainSource { elevationUrl: string; imageryUrl: string; attribution: string }
+export interface TerrainSource { elevationUrl: string; imageryUrl: string; attribution: string;
+  /** Natural Earth land TopoJSON, for the HQ coast mask. */ landUrl: string }
 
 export const DEFAULT_TERRAIN_SOURCE: TerrainSource = {
   elevationUrl: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
   imageryUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
   attribution: 'Imagery © Esri, Maxar, Earthstar Geographics · Elevation: Terrain Tiles (AWS / Mapzen)',
+  landUrl: 'https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/land-10m.json',
 };
 
 /** The deployment's terrain block laid over the public defaults, field by field. */
@@ -48,6 +50,7 @@ export function resolveTerrainSource(cfg?: Partial<TerrainSource> | null): Terra
     elevationUrl: cfg?.elevationUrl || DEFAULT_TERRAIN_SOURCE.elevationUrl,
     imageryUrl: cfg?.imageryUrl || DEFAULT_TERRAIN_SOURCE.imageryUrl,
     attribution: cfg?.attribution || DEFAULT_TERRAIN_SOURCE.attribution,
+    landUrl: cfg?.landUrl || DEFAULT_TERRAIN_SOURCE.landUrl,
   };
 }
 

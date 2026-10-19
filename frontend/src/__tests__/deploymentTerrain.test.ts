@@ -7,7 +7,7 @@ const T = 'https://tiles.local/{z}/{x}/{y}.png';
 describe('isValidDeploymentTerrain', () => {
   it('accepts an empty block and a full one', () => {
     expect(isValidDeploymentTerrain({})).toBe(true);
-    expect(isValidDeploymentTerrain({ elevationUrl: T, imageryUrl: T, attribution: 'x' })).toBe(true);
+    expect(isValidDeploymentTerrain({ elevationUrl: T, imageryUrl: T, attribution: 'x', landUrl: 'https://land.local/land.json' })).toBe(true);
   });
   it('rejects non-objects', () => {
     for (const v of [null, undefined, 'x', 3, [], true]) expect(isValidDeploymentTerrain(v)).toBe(false);
@@ -21,6 +21,11 @@ describe('isValidDeploymentTerrain', () => {
     expect(isValidDeploymentTerrain({ attribution: '' })).toBe(false);
     expect(isValidDeploymentTerrain({ attribution: 4 })).toBe(false);
   });
+  it('accepts a land URL that is a non-empty string, or absent', () => {
+    expect(isValidDeploymentTerrain({ landUrl: '/deployment-overlay/land.json' })).toBe(true);
+    expect(isValidDeploymentTerrain({ landUrl: '' })).toBe(false);
+    expect(isValidDeploymentTerrain({ landUrl: 9 })).toBe(false);
+  });
 });
 
 describe('resolveTerrainSource', () => {
@@ -31,6 +36,10 @@ describe('resolveTerrainSource', () => {
     const s = resolveTerrainSource({ elevationUrl: T });
     expect(s.elevationUrl).toBe(T);
     expect(s.imageryUrl).toBe(DEFAULT_TERRAIN_SOURCE.imageryUrl);
+    expect(s.landUrl).toBe(DEFAULT_TERRAIN_SOURCE.landUrl);
+  });
+  it('overrides the land URL on its own', () => {
+    expect(resolveTerrainSource({ landUrl: '/land.json' }).landUrl).toBe('/land.json');
   });
 });
 

@@ -47,3 +47,39 @@ export function saveTerrainPrefs(p: TerrainPrefs): void {
     // Storage blocked or full: the controls still work, they just don't persist.
   }
 }
+
+/** The HQ map's terrain controls: fewer than the regional's (no holo panel), and the satellite style by default. */
+export interface HqTerrainPrefs {
+  on: boolean;
+  style: TerrainStyle;
+  exag: Exaggeration;
+}
+
+export const HQ_TERRAIN_PREFS_KEY = 'openddil.hq.terrain';
+
+export const DEFAULT_HQ_TERRAIN_PREFS: HqTerrainPrefs = { on: true, style: 'sat', exag: 1 };
+
+/** Stored HQ prefs laid over the defaults; anything missing or of the wrong type falls back. Never throws. */
+export function loadHqTerrainPrefs(): HqTerrainPrefs {
+  try {
+    const raw = typeof localStorage === 'undefined' ? null : localStorage.getItem(HQ_TERRAIN_PREFS_KEY);
+    if (!raw) return DEFAULT_HQ_TERRAIN_PREFS;
+    const j = JSON.parse(raw) as Partial<Record<keyof HqTerrainPrefs, unknown>> | null;
+    if (!j || typeof j !== 'object') return DEFAULT_HQ_TERRAIN_PREFS;
+    return {
+      on: typeof j.on === 'boolean' ? j.on : DEFAULT_HQ_TERRAIN_PREFS.on,
+      style: j.style === 'sat' || j.style === 'holo' ? j.style : DEFAULT_HQ_TERRAIN_PREFS.style,
+      exag: (EXAGGERATIONS as readonly unknown[]).includes(j.exag) ? (j.exag as Exaggeration) : DEFAULT_HQ_TERRAIN_PREFS.exag,
+    };
+  } catch {
+    return DEFAULT_HQ_TERRAIN_PREFS;
+  }
+}
+
+export function saveHqTerrainPrefs(p: HqTerrainPrefs): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(HQ_TERRAIN_PREFS_KEY, JSON.stringify(p));
+  } catch {
+    // Storage blocked or full: the controls still work, they just don't persist.
+  }
+}

@@ -67,7 +67,7 @@ import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
 import { INSET_RECT, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale';
-import { PX_R, R_TRUE, symbolRadius } from '../../lib/symbolScale';
+import { symbolRadius } from '../../lib/symbolScale';
 import { SEV_RANK, kindsOf, shouldSplit, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
@@ -79,6 +79,7 @@ import { HoloPanel, HoloTerrain, type HoloOpts } from '../terrain/holo';
 import {
   EXAGGERATIONS, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
 } from '../terrain/prefs';
+import { segBtn } from '../terrain/segBtn';
 
 // Severity color tables previously lived here. Removed when AssetMarker's
 // sphereGeometry was replaced with AssetVisual (Phase 3 of the cascade
@@ -753,11 +754,6 @@ const ASSET_PATCH_STEP = 0.0005;
 const MAX_CLUSTER_PATCHES = 8;
 const MAX_ASSET_PATCHES = 32;
 const quantise = (v: number, step: number) => Number((Math.round(v / step) * step).toFixed(6));
-
-const segBtn = (active: boolean) =>
-  `px-2 py-0.5 border ${active
-    ? 'border-cyan-400/70 bg-cyan-500/20 text-cyan-200'
-    : 'border-slate-700 bg-slate-900/80 text-slate-400 hover:text-slate-200'}`;
 
 export default function RegionalSustainmentPosture({
   regionId,
