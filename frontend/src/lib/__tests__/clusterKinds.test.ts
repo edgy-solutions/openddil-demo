@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_KINDS, SEV_RANK, kindsOf, roleOf, shouldSplit } from '../clusterKinds';
+import { MAX_KINDS, SEV_RANK, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, roleOf, shouldSplit } from '../clusterKinds';
 
 const OK = 'LOGISTICS_SEVERITY_OK';
 const DEG = 'LOGISTICS_SEVERITY_DEGRADED';
@@ -67,5 +67,69 @@ describe('shouldSplit hysteresis', () => {
   it('members at one coordinate never split', () => {
     expect(shouldSplit(true, 0, 1e-9)).toBe(false);
     expect(shouldSplit(false, 0, 1e-9)).toBe(false);
+  });
+});
+
+describe('mstEdges', () => {
+  const total = (e: { len: number }[]) => e.reduce((s, x) => s + x.len, 0);
+  it('has n-1 edges, none for n <= 1', () => {
+    expect(mstEdges([])).toEqual([]);
+    expect(mstEdges([[1, 2]])).toEqual([]);
+    expect(mstEdges([[0, 0], [1, 0], [2, 0], [3, 0]])).toHaveLength(3);
+  });
+  it('collinear points chain to the span', () => {
+    expect(total(mstEdges([[0, 0], [5, 0], [1, 0], [3, 0]]))).toBeCloseTo(5);
+  });
+  it('a unit square costs 3', () => {
+    const e = mstEdges([[0, 0], [1, 0], [1, 1], [0, 1]]);
+    expect(e).toHaveLength(3);
+    expect(total(e)).toBeCloseTo(3);
+  });
+  it('duplicates give a zero-length edge', () => {
+    const e = mstEdges([[4, 4], [4, 4], [9, 4]]);
+    expect(e.map((x) => x.len).sort((p, q) => p - q)).toEqual([0, 5]);
+  });
+});
+
+describe('nextMerged', () => {
+  it('merges below 2.0, holds to 2.4, for known and unknown state', () => {
+    expect(nextMerged(undefined, 1.9, 1)).toBe(true);
+    expect(nextMerged(undefined, 2.1, 1)).toBe(false);
+    expect(nextMerged(false, 2.1, 1)).toBe(false);
+    expect(nextMerged(true, 2.1, 1)).toBe(true);
+    expect(nextMerged(true, 2.5, 1)).toBe(false);
+  });
+  it('len 0 is always merged', () => {
+    for (const w of [undefined, true, false]) expect(nextMerged(w, 0, 0.001)).toBe(true);
+  });
+});
+
+describe('groupsOf', () => {
+  const edges = [{ a: 0, b: 1, len: 1 }, { a: 1, b: 2, len: 1 }];
+  it('all merged is one group', () => expect(groupsOf(3, edges, [true, true])).toEqual([[0, 1, 2]]));
+  it('none merged is singletons', () => expect(groupsOf(3, edges, [false, false])).toEqual([[0], [1], [2]]));
+  it('chain A-B merged, B-C not', () => expect(groupsOf(3, edges, [true, false])).toEqual([[0, 1], [2]]));
+});
+
+describe('two sites', () => {
+  const pts: [number, number][] = [[0, 0], [0.1, 0], [0, 0.1], [10, 0], [10.1, 0], [10, 0.1]];
+  const run = (p: [number, number][], r: number) => {
+    const e = mstEdges(p);
+    return groupsOf(p.length, e, e.map((x) => nextMerged(undefined, x.len, r)));
+  };
+  it('splits by place at a middling radius', () => expect(run(pts, 0.2)).toEqual([[0, 1, 2], [3, 4, 5]]));
+  it('one group when far away', () => expect(run(pts, 10)).toHaveLength(1));
+  it('singletons when close, duplicates stay together', () => {
+    expect(run(pts, 0.01)).toHaveLength(6);
+    expect(run([[0, 0], [0, 0], [3, 3]], 0.01)).toEqual([[0, 1], [2]]);
+  });
+});
+
+describe('fogVisibility', () => {
+  it('is 1 with no fog or no distance, falls with both', () => {
+    expect(fogVisibility(0, 100)).toBe(1);
+    expect(fogVisibility(0.01, 0)).toBe(1);
+    expect(fogVisibility(0.01, 100)).toBeCloseTo(Math.exp(-1));
+    expect(fogVisibility(0.01, 300)).toBeLessThan(fogVisibility(0.01, 100));
   });
 });

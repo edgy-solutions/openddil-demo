@@ -69,7 +69,7 @@ import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../Enga
 import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale';
 import { symbolRadius } from '../../lib/symbolScale';
-import { SEV_RANK, kindsOf, shouldSplit, type Kind } from '../../lib/clusterKinds';
+import { SEV_RANK, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
 import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
@@ -149,7 +149,9 @@ type GroundFn = (x: number, z: number) => number;
 const REGIONAL_INSET_RECT = { ...INSET_RECT, y: INSET_RECT.y + 36 };
 
 /** Every asset at its true position (on `ground`), plus the clusters they bucket into. */
-function buildRenderables(
+// Exported for tests.
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildRenderables(
   fleet: FleetAsset[],
   logistics: LogisticsStatus[],
   fobs: Fob[],
@@ -202,10 +204,11 @@ function buildRenderables(
     };
     renderables.push(r);
 
-    // Bucket by edge_id (FOB attribution) when known: a FOB is a logical
+    // Bucket friendly assets by edge_id (FOB attribution) when known: a FOB is a logical
     // grouping, and its assets' raw positions can span several world units.
     // The geometric bucket is the fallback for assets without an edge_id.
-    const key = a.edge_id ? `edge:${a.edge_id}` : colocationBucketKey(x, z);
+    const tracked = a.force_id !== 'FORCE_OPPOSING' && a.force_id !== 'FORCE_NEUTRAL';
+    const key = a.edge_id && tracked ? `edge:${a.edge_id}` : colocationBucketKey(x, z);
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
@@ -343,41 +346,68 @@ const SEV_CHIP: Record<number, string> = {
   0: 'border-cyan-400/60 text-cyan-200', 1: 'border-amber-400/70 text-amber-200',
   2: 'border-rose-500/80 text-rose-200', 3: 'border-rose-500/80 text-rose-200',
 };
+/** Fades a chip with the scene fog, as a model fades: DOM overlays are not fogged by three. */
+function useFogFade() {
+  const g = useRef<THREE.Group>(null);
+  const el = useRef<HTMLDivElement>(null);
+  const wp = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera, scene }) => {
+    if (!g.current || !el.current) return;
+    g.current.getWorldPosition(wp);
+    const density = scene.fog instanceof THREE.FogExp2 ? scene.fog.density : 0;
+    const v = fogVisibility(density, camera.position.distanceTo(wp));
+    el.current.style.opacity = String(v);
+    el.current.style.visibility = v < 0.05 ? 'hidden' : 'visible';
+  });
+  return { g, el };
+}
+
 function CountChip({ text, sev }: { text: string; sev: number }) {
+  const { g, el } = useFogFade();
   return (
-    <Html center style={{ pointerEvents: 'none', transform: 'translate3d(-50%,calc(-50% - 34px),0)' }}>
-      <div className={`whitespace-nowrap rounded-full border bg-slate-900/90 px-1.5 font-mono text-[10px] font-bold ${SEV_CHIP[sev] ?? SEV_CHIP[0]}`}>
-        {text}
-      </div>
-    </Html>
+    <group ref={g}>
+      <Html center style={{ pointerEvents: 'none', transform: 'translate3d(-50%,calc(-50% - 34px),0)' }}>
+        <div ref={el} className={`whitespace-nowrap rounded-full border bg-slate-900/90 px-1.5 font-mono text-[10px] font-bold ${SEV_CHIP[sev] ?? SEV_CHIP[0]}`}>
+          {text}
+        </div>
+      </Html>
+    </group>
   );
 }
 
-/** A cluster's members: one symbol per kind (with a count) until they would clear each other, then each at its true position. */
-function ClusterGroup({
-  members, selectedAssetId, onSelect, calloutOf,
+/** The "+N" chip for kinds past the cap; click selects a hidden member, again steps to the next. */
+function MoreChip({ text, sev, title, onClick }: { text: string; sev: number; title: string; onClick: () => void }) {
+  const { g, el } = useFogFade();
+  return (
+    <group ref={g}>
+      <Html center style={{ pointerEvents: 'none' }}>
+        <div
+          ref={el}
+          className={`cursor-pointer whitespace-nowrap rounded-sm border bg-slate-900/90 px-1 font-mono text-[10px] font-bold ${SEV_CHIP[sev]}`}
+          style={{ pointerEvents: 'auto' }}
+          title={title}
+          onClick={(e) => { e.stopPropagation(); onClick(); }}
+        >
+          {text}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+/** One place's members: one symbol per kind (with a count) side by side at their centroid. */
+function KindsCluster({
+  members, selectedAssetId, onSelect,
 }: {
   members: RenderableAsset[];
   selectedAssetId: string | null;
   onSelect: (id: string, severity: string) => void;
-  calloutOf: (a: RenderableAsset) => CalloutInfo;
 }) {
   const centroid = useMemo(() => {
     const c = new THREE.Vector3();
     for (const a of members) c.add(new THREE.Vector3(...a.position));
     return c.divideScalar(members.length);
   }, [members]);
-  // Closest pair on the ground plane. Members at one coordinate give 0 and stay clustered.
-  const minSep = useMemo(() => {
-    let m = Infinity;
-    for (let i = 0; i < members.length; i++) {
-      for (let j = i + 1; j < members.length; j++) {
-        m = Math.min(m, Math.hypot(members[i].position[0] - members[j].position[0], members[i].position[2] - members[j].position[2]));
-      }
-    }
-    return m;
-  }, [members]);
-  const [clustered, setClustered] = useState(members.length > 1);
   const { shown, hidden } = useMemo(() => kindsOf(members), [members]);
   const slotRefs = useRef<(THREE.Group | null)[]>([]);
   const modelRefs = useRef<(THREE.Group | null)[]>([]);
@@ -385,12 +415,7 @@ function ClusterGroup({
   const { size } = useThree();
 
   useFrame(({ camera }) => {
-    if (members.length < 2) return;
     const rSym = symbolRadius(camera.position.distanceTo(centroid), size.height, fovOf(camera));
-    // Hysteresis, so a cluster does not flicker at the boundary.
-    const next = !shouldSplit(clustered, minSep, rSym);
-    if (next !== clustered) setClustered(next);
-    if (!next) return;
     // Kinds sit side by side, just clearing, across the screen; the "+N" chip takes the last slot.
     right.setFromMatrixColumn(camera.matrixWorld, 0).setY(0).normalize();
     const n = shown.length + (hidden.length ? 1 : 0);
@@ -413,62 +438,117 @@ function ClusterGroup({
     }
   });
 
-  if (members.length > 1 && clustered) {
-    const hiddenN = hidden.reduce((n, k) => n + k.members.length, 0);
-    const hiddenSev = Math.max(0, ...hidden.map((k) => SEV_RANK[k.sev] ?? 0));
-    // Click selects the kind's first member; clicking again steps to the next.
-    const pick = (k: Kind<RenderableAsset>) => (e: ThreeEvent<MouseEvent>) => {
-      e.stopPropagation();
-      const i = k.members.findIndex((m) => m.asset_id === selectedAssetId);
-      const next = k.members[(i + 1) % k.members.length];
-      onSelect(next.asset_id, next.severity);
-    };
-    return (
-      <>
-        {shown.map((k, i) => (
-          <group
-            key={k.variant ?? ''}
-            ref={(el) => { slotRefs.current[i] = el; }}
-            position={centroid}
-            userData={{ insetHidden: true }}
-          >
-            <group ref={(el) => { modelRefs.current[i] = el; }} onClick={pick(k)}>
-              <HitSphere variant={k.variant} />
-              <Model a={k.members[0]} sev={k.sev} selected={k.members.some((m) => m.asset_id === selectedAssetId)} />
-            </group>
-            {k.members.length > 1 && <CountChip text={`×${k.members.length}`} sev={SEV_RANK[k.sev] ?? 0} />}
-          </group>
-        ))}
-        {hidden.length > 0 && (
-          <group
-            ref={(el) => { slotRefs.current[shown.length] = el; }}
-            position={centroid}
-            userData={{ insetHidden: true }}
-          >
-            <Html center style={{ pointerEvents: 'none' }}>
-              <div
-                className={`whitespace-nowrap rounded-sm border bg-slate-900/90 px-1 font-mono text-[10px] font-bold ${SEV_CHIP[hiddenSev]}`}
-                title={hidden.map((k) => `${k.variant} ×${k.members.length}`).join(', ')}
-              >
-                +{hiddenN}
-              </div>
-            </Html>
-          </group>
-        )}
-      </>
-    );
-  }
+  const hiddenN = hidden.reduce((n, k) => n + k.members.length, 0);
+  const hiddenSev = Math.max(0, ...hidden.map((k) => SEV_RANK[k.sev] ?? 0));
+  // Click selects the kind's first member; clicking again steps to the next.
+  const pick = (k: Kind<RenderableAsset>) => (e: ThreeEvent<MouseEvent>) => {
+    e.stopPropagation();
+    const i = k.members.findIndex((m) => m.asset_id === selectedAssetId);
+    const next = k.members[(i + 1) % k.members.length];
+    onSelect(next.asset_id, next.severity);
+  };
+  const pickHidden = () => {
+    const all = hidden.flatMap((k) => k.members);
+    if (!all.length) return;
+    const i = all.findIndex((m) => m.asset_id === selectedAssetId);
+    const next = all[(i + 1) % all.length];
+    onSelect(next.asset_id, next.severity);
+  };
   return (
     <>
-      {members.map((a) => (
-        <AssetMarker
-          key={a.asset_id}
-          asset={a}
-          selected={a.asset_id === selectedAssetId}
-          callout={calloutOf(a)}
-          onClick={(e) => { e.stopPropagation(); onSelect(a.asset_id, a.severity); }}
-        />
+      {shown.map((k, i) => (
+        <group
+          key={k.variant ?? ''}
+          ref={(el) => { slotRefs.current[i] = el; }}
+          position={centroid}
+          userData={{ insetHidden: true }}
+        >
+          <group ref={(el) => { modelRefs.current[i] = el; }} onClick={pick(k)}>
+            <HitSphere variant={k.variant} />
+            <Model a={k.members[0]} sev={k.sev} selected={k.members.some((m) => m.asset_id === selectedAssetId)} />
+          </group>
+          {k.members.length > 1 && <CountChip text={`×${k.members.length}`} sev={SEV_RANK[k.sev] ?? 0} />}
+        </group>
       ))}
+      {hidden.length > 0 && (
+        <group
+          ref={(el) => { slotRefs.current[shown.length] = el; }}
+          position={centroid}
+          userData={{ insetHidden: true }}
+        >
+          <MoreChip
+            text={`+${hiddenN}`}
+            sev={hiddenSev}
+            title={hidden.map((k) => `${k.variant} ×${k.members.length}`).join(', ')}
+            onClick={pickHidden}
+          />
+        </group>
+      )}
+    </>
+  );
+}
+
+/**
+ * A bucket's members grouped by place: members whose nearest neighbours (a minimum
+ * spanning tree) clear each other on screen are drawn singly, the rest as one
+ * kinds-cluster per place. An edge's merge state has hysteresis (kept by asset-id pair,
+ * so it survives the members array being rebuilt on each poll).
+ */
+function ClusterGroup({
+  members, selectedAssetId, onSelect, calloutOf,
+}: {
+  members: RenderableAsset[];
+  selectedAssetId: string | null;
+  onSelect: (id: string, severity: string) => void;
+  calloutOf: (a: RenderableAsset) => CalloutInfo;
+}) {
+  const mst = useMemo(() => mstEdges(members.map((a) => [a.position[0], a.position[2]])), [members]);
+  const mids = useMemo(
+    () => mst.map((e) => new THREE.Vector3(...members[e.a].position).add(new THREE.Vector3(...members[e.b].position)).multiplyScalar(0.5)),
+    [mst, members],
+  );
+  const keys = useMemo(
+    () => mst.map((e) => [members[e.a].asset_id, members[e.b].asset_id].sort().join('|')),
+    [mst, members],
+  );
+  const state = useRef(new Map<string, boolean>());
+  const [sig, setSig] = useState('');
+  const { size } = useThree();
+
+  useFrame(({ camera }) => {
+    if (members.length < 2) return;
+    const fov = fovOf(camera);
+    const merged = state.current;
+    let next = '';
+    for (let i = 0; i < mst.length; i++) {
+      const rSym = symbolRadius(camera.position.distanceTo(mids[i]), size.height, fov);
+      const m = nextMerged(merged.get(keys[i]), mst[i].len, rSym);
+      merged.set(keys[i], m);
+      if (m) next += keys[i] + ';';
+    }
+    if (next !== sig) setSig(next);
+  });
+
+  const marker = (a: RenderableAsset) => (
+    <AssetMarker
+      key={a.asset_id}
+      asset={a}
+      selected={a.asset_id === selectedAssetId}
+      callout={calloutOf(a)}
+      onClick={(e) => { e.stopPropagation(); onSelect(a.asset_id, a.severity); }}
+    />
+  );
+  if (members.length < 2) return <>{members.map(marker)}</>;
+  const on = new Set(sig.split(';').filter(Boolean));
+  const groups = groupsOf(members.length, mst, keys.map((k) => on.has(k)));
+  return (
+    <>
+      {groups.map((g) => {
+        if (g.length === 1) return marker(members[g[0]]);
+        const ms = g.map((i) => members[i]);
+        const id = ms.reduce((m, a) => (a.asset_id < m ? a.asset_id : m), ms[0].asset_id);
+        return <KindsCluster key={`k:${id}`} members={ms} selectedAssetId={selectedAssetId} onSelect={onSelect} />;
+      })}
     </>
   );
 }
@@ -1186,7 +1266,7 @@ export default function RegionalSustainmentPosture({
           <directionalLight position={[50, 100, 50]} intensity={1.5} />
           <hemisphereLight groundColor={0x020617} intensity={0.5} />
 
-          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={0.01} maxPolarAngle={Math.PI / 2 - 0.1} />
+          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={0.01} maxPolarAngle={Math.PI / 2 - 0.1} zoomToCursor />
 
           <CameraRig goal={goal} />
           <FogController isZoomed={!!selectedAssetId} />
