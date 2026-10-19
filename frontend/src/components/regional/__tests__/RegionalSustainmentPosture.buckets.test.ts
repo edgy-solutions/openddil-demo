@@ -7,7 +7,11 @@ import { buildRenderables } from '../RegionalSustainmentPosture';
 import type { FleetAsset } from '../../../hooks';
 import type { Projection } from '../../../lib/geoProjection';
 
-const proj: Projection = { project: (lat, lon) => [lon * 10, lat * 10], center: { lat: 0, lon: 0 } };
+const proj: Projection = {
+  project: (lat, lon) => [lon * 10, lat * 10],
+  unproject: (x, z) => [z / 10, x / 10],
+  center: { lat: 0, lon: 0 },
+};
 const asset = (id: string, lat: number, lon: number, force: string | null, edge: string | null) => ({
   asset_id: id, platform_variant: null, subsystem: null, callsign: null, force_id: force,
   last_sample_at: null, reporting_status: null, reporting_status_at: null, schema_revision: 1,

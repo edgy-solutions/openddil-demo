@@ -7,7 +7,7 @@
 // packaged or deployment-supplied tiles. Tiles are packaged under
 // `/deployment-overlay/` and nothing is fetched from the internet unless the
 // deployment's config turns `network` on.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import type { Projection } from '../../lib/geoProjection';
 import { M, SCENE_SCALE_UNITS_PER_DEG } from '../../lib/sceneScale';
@@ -36,6 +36,8 @@ export type TerrainData = {
   masked: boolean;
   /** Land/sea mask over `bounds` (white = land, row 0 = north, Mercator in y), or null when no coastline data could be had. */
   mask: HTMLCanvasElement | null;
+  /** Zoom of the base imagery (or relief) mosaic. */
+  baseZoom: number;
 };
 
 const MAX_INFLIGHT = 8;
@@ -62,10 +64,12 @@ async function pool(tasks: (() => Promise<void>)[], limit: number) {
 type Mosaic = { canvas: HTMLCanvasElement; x0: number; y0: number; z: number; loaded: number };
 
 async function mosaic(b: Bounds, z: number, template: string, fill: string): Promise<Mosaic> {
-  const x0 = Math.floor(lonToTileX(b.west, z));
-  const x1 = Math.floor(lonToTileX(b.east, z));
-  const y0 = Math.floor(latToTileY(b.north, z));
-  const y1 = Math.floor(latToTileY(b.south, z));
+  // A tile-aligned edge sits exactly on a tile boundary: nudge inward so it does not pull in the next tile.
+  const EPS = 1e-6;
+  const x0 = Math.floor(lonToTileX(b.west, z) + EPS);
+  const y0 = Math.floor(latToTileY(b.north, z) + EPS);
+  const x1 = Math.max(x0, Math.floor(lonToTileX(b.east, z) - EPS));
+  const y1 = Math.max(y0, Math.floor(latToTileY(b.south, z) - EPS));
   const canvas = document.createElement('canvas');
   canvas.width = (x1 - x0 + 1) * 256;
   canvas.height = (y1 - y0 + 1) * 256;
@@ -176,7 +180,7 @@ export async function loadTerrain(
       if (m) { water = m.water; masked = true; mask = m.canvas; }
     } catch { /* no coastline data */ }
   }
-  return { bounds: b, proj, heightM, rawM, texture, water, masked, mask };
+  return { bounds: b, proj, heightM, rawM, texture, water, masked, mask, baseZoom };
 }
 
 /** Load terrain for `b` (null = none). Reloads when the box, the tile source or the projection centre changes. */
@@ -279,10 +283,11 @@ function feather(c: HTMLCanvasElement, frac: number) {
   ctx.globalCompositeOperation = 'source-over';
 }
 
-export type Patch = { bounds: Bounds; texture: THREE.Texture; zoom: number };
-/** High-resolution imagery for a small area (up to z18+, ~0.4 m/px at 53°N), feathered at the edges. */
-export async function loadPatch(b: Bounds, source: TerrainSource, maxZoom = 18): Promise<Patch> {
-  const zoom = fitZoom(b, Math.min(maxZoom, source.patchMaxZoom));
+export type Patch = { bounds: Bounds; texture: THREE.Texture; zoom: number; /** The spec key it was loaded for (set by usePatches). */ key?: string };
+/** High-resolution imagery for a small area (up to z18+, ~0.4 m/px at 53°N), feathered at the edges.
+ *  `exactZoom` (tile-aligned bounds) replaces the fitted zoom. */
+export async function loadPatch(b: Bounds, source: TerrainSource, maxZoom = 18, exactZoom?: number): Promise<Patch> {
+  const zoom = exactZoom ?? fitZoom(b, Math.min(maxZoom, source.patchMaxZoom));
   const c = crop(await mosaic(b, zoom, source.patchImageryUrl, '#000'), b);
   feather(c, 0.1);
   const texture = new THREE.CanvasTexture(c);
@@ -291,23 +296,80 @@ export async function loadPatch(b: Bounds, source: TerrainSource, maxZoom = 18):
   return { bounds: b, texture, zoom };
 }
 
-export type PatchSpec = { bounds: Bounds; maxZoom: number };
+/** `zoom`, when set, is the exact tile zoom (the bounds are tile-aligned); else the zoom is fitted up to `maxZoom`. */
+export type PatchSpec = { bounds: Bounds; maxZoom: number; zoom?: number };
+const patchSpecKey = (s: PatchSpec): string =>
+  `${s.zoom ?? `f${s.maxZoom}`}:${s.bounds.south}:${s.bounds.west}:${s.bounds.north}:${s.bounds.east}`;
+
+/** Patches for `list`, loaded incrementally: a spec already loaded or loading is not requested again, and
+ *  patches that left the list stay on screen until every spec in the current list has finished (loaded or
+ *  failed), so the old sharp imagery is not removed before the new is in. */
 export function usePatches(list: PatchSpec[], source: TerrainSource): Patch[] {
   const [patches, setPatches] = useState<Patch[]>([]);
   const key = JSON.stringify(list);
   const { patchImageryUrl, patchMaxZoom } = source;
+  const loaded = useRef(new Map<string, Patch>());
+  const loading = useRef(new Set<string>());
+  const failed = useRef(new Set<string>());
+  const current = useRef(new Set<string>());
+  const mounted = useRef(false);
+
   useEffect(() => {
-    let live = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- a deliberate reset when the patch imagery goes away; patches then arrive asynchronously
-    if (!patchImageryUrl) { setPatches([]); return; }
-    const specs: PatchSpec[] = JSON.parse(key);
-    // Each patch appears as soon as it is ready.
-    for (const { bounds, maxZoom } of specs) {
-      loadPatch(bounds, source, maxZoom)
-        .then((p) => { if (live) setPatches((ps) => [...ps, p]); else p.texture.dispose(); })
-        .catch((e) => console.error('patch load failed', e));
+    mounted.current = true;
+    const done = loaded.current;
+    const bad = failed.current;
+    return () => {
+      mounted.current = false;
+      for (const p of done.values()) p.texture.dispose();
+      done.clear();
+      bad.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!patchImageryUrl) {
+      for (const p of loaded.current.values()) p.texture.dispose();
+      loaded.current.clear();
+      current.current = new Set();
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- a deliberate reset when the patch imagery goes away; patches then arrive asynchronously
+      setPatches([]);
+      return;
     }
-    return () => { live = false; setPatches([]); };
+    const specs: PatchSpec[] = JSON.parse(key);
+    const keyed = specs.map((s) => [patchSpecKey(s), s] as const);
+    current.current = new Set(keyed.map(([k]) => k));
+    for (const k of failed.current) if (!current.current.has(k)) failed.current.delete(k);
+
+    const settle = () => {
+      if (!mounted.current) return;
+      const pending = [...current.current].some((k) => !loaded.current.has(k) && !failed.current.has(k));
+      if (!pending) {
+        for (const [k, p] of loaded.current) {
+          if (!current.current.has(k)) { p.texture.dispose(); loaded.current.delete(k); }
+        }
+      }
+      setPatches([...loaded.current.values()]);
+    };
+
+    for (const [k, spec] of keyed) {
+      if (loaded.current.has(k) || loading.current.has(k) || failed.current.has(k)) continue;
+      loading.current.add(k);
+      loadPatch(spec.bounds, source, spec.maxZoom, spec.zoom)
+        .then((p) => {
+          loading.current.delete(k);
+          // Gone, or its spec left the list while it loaded: drop it.
+          if (!mounted.current || !current.current.has(k)) { p.texture.dispose(); return; }
+          loaded.current.set(k, { ...p, key: k });
+          settle();
+        })
+        .catch((e) => {
+          loading.current.delete(k);
+          console.error('patch load failed', e);
+          failed.current.add(k);
+          settle();
+        });
+    }
+    settle();
     // source is read by the two fields above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, patchImageryUrl, patchMaxZoom]);

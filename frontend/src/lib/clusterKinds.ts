@@ -113,3 +113,15 @@ export function groupsOf(n: number, edges: MstEdge[], merged: boolean[]): number
 export function fogVisibility(density: number, distance: number): number {
   return Math.exp(-((density * distance) ** 2));
 }
+
+/** Fog per unit of camera-to-target distance: the target keeps ~99% of its colour, 6x as far ~60%, 10x ~25%.
+ *  Selected: a little denser so the asset's surroundings recede. */
+export const FOG_PER_DIST = 0.12;
+export const FOG_PER_DIST_SELECTED = 0.16;
+
+/** FogExp2 density that scales with how far the camera is from what it looks at, so the overview is as clear as a
+ *  close-up and only the horizon fades. */
+export function fogDensity(targetDist: number, selected: boolean): number {
+  const k = selected ? FOG_PER_DIST_SELECTED : FOG_PER_DIST;
+  return Math.min(0.5, Math.max(0.0005, k / Math.max(targetDist, 1e-3)));
+}

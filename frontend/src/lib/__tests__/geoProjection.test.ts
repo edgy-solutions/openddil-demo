@@ -58,3 +58,15 @@ describe('makeProjection fallback centre', () => {
     expect(makeProjection([], 80).center).toEqual({ lat: 0, lon: 0 });
   });
 });
+
+describe('makeProjection unproject', () => {
+  it('inverts project at made-up points', () => {
+    const p = makeProjection([{ lat: 10, lon: 20 } as never, { lat: 12, lon: 22 } as never], 80);
+    for (const [lat, lon] of [[10, 20], [11.3, 21.7], [-2, 5]] as const) {
+      const [x, z] = p.project(lat, lon);
+      const [la, lo] = p.unproject(x, z);
+      expect(la).toBeCloseTo(lat, 9);
+      expect(lo).toBeCloseTo(lon, 9);
+    }
+  });
+});

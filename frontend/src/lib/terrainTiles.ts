@@ -15,6 +15,15 @@ export function latToTileY(lat: number, z: number): number {
   const r = (lat * Math.PI) / 180;
   return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z;
 }
+/** Inverse of lonToTileX. */
+export function tileXToLon(x: number, z: number): number {
+  return (x / 2 ** z) * 360 - 180;
+}
+/** Inverse of latToTileY. */
+export function tileYToLat(y: number, z: number): number {
+  const n = Math.PI * (1 - (2 * y) / 2 ** z);
+  return (Math.atan(Math.sinh(n)) * 180) / Math.PI;
+}
 /** Terrarium PNG pixel to metres. */
 export function decodeTerrarium(r: number, g: number, b: number): number {
   return r * 256 + g + b / 256 - 32768;
