@@ -116,3 +116,21 @@ toxiproxy (the DDIL link control) and `/v1/shape` to ElectricSQL.
 
 Tooling: Vite 7, React 19, TypeScript, Tailwind, Chart.js, react-three-fiber.
 The ESLint config is in `eslint.config.js`.
+
+## Terrain by image
+
+A packed terrain bundle is tens of MB of tiles, too heavy for a ConfigMap. Ship it as an
+image; the chart's initContainer copies it into an emptyDir that nginx serves at
+`/deployment-overlay/terrain/`.
+
+```bash
+node frontend/scripts/pack-terrain.mjs <src-dir> <overlay-dir>
+docker build -f frontend/scripts/terrain-image/Dockerfile -t <registry>/<name>:<hash> <overlay-dir>
+```
+
+Then, in the chart values, set `frontend.terrain.image.repository`, `tag` (or `digest`),
+and optionally `pullPolicy` and `sizeLimit`, plus the `terrain` URLs and `credits` copied from
+the overlay's `deployment.json`. `elevationUrl` must sit under
+`/deployment-overlay/terrain/<hash>/`; the chart checks that hash against the image. The
+`image` block is chart-only and never lands in `deployment.json`. An image of a real area is
+location data: push it only to a private registry.
