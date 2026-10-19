@@ -65,7 +65,7 @@ import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
-import { INSET_RECT, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
+import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale';
 import { symbolRadius } from '../../lib/symbolScale';
 import { SEV_RANK, kindsOf, shouldSplit, type Kind } from '../../lib/clusterKinds';
@@ -958,8 +958,8 @@ export default function RegionalSustainmentPosture({
     const [x, z] = proj.project(ll.lat, ll.lon);
     const launchAlt = t.launcherAssetId ? altById.get(t.launcherAssetId) : undefined;
     const base = t.launcherAssetId ? (groundById.get(t.launcherAssetId) ?? 0) : 0;
-    return [x, base + heightAboveLaunch(ll.h, launchAlt, UNITS_PER_KM), z];
-  }, [proj, altById, groundById]);
+    return [x, clearOfGround(base + heightAboveLaunch(ll.h, launchAlt, UNITS_PER_KM), groundAt(x, z), UNITS_PER_KM), z];
+  }, [proj, altById, groundById, groundAt]);
   const launcherOf = useCallback((t: (typeof trailTracks)[number]): Vec3 | undefined => {
     const p = t.launcherAssetId ? renderables.find((a) => a.asset_id === t.launcherAssetId)?.position : undefined;
     return p ? [p[0], p[1], p[2]] : undefined;
@@ -1235,7 +1235,7 @@ export default function RegionalSustainmentPosture({
                 <MunitionTrackHolo
                   track={trackById.get(m.id) ?? { munitionAssetId: m.id, launcherAssetId: null }}
                   trail={m.trail}
-                  groundY={insetGround}
+                  groundY={m.launcher?.[1] ?? insetGround}
                   launcher={m.launcher}
                   target={targetOf(trackById.get(m.id))}
                   ending={m.ending}

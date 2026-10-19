@@ -99,4 +99,10 @@ describe('RegionalSustainmentPosture holo target', () => {
     const trail = last().trail as number[][];
     expect(trail[trail.length - 1][1]).toBeCloseTo(2 * (80 / 111), 6);
   });
+
+  it("grounds the holo at the track's own launcher", () => {
+    state.fleet = [asset('dis:9:9:2', { lat: 10, lon: 20 })];
+    view();
+    expect(last().groundY).toBe((last().launcher as number[])[1]);
+  });
 });

@@ -53,7 +53,7 @@ import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
-import { engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
+import { clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { LinkChips } from '../network/LinkChips';
 import {
   linkStateWord,
@@ -66,10 +66,9 @@ import { buildTheaterTopology, type EdgeState } from '../../lib/theaterTopology'
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
 // within view at the default (0, 150, 600) camera.
 const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
+// Markers sit on the terrain (y = 0 with terrain off); tracks rise from their
+// launcher's ground by their ellipsoidal height (units per km = units per deg / 111).
 const HQ_UNITS_PER_KM = HQ_SCENE_SCALE_UNITS_PER_DEG / 111;
-// FOB markers and labels sit at y = 0; tracks are drawn against this ground plane
-// and rise from it by their ellipsoidal height (units per km = units per deg / 111).
-const HQ_GROUND_Y = 0;
 
 // Per-FOB composition breakdown, driven by the asset_class discriminator
 // (src/lib/assetClass.ts) rather than by platform_variant pattern-matching.
@@ -519,28 +518,30 @@ export default function TheaterReadinessPosture() {
   );
   const edgeById = useMemo(() => new Map(topo.edges.map((e) => [e.id, e])), [topo.edges]);
 
-  // Height is above the launcher's own altitude: FOBs sit on one ground plane,
-  // so the site elevation is not flight.
-  const projectTrack = useCallback((t: MunitionTrack): Vec3 | null => {
-    const ll = trackLatLon(t);
-    if (!ll) return null;
-    const [x, z] = proj.project(ll.lat, ll.lon);
-    const launchAlt = t.launcherAssetId ? fleet.data.find((a) => a.asset_id === t.launcherAssetId)?.position?.alt : undefined;
-    return [x, HQ_GROUND_Y + heightAboveLaunch(ll.h, launchAlt, HQ_UNITS_PER_KM), z];
-  }, [proj, fleet.data]);
   // The launcher's own fleet position, projected to the ground, when it has
   // one; otherwise its FOB (this map draws FOBs, not individual assets).
   const launcherOf = useCallback((t: MunitionTrack): Vec3 | undefined => {
     const own = t.launcherAssetId ? fleet.data.find((a) => a.asset_id === t.launcherAssetId)?.position : null;
     if (own) {
       const [x, z] = proj.project(own.lat, own.lon);
-      return [x, HQ_GROUND_Y, z];
+      return [x, groundY(x, z), z];
     }
     const edgeByAsset = new Map(fleet.data.map((a) => [a.asset_id, a.edge_id]));
     const lEdge = t.launcherAssetId ? edgeByAsset.get(t.launcherAssetId) : null;
     const fob = lEdge ? drawnMetrics.find((m) => m.fob.edge_id === lEdge) : undefined;
-    return fob ? [fob.scenePos[0], HQ_GROUND_Y, fob.scenePos[1]] : undefined;
-  }, [fleet.data, drawnMetrics, proj]);
+    return fob ? [fob.scenePos[0], groundY(fob.scenePos[0], fob.scenePos[1]), fob.scenePos[1]] : undefined;
+  }, [fleet.data, drawnMetrics, proj, groundY]);
+  // Flight height is true-scale above the launcher's own ground (FOB altitude
+  // is not flight). Terrain relief is exaggerated by `exag`, so the clamp keeps
+  // a low track out of the hills.
+  const projectTrack = useCallback((t: MunitionTrack): Vec3 | null => {
+    const ll = trackLatLon(t);
+    if (!ll) return null;
+    const [x, z] = proj.project(ll.lat, ll.lon);
+    const launchAlt = t.launcherAssetId ? fleet.data.find((a) => a.asset_id === t.launcherAssetId)?.position?.alt : undefined;
+    const base = launcherOf(t)?.[1] ?? groundY(x, z);
+    return [x, clearOfGround(base + heightAboveLaunch(ll.h, launchAlt, HQ_UNITS_PER_KM), groundY(x, z), HQ_UNITS_PER_KM), z];
+  }, [proj, fleet.data, launcherOf, groundY]);
   const trails = useMunitionTrails(trackFeed.data, projectTrack, launcherOf);
   const trackById = useMemo(() => new Map(trackFeed.data.map((t) => [t.munitionAssetId, t])), [trackFeed.data]);
   // Target: the Fire PDU's target (effector_launch, by event_urn), at that asset's fleet position.
@@ -553,9 +554,9 @@ export default function TheaterReadinessPosture() {
       const pos = id ? posById.get(id) : null;
       if (!pos) return undefined;
       const [x, z] = proj.project(pos.lat, pos.lon);
-      return [x, HQ_GROUND_Y, z];
+      return [x, groundY(x, z), z];
     };
-  }, [launches.data, fleet.data, proj]);
+  }, [launches.data, fleet.data, proj, groundY]);
 
   // Engagement inset: the same scene framed on what is in flight, nodes as dots.
   const insetFocus = useMemo(
@@ -565,11 +566,13 @@ export default function TheaterReadinessPosture() {
   const insetMarkers = useMemo<InsetMarker[]>(() => [
     ...topo.nodes.flatMap((n) => {
       const p = nodePos.get(n.id);
-      return p ? [{ at: [p[0], HQ_GROUND_Y, p[1]] as Vec3, color: '#22d3ee' }] : [];
+      return p ? [{ at: [p[0], groundY(p[0], p[1]), p[1]] as Vec3, color: '#22d3ee' }] : [];
     }),
-    { at: [hqPos[0], HQ_GROUND_Y, hqPos[1]] as Vec3, color: '#10b981' },
-  ], [topo.nodes, nodePos, hqPos]);
-  const insetFrame = frameOf(insetFocus, HQ_GROUND_Y);
+    { at: [hqPos[0], groundY(hqPos[0], hqPos[1]), hqPos[1]] as Vec3, color: '#10b981' },
+  ], [topo.nodes, nodePos, hqPos, groundY]);
+  // The inset's ground is the first launcher's, as in regional.
+  const insetGround = trails.find((m) => m.launcher)?.launcher?.[1] ?? 0;
+  const insetFrame = frameOf(insetFocus, insetGround);
   const insetLabel = `ENGAGEMENT · ${trails.filter((m) => !m.ending).length} IN FLIGHT${
     insetFrame ? ` · GRID ${gridStepKm(insetFrame.r, HQ_UNITS_PER_KM)} KM` : ''}`;
 
@@ -884,7 +887,7 @@ export default function TheaterReadinessPosture() {
               key={`track-${m.id}`}
               track={trackById.get(m.id) ?? { munitionAssetId: m.id, launcherAssetId: null }}
               trail={m.trail}
-              groundY={HQ_GROUND_Y}
+              groundY={m.launcher?.[1] ?? insetGround}
               launcher={m.launcher}
               target={targetOf(trackById.get(m.id))}
               ending={m.ending}
@@ -901,7 +904,7 @@ export default function TheaterReadinessPosture() {
             <Bloom luminanceThreshold={0.2} mipmapBlur intensity={1.2} luminanceSmoothing={0.9} />
           </EffectComposer>
           {/* After the composer (priority 2): the inset draws without bloom. */}
-          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={HQ_GROUND_Y} unitsPerKm={HQ_UNITS_PER_KM} />
+          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={insetGround} unitsPerKm={HQ_UNITS_PER_KM} />
         </Canvas>
         <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} />
       </div>

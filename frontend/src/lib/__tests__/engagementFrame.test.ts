@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { engagementFocus, frameOf, gridStepKm, heightAboveLaunch, MIN_RADIUS } from '../engagementFrame';
+import { clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch, MIN_RADIUS } from '../engagementFrame';
 
 describe('frameOf', () => {
   it('is null with nothing in flight', () => {
@@ -48,5 +48,15 @@ describe('engagementFocus', () => {
       { trail: [[0, 1, 0], [1, 2, 1]], launcher: [0, 0, 0], target: [9, 0, 9] },
       { trail: [[5, 5, 5]] },
     ])).toEqual([[0, 1, 0], [1, 2, 1], [0, 0, 0], [9, 0, 9], [5, 5, 5]]);
+  });
+});
+
+describe('clearOfGround', () => {
+  it('keeps a high point as is', () => {
+    expect(clearOfGround(10, 2, 4)).toBe(10);
+  });
+  it('lifts a point below the ground to 50 m clearance', () => {
+    expect(clearOfGround(1, 5, 4)).toBeCloseTo(5.2);
+    expect(clearOfGround(5, 5, 10)).toBeCloseTo(5.5);
   });
 });
