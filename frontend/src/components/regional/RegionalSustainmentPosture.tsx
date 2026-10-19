@@ -68,8 +68,10 @@ import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
 import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale';
-import { symbolRadius } from '../../lib/symbolScale';
-import { SEV_RANK, kindsOf, shouldSplit, type Kind } from '../../lib/clusterKinds';
+import { symbolRadius, worldPerPx } from '../../lib/symbolScale';
+import { separate } from '../../lib/separate';
+import { AGG_PX, FOB_PX, HQ_PX, markerScale, regionExtent, topologyHeights } from '../../lib/topologyMarkers';
+import { SEV_RANK, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
 import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
@@ -149,7 +151,9 @@ type GroundFn = (x: number, z: number) => number;
 const REGIONAL_INSET_RECT = { ...INSET_RECT, y: INSET_RECT.y + 36 };
 
 /** Every asset at its true position (on `ground`), plus the clusters they bucket into. */
-function buildRenderables(
+// Exported for tests.
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildRenderables(
   fleet: FleetAsset[],
   logistics: LogisticsStatus[],
   fobs: Fob[],
@@ -202,10 +206,11 @@ function buildRenderables(
     };
     renderables.push(r);
 
-    // Bucket by edge_id (FOB attribution) when known: a FOB is a logical
+    // Bucket friendly assets by edge_id (FOB attribution) when known: a FOB is a logical
     // grouping, and its assets' raw positions can span several world units.
     // The geometric bucket is the fallback for assets without an edge_id.
-    const key = a.edge_id ? `edge:${a.edge_id}` : colocationBucketKey(x, z);
+    const tracked = a.force_id !== 'FORCE_OPPOSING' && a.force_id !== 'FORCE_NEUTRAL';
+    const key = a.edge_id && tracked ? `edge:${a.edge_id}` : colocationBucketKey(x, z);
     let bucket = buckets.get(key);
     if (!bucket) {
       bucket = [];
@@ -343,17 +348,200 @@ const SEV_CHIP: Record<number, string> = {
   0: 'border-cyan-400/60 text-cyan-200', 1: 'border-amber-400/70 text-amber-200',
   2: 'border-rose-500/80 text-rose-200', 3: 'border-rose-500/80 text-rose-200',
 };
+/** Fades a chip with the scene fog, as a model fades: DOM overlays are not fogged by three. */
+function useFogFade() {
+  const g = useRef<THREE.Group>(null);
+  const el = useRef<HTMLDivElement>(null);
+  const wp = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera, scene }) => {
+    if (!g.current || !el.current) return;
+    g.current.getWorldPosition(wp);
+    const density = scene.fog instanceof THREE.FogExp2 ? scene.fog.density : 0;
+    const v = fogVisibility(density, camera.position.distanceTo(wp));
+    el.current.style.opacity = String(v);
+    el.current.style.visibility = v < 0.05 ? 'hidden' : 'visible';
+  });
+  return { g, el };
+}
+
 function CountChip({ text, sev }: { text: string; sev: number }) {
+  const { g, el } = useFogFade();
   return (
-    <Html center style={{ pointerEvents: 'none', transform: 'translate3d(-50%,calc(-50% - 34px),0)' }}>
-      <div className={`whitespace-nowrap rounded-full border bg-slate-900/90 px-1.5 font-mono text-[10px] font-bold ${SEV_CHIP[sev] ?? SEV_CHIP[0]}`}>
-        {text}
-      </div>
-    </Html>
+    <group ref={g}>
+      <Html center style={{ pointerEvents: 'none', transform: 'translate3d(-50%,calc(-50% - 34px),0)' }}>
+        <div ref={el} className={`whitespace-nowrap rounded-full border bg-slate-900/90 px-1.5 font-mono text-[10px] font-bold ${SEV_CHIP[sev] ?? SEV_CHIP[0]}`}>
+          {text}
+        </div>
+      </Html>
+    </group>
   );
 }
 
-/** A cluster's members: one symbol per kind (with a count) until they would clear each other, then each at its true position. */
+/** The "+N" chip for kinds past the cap; click selects a hidden member, again steps to the next. */
+function MoreChip({ text, sev, title, onClick }: { text: string; sev: number; title: string; onClick: () => void }) {
+  const { g, el } = useFogFade();
+  return (
+    <group ref={g}>
+      <Html center style={{ pointerEvents: 'none' }}>
+        <div
+          ref={el}
+          className={`cursor-pointer whitespace-nowrap rounded-sm border bg-slate-900/90 px-1 font-mono text-[10px] font-bold ${SEV_CHIP[sev]}`}
+          style={{ pointerEvents: 'auto' }}
+          title={title}
+          onClick={(e) => { e.stopPropagation(); onClick(); }}
+        >
+          {text}
+        </div>
+      </Html>
+    </group>
+  );
+}
+
+/** One place's members: one symbol per kind (with a count) side by side at their centroid. */
+function KindsCluster({
+  members, selectedAssetId, onSelect,
+}: {
+  members: RenderableAsset[];
+  selectedAssetId: string | null;
+  onSelect: (id: string, severity: string) => void;
+}) {
+  const centroid = useMemo(() => {
+    const c = new THREE.Vector3();
+    for (const a of members) c.add(new THREE.Vector3(...a.position));
+    return c.divideScalar(members.length);
+  }, [members]);
+  const { shown, hidden } = useMemo(() => kindsOf(members), [members]);
+  // One anchor per slot (each shown kind, then the "+N" chip): the mean of its members.
+  const anchors = useMemo(() => {
+    const mean = (ms: RenderableAsset[]) => {
+      const c = new THREE.Vector3();
+      for (const a of ms) c.add(new THREE.Vector3(...a.position));
+      return c.divideScalar(Math.max(1, ms.length));
+    };
+    const out = shown.map((k) => mean(k.members));
+    if (hidden.length) out.push(mean(hidden.flatMap((k) => k.members)));
+    return out;
+  }, [shown, hidden]);
+  const slotRefs = useRef<(THREE.Group | null)[]>([]);
+  const modelRefs = useRef<(THREE.Group | null)[]>([]);
+  const { size } = useThree();
+  const raycaster = useMemo(() => new THREE.Raycaster(), []);
+  const plane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
+  const leaders = useMemo(() => {
+    const mat = new THREE.LineBasicMaterial({ color: '#64748b', transparent: true, opacity: 0.6, depthWrite: false });
+    return Array.from({ length: 8 }, () => {
+      const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+      const line = new THREE.Line(geo, mat);
+      line.visible = false;
+      line.frustumCulled = false;
+      line.userData.insetHidden = true;
+      return line;
+    });
+  }, []);
+  useEffect(() => () => {
+    (leaders[0].material as THREE.Material).dispose();
+    for (const l of leaders) l.geometry.dispose();
+  }, [leaders]);
+
+  useFrame(({ camera }) => {
+    const rSym = symbolRadius(camera.position.distanceTo(centroid), size.height, fovOf(camera));
+    // Symbol radius on screen as drawn (PX_R, or larger when the true-size floor applies).
+    const symPx = rSym / worldPerPx(camera.position.distanceTo(centroid), size.height, fovOf(camera));
+    const px = anchors.map((a) => {
+      const v = a.clone().project(camera);
+      return [((v.x + 1) / 2) * size.width, ((1 - v.y) / 2) * size.height] as [number, number];
+    });
+    const moved = separate(px, 2.2 * symPx);
+    const pos = anchors.map((a, i) => {
+      if (Math.hypot(moved[i][0] - px[i][0], moved[i][1] - px[i][1]) < 0.5) return a;
+      plane.constant = -a.y;
+      raycaster.setFromCamera(
+        new THREE.Vector2((moved[i][0] / size.width) * 2 - 1, 1 - (moved[i][1] / size.height) * 2), camera);
+      return raycaster.ray.intersectPlane(plane, new THREE.Vector3()) ?? a;
+    });
+    // Each member's flights leave the symbol for its kind.
+    const follow = (k: Kind<RenderableAsset>, p: THREE.Vector3) => {
+      for (const a of k.members) offsetOf(a.asset_id).copy(p).sub(new THREE.Vector3(...a.position));
+    };
+    shown.forEach((k, i) => {
+      slotRefs.current[i]?.position.copy(pos[i]);
+      modelRefs.current[i]?.scale.setScalar(modelScale(k.variant, rSym));
+      follow(k, pos[i]);
+    });
+    if (hidden.length) {
+      const i = shown.length;
+      slotRefs.current[i]?.position.copy(pos[i]);
+      for (const k of hidden) follow(k, pos[i]);
+    }
+    // A thin ground leader from a displaced slot back to its true place.
+    leaders.forEach((line, i) => {
+      const displaced = i < pos.length && pos[i].distanceTo(anchors[i]) > 0.6 * rSym;
+      line.visible = displaced;
+      if (!displaced) return;
+      const at = line.geometry.getAttribute('position');
+      at.setXYZ(0, pos[i].x, anchors[i].y, pos[i].z);
+      at.setXYZ(1, anchors[i].x, anchors[i].y, anchors[i].z);
+      at.needsUpdate = true;
+    });
+  });
+
+  const hiddenN = hidden.reduce((n, k) => n + k.members.length, 0);
+  const hiddenSev = Math.max(0, ...hidden.map((k) => SEV_RANK[k.sev] ?? 0));
+  // Click selects the kind's first member; clicking again steps to the next.
+  const pick = (k: Kind<RenderableAsset>) => (e: ThreeEvent<MouseEvent>) => {
+    e.stopPropagation();
+    const i = k.members.findIndex((m) => m.asset_id === selectedAssetId);
+    const next = k.members[(i + 1) % k.members.length];
+    onSelect(next.asset_id, next.severity);
+  };
+  const pickHidden = () => {
+    const all = hidden.flatMap((k) => k.members);
+    if (!all.length) return;
+    const i = all.findIndex((m) => m.asset_id === selectedAssetId);
+    const next = all[(i + 1) % all.length];
+    onSelect(next.asset_id, next.severity);
+  };
+  return (
+    <>
+      {shown.map((k, i) => (
+        <group
+          key={k.variant ?? ''}
+          ref={(el) => { slotRefs.current[i] = el; }}
+          position={anchors[i]}
+          userData={{ insetHidden: true }}
+        >
+          <group ref={(el) => { modelRefs.current[i] = el; }} onClick={pick(k)}>
+            <HitSphere variant={k.variant} />
+            <Model a={k.members[0]} sev={k.sev} selected={k.members.some((m) => m.asset_id === selectedAssetId)} />
+          </group>
+          {k.members.length > 1 && <CountChip text={`×${k.members.length}`} sev={SEV_RANK[k.sev] ?? 0} />}
+        </group>
+      ))}
+      {hidden.length > 0 && (
+        <group
+          ref={(el) => { slotRefs.current[shown.length] = el; }}
+          position={anchors[shown.length]}
+          userData={{ insetHidden: true }}
+        >
+          <MoreChip
+            text={`+${hiddenN}`}
+            sev={hiddenSev}
+            title={hidden.map((k) => `${k.variant} ×${k.members.length}`).join(', ')}
+            onClick={pickHidden}
+          />
+        </group>
+      )}
+      {leaders.map((l, i) => <primitive key={`lead${i}`} object={l} />)}
+    </>
+  );
+}
+
+/**
+ * A bucket's members grouped by place: members whose nearest neighbours (a minimum
+ * spanning tree) clear each other on screen are drawn singly, the rest as one
+ * kinds-cluster per place. An edge's merge state has hysteresis (kept by asset-id pair,
+ * so it survives the members array being rebuilt on each poll).
+ */
 function ClusterGroup({
   members, selectedAssetId, onSelect, calloutOf,
 }: {
@@ -362,113 +550,53 @@ function ClusterGroup({
   onSelect: (id: string, severity: string) => void;
   calloutOf: (a: RenderableAsset) => CalloutInfo;
 }) {
-  const centroid = useMemo(() => {
-    const c = new THREE.Vector3();
-    for (const a of members) c.add(new THREE.Vector3(...a.position));
-    return c.divideScalar(members.length);
-  }, [members]);
-  // Closest pair on the ground plane. Members at one coordinate give 0 and stay clustered.
-  const minSep = useMemo(() => {
-    let m = Infinity;
-    for (let i = 0; i < members.length; i++) {
-      for (let j = i + 1; j < members.length; j++) {
-        m = Math.min(m, Math.hypot(members[i].position[0] - members[j].position[0], members[i].position[2] - members[j].position[2]));
-      }
-    }
-    return m;
-  }, [members]);
-  const [clustered, setClustered] = useState(members.length > 1);
-  const { shown, hidden } = useMemo(() => kindsOf(members), [members]);
-  const slotRefs = useRef<(THREE.Group | null)[]>([]);
-  const modelRefs = useRef<(THREE.Group | null)[]>([]);
-  const right = useMemo(() => new THREE.Vector3(), []);
+  const mst = useMemo(() => mstEdges(members.map((a) => [a.position[0], a.position[2]])), [members]);
+  const mids = useMemo(
+    () => mst.map((e) => new THREE.Vector3(...members[e.a].position).add(new THREE.Vector3(...members[e.b].position)).multiplyScalar(0.5)),
+    [mst, members],
+  );
+  const keys = useMemo(
+    () => mst.map((e) => [members[e.a].asset_id, members[e.b].asset_id].sort().join('|')),
+    [mst, members],
+  );
+  const state = useRef(new Map<string, boolean>());
+  const [sig, setSig] = useState('');
   const { size } = useThree();
 
   useFrame(({ camera }) => {
     if (members.length < 2) return;
-    const rSym = symbolRadius(camera.position.distanceTo(centroid), size.height, fovOf(camera));
-    // Hysteresis, so a cluster does not flicker at the boundary.
-    const next = !shouldSplit(clustered, minSep, rSym);
-    if (next !== clustered) setClustered(next);
-    if (!next) return;
-    // Kinds sit side by side, just clearing, across the screen; the "+N" chip takes the last slot.
-    right.setFromMatrixColumn(camera.matrixWorld, 0).setY(0).normalize();
-    const n = shown.length + (hidden.length ? 1 : 0);
-    const gap = 4 * rSym;
-    const at = (i: number) => centroid.clone().addScaledVector(right, (i - (n - 1) / 2) * gap);
-    // Each member's flights leave the symbol for its kind.
-    const follow = (k: Kind<RenderableAsset>, p: THREE.Vector3) => {
-      for (const a of k.members) offsetOf(a.asset_id).copy(p).sub(new THREE.Vector3(...a.position));
-    };
-    shown.forEach((k, i) => {
-      const p = at(i);
-      slotRefs.current[i]?.position.copy(p);
-      modelRefs.current[i]?.scale.setScalar(modelScale(k.variant, rSym));
-      follow(k, p);
-    });
-    if (hidden.length) {
-      const p = at(n - 1);
-      slotRefs.current[n - 1]?.position.copy(p);
-      for (const k of hidden) follow(k, p);
+    const fov = fovOf(camera);
+    const merged = state.current;
+    let next = '';
+    for (let i = 0; i < mst.length; i++) {
+      const rSym = symbolRadius(camera.position.distanceTo(mids[i]), size.height, fov);
+      const m = nextMerged(merged.get(keys[i]), mst[i].len, rSym);
+      merged.set(keys[i], m);
+      if (m) next += keys[i] + ';';
     }
+    if (next !== sig) setSig(next);
   });
 
-  if (members.length > 1 && clustered) {
-    const hiddenN = hidden.reduce((n, k) => n + k.members.length, 0);
-    const hiddenSev = Math.max(0, ...hidden.map((k) => SEV_RANK[k.sev] ?? 0));
-    // Click selects the kind's first member; clicking again steps to the next.
-    const pick = (k: Kind<RenderableAsset>) => (e: ThreeEvent<MouseEvent>) => {
-      e.stopPropagation();
-      const i = k.members.findIndex((m) => m.asset_id === selectedAssetId);
-      const next = k.members[(i + 1) % k.members.length];
-      onSelect(next.asset_id, next.severity);
-    };
-    return (
-      <>
-        {shown.map((k, i) => (
-          <group
-            key={k.variant ?? ''}
-            ref={(el) => { slotRefs.current[i] = el; }}
-            position={centroid}
-            userData={{ insetHidden: true }}
-          >
-            <group ref={(el) => { modelRefs.current[i] = el; }} onClick={pick(k)}>
-              <HitSphere variant={k.variant} />
-              <Model a={k.members[0]} sev={k.sev} selected={k.members.some((m) => m.asset_id === selectedAssetId)} />
-            </group>
-            {k.members.length > 1 && <CountChip text={`×${k.members.length}`} sev={SEV_RANK[k.sev] ?? 0} />}
-          </group>
-        ))}
-        {hidden.length > 0 && (
-          <group
-            ref={(el) => { slotRefs.current[shown.length] = el; }}
-            position={centroid}
-            userData={{ insetHidden: true }}
-          >
-            <Html center style={{ pointerEvents: 'none' }}>
-              <div
-                className={`whitespace-nowrap rounded-sm border bg-slate-900/90 px-1 font-mono text-[10px] font-bold ${SEV_CHIP[hiddenSev]}`}
-                title={hidden.map((k) => `${k.variant} ×${k.members.length}`).join(', ')}
-              >
-                +{hiddenN}
-              </div>
-            </Html>
-          </group>
-        )}
-      </>
-    );
-  }
+  const marker = (a: RenderableAsset) => (
+    <AssetMarker
+      key={a.asset_id}
+      asset={a}
+      selected={a.asset_id === selectedAssetId}
+      callout={calloutOf(a)}
+      onClick={(e) => { e.stopPropagation(); onSelect(a.asset_id, a.severity); }}
+    />
+  );
+  if (members.length < 2) return <>{members.map(marker)}</>;
+  const on = new Set(sig.split(';').filter(Boolean));
+  const groups = groupsOf(members.length, mst, keys.map((k) => on.has(k)));
   return (
     <>
-      {members.map((a) => (
-        <AssetMarker
-          key={a.asset_id}
-          asset={a}
-          selected={a.asset_id === selectedAssetId}
-          callout={calloutOf(a)}
-          onClick={(e) => { e.stopPropagation(); onSelect(a.asset_id, a.severity); }}
-        />
-      ))}
+      {groups.map((g) => {
+        if (g.length === 1) return marker(members[g[0]]);
+        const ms = g.map((i) => members[i]);
+        const id = ms.reduce((m, a) => (a.asset_id < m ? a.asset_id : m), ms[0].asset_id);
+        return <KindsCluster key={`k:${id}`} members={ms} selectedAssetId={selectedAssetId} onSelect={onSelect} />;
+      })}
     </>
   );
 }
@@ -617,8 +745,19 @@ function AssetCallout({ name, family, ammoText, launcherDepleted }: CalloutInfo)
 // severed, line styling + node coloring shift to red/dashed — matches the
 // DdilNetworkLink convention.
 
-const REGIONAL_AGGREGATOR_Y = 8;   // slightly elevated above FOB markers (Y=0)
-const HQ_MARKER_Y = 40;             // stacked above the regional aggregator
+/** Draws its children at a constant on-screen radius: they are authored at `radius` world units. */
+function ScreenSized({ radius, px, children }: { radius: number; px: number; children: React.ReactNode }) {
+  const ref = useRef<THREE.Group>(null);
+  const wp = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera, size }) => {
+    const g = ref.current;
+    if (!g) return;
+    g.getWorldPosition(wp);
+    const fov = (camera as THREE.PerspectiveCamera).fov;
+    g.scale.setScalar(markerScale(radius, px, camera.position.distanceTo(wp), size.height, fov));
+  });
+  return <group ref={ref}>{children}</group>;
+}
 
 function RegionalAggregatorNode({ position, label, severed }: {
   position: [number, number, number];
@@ -631,25 +770,27 @@ function RegionalAggregatorNode({ position, label, severed }: {
       {/* Solid octahedron core — logical node visual. Octahedron is
           deliberately not a shape any FOB or platform schematic uses, so
           it reads as "different category of thing." */}
-      <mesh>
-        <octahedronGeometry args={[3.5, 0]} />
-        <meshBasicMaterial color={color} transparent opacity={0.65} />
-      </mesh>
-      {/* Wireframe outer shell — gives the node a halo without solidifying */}
-      <mesh>
-        <octahedronGeometry args={[4.5, 0]} />
-        <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
-      </mesh>
-      <Html
-        position={[0, 6, 0]}
-        center
-        style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
-      >
-        <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
-          <div className="text-[9px] text-slate-400">REGIONAL AGGREGATOR</div>
-          <div className="text-slate-200 font-bold">{label}</div>
-        </div>
-      </Html>
+      <ScreenSized radius={4.5} px={AGG_PX}>
+        <mesh>
+          <octahedronGeometry args={[3.5, 0]} />
+          <meshBasicMaterial color={color} transparent opacity={0.65} />
+        </mesh>
+        {/* Wireframe outer shell — gives the node a halo without solidifying */}
+        <mesh>
+          <octahedronGeometry args={[4.5, 0]} />
+          <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
+        </mesh>
+        <Html
+          position={[0, 6, 0]}
+          center
+          style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
+        >
+          <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+            <div className="text-[9px] text-slate-400">REGIONAL AGGREGATOR</div>
+            <div className="text-slate-200 font-bold">{label}</div>
+          </div>
+        </Html>
+      </ScreenSized>
     </group>
   );
 }
@@ -663,24 +804,26 @@ function HqMarker({ position, severed }: {
     <group position={position} userData={{ insetHidden: true }}>
       {/* Pyramid form — distinct from FOB hubs and regional octahedron.
           Cone with 4 radial segments approximates a pyramid. */}
-      <mesh>
-        <coneGeometry args={[5, 10, 4]} />
-        <meshBasicMaterial color={color} transparent opacity={0.7} />
-      </mesh>
-      <mesh>
-        <coneGeometry args={[5.5, 10.5, 4]} />
-        <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
-      </mesh>
-      <Html
-        position={[0, 8, 0]}
-        center
-        style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
-      >
-        <div className="font-mono text-[10px] tracking-widest text-emerald-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
-          <div className="text-[9px] text-slate-400">UP-CHAIN</div>
-          <div className="text-slate-200 font-bold">HQ THEATER</div>
-        </div>
-      </Html>
+      <ScreenSized radius={5.5} px={HQ_PX}>
+        <mesh>
+          <coneGeometry args={[5, 10, 4]} />
+          <meshBasicMaterial color={color} transparent opacity={0.7} />
+        </mesh>
+        <mesh>
+          <coneGeometry args={[5.5, 10.5, 4]} />
+          <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
+        </mesh>
+        <Html
+          position={[0, 8, 0]}
+          center
+          style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
+        >
+          <div className="font-mono text-[10px] tracking-widest text-emerald-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+            <div className="text-[9px] text-slate-400">UP-CHAIN</div>
+            <div className="text-slate-200 font-bold">HQ THEATER</div>
+          </div>
+        </Html>
+      </ScreenSized>
     </group>
   );
 }
@@ -1114,10 +1257,24 @@ export default function RegionalSustainmentPosture({
     return { x, z };
   }, [regionFobs, proj]);
 
+  // Stack heights follow the region's ground extent, over the ground under the centroid.
+  const topo = useMemo(() => {
+    if (!regionalCentroid) return null;
+    const { x: cx, z: cz } = regionalCentroid;
+    const pts: [number, number][] = [
+      ...regionFobs.map((f) => proj.project(f.lat, f.lon) as [number, number]),
+      ...renderables.map((a) => [a.position[0], a.position[2]] as [number, number]),
+    ];
+    const h = topologyHeights(regionExtent([cx, cz], pts));
+    const g = groundAt(cx, cz);
+    return { aggY: g + h.aggregator, hqY: g + h.hq };
+  }, [regionalCentroid, regionFobs, proj, renderables, groundAt]);
+
+  const usesMask = !!terrain?.mask && (prefs.style === 'holo' || terrainSource.basemap === 'relief');
   const credits = terrainFailed ? ['Terrain data unavailable'] : creditLines(terrainSource, {
     style: prefs.style,
-    landMask: terrainSource.basemap === 'relief' && prefs.style === 'sat' && !!terrain?.masked,
-    water: !!terrain?.water,
+    landMask: usesMask,
+    water: usesMask && !!terrain?.water,
   });
 
   return (
@@ -1188,7 +1345,7 @@ export default function RegionalSustainmentPosture({
           <directionalLight position={[50, 100, 50]} intensity={1.5} />
           <hemisphereLight groundColor={0x020617} intensity={0.5} />
 
-          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={0.01} maxPolarAngle={Math.PI / 2 - 0.1} />
+          <OrbitControls makeDefault enableDamping dampingFactor={0.05} maxDistance={300} minDistance={0.01} maxPolarAngle={Math.PI / 2 - 0.1} zoomToCursor />
 
           <CameraRig goal={goal} />
           <FogController isZoomed={!!selectedAssetId} />
@@ -1218,8 +1375,10 @@ export default function RegionalSustainmentPosture({
             {regionFobs.map((fob) => {
               const [x, z] = proj.project(fob.lat, fob.lon);
               return (
-                <group key={`hub-${fob.edge_id}`} userData={{ insetHidden: true }}>
-                  <LogisticsHubNode position={[x, groundAt(x, z), z]} />
+                <group key={`hub-${fob.edge_id}`} position={[x, groundAt(x, z), z]} userData={{ insetHidden: true }}>
+                  <ScreenSized radius={4.7} px={FOB_PX}>
+                    <LogisticsHubNode position={[0, 0, 0]} />
+                  </ScreenSized>
                 </group>
               );
             })}
@@ -1272,7 +1431,7 @@ export default function RegionalSustainmentPosture({
               header uses, so severance toggling is consistent across
               the view. Future: per-edge bridge health would let each
               FOB->aggregator line carry its own state independently. */}
-          {regionalCentroid && (
+          {regionalCentroid && topo && (
             <>
               {regionFobs.map((fob) => {
                 const [fx, fz] = proj.project(fob.lat, fob.lon);
@@ -1280,23 +1439,23 @@ export default function RegionalSustainmentPosture({
                   <DdilNetworkLink
                     key={`fob-link-${fob.edge_id}`}
                     start={new THREE.Vector3(fx, groundAt(fx, fz), fz)}
-                    end={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
+                    end={new THREE.Vector3(regionalCentroid.x, topo.aggY, regionalCentroid.z)}
                     status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
                   />
                 );
               })}
               <DdilNetworkLink
-                start={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
-                end={new THREE.Vector3(regionalCentroid.x, HQ_MARKER_Y, regionalCentroid.z)}
+                start={new THREE.Vector3(regionalCentroid.x, topo.aggY, regionalCentroid.z)}
+                end={new THREE.Vector3(regionalCentroid.x, topo.hqY, regionalCentroid.z)}
                 status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
               />
               <RegionalAggregatorNode
-                position={[regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z]}
+                position={[regionalCentroid.x, topo.aggY, regionalCentroid.z]}
                 label={(regionId ?? '').toUpperCase()}
                 severed={!uplinkUp}
               />
               <HqMarker
-                position={[regionalCentroid.x, HQ_MARKER_Y, regionalCentroid.z]}
+                position={[regionalCentroid.x, topo.hqY, regionalCentroid.z]}
                 severed={!uplinkUp}
               />
             </>
@@ -1313,7 +1472,7 @@ export default function RegionalSustainmentPosture({
       >
         {prefs.on && prefs.style === 'holo' && holoOpen && (
           <div data-testid="holo-panel" className="mb-1">
-            <HoloPanel opts={prefs.holo} set={(holo: HoloOpts) => updatePrefs({ holo })} />
+            <HoloPanel opts={prefs.holo} set={(holo: HoloOpts) => updatePrefs({ holo })} masked={!!terrain?.mask} />
           </div>
         )}
         <div className="flex flex-wrap items-center gap-3 border border-slate-700 bg-slate-900/80 px-2 py-1">

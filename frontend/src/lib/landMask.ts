@@ -197,6 +197,14 @@ async function loadMaskInputs(urls: { landUrl: string; lakesUrl?: string; waterU
 
 /** A `w` x `h` land/water mask canvas (white land) over `b` for the relief. Natural Earth land everywhere, the water file
  *  over its own coverage; either one alone is enough, and with neither there is no mask. `water` is true when the water file was drawn. */
+/** Mask canvas size for a DEM crop of W x H: width at least 1024 and at most 4096, aspect kept, height capped at 4096. */
+export function maskSize(W: number, H: number): [number, number] {
+  let w = Math.min(4096, Math.max(1024, W));
+  let h = Math.round((w * H) / Math.max(W, 1));
+  if (h > 4096) { w = Math.max(1, Math.round((w * 4096) / h)); h = 4096; }
+  return [w, Math.max(1, h)];
+}
+
 export async function reliefMask(
   b: Bounds, w: number, h: number, urls: { landUrl: string; lakesUrl: string; waterUrl: string },
 ): Promise<{ canvas: HTMLCanvasElement; water: boolean } | null> {
