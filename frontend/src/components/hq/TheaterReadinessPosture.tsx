@@ -867,7 +867,8 @@ export default function TheaterReadinessPosture() {
             );
           })}
 
-          {/* Per-FOB label + composition breakdown (derived tiers have no FOB). */}
+          {/* Per-FOB label + composition breakdown. A tier with no FOB (derived,
+              or placed by its site row) gets the id + link label below. */}
           {drawnMetrics.map((m) => (
             <FobLabel
               key={`label-${m.fob.edge_id}`}
@@ -880,7 +881,7 @@ export default function TheaterReadinessPosture() {
               unreachableVia={edgeById.get(m.fob.edge_id)?.via}
             />
           ))}
-          {topo.nodes.filter((n) => n.derived).map((n) => {
+          {topo.nodes.filter((n) => !n.fob).map((n) => {
             const [x, z] = nodePos.get(n.id)!;
             const e = edgeById.get(n.id);
             const word = e ? (e.via ? `UNREACHABLE via ${e.via}` : linkStateWord(e.reading)) : '';

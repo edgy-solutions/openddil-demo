@@ -40,7 +40,7 @@ export interface TopoNode {
   derived: boolean;
   /** The tier rolls up children (drawn as a region marker). */
   hasChildren: boolean;
-  /** The FOB that places this node; absent when derived. */
+  /** The FOB that places this node; absent when derived or site-placed. */
   fob?: Fob;
 }
 
