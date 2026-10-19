@@ -1,6 +1,9 @@
 // Web-mercator tile maths and Terrarium decoding for the regional terrain.
 import type { DeploymentTerrain } from '../deployment';
 import type { Bounds } from './terrainBounds';
+// Hashed by Vite and emitted under /assets/ (immutable cache in nginx).
+import landDefaultUrl from '../assets/terrain/land-10m.json?url';
+import lakesDefaultUrl from '../assets/terrain/lakes-10m.json?url';
 
 /** Largest mosaic edge, px: the canvas and texture size limit. */
 export const MAX_PX = 4096;
@@ -64,8 +67,8 @@ export const TERRAIN_DEFAULTS: TerrainSource = {
   patchImageryUrl: '',
   imageryMaxZoom: 14,
   patchMaxZoom: 19,
-  landUrl: '/terrain/land-10m.json',
-  lakesUrl: '/terrain/lakes-10m.json',
+  landUrl: landDefaultUrl,
+  lakesUrl: lakesDefaultUrl,
   waterUrl: '/deployment-overlay/terrain/water.json',
   reliefPalette: 'sand',
   credits: {

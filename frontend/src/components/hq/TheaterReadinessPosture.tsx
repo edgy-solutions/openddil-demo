@@ -480,7 +480,7 @@ export default function TheaterReadinessPosture() {
   const credits = terrain.failed ? ['Terrain data unavailable'] : creditLines(terrainSource, {
     style: tp.style,
     landMask: terrain.mask.theater !== null || terrain.mask.surround !== null,
-    water: !!terrain.theater?.water,
+    water: !!terrain.water,
   });
 
   const metrics = useMemo(

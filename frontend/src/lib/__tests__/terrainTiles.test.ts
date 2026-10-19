@@ -48,6 +48,8 @@ describe('resolveTerrainSource', () => {
     expect(s.network).toBe(false);
     for (const u of [s.elevationUrl, s.landUrl, s.lakesUrl, s.waterUrl]) expect(isRemoteUrl(u)).toBe(false);
     expect(s.elevationUrl).toBe('/deployment-overlay/terrain/dem/{z}/{x}/{y}.png');
+    expect(s.landUrl).toMatch(/land-10m.*\.json$/);
+    expect(s.lakesUrl).toMatch(/lakes-10m.*\.json$/);
     expect(s.imageryUrl).toBe('');
     expect(s.patchImageryUrl).toBe('');
     expect(s.reliefPalette).toBe('sand');

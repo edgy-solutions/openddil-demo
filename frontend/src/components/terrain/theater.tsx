@@ -49,6 +49,8 @@ export interface TheaterTerrainData {
   surround: TerrainData | null;
   /** Land/sea masks over each layer's bounds; null until loaded (or if the land file is unavailable): all land. */
   mask: { theater: THREE.Texture | null; surround: THREE.Texture | null };
+  /** True when the OSM water file was drawn into the theater or surround relief or either mask (for its credit). */
+  water: boolean;
   rect: Rect | null;
   /** True when the theater layer failed to load (no elevation tiles): the caller falls back to the terrain-off scene. */
   failed: boolean;
@@ -74,16 +76,17 @@ function useSurround(b: Bounds | null, proj: Projection, source: TerrainSource):
   return data;
 }
 
-function useMask(b: Bounds | null, landUrl: string, lakesUrl: string): THREE.Texture | null {
-  const [t, setT] = useState<THREE.Texture | null>(null);
+function useMask(b: Bounds | null, source: TerrainSource): { texture: THREE.Texture | null; water: boolean } {
+  const [m, setM] = useState<{ texture: THREE.Texture; water: boolean } | null>(null);
+  const { landUrl, lakesUrl, waterUrl } = source;
   useEffect(() => {
-    if (!b) { setT(null); return; }
+    if (!b) { setM(null); return; }
     let live = true;
-    landMaskTexture(b, landUrl, undefined, lakesUrl).then((x) => { if (live) setT(x); else x?.dispose(); });
+    landMaskTexture(b, landUrl, undefined, lakesUrl, waterUrl).then((x) => { if (live) setM(x); else x?.texture.dispose(); });
     return () => { live = false; };
-  }, [b, landUrl, lakesUrl]);
-  useEffect(() => () => t?.dispose(), [t]);
-  return t;
+  }, [b, landUrl, lakesUrl, waterUrl]);
+  useEffect(() => () => m?.texture.dispose(), [m]);
+  return { texture: m?.texture ?? null, water: m?.water ?? false };
 }
 
 /** Loads the theater, the surround and the land mask around `points` (FOBs, plus the HQ if configured) while `on`. */
@@ -99,9 +102,10 @@ export function useTheaterTerrain({ points, projection, source, exag, on }: {
 
   const { data: theater, failed } = useTerrain(bounds, source, regional);
   const surround = useSurround(sBounds, regional, source);
-  const tMask = useMask(bounds, source.landUrl, source.lakesUrl);
-  const sMask = useMask(sBounds, source.landUrl, source.lakesUrl);
-  const mask = useMemo(() => ({ theater: tMask, surround: sMask }), [tMask, sMask]);
+  const tMask = useMask(bounds, source);
+  const sMask = useMask(sBounds, source);
+  const mask = useMemo(() => ({ theater: tMask.texture, surround: sMask.texture }), [tMask.texture, sMask.texture]);
+  const water = !!(theater?.water || surround?.water || tMask.water || sMask.water);
 
   const rect = useMemo<Rect | null>(() => {
     if (!bounds) return null;
@@ -114,7 +118,7 @@ export function useTheaterTerrain({ points, projection, source, exag, on }: {
     (x: number, z: number) => (on && theater ? HQ_SCALE * theater.heightM(x / HQ_SCALE, z / HQ_SCALE) * M * exag : 0),
     [on, theater, exag],
   );
-  return { theater, surround, mask, rect, failed, groundY };
+  return { theater, surround, mask, water, rect, failed, groundY };
 }
 
 // Stands in for a mask that is not (or never will be) there: everything is land.
