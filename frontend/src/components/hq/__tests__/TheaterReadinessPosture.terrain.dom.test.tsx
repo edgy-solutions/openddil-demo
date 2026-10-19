@@ -34,9 +34,9 @@ vi.mock('@react-three/drei', () => ({
 vi.mock('@react-three/postprocessing', () => ({ EffectComposer: () => null, Bloom: () => null }));
 vi.mock('../../TacticalMapUnderlay', () => ({ default: () => null }));
 // Terrain stays off the network: no tile or land-file fetches from an HQ test.
-vi.mock('../../terrain/theater', () => ({
+vi.mock('../../terrain/theater', () => ({ TheaterTerrain: () => null }));
+vi.mock('../../terrain/theaterData', () => ({
   useTheaterTerrain: () => ({ theater: null, surround: null, mask: { theater: {}, surround: null }, rect: null, failed: false, groundY: () => 0 }),
-  TheaterTerrain: () => null,
 }));
 
 import TheaterReadinessPosture from '../TheaterReadinessPosture';

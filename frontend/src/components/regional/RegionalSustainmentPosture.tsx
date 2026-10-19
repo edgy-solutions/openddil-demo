@@ -73,10 +73,10 @@ import { SEV_RANK, kindsOf, shouldSplit, type Kind } from '../../lib/clusterKind
 import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
 import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
-import {
-  TerrainMesh, PatchMesh, boundsAround, usePatches, useTerrain, type PatchSpec,
-} from '../terrain/terrain';
-import { HoloPanel, HoloTerrain, type HoloOpts } from '../terrain/holo';
+import { TerrainMesh, PatchMesh } from '../terrain/terrain';
+import { boundsAround, usePatches, useTerrain, type PatchSpec } from '../terrain/terrainData';
+import { HoloPanel, HoloTerrain } from '../terrain/holo';
+import type { HoloOpts } from '../terrain/holoOpts';
 import {
   EXAGGERATIONS, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
 } from '../terrain/prefs';
@@ -696,6 +696,7 @@ function CameraRig({ goal }: { goal: CameraGoal | null }) {
   };
   const move = useRef<{ t: number; p0: THREE.Vector3; t0: THREE.Vector3; p1: THREE.Vector3; t1: THREE.Vector3 } | null>(null);
   const seen = useRef<number | null>(null);
+  // eslint-disable-next-line react-hooks/immutability -- the R3F camera and controls are imperative three.js state, driven per frame
   useFrame((_, delta) => {
     if (!controls) return;
     // A new goal eases the camera there over EASE_S, once; after that
@@ -721,6 +722,7 @@ function CameraRig({ goal }: { goal: CameraGoal | null }) {
     }
     // Clip planes follow the zoom, so a 12 m vehicle and a 100 km map both hold depth.
     const d = camera.position.distanceTo(controls.target);
+    // eslint-disable-next-line react-hooks/immutability -- the camera clip planes are three.js state set imperatively (R3F)
     camera.near = Math.max(1e-4, d / 300);
     camera.far = Math.max(1000, d * 50);
     camera.updateProjectionMatrix();

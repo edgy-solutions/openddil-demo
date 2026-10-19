@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { usePatches } from '../terrain';
+import { usePatches } from '../terrainData';
 import { resolveTerrainSource } from '../../../lib/terrainTiles';
 
 describe('usePatches', () => {

@@ -48,9 +48,9 @@ vi.mock('@react-three/drei', () => ({
 }));
 
 // Terrain stays off the network: no tile or land-file fetches from an HQ test.
-vi.mock('../../terrain/theater', () => ({
+vi.mock('../../terrain/theater', () => ({ TheaterTerrain: () => null }));
+vi.mock('../../terrain/theaterData', () => ({
   useTheaterTerrain: () => ({ theater: null, surround: null, mask: { theater: null, surround: null }, rect: null, groundY: () => 0 }),
-  TheaterTerrain: () => null,
 }));
 
 import { HQ_NODE } from '../../../lib/theaterTopology';

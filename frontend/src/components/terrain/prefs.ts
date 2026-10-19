@@ -1,5 +1,5 @@
 // The regional map's terrain controls, remembered per browser.
-import { HOLO_DEFAULTS, type HoloOpts } from './holo';
+import { HOLO_DEFAULTS, type HoloOpts } from './holoOpts';
 
 export type TerrainStyle = 'holo' | 'sat';
 export const EXAGGERATIONS = [1, 5, 20] as const;

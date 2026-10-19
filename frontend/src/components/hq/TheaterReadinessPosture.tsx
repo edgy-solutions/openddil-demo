@@ -29,7 +29,8 @@ import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
-import { TheaterTerrain, useTheaterTerrain } from '../terrain/theater';
+import { TheaterTerrain } from '../terrain/theater';
+import { useTheaterTerrain } from '../terrain/theaterData';
 import {
   EXAGGERATIONS, loadHqTerrainPrefs, saveHqTerrainPrefs, type Exaggeration, type HqTerrainPrefs,
 } from '../terrain/prefs';
