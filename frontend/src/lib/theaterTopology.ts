@@ -4,7 +4,9 @@
 //
 // With the chart's tier tree (deployment.json `tiers`):
 //   * a tier is drawn if a FOB places it (fob.edge_id === tier.id), at the FOB;
-//   * a tier with no FOB but a drawn child is drawn at the mean of its drawn
+//   * else, if the site table has a tier_sites row for it (tier_id === tier.id),
+//     at that site (not derived): a region's own declared position;
+//   * a tier with neither but a drawn child is drawn at the mean of its drawn
 //     children (`derived`), so a region needs no coordinates of its own;
 //   * any other tier, and any FOB that is not a tier, is not drawn.
 // One edge per drawn tier runs to its parent's node, or to HQ when the parent
@@ -16,7 +18,7 @@
 // ancestor, not itself DOWN.
 //
 // Without a tier tree: today's picture, one edge per FOB straight to HQ.
-import type { Fob, TierEntry } from '../deployment';
+import type { Fob, TierEntry, TierSite } from '../deployment';
 import {
   linkForFob,
   summarizeLinks,
@@ -77,6 +79,7 @@ export function buildTheaterTopology(
   fobs: readonly Fob[],
   linkRows: ReadonlyMap<string, LinkStatusRow>,
   nowMs: number,
+  sites?: readonly TierSite[],
 ): TheaterTopology {
   if (!tiers || tiers.length === 0) {
     const nodes: TopoNode[] = fobs.map((f) => ({
@@ -93,6 +96,8 @@ export function buildTheaterTopology(
   for (const t of tiers) if (!byId.has(t.id)) byId.set(t.id, t);
   const fobOf = new Map<string, Fob>();
   for (const f of fobs) if (byId.has(f.edge_id) && !fobOf.has(f.edge_id)) fobOf.set(f.edge_id, f);
+  const siteOf = new Map<string, TierSite>();
+  for (const s of sites ?? []) if (!siteOf.has(s.tier_id)) siteOf.set(s.tier_id, s);
   const childrenOf = new Map<string, string[]>();
   for (const t of byId.values()) {
     if (t.parent && t.parent !== t.id && byId.has(t.parent)) {
@@ -114,6 +119,9 @@ export function buildTheaterTopology(
     let node: TopoNode | null = null;
     if (f) {
       node = { id, lat: f.lat, lon: f.lon, derived: false, hasChildren: tier.hasChildren, fob: f };
+    } else if (siteOf.has(id)) {
+      const s = siteOf.get(id)!;
+      node = { id, lat: s.lat, lon: s.lon, derived: false, hasChildren: tier.hasChildren };
     } else {
       const kids = (childrenOf.get(id) ?? []).map(place).filter((n): n is TopoNode => n !== null);
       if (kids.length > 0) {

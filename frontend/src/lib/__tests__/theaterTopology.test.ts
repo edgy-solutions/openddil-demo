@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildTheaterTopology } from '../theaterTopology';
 import { classifyLink, linkForFob, summarizeLinks, type LinkStatusRow } from '../linkStatus';
-import type { Fob, TierEntry } from '../../deployment';
+import type { Fob, TierEntry, TierSite } from '../../deployment';
 
 const NOW = Date.parse('2026-10-08T12:00:30Z');
 const fresh = '2026-10-08T12:00:28Z';
@@ -90,6 +90,31 @@ describe('buildTheaterTopology - tree', () => {
     const region = t.nodes.find((n) => n.id === 'region-a')!;
     expect(region.derived).toBe(false);
     expect([region.lat, region.lon]).toEqual([7, 7]);
+  });
+
+  it('(g) a site row places a region there, not at the mean, not derived', () => {
+    const sites: TierSite[] = [{ tier_id: 'region-a', lat: 30, lon: 40 }];
+    const t = buildTheaterTopology(TIERS, FOBS, rows(ALL_UP), NOW, sites);
+    const region = t.nodes.find((n) => n.id === 'region-a')!;
+    expect(region.derived).toBe(false);
+    expect(region.fob).toBeUndefined();
+    expect([region.lat, region.lon]).toEqual([30, 40]);
+  });
+
+  it('(h) a region with no site row is still the mean of its children', () => {
+    const sites: TierSite[] = [{ tier_id: 'elsewhere', lat: 30, lon: 40 }];
+    const t = buildTheaterTopology(TIERS, FOBS, rows(ALL_UP), NOW, sites);
+    const region = t.nodes.find((n) => n.id === 'region-a')!;
+    expect(region.derived).toBe(true);
+    expect([region.lat, region.lon]).toEqual([3, 6]);
+  });
+
+  it('(i) a FOB outranks a site row for the same tier', () => {
+    const sites: TierSite[] = [{ tier_id: 'region-a', lat: 30, lon: 40 }];
+    const t = buildTheaterTopology(TIERS, [...FOBS, fob('region-a', 7, 7)], rows(ALL_UP), NOW, sites);
+    const region = t.nodes.find((n) => n.id === 'region-a')!;
+    expect([region.lat, region.lon]).toEqual([7, 7]);
+    expect(region.fob).toBeDefined();
   });
 
   it('(f) a stale row reads exactly as the header classifies it', () => {

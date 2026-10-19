@@ -17,6 +17,9 @@
 // =============================================================================
 import type { TierScope } from './hooks/useFleetAssets';
 
+import { EMPTY_SITE_TABLE, parseSiteTableText, selectForTier, type TierSite } from './siteTable';
+export type { TierSite } from './siteTable';
+
 /** Forward Operating Base — an OpenDDIL edge's geographic anchor.
  *  The HQ and Regional 3D maps use these as markers and as the projection
  *  center; positionless assets (e.g. strike-only launchers) are placed at
@@ -255,7 +258,7 @@ export interface ChildLinkEntry {
   hasChildren: boolean;
 }
 
-/** Optional configured HQ location (`deployment.json`'s `hq`). */
+/** HQ's position, from the site table's `tier_sites` row `hq`. */
 export interface HqLocation {
   lat: number;
   lon: number;
@@ -308,10 +311,18 @@ export interface Deployment {
   /** The cortex deployment this UI links to. ABSENT means no cortex UI
    *  anywhere (the OSS and work default). Parsed by `parseCortex`. */
   cortex?: CortexConfig;
-  /** Optional FOB list — populated by a deployment overlay. The 3D maps
+  /** The FOBs THIS map draws, from the site table, filtered per tier: hub
+   *  all; a region its own; an edge every FOB in its region. The 3D maps
    *  use this to place edge markers and to home positionless assets.
-   *  Empty in the OSS default; the maps render an empty theater. */
+   *  Empty when no site table is mounted; the maps render an empty theater. */
   fobs: Fob[];
+  /** The edge tier this deployment serves, when its id is a FOB's edge_id;
+   *  null at the hub and at a region. */
+  ownFob: string | null;
+  /** Every tier_sites row of the site table (regions, `hq`), unfiltered. */
+  tierSites: TierSite[];
+  /** Why the site table was rejected, or null (accepted, or none mounted). */
+  siteTableError: string | null;
   /** Optional tactical map underlay. When set, the HQ view shows the
    *  real geography under the FOBs. Absent => decorative fallback
    *  texture (`/map_base.png`) with low opacity. */
@@ -348,8 +359,8 @@ export interface Deployment {
   /** The chart's tier tree, when rendered. Absent => the HQ theater draws
    *  one link per FOB straight to HQ. */
   tiers?: TierEntry[];
-  /** Where HQ sits on the HQ theater, when the chart declares it. ABSENT
-   *  means HQ is drawn at the centre of the FOBs. Parsed by `parseHq`. */
+  /** Where HQ sits on the HQ theater. Only from the site table's
+   *  tier_sites row `hq`; ABSENT means HQ is drawn at the centre of the FOBs. */
   hq?: HqLocation;
   /** Declared inputs to the move panel: effector declared load, movement
    *  standards and movement units. ABSENT on an older chart that carries
@@ -421,6 +432,9 @@ const DEFAULT: Deployment = {
   title: 'OpenDDIL',
   logo: '',
   fobs: [],
+  ownFob: null,
+  tierSites: [],
+  siteTableError: null,
   liveness: DEFAULT_LIVENESS,
   tier: IMPLICIT_ROOT,
   releasedRecordsPanes: [],
@@ -444,6 +458,11 @@ export function deployment(): Deployment {
   return active;
 }
 
+/** A tier's own site-table position (a region, or `hq`), if the table has one. */
+export function tierSite(id: string): TierSite | undefined {
+  return active.tierSites.find((s) => s.tier_id === id);
+}
+
 /** This tier's parent id from its own configuration, or null when it has
  *  none. Independent of link control: a tier knows its parent whether or not
  *  the link toggles are available. */
@@ -462,17 +481,6 @@ export function isRootTier(id: string): boolean {
 /** How a parent is shown: 'HQ' for the root, otherwise the id as configured. */
 export function parentDisplay(id: string): string {
   return isRootTier(id) ? 'HQ' : id;
-}
-
-function isValidFob(x: unknown): x is Fob {
-  if (!x || typeof x !== 'object') return false;
-  const f = x as Record<string, unknown>;
-  return (
-    typeof f.edge_id === 'string' && f.edge_id.length > 0 &&
-    typeof f.region_id === 'string' && f.region_id.length > 0 &&
-    typeof f.lat === 'number' && Number.isFinite(f.lat) &&
-    typeof f.lon === 'number' && Number.isFinite(f.lon)
-  );
 }
 
 function mergeLiveness(x: unknown): LivenessThresholds {
@@ -693,26 +701,6 @@ export function parseChildLinks(raw: unknown): ChildLinkEntry[] | undefined {
     }
     out.push({ id: e.id.trim(), hasChildren: e.hasChildren });
   }
-  return out;
-}
-
-/** Parses `deployment.json`'s `hq`, defensively: lat and lon must be finite
- *  numbers in range, else the whole value is dropped (HQ then draws at the
- *  FOB centre). An empty or non-string label is dropped alone. */
-export function parseHq(raw: unknown): HqLocation | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    console.warn('[deployment] hq dropped (not an object):', raw);
-    return undefined;
-  }
-  const h = raw as Record<string, unknown>;
-  if (typeof h.lat !== 'number' || !Number.isFinite(h.lat) || h.lat < -90 || h.lat > 90 ||
-      typeof h.lon !== 'number' || !Number.isFinite(h.lon) || h.lon < -180 || h.lon > 180) {
-    console.warn('[deployment] hq dropped (lat/lon must be finite numbers, lat in [-90,90], lon in [-180,180]):', raw);
-    return undefined;
-  }
-  const out: HqLocation = { lat: h.lat, lon: h.lon };
-  if (typeof h.label === 'string' && h.label.length > 0) out.label = h.label;
   return out;
 }
 
@@ -1059,6 +1047,20 @@ export async function fetchJsonObject(
   }
 }
 
+/** GET the site table's text. Undefined when no file is mounted (the OSS
+ *  default, not an error): a failed fetch, a non-ok response, or an HTML
+ *  answer (an SPA/dev-server fallback or a sign-in page). */
+export async function fetchSiteTableText(): Promise<string | undefined> {
+  try {
+    const res = await fetch('/edge-assignment/edge-assignment.yaml', { cache: 'no-store' });
+    if (!res.ok) return undefined;
+    if ((res.headers.get('content-type') ?? '').includes('text/html')) return undefined;
+    return await res.text();
+  } catch {
+    return undefined;
+  }
+}
+
 /** Shallow-merge the chart's deployment.json (base) with the optional overlay
  *  bundle's (overlay). An overlay key replaces the whole base value for that
  *  key. Both undefined -> undefined (no file anywhere). */
@@ -1079,18 +1081,32 @@ export function mergeDeploymentSources(
  * JSON) leaves the prior state in place — it never throws.
  */
 export async function loadDeployment(): Promise<void> {
+  let siteTableText: string | undefined;
   try {
-    const [base, overlay] = await Promise.all([
+    const [base, overlay, siteText] = await Promise.all([
       fetchJsonObject('/deployment/deployment.json'),
       fetchJsonObject('/deployment-overlay/deployment.json'),
+      fetchSiteTableText(),
     ]);
+    siteTableText = siteText;
     const merged = mergeDeploymentSources(base, overlay);
     if (merged) {
+      // Positions come only from the site table; a stale key is ignored loudly.
+      for (const k of ['fobs', 'hq']) {
+        if (k in merged) {
+          console.warn(
+            `[deployment] deployment.json "${k}" ignored: positions come only from /edge-assignment/edge-assignment.yaml`,
+          );
+        }
+      }
       const j = merged as Partial<Deployment>;
       active = {
         title: j.title?.trim() || DEFAULT.title,
         logo: j.logo?.trim() || DEFAULT.logo,
-        fobs: Array.isArray(j.fobs) ? j.fobs.filter(isValidFob) : DEFAULT.fobs,
+        fobs: DEFAULT.fobs,
+        ownFob: null,
+        tierSites: [],
+        siteTableError: null,
         map: isValidDeploymentMap(j.map) ? j.map : undefined,
         terrain: isValidDeploymentTerrain((j as { terrain?: unknown }).terrain)
           ? (j as { terrain: DeploymentTerrain }).terrain : undefined,
@@ -1112,12 +1128,27 @@ export async function loadDeployment(): Promise<void> {
         edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
         childLinks: parseChildLinks((j as { childLinks?: unknown }).childLinks),
         tiers: parseTiers((j as { tiers?: unknown }).tiers),
-        hq: parseHq((j as { hq?: unknown }).hq),
         moveInputs: parseMoveInputs(j),
       };
     }
   } catch {
     // No overlay reachable — keep the OpenDDIL defaults.
+  }
+  // The site table, applied whether or not a deployment.json was found.
+  try {
+    let table = EMPTY_SITE_TABLE;
+    let siteTableError: string | null = null;
+    if (siteTableText !== undefined) {
+      const r = parseSiteTableText(siteTableText);
+      if (r.ok) table = r.table;
+      else {
+        siteTableError = r.error;
+        console.error('[deployment] site table rejected, no sites drawn:', r.error);
+      }
+    }
+    active = { ...active, ...selectForTier(table, active.tier), siteTableError };
+  } catch (e) {
+    console.error('[deployment] site table could not be applied:', e);
   }
   // Branding overlay — same-origin, ungated (see frontend/nginx.conf). Its
   // own try/catch: a bad or absent branding.json must leave `active`

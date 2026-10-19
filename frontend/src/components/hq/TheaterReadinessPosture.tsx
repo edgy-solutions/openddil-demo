@@ -434,7 +434,7 @@ export function FobLabel({
 
 export default function TheaterReadinessPosture() {
   const dep = deployment();
-  const { fobs, tiers, hq } = dep;
+  const { fobs, tiers, hq, tierSites } = dep;
   const linkRows = useLinkStatus();
   // Re-evaluated on a timer so a monitor that stops writing ages out to
   // UNKNOWN without waiting for another row to arrive.
@@ -507,8 +507,8 @@ export default function TheaterReadinessPosture() {
   // one, else one link per FOB straight to HQ. Counts run over the drawn
   // edges, each read from its own link_status row.
   const topo = useMemo(
-    () => buildTheaterTopology(tiers, fobs, linkRows.links, nowMs),
-    [tiers, fobs, linkRows.links, nowMs],
+    () => buildTheaterTopology(tiers, fobs, linkRows.links, nowMs, tierSites),
+    [tiers, fobs, linkRows.links, nowMs, tierSites],
   );
   const totalLinks = topo.edges.length;
   const linkCounts = topo.counts;
