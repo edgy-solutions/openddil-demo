@@ -13,7 +13,7 @@ import * as THREE from 'three';
 import type { Projection } from '../../lib/geoProjection';
 import { M, SCENE_SCALE_UNITS_PER_DEG } from '../../lib/sceneScale';
 import type { Bounds } from '../../lib/terrainBounds';
-import { reliefMask } from '../../lib/landMask';
+import { reliefMask, maskSize } from '../../lib/landMask';
 import { reliefCanvas, reliefTexture } from '../../lib/relief';
 import {
   decodeTerrarium, fitZoom, latToTileY, lonToTileX, tileUrl, type TerrainSource,
@@ -35,6 +35,8 @@ export type TerrainData = {
   water: boolean;
   /** True when a land or water mask was drawn into the relief (for the coastline credit). */
   masked: boolean;
+  /** Land/sea mask over `bounds` (white = land, row 0 = north, Mercator in y), or null when no coastline data could be had. */
+  mask: HTMLCanvasElement | null;
 };
 
 const MAX_INFLIGHT = 8;
@@ -158,17 +160,24 @@ export async function loadTerrain(
 
   let texture: THREE.Texture;
   let water = false, masked = false;
+  let mask: HTMLCanvasElement | null = null;
   if (relief) {
     const rc = crop(base, b);
     const m = await reliefMask(b, rc.width, rc.height, source);
-    water = !!m?.water; masked = !!m;
+    water = !!m?.water; masked = !!m; mask = m?.canvas ?? null;
     texture = reliefTexture(reliefCanvas(rc, b, baseZoom, m?.canvas ?? null, source.reliefPalette, opts.reliefGain ?? 1));
   } else {
     texture = new THREE.CanvasTexture(crop(base, b));
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.anisotropy = 8;
+    // The holo style takes land and sea from the coastline, not from height; the terrain loads without it.
+    try {
+      const [mw, mh] = maskSize(W, H);
+      const m = await reliefMask(b, mw, mh, source);
+      if (m) { water = m.water; masked = true; mask = m.canvas; }
+    } catch { /* no coastline data */ }
   }
-  return { bounds: b, proj, heightM, rawM, texture, water, masked };
+  return { bounds: b, proj, heightM, rawM, texture, water, masked, mask };
 }
 
 /** Load terrain for `b` (null = none). Reloads when the box, the tile source or the projection centre changes. */

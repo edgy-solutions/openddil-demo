@@ -30,8 +30,10 @@ const VERT = /* glsl */ `
 attribute float hraw;
 varying float vH;
 varying vec3 vW;
+varying vec2 vUv;
 void main() {
   vH = hraw;
+  vUv = uv;
   vec4 w = modelMatrix * vec4(position, 1.0);
   vW = w.xyz;
   gl_Position = projectionMatrix * viewMatrix * w;
@@ -42,8 +44,11 @@ uniform vec3 uColor;
 uniform float uFloor, uStep, uSeaStep, uSeaLevel, uKm, uTime, uGlow, uDot;
 uniform float uContours, uCoast, uDepth, uGrid, uDots, uSweep;
 uniform vec2 uCenter;
+uniform sampler2D uMask;
+uniform float uHasMask;
 varying float vH;
 varying vec3 vW;
+varying vec2 vUv;
 
 // Anti-aliased line on the integer values of v, about w px wide.
 float isoLine(float v, float w) {
@@ -54,7 +59,8 @@ float isoLine(float v, float w) {
 float sparse(float v) { return 1.0 - smoothstep(0.08, 0.25, fwidth(v)); }
 
 void main() {
-  float land = smoothstep(uSeaLevel - 0.3, uSeaLevel + 0.3, vH);
+  float m = texture2D(uMask, vUv).r;
+  float land = uHasMask > 0.5 ? smoothstep(0.35, 0.65, m) : smoothstep(uSeaLevel - 0.3, uSeaLevel + 0.3, vH);
   float lift = clamp(vH / 20.0, 0.0, 1.0);
   vec3 col = mix(uColor * 0.012, uColor * (0.045 + 0.06 * lift), land);
   float glow = 0.0;
@@ -70,7 +76,7 @@ void main() {
   if (uContours > 0.5) { float v = vH / uStep; glow += 0.45 * land * smoothstep(uFloor - 0.5, uFloor, vH) * isoLine(v, 1.0) * sparse(v); }
   if (uDepth > 0.5) { float v = vH / uSeaStep; glow += 0.3 * (1.0 - land) * isoLine(v, 1.0) * sparse(v); }
   if (uCoast > 0.5) {
-    float e = abs(vH - uSeaLevel) / max(fwidth(vH), 1e-4);
+    float e = uHasMask > 0.5 ? abs(m - 0.5) / max(fwidth(m), 1e-4) : abs(vH - uSeaLevel) / max(fwidth(vH), 1e-4);
     glow += 1.2 * (1.0 - clamp(e / 1.5, 0.0, 1.0)) + 0.35 * exp(-e / 6.0);
   }
   if (uGrid > 0.5) {
@@ -127,6 +133,8 @@ export function HoloTerrain({ data, exag, opts, center }: {
   }, [geometry, raw, opts.smooth]);
   const wireGeo = useMemo(() => drape(data.heightM, data.bounds, data.proj, 120, exag), [data, exag]);
   useEffect(() => () => { geometry.dispose(); wireGeo.dispose(); }, [geometry, wireGeo]);
+  const maskTex = useMemo(() => (data.mask ? new THREE.CanvasTexture(data.mask) : null), [data.mask]);
+  useEffect(() => () => { maskTex?.dispose(); }, [maskTex]);
   const material = useMemo(() => new THREE.ShaderMaterial({
     vertexShader: VERT, fragmentShader: FRAG,
     uniforms: {
@@ -134,6 +142,7 @@ export function HoloTerrain({ data, exag, opts, center }: {
       uKm: { value: UNITS_PER_KM }, uTime: { value: 0 }, uGlow: { value: 1 }, uDot: { value: 0.25 },
       uContours: { value: 1 }, uCoast: { value: 1 }, uDepth: { value: 1 }, uGrid: { value: 1 }, uDots: { value: 0 },
       uSweep: { value: 1 }, uCenter: { value: new THREE.Vector2() },
+      uMask: { value: null as THREE.Texture | null }, uHasMask: { value: 0 },
     },
   }), []);
   useEffect(() => () => material.dispose(), [material]);
@@ -144,6 +153,7 @@ export function HoloTerrain({ data, exag, opts, center }: {
   u.uContours.value = f(opts.contours); u.uCoast.value = f(opts.coast); u.uDepth.value = f(opts.depth);
   u.uGrid.value = f(opts.grid); u.uDots.value = f(opts.dots); u.uSweep.value = f(opts.sweep);
   u.uCenter.value.set(center[0], center[1]);
+  u.uMask.value = maskTex; u.uHasMask.value = maskTex ? 1 : 0;
   useFrame(({ clock }) => { u.uTime.value = clock.elapsedTime; });
   return (
     <>
@@ -166,17 +176,17 @@ const box: React.CSSProperties = {
 const row: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, margin: '3px 0' };
 
 /** The holo style's options; the caller positions it (it is a popover). */
-export function HoloPanel({ opts, set }: { opts: HoloOpts; set: (o: HoloOpts) => void }) {
+export function HoloPanel({ opts, set, masked = false }: { opts: HoloOpts; set: (o: HoloOpts) => void; masked?: boolean }) {
   const toggle = (k: keyof HoloOpts, label: string) => (
     <label style={row}>
       <span>{label}</span>
       <input type="checkbox" checked={opts[k] as boolean} onChange={(e) => set({ ...opts, [k]: e.target.checked })} />
     </label>
   );
-  const slider = (k: keyof HoloOpts, label: string, min: number, max: number, step: number, unit: string) => (
-    <label style={{ ...row, display: 'block' }}>
+  const slider = (k: keyof HoloOpts, label: string, min: number, max: number, step: number, unit: string, disabled = false) => (
+    <label style={{ ...row, display: 'block', opacity: disabled ? 0.5 : 1 }}>
       <span style={{ display: 'flex', justifyContent: 'space-between' }}><span>{label}</span><span style={{ color: '#67e8f9' }}>{opts[k] as number}{unit}</span></span>
-      <input type="range" min={min} max={max} step={step} value={opts[k] as number} style={{ width: '100%' }}
+      <input type="range" min={min} max={max} step={step} value={opts[k] as number} style={{ width: '100%' }} disabled={disabled}
         onChange={(e) => set({ ...opts, [k]: Number(e.target.value) })} />
     </label>
   );
@@ -192,7 +202,7 @@ export function HoloPanel({ opts, set }: { opts: HoloOpts; set: (o: HoloOpts) =>
       {toggle('wire', 'Wireframe')}
       {slider('step', 'Land contour step', 1, 10, 1, ' m')}
       {slider('seaStep', 'Sea contour step', 1, 20, 1, ' m')}
-      {slider('seaLevel', 'Sea level cut', -6, 1, 0.5, ' m')}
+      {slider('seaLevel', masked ? 'Sea level cut (off: coastline data in use)' : 'Sea level cut', -6, 1, 0.5, ' m', masked)}
       {slider('smooth', 'Smoothing', 0, 6, 1, ' cells')}
       {slider('floor', 'Contours from', -2, 10, 0.5, ' m')}
       {slider('dot', 'Dot spacing', 0.05, 1, 0.05, ' km')}

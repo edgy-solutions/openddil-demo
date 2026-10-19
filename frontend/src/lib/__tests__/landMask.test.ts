@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeFeatures, decodeLand, decodeRings, decodeWater, drawMask, mercatorV, type Ring, type Topology } from '../landMask';
+import { decodeFeatures, decodeLand, decodeRings, decodeWater, drawMask, maskSize, mercatorV, type Ring, type Topology } from '../landMask';
 
 // Scale 1, translate (10, 20). Arc 0: (10,20) (12,20) (12,22). Arc 1: (12,22) (10,22) (10,20).
 // Arc 2 stands alone at (15,25).
@@ -188,5 +188,22 @@ describe('decodeRings', () => {
   it('reads TopoJSON as decodeLand does', () => {
     const t = topo({ land: { type: 'Polygon', arcs: [[0, 1]] } });
     expect(decodeRings(t)).toEqual(decodeLand(t));
+  });
+});
+
+describe('maskSize', () => {
+  it('scales a small crop up to 1024 wide, keeping the aspect', () => {
+    expect(maskSize(512, 256)).toEqual([1024, 512]);
+  });
+  it('leaves a crop already in range alone', () => {
+    expect(maskSize(2000, 1500)).toEqual([2000, 1500]);
+  });
+  it('caps the width at 4096', () => {
+    expect(maskSize(6000, 3000)).toEqual([4096, 2048]);
+  });
+  it('caps the height at 4096 too', () => {
+    const [w, h] = maskSize(1500, 9000);
+    expect(h).toBe(4096);
+    expect(w).toBe(683);
   });
 });

@@ -1268,10 +1268,11 @@ export default function RegionalSustainmentPosture({
     return { aggY: g + h.aggregator, hqY: g + h.hq };
   }, [regionalCentroid, regionFobs, proj, renderables, groundAt]);
 
+  const usesMask = !!terrain?.mask && (prefs.style === 'holo' || terrainSource.basemap === 'relief');
   const credits = terrainFailed ? ['Terrain data unavailable'] : creditLines(terrainSource, {
     style: prefs.style,
-    landMask: terrainSource.basemap === 'relief' && prefs.style === 'sat' && !!terrain?.masked,
-    water: !!terrain?.water,
+    landMask: usesMask,
+    water: usesMask && !!terrain?.water,
   });
 
   return (
@@ -1468,7 +1469,7 @@ export default function RegionalSustainmentPosture({
       >
         {prefs.on && prefs.style === 'holo' && holoOpen && (
           <div data-testid="holo-panel" className="mb-1">
-            <HoloPanel opts={prefs.holo} set={(holo: HoloOpts) => updatePrefs({ holo })} />
+            <HoloPanel opts={prefs.holo} set={(holo: HoloOpts) => updatePrefs({ holo })} masked={!!terrain?.mask} />
           </div>
         )}
         <div className="flex flex-wrap items-center gap-3 border border-slate-700 bg-slate-900/80 px-2 py-1">
