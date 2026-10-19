@@ -742,22 +742,22 @@ function AssetCallout({ name, family, ammoText, launcherDepleted }: CalloutInfo)
     >
       <div
         data-testid="asset-callout"
-        className="relative font-mono text-[10px] tracking-wider leading-tight border-b border-slate-500/70 pl-1 pr-2 pb-0.5 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]"
+        className="relative font-mono text-[10px] tracking-wider leading-tight rounded-t-sm bg-slate-950/75 border-b border-slate-300/80 pl-1 pr-2 py-0.5"
       >
         <span className="text-slate-100">{name}</span>
         {family && (
           <>
-            <span className="text-slate-500 mx-1">·</span>
-            <span className="text-slate-400">{family}</span>
+            <span className="text-slate-400 mx-1">·</span>
+            <span className="text-slate-300">{family}</span>
           </>
         )}
         {ammoText && (
           <>
-            <span className="text-slate-500 mx-1">·</span>
+            <span className="text-slate-400 mx-1">·</span>
             <span className={ammoClass}>{ammoText}</span>
           </>
         )}
-        <div className="absolute left-0 top-full w-px bg-slate-500/75" style={{ height: LEADER_PX }} />
+        <div className="absolute left-0 top-full w-px bg-slate-300/80 shadow-[0_0_2px_rgba(0,0,0,0.9)]" style={{ height: LEADER_PX }} />
       </div>
     </Html>
   );
