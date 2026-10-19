@@ -71,7 +71,7 @@ import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale
 import { symbolRadius, worldPerPx } from '../../lib/symbolScale';
 import { separate } from '../../lib/separate';
 import { AGG_PX, FOB_PX, HQ_PX, markerScale, regionExtent, topologyHeights } from '../../lib/topologyMarkers';
-import { SEV_RANK, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
+import { SEV_RANK, fogDensity, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
 import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
@@ -913,18 +913,15 @@ function CameraRig({ goal }: { goal: CameraGoal | null }) {
 function FogController({ isZoomed }: { isZoomed: boolean }) {
   // The scene comes from useFrame's own state: three.js objects are mutated
   // per frame by design, and the hook-value immutability rule does not apply.
-  useFrame(({ scene }) => {
+  useFrame(({ scene, camera, controls }) => {
     if (scene.fog instanceof THREE.FogExp2) {
-      // Zoomed-in fog density tuned to "fade distant context, not erase it."
-      // Previously 0.08 was so dense that the entire scene went dark on
-      // asset click — exponential fog at that density makes anything past
-      // ~30 units invisible, including the surrounding terrain + map
-      // underlay + sibling assets. Now 0.018 keeps the selected asset and
-      // its near neighbors crisp, fades far context to atmospheric grey
-      // without making it disappear. Selected-asset focus is handled by
-      // the brighter base-ring on the AssetVisual `selected` path, not by
-      // erasing everything else.
-      scene.fog.density = THREE.MathUtils.lerp(scene.fog.density, isZoomed ? 0.018 : 0.005, 0.05);
+      // Fade distant context, don't erase it. The density scales with the distance to the orbit target
+      // (fogDensity), so the overview (~200 units) is as clear as a close-up and only the horizon fades; a fixed
+      // 0.005 hid most of the map at overview distance. Selecting an asset makes it a little denser; focus on the
+      // asset itself comes from the brighter base ring on the AssetVisual `selected` path.
+      const target = (controls as unknown as { target?: THREE.Vector3 } | null)?.target;
+      const dist = target ? camera.position.distanceTo(target) : camera.position.length();
+      scene.fog.density = THREE.MathUtils.lerp(scene.fog.density, fogDensity(dist, isZoomed), 0.1);
     }
   });
   return null;

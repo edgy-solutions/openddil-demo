@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_KINDS, SEV_RANK, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, roleOf, shouldSplit } from '../clusterKinds';
+import { MAX_KINDS, SEV_RANK, fogDensity, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, roleOf, shouldSplit } from '../clusterKinds';
 
 const OK = 'LOGISTICS_SEVERITY_OK';
 const DEG = 'LOGISTICS_SEVERITY_DEGRADED';
@@ -131,5 +131,22 @@ describe('fogVisibility', () => {
     expect(fogVisibility(0.01, 0)).toBe(1);
     expect(fogVisibility(0.01, 100)).toBeCloseTo(Math.exp(-1));
     expect(fogVisibility(0.01, 300)).toBeLessThan(fogVisibility(0.01, 100));
+  });
+});
+
+describe('fogDensity', () => {
+  it('keeps the target equally clear at any distance', () => {
+    for (const d of [0.5, 20, 200]) {
+      expect(fogVisibility(fogDensity(d, false), d)).toBeGreaterThan(0.98);
+      expect(fogVisibility(fogDensity(d, false), 10 * d)).toBeLessThan(0.3);
+    }
+  });
+  it('is lighter far out than the old fixed 0.005, and denser when selected', () => {
+    expect(fogDensity(200, false)).toBeLessThan(0.005);
+    expect(fogDensity(20, true)).toBeGreaterThan(fogDensity(20, false));
+  });
+  it('clamps', () => {
+    expect(fogDensity(0, false)).toBe(0.5);
+    expect(fogDensity(1e6, false)).toBe(0.0005);
   });
 });
