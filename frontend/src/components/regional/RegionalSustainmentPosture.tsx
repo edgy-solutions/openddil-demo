@@ -822,7 +822,7 @@ function ScreenSized({ radius, px, children }: { radius: number; px: number; chi
 function RegionalAggregatorNode({ position, label, kicker = 'REGIONAL AGGREGATOR', severed, grounded }: {
   position: [number, number, number];
   label: string;
-  /** The small line above the label; "REGIONAL · HQ" when HQ shares the regional node's site. */
+  /** The small line above the label; "REGIONAL Â· HQ" when HQ shares the regional node's site. */
   kicker?: string;
   severed: boolean;
   /** Lift the meshes so their base sits on the group origin (a node standing on the ground). */
