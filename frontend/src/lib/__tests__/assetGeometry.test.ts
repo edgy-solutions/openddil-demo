@@ -35,6 +35,8 @@ import {
   resolvePadWorldRadius,
   resolveVariantScale,
 } from '../assetGeometry';
+import { findSchematic } from '../../components/platform-schematics';
+import { ArtillerySchematic } from '../../components/platform-schematics/ArtillerySchematic';
 
 // ArtillerySchematic native geometry — referenced in multiple tests.
 // Mirrors the source-of-truth values in ArtillerySchematic.tsx.
@@ -349,5 +351,44 @@ describe("ASSET_VARIANT_SCALE -- per-variant visual scale", () => {
     for (const [variant, value] of Object.entries(ASSET_VARIANT_SCALE)) {
       expect(value, `${variant} should be removed from ASSET_VARIANT_SCALE if equal to DEFAULT`).not.toBe(DEFAULT_VARIANT_SCALE);
     }
+  });
+});
+
+describe('suffix-family geometry fallback (mirrors findSchematic)', () => {
+  it.each(['MRAD2_launcher', 'Foo_Interceptor'])('%s resolves like MISSILE_LAUNCHER', (v) => {
+    expect(resolveGroundOffset(v)).toBe(resolveGroundOffset('MISSILE_LAUNCHER'));
+    expect(resolveAssetHeight(v)).toBe(resolveAssetHeight('MISSILE_LAUNCHER'));
+    expect(resolveVariantScale(v)).toBe(resolveVariantScale('MISSILE_LAUNCHER'));
+    expect(resolvePadHeight(v)).toBe(resolvePadHeight('MISSILE_LAUNCHER'));
+    expect(resolveFootprintRadius(v)).toBe(resolveFootprintRadius('MISSILE_LAUNCHER'));
+  });
+
+  it('MRAD2_radar resolves like MRAD_Sensor', () => {
+    expect(resolveGroundOffset('MRAD2_radar')).toBe(resolveGroundOffset('MRAD_Sensor'));
+    expect(resolveAssetHeight('MRAD2_radar')).toBe(resolveAssetHeight('MRAD_Sensor'));
+  });
+
+  it('exact keys and aliases are unchanged', () => {
+    expect(resolveGroundOffset('MRAD_Interceptor')).toBe(GROUND_OFFSET['MRAD_Interceptor']);
+    expect(resolveFootprintRadius('MRAD_Interceptor')).toBe(3.3);
+    expect(resolveGroundOffset('M1A2-SEPv3')).toBe(GROUND_OFFSET['M1A2-SEPv3']);
+    expect(resolveGroundOffset('MRAD_ADVANCED_Sensor')).toBe(GROUND_OFFSET['MRAD_Sensor']);
+    expect(resolveGroundOffset('MRAD_ADVANCED_Interceptor')).toBe(GROUND_OFFSET['MRAD_Interceptor']);
+  });
+
+  it('an unknown non-suffix variant still gets the defaults', () => {
+    expect(resolveGroundOffset('Mystery-X')).toBe(DEFAULT_GROUND_OFFSET);
+    expect(resolveAssetHeight('Mystery-X')).toBe(DEFAULT_ASSET_HEIGHT);
+    expect(resolveVariantScale('Mystery-X')).toBe(DEFAULT_VARIANT_SCALE);
+    expect(resolvePadHeight('Mystery-X')).toBeUndefined();
+  });
+
+  it('every variant drawn as ArtillerySchematic has a pad height', () => {
+    for (const v of ['MRAD2_launcher', 'Foo_Interceptor', 'bar_LAUNCHER', 'MRAD_Interceptor', 'MISSILE_LAUNCHER']) {
+      if (findSchematic(v) === ArtillerySchematic) {
+        expect(resolvePadHeight(v), v).toBeDefined();
+      }
+    }
+    expect(findSchematic('MRAD2_launcher')).toBe(ArtillerySchematic);
   });
 });

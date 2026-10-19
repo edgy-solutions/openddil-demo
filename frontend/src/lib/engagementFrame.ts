@@ -54,3 +54,10 @@ export function heightAboveLaunch(hM: number, launcherAltM: number | null | unde
   const agl = launcherAltM == null || !Number.isFinite(launcherAltM) ? hM : hM - launcherAltM;
   return (Math.max(0, agl) / 1000) * unitsPerKm;
 }
+
+/** Lift a flight point at least 50 m above the ground under it. Flight height is
+ *  true-scale but relief may be exaggerated, so a low track could otherwise
+ *  sit inside a hill. */
+export function clearOfGround(y: number, groundY: number, unitsPerKm: number): number {
+  return Math.max(y, groundY + 0.05 * unitsPerKm);
+}

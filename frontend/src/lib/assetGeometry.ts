@@ -161,6 +161,12 @@ export const PAD_RADIUS_NATIVE: Readonly<Record<string, number>> = {
 // shares. Keep this map in lockstep with SCHEMATIC_REGISTRY: whenever a
 // new registry key points at an existing schematic, add the alias here.
 //
+// Suffix families: `*_interceptor` / `*_launcher` and `*_sensor` / `*_radar`
+// (case-insensitive) mirror findSchematic's suffix fallback, which draws
+// them as the generic artillery launcher / MRAD radar. geometryKey maps
+// them to MISSILE_LAUNCHER / MRAD_Sensor so the geometry matches the
+// drawn schematic. These regexes must stay in step with findSchematic.
+//
 // Provably safe for existing variants: a variant NOT in this map
 // resolves to itself (`?? platformVariant`), so every current lookup is
 // byte-for-byte unchanged.
@@ -173,7 +179,12 @@ export const GEOMETRY_VARIANT_ALIAS: Readonly<Record<string, string>> = {
  *  Variants that render an existing schematic verbatim alias to that
  *  schematic's base variant; everything else resolves to itself. */
 function geometryKey(platformVariant: string): string {
-  return GEOMETRY_VARIANT_ALIAS[platformVariant] ?? platformVariant;
+  const alias = GEOMETRY_VARIANT_ALIAS[platformVariant];
+  if (alias) return alias;
+  if (platformVariant in GROUND_OFFSET) return platformVariant;
+  if (/_(interceptor|launcher)$/i.test(platformVariant)) return 'MISSILE_LAUNCHER';
+  if (/_(sensor|radar)$/i.test(platformVariant)) return 'MRAD_Sensor';
+  return platformVariant;
 }
 
 // ---------------------------------------------------------------------------

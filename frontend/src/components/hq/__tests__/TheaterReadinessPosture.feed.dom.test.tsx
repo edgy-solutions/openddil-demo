@@ -20,7 +20,7 @@ const flying = mapMunitionTrack({
   ecef_z: r * Math.sin(la),
 });
 const holoProps: Array<Record<string, unknown>> = [];
-const state = { fleet: [] as unknown[], launches: [] as unknown[] };
+const state = { fleet: [] as unknown[], launches: [] as unknown[], ground: 0 };
 
 vi.mock('../../MunitionTrackHolo', () => ({
   CURTAIN_MAX_TRACKS: 12,
@@ -54,6 +54,11 @@ vi.mock('@react-three/drei', () => ({
 }));
 vi.mock('@react-three/postprocessing', () => ({ EffectComposer: () => null, Bloom: () => null }));
 vi.mock('../../TacticalMapUnderlay', () => ({ default: () => null }));
+// Terrain stays off the network: no tile or land-file fetches from an HQ test.
+vi.mock('../../terrain/theater', () => ({
+  useTheaterTerrain: () => ({ theater: null, surround: null, mask: { theater: null, surround: null }, rect: null, groundY: () => state.ground }),
+  TheaterTerrain: () => null,
+}));
 
 import TheaterReadinessPosture from '../TheaterReadinessPosture';
 
@@ -62,7 +67,7 @@ const asset = (id: string, position: { lat: number; lon: number; alt?: number } 
 const last = () => holoProps[holoProps.length - 1];
 
 describe('TheaterReadinessPosture holo target and launcher', () => {
-  afterEach(() => { cleanup(); holoProps.length = 0; state.fleet = []; state.launches = []; });
+  afterEach(() => { cleanup(); holoProps.length = 0; state.fleet = []; state.launches = []; state.ground = 0; });
 
   it('passes a target when the launch row names an asset with a fleet position', () => {
     state.fleet = [asset('dis:9:9:2', null), asset('dis:9:9:3', { lat: 10.2, lon: 20.2 })];
@@ -105,5 +110,23 @@ describe('TheaterReadinessPosture holo target and launcher', () => {
     render(<TheaterReadinessPosture />);
     const trail = last().trail as number[][];
     expect(trail[trail.length - 1][1]).toBeCloseTo(2 * (400 / 111), 6);
+  });
+
+  it('with terrain off the inset and holo ground is 0', () => {
+    state.fleet = [asset('dis:9:9:2', { lat: 10, lon: 20 })];
+    render(<TheaterReadinessPosture />);
+    expect(last().groundY).toBe(0);
+    expect((last().launcher as number[])[1]).toBe(0);
+  });
+
+  it('puts the launcher, the holo ground and every trail point on the terrain', () => {
+    state.ground = 7;
+    state.fleet = [asset('dis:9:9:2', { lat: 10, lon: 20 })];
+    render(<TheaterReadinessPosture />);
+    expect(last().groundY).toBe(7);
+    expect((last().launcher as number[])[1]).toBe(7);
+    const trail = last().trail as number[][];
+    expect(trail.length).toBeGreaterThan(0);
+    for (const p of trail) expect(p[1]).toBeGreaterThanOrEqual(7);
   });
 });

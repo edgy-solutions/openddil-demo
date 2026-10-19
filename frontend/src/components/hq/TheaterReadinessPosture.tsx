@@ -29,6 +29,12 @@ import { EffectComposer, Bloom } from '@react-three/postprocessing';
 import DdilNetworkLink from '../DdilNetworkLink';
 import LogisticsHubNode from '../LogisticsHubNode';
 import TacticalMapUnderlay from '../TacticalMapUnderlay';
+import { TheaterTerrain, useTheaterTerrain } from '../terrain/theater';
+import {
+  EXAGGERATIONS, loadHqTerrainPrefs, saveHqTerrainPrefs, type Exaggeration, type HqTerrainPrefs,
+} from '../terrain/prefs';
+import { segBtn } from '../terrain/segBtn';
+import { elevationCredit, resolveTerrainSource } from '../../lib/terrainTiles';
 import { deployment, edgeAttachment, type Fob, type EdgeAttachment } from '../../deployment';
 import {
   useClassifiedFleet,
@@ -47,8 +53,9 @@ import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { CURTAIN_MAX_TRACKS, type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
-import { engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
+import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { LinkChips } from '../network/LinkChips';
+import { PostureHeader } from '../PostureHeader';
 import {
   linkStateWord,
   type LinkReading,
@@ -60,10 +67,11 @@ import { buildTheaterTopology, type EdgeState } from '../../lib/theaterTopology'
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
 // within view at the default (0, 150, 600) camera.
 const HQ_SCENE_SCALE_UNITS_PER_DEG = 400;
+/** The engagement inset, lifted clear of the terrain controls under it. */
+const HQ_INSET_RECT = { ...INSET_RECT, y: INSET_RECT.y + 36 };
+// Markers sit on the terrain (y = 0 with terrain off); tracks rise from their
+// launcher's ground by their ellipsoidal height (units per km = units per deg / 111).
 const HQ_UNITS_PER_KM = HQ_SCENE_SCALE_UNITS_PER_DEG / 111;
-// FOB markers and labels sit at y = 0; tracks are drawn against this ground plane
-// and rise from it by their ellipsoidal height (units per km = units per deg / 111).
-const HQ_GROUND_Y = 0;
 
 // Per-FOB composition breakdown, driven by the asset_class discriminator
 // (src/lib/assetClass.ts) rather than by platform_variant pattern-matching.
@@ -424,7 +432,8 @@ export function FobLabel({
 }
 
 export default function TheaterReadinessPosture() {
-  const { fobs, tiers, hq } = deployment();
+  const dep = deployment();
+  const { fobs, tiers, hq } = dep;
   const linkRows = useLinkStatus();
   // Re-evaluated on a timer so a monitor that stops writing ages out to
   // UNKNOWN without waiting for another row to arrive.
@@ -447,6 +456,28 @@ export default function TheaterReadinessPosture() {
     () => makeProjection(fobs, HQ_SCENE_SCALE_UNITS_PER_DEG),
     [fobs],
   );
+
+  // Terrain: the controls' state, the tile source, and the box around the FOBs
+  // (and the HQ, if it is configured). With no FOBs there is nothing to frame.
+  const [tp, setTp] = useState<HqTerrainPrefs>(loadHqTerrainPrefs);
+  const updateTp = useCallback((patch: Partial<HqTerrainPrefs>) => {
+    setTp((prev) => {
+      const next = { ...prev, ...patch };
+      saveHqTerrainPrefs(next);
+      return next;
+    });
+  }, []);
+  const terrainSource = useMemo(() => resolveTerrainSource(dep.terrain), [dep.terrain]);
+  const terrainPoints = useMemo(() => (hq ? [...fobs, hq] : fobs), [fobs, hq]);
+  const terrainAvailable = fobs.length > 0;
+  const terrainOn = terrainAvailable && tp.on;
+  const terrain = useTheaterTerrain({
+    points: terrainPoints, projection: proj, source: terrainSource, style: tp.style, exag: tp.exag, on: terrainOn,
+  });
+  const { groundY } = terrain;
+  const attribution = (tp.style === 'sat'
+    ? terrainSource.attribution
+    : elevationCredit(terrainSource.attribution)) + ' · Coastline: Natural Earth';
 
   const metrics = useMemo(
     () => buildFobMetrics(fobs, fleet.data, logistics.data, tracks.data, HQ_SCENE_SCALE_UNITS_PER_DEG),
@@ -490,28 +521,30 @@ export default function TheaterReadinessPosture() {
   );
   const edgeById = useMemo(() => new Map(topo.edges.map((e) => [e.id, e])), [topo.edges]);
 
-  // Height is above the launcher's own altitude: FOBs sit on one ground plane,
-  // so the site elevation is not flight.
-  const projectTrack = useCallback((t: MunitionTrack): Vec3 | null => {
-    const ll = trackLatLon(t);
-    if (!ll) return null;
-    const [x, z] = proj.project(ll.lat, ll.lon);
-    const launchAlt = t.launcherAssetId ? fleet.data.find((a) => a.asset_id === t.launcherAssetId)?.position?.alt : undefined;
-    return [x, HQ_GROUND_Y + heightAboveLaunch(ll.h, launchAlt, HQ_UNITS_PER_KM), z];
-  }, [proj, fleet.data]);
   // The launcher's own fleet position, projected to the ground, when it has
   // one; otherwise its FOB (this map draws FOBs, not individual assets).
   const launcherOf = useCallback((t: MunitionTrack): Vec3 | undefined => {
     const own = t.launcherAssetId ? fleet.data.find((a) => a.asset_id === t.launcherAssetId)?.position : null;
     if (own) {
       const [x, z] = proj.project(own.lat, own.lon);
-      return [x, HQ_GROUND_Y, z];
+      return [x, groundY(x, z), z];
     }
     const edgeByAsset = new Map(fleet.data.map((a) => [a.asset_id, a.edge_id]));
     const lEdge = t.launcherAssetId ? edgeByAsset.get(t.launcherAssetId) : null;
     const fob = lEdge ? drawnMetrics.find((m) => m.fob.edge_id === lEdge) : undefined;
-    return fob ? [fob.scenePos[0], HQ_GROUND_Y, fob.scenePos[1]] : undefined;
-  }, [fleet.data, drawnMetrics, proj]);
+    return fob ? [fob.scenePos[0], groundY(fob.scenePos[0], fob.scenePos[1]), fob.scenePos[1]] : undefined;
+  }, [fleet.data, drawnMetrics, proj, groundY]);
+  // Flight height is true-scale above the launcher's own ground (FOB altitude
+  // is not flight). Terrain relief is exaggerated by `exag`, so the clamp keeps
+  // a low track out of the hills.
+  const projectTrack = useCallback((t: MunitionTrack): Vec3 | null => {
+    const ll = trackLatLon(t);
+    if (!ll) return null;
+    const [x, z] = proj.project(ll.lat, ll.lon);
+    const launchAlt = t.launcherAssetId ? fleet.data.find((a) => a.asset_id === t.launcherAssetId)?.position?.alt : undefined;
+    const base = launcherOf(t)?.[1] ?? groundY(x, z);
+    return [x, clearOfGround(base + heightAboveLaunch(ll.h, launchAlt, HQ_UNITS_PER_KM), groundY(x, z), HQ_UNITS_PER_KM), z];
+  }, [proj, fleet.data, launcherOf, groundY]);
   const trails = useMunitionTrails(trackFeed.data, projectTrack, launcherOf);
   const trackById = useMemo(() => new Map(trackFeed.data.map((t) => [t.munitionAssetId, t])), [trackFeed.data]);
   // Target: the Fire PDU's target (effector_launch, by event_urn), at that asset's fleet position.
@@ -524,9 +557,9 @@ export default function TheaterReadinessPosture() {
       const pos = id ? posById.get(id) : null;
       if (!pos) return undefined;
       const [x, z] = proj.project(pos.lat, pos.lon);
-      return [x, HQ_GROUND_Y, z];
+      return [x, groundY(x, z), z];
     };
-  }, [launches.data, fleet.data, proj]);
+  }, [launches.data, fleet.data, proj, groundY]);
 
   // Engagement inset: the same scene framed on what is in flight, nodes as dots.
   const insetFocus = useMemo(
@@ -536,32 +569,37 @@ export default function TheaterReadinessPosture() {
   const insetMarkers = useMemo<InsetMarker[]>(() => [
     ...topo.nodes.flatMap((n) => {
       const p = nodePos.get(n.id);
-      return p ? [{ at: [p[0], HQ_GROUND_Y, p[1]] as Vec3, color: '#22d3ee' }] : [];
+      return p ? [{ at: [p[0], groundY(p[0], p[1]), p[1]] as Vec3, color: '#22d3ee' }] : [];
     }),
-    { at: [hqPos[0], HQ_GROUND_Y, hqPos[1]] as Vec3, color: '#10b981' },
-  ], [topo.nodes, nodePos, hqPos]);
-  const insetFrame = frameOf(insetFocus, HQ_GROUND_Y);
-  const insetLabel = `ENGAGEMENT · ${trails.filter((m) => !m.ending).length} IN FLIGHT${
+    { at: [hqPos[0], groundY(hqPos[0], hqPos[1]), hqPos[1]] as Vec3, color: '#10b981' },
+  ], [topo.nodes, nodePos, hqPos, groundY]);
+  // The inset's ground is the first launcher's, as in regional.
+  const insetGround = trails.find((m) => m.launcher)?.launcher?.[1] ?? 0;
+  const insetFrame = frameOf(insetFocus, insetGround);
+  const inflightCount = trails.filter((m) => !m.ending).length;
+  const insetLabel = `ENGAGEMENT · ${inflightCount} IN FLIGHT${
     insetFrame ? ` · GRID ${gridStepKm(insetFrame.r, HQ_UNITS_PER_KM)} KM` : ''}`;
 
   return (
     <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${severed ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-theater-readiness">
-      <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
-        <div>
-          <h1 className={`glitch-text text-3xl font-bold transition-colors ${!severed ? 'text-emerald-400 shadow-[0_0_10px_#10b981]' : 'text-rose-500 shadow-[0_0_10px_#f43f5e]'}`} style={{ textShadow: !severed ? '0 0 10px #10b981' : '0 0 10px #f43f5e' }}>
-            THEATER READINESS POSTURE
-          </h1>
-          <p className="text-[10px] font-mono tracking-widest text-slate-400 mt-1">
+      <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start gap-4">
+        <PostureHeader
+          eyebrow="HQ · THEATER"
+          title="THEATER READINESS POSTURE"
+          severed={severed}
+          meta={<>
             {/* "0 FOBS // 14 ASSETS" invited the reading that fourteen
                 assets had lost their sites. FOBs are deployment-supplied
                 map topology; assets are live data. An empty FOB list is a
                 deployment that did not configure a map, and saying so is
                 shorter than the confusion it prevents. */}
-            GLOBAL FLEET // {fobs.length > 0
-              ? `${fobs.length} FOB${fobs.length === 1 ? '' : 'S'}`
-              : 'no FOB topology'} // {fleet.data.length} ASSET{fleet.data.length === 1 ? '' : 'S'}
-          </p>
-        </div>
+            {fobs.length > 0 ? `${fobs.length} FOB${fobs.length === 1 ? '' : 'S'}` : 'no FOB topology'}
+            <span className="ml-3 opacity-60">{fleet.data.length} ASSET{fleet.data.length === 1 ? '' : 'S'}</span>
+            {inflightCount > 0 && (
+              <span className="ml-3 text-amber-400">· {inflightCount} IN FLIGHT</span>
+            )}
+          </>}
+        />
         {/* The right-hand panels' look (.panel: zinc-800 border, rounded-xl, zinc-900/40 fill), spelled as
             utilities: .panel is unlayered CSS, so it would beat any bg/border utility here. The fill is
             .panel's zinc-900/40 over the page's slate-950, made opaque so the map behind the card
@@ -624,13 +662,84 @@ export default function TheaterReadinessPosture() {
         </div>
       </div>
 
-      <div className="absolute bottom-4 right-4 z-10 bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
-        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-emerald-500"></div><span className="text-slate-300">NOMINAL LINK</span></div>
-        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-amber-500"></div><span className="text-slate-300">IDLE LINK</span></div>
-        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
-        <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
-        <div className="flex items-center gap-2"><div className="w-3 h-3 border border-dashed border-slate-400"></div><span className="text-slate-300">UNREACHABLE (ANCESTOR DOWN)</span></div>
+      {/* Placed like regional: the engagement inset is bottom-left with the terrain controls under it;
+          bottom-right is the link legend (lifted above the credit when terrain is on) and the credit. */}
+      <div className={`absolute ${terrainOn ? 'bottom-10' : 'bottom-4'} right-4 z-10`}>
+        <div className="bg-slate-900/80 border border-slate-700 p-3 text-[10px] font-mono">
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-emerald-500"></div><span className="text-slate-300">NOMINAL LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-amber-500"></div><span className="text-slate-300">IDLE LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-rose-500"></div><span className="text-slate-300">SEVERED LINK</span></div>
+          <div className="flex items-center gap-2 mb-2"><div className="w-3 h-3 bg-slate-500"></div><span className="text-slate-300">UNKNOWN LINK</span></div>
+          <div className="flex items-center gap-2"><div className="w-3 h-3 border border-dashed border-slate-400"></div><span className="text-slate-300">UNREACHABLE (ANCESTOR DOWN)</span></div>
+        </div>
       </div>
+      {terrainAvailable && (
+        <div
+          data-testid="hq-terrain-controls"
+          className="absolute bottom-10 left-4 z-10 pointer-events-auto font-mono text-[10px] uppercase tracking-wider"
+        >
+          <div
+            className="flex flex-wrap items-center gap-3 border border-slate-700 bg-slate-900/80 px-2 py-1 font-mono text-[10px] uppercase tracking-wider"
+          >
+            <button
+              type="button"
+              data-testid="hq-terrain-toggle"
+              aria-pressed={tp.on}
+              onClick={() => updateTp({ on: !tp.on })}
+              className={segBtn(tp.on)}
+            >
+              TERRAIN {tp.on ? 'ON' : 'OFF'}
+            </button>
+            {tp.on && (
+              <>
+                <div role="group" aria-label="Terrain style" className="flex">
+                  <button
+                    type="button"
+                    data-testid="hq-terrain-style-holo"
+                    aria-pressed={tp.style === 'holo'}
+                    onClick={() => updateTp({ style: 'holo' })}
+                    className={segBtn(tp.style === 'holo')}
+                  >
+                    HOLO
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="hq-terrain-style-sat"
+                    aria-pressed={tp.style === 'sat'}
+                    onClick={() => updateTp({ style: 'sat' })}
+                    className={segBtn(tp.style === 'sat')}
+                  >
+                    SATELLITE
+                  </button>
+                </div>
+                <div role="group" aria-label="Relief exaggeration" className="flex items-center gap-1">
+                  <span className="text-slate-500">RELIEF</span>
+                  {EXAGGERATIONS.map((x: Exaggeration) => (
+                    <button
+                      key={x}
+                      type="button"
+                      data-testid={`hq-terrain-exag-${x}`}
+                      aria-pressed={tp.exag === x}
+                      onClick={() => updateTp({ exag: x })}
+                      className={segBtn(tp.exag === x)}
+                    >
+                      ×{x}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {terrainOn && (
+        <div
+          data-testid="hq-terrain-attribution"
+          className="absolute bottom-1 right-4 z-10 max-w-[60%] text-right text-[9px] font-mono text-slate-500 pointer-events-none"
+        >
+          {attribution}
+        </div>
+      )}
 
       <div className="absolute inset-0 cursor-move">
         {/* Camera far plane lifted from default 2000 → 8000. AbstractContinents
@@ -663,43 +772,46 @@ export default function TheaterReadinessPosture() {
 
           <OrbitControls enableDamping dampingFactor={0.05} maxDistance={1200} minDistance={200} maxPolarAngle={Math.PI / 2 - 0.1} target={[0, 0, 0]} />
 
-          <Grid
-            position={[0, -2, 0]}
-            args={[2000, 2000]}
-            cellSize={20}
-            cellThickness={0.5}
-            sectionSize={100}
-            sectionThickness={1.5}
-            cellColor="#22d3ee"
-            sectionColor="#10b981"
-            /* drei's Grid fadeDistance is the camera-distance over which
-             * the grid lines fade to transparent (default 100). Earlier
-             * fadeDistance=1500 meant the grid was nearly invisible when
-             * the user zoomed out to OrbitControls maxDistance=1200 — the
-             * fade factor at that distance was (1500-1200)/1500 = 0.2,
-             * leaving only 20% of the grid intensity. Combined with the
-             * AbstractContinents clipping past the camera far plane,
-             * this read as "scene blanks on zoom-out." 5000 keeps the
-             * grid visible at any camera position the OrbitControls
-             * permits. */
-            fadeDistance={5000}
-          />
+          {/* Flat-ground decoration gives way to the terrain. */}
+          {!terrainOn && (<>
+            <Grid
+              position={[0, -2, 0]}
+              args={[2000, 2000]}
+              cellSize={20}
+              cellThickness={0.5}
+              sectionSize={100}
+              sectionThickness={1.5}
+              cellColor="#22d3ee"
+              sectionColor="#10b981"
+              /* drei's Grid fadeDistance is the camera-distance over which
+               * the grid lines fade to transparent (default 100). Earlier
+               * fadeDistance=1500 meant the grid was nearly invisible when
+               * the user zoomed out to OrbitControls maxDistance=1200 — the
+               * fade factor at that distance was (1500-1200)/1500 = 0.2,
+               * leaving only 20% of the grid intensity. Combined with the
+               * AbstractContinents clipping past the camera far plane,
+               * this read as "scene blanks on zoom-out." 5000 keeps the
+               * grid visible at any camera position the OrbitControls
+               * permits. */
+              fadeDistance={5000}
+            />
 
-          {/* Concentric rings — visual scale reference, unchanged. */}
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
-            <ringGeometry args={[200, 202, 64]} />
-            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.15} side={THREE.DoubleSide} />
-          </mesh>
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
-            <ringGeometry args={[400, 404, 64]} />
-            <meshBasicMaterial color={0x10b981} transparent opacity={0.1} side={THREE.DoubleSide} />
-          </mesh>
-          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
-            <ringGeometry args={[600, 606, 64]} />
-            <meshBasicMaterial color={0x22d3ee} transparent opacity={0.05} side={THREE.DoubleSide} />
-          </mesh>
+            {/* Concentric rings — visual scale reference, unchanged. */}
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+              <ringGeometry args={[200, 202, 64]} />
+              <meshBasicMaterial color={0x22d3ee} transparent opacity={0.15} side={THREE.DoubleSide} />
+            </mesh>
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+              <ringGeometry args={[400, 404, 64]} />
+              <meshBasicMaterial color={0x10b981} transparent opacity={0.1} side={THREE.DoubleSide} />
+            </mesh>
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.9, 0]}>
+              <ringGeometry args={[600, 606, 64]} />
+              <meshBasicMaterial color={0x22d3ee} transparent opacity={0.05} side={THREE.DoubleSide} />
+            </mesh>
 
-          <AbstractContinents />
+            <AbstractContinents />
+          </>)}
 
           {/* Tier nodes: a hub per FOB-placed tier, plus a ring on every tier
               that rolls up children (a derived region has the ring alone). */}
@@ -707,9 +819,9 @@ export default function TheaterReadinessPosture() {
             const [x, z] = nodePos.get(n.id)!;
             return (
               <group key={`node-${n.id}`} userData={{ insetHidden: true }}>
-                {!n.derived && <LogisticsHubNode position={[x, 0, z]} />}
+                {!n.derived && <LogisticsHubNode position={[x, groundY(x, z), z]} />}
                 {n.hasChildren && (
-                  <mesh position={[x, 0.5, z]} rotation={[-Math.PI / 2, 0, 0]}>
+                  <mesh position={[x, groundY(x, z) + 0.5, z]} rotation={[-Math.PI / 2, 0, 0]}>
                     <ringGeometry args={[7, 8.5, 32]} />
                     <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
                   </mesh>
@@ -720,13 +832,13 @@ export default function TheaterReadinessPosture() {
 
           {/* HQ marker: always drawn, at the configured location or the FOB centre. */}
           <group userData={{ insetHidden: true }}>
-            <LogisticsHubNode position={[hqPos[0], 0, hqPos[1]]} />
-            <mesh position={[hqPos[0], 0.5, hqPos[1]]} rotation={[-Math.PI / 2, 0, 0]}>
+            <LogisticsHubNode position={[hqPos[0], groundY(hqPos[0], hqPos[1]), hqPos[1]]} />
+            <mesh position={[hqPos[0], groundY(hqPos[0], hqPos[1]) + 0.5, hqPos[1]]} rotation={[-Math.PI / 2, 0, 0]}>
               <ringGeometry args={[7, 8.5, 32]} />
               <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
             </mesh>
           </group>
-          <Html position={[hqPos[0], 0, hqPos[1]]} center
+          <Html position={[hqPos[0], groundY(hqPos[0], hqPos[1]), hqPos[1]]} center
                 style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
             <div data-testid="hq-node-label"
                  className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
@@ -741,10 +853,11 @@ export default function TheaterReadinessPosture() {
             return (
               <DdilNetworkLink
                 key={`link-${e.id}`}
-                start={new THREE.Vector3(sx, 0, sz)}
-                end={new THREE.Vector3(ex, 0, ez)}
+                start={new THREE.Vector3(sx, groundY(sx, sz), sz)}
+                end={new THREE.Vector3(ex, groundY(ex, ez), ez)}
                 status={DDIL_STATUS[e.state]}
                 via={e.via}
+                groundY={groundY}
               />
             );
           })}
@@ -753,7 +866,7 @@ export default function TheaterReadinessPosture() {
           {drawnMetrics.map((m) => (
             <FobLabel
               key={`label-${m.fob.edge_id}`}
-              position={[m.scenePos[0], 0, m.scenePos[1]]}
+              position={[m.scenePos[0], groundY(m.scenePos[0], m.scenePos[1]), m.scenePos[1]]}
               label={m.fob.label || m.fob.edge_id}
               total={m.total}
               composition={m.composition}
@@ -767,7 +880,7 @@ export default function TheaterReadinessPosture() {
             const e = edgeById.get(n.id);
             const word = e ? (e.via ? `UNREACHABLE via ${e.via}` : linkStateWord(e.reading)) : '';
             return (
-              <Html key={`region-label-${n.id}`} position={[x, 0, z]} center
+              <Html key={`region-label-${n.id}`} position={[x, groundY(x, z), z]} center
                     style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
                 <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
                   <span className="text-slate-200 font-bold">{n.id}</span>
@@ -785,7 +898,7 @@ export default function TheaterReadinessPosture() {
               key={`track-${m.id}`}
               track={trackById.get(m.id) ?? { munitionAssetId: m.id, launcherAssetId: null }}
               trail={m.trail}
-              groundY={HQ_GROUND_Y}
+              groundY={m.launcher?.[1] ?? insetGround}
               launcher={m.launcher}
               target={targetOf(trackById.get(m.id))}
               ending={m.ending}
@@ -794,16 +907,18 @@ export default function TheaterReadinessPosture() {
           ))}
 
           <React.Suspense fallback={null}>
-            <TacticalMapUnderlay projection={proj} />
+            {terrainOn
+              ? <TheaterTerrain data={terrain} style={tp.style} exag={tp.exag} />
+              : <TacticalMapUnderlay projection={proj} />}
           </React.Suspense>
 
           <EffectComposer>
             <Bloom luminanceThreshold={0.2} mipmapBlur intensity={1.2} luminanceSmoothing={0.9} />
           </EffectComposer>
           {/* After the composer (priority 2): the inset draws without bloom. */}
-          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={HQ_GROUND_Y} unitsPerKm={HQ_UNITS_PER_KM} />
+          <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={insetGround} unitsPerKm={HQ_UNITS_PER_KM} rect={terrainAvailable ? HQ_INSET_RECT : INSET_RECT} />
         </Canvas>
-        <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} />
+        <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} rect={terrainAvailable ? HQ_INSET_RECT : INSET_RECT} />
       </div>
 
       {severed && <div className="absolute inset-0 bg-rose-950/30 z-20 pointer-events-none"></div>}

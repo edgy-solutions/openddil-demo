@@ -1,0 +1,61 @@
+import { describe, expect, it } from 'vitest';
+import { isValidDeploymentTerrain } from '../deployment';
+import { DEFAULT_TERRAIN_SOURCE, elevationCredit, resolveTerrainSource } from '../lib/terrainTiles';
+
+const T = 'https://tiles.local/{z}/{x}/{y}.png';
+
+describe('isValidDeploymentTerrain', () => {
+  it('accepts an empty block and a full one', () => {
+    expect(isValidDeploymentTerrain({})).toBe(true);
+    expect(isValidDeploymentTerrain({ elevationUrl: T, imageryUrl: T, attribution: 'x', landUrl: 'https://land.local/land.json' })).toBe(true);
+  });
+  it('rejects non-objects', () => {
+    for (const v of [null, undefined, 'x', 3, [], true]) expect(isValidDeploymentTerrain(v)).toBe(false);
+  });
+  it('rejects a URL that is not a z/x/y template or not a string', () => {
+    expect(isValidDeploymentTerrain({ elevationUrl: 'https://t/{z}/{x}.png' })).toBe(false);
+    expect(isValidDeploymentTerrain({ imageryUrl: '' })).toBe(false);
+    expect(isValidDeploymentTerrain({ imageryUrl: 7 })).toBe(false);
+  });
+  it('rejects an empty or non-string attribution', () => {
+    expect(isValidDeploymentTerrain({ attribution: '' })).toBe(false);
+    expect(isValidDeploymentTerrain({ attribution: 4 })).toBe(false);
+  });
+  it('accepts a land URL that is a non-empty string, or absent', () => {
+    expect(isValidDeploymentTerrain({ landUrl: '/deployment-overlay/land.json' })).toBe(true);
+    expect(isValidDeploymentTerrain({ landUrl: '' })).toBe(false);
+    expect(isValidDeploymentTerrain({ landUrl: 9 })).toBe(false);
+  });
+  it('accepts a lakes URL that is a non-empty string, or absent', () => {
+    expect(isValidDeploymentTerrain({ lakesUrl: '/deployment-overlay/lakes.json' })).toBe(true);
+    expect(isValidDeploymentTerrain({ lakesUrl: '' })).toBe(false);
+    expect(isValidDeploymentTerrain({ lakesUrl: 9 })).toBe(false);
+  });
+});
+
+describe('resolveTerrainSource', () => {
+  it('uses the public defaults when nothing is configured', () => {
+    expect(resolveTerrainSource(undefined)).toEqual(DEFAULT_TERRAIN_SOURCE);
+  });
+  it('overrides field by field', () => {
+    const s = resolveTerrainSource({ elevationUrl: T });
+    expect(s.elevationUrl).toBe(T);
+    expect(s.imageryUrl).toBe(DEFAULT_TERRAIN_SOURCE.imageryUrl);
+    expect(s.landUrl).toBe(DEFAULT_TERRAIN_SOURCE.landUrl);
+  });
+  it('overrides the land URL on its own', () => {
+    expect(resolveTerrainSource({ landUrl: '/land.json' }).landUrl).toBe('/land.json');
+  });
+  it('defaults the lakes URL to the bundled file and overrides it on its own', () => {
+    expect(resolveTerrainSource(undefined).lakesUrl).toBe('/terrain/lakes-10m.json');
+    expect(resolveTerrainSource({ lakesUrl: '/l.json' }).lakesUrl).toBe('/l.json');
+    expect(resolveTerrainSource({ landUrl: '/land.json' }).lakesUrl).toBe(DEFAULT_TERRAIN_SOURCE.lakesUrl);
+  });
+});
+
+describe('elevationCredit', () => {
+  it('keeps the part after the last separator', () => {
+    expect(elevationCredit(DEFAULT_TERRAIN_SOURCE.attribution)).toBe('Elevation: Terrain Tiles (AWS / Mapzen)');
+    expect(elevationCredit('plain')).toBe('plain');
+  });
+});

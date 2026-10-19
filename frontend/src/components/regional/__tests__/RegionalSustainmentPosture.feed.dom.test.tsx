@@ -40,6 +40,7 @@ vi.mock('../../../hooks', () => ({
 }));
 vi.mock('../../../hooks/useEffectorLaunches', () => ({ useMunitionLaunches: () => ({ data: [] }) }));
 vi.mock('../../../hooks/useLinkIndicator', () => ({ useLinkIndicator: () => 'up' }));
+vi.mock('../../terrain/terrain', async (orig) => ({ ...(await orig<typeof import('../../terrain/terrain')>()), useTerrain: () => null, usePatches: () => [] }));
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   useFrame: () => {},
@@ -50,7 +51,6 @@ vi.mock('@react-three/drei', () => ({
   Line: () => null,
   OrbitControls: () => null,
 }));
-vi.mock('../../TacticalMapUnderlay', () => ({ default: () => null }));
 
 import RegionalSustainmentPosture from '../RegionalSustainmentPosture';
 
@@ -99,5 +99,11 @@ describe('RegionalSustainmentPosture holo target', () => {
     view();
     const trail = last().trail as number[][];
     expect(trail[trail.length - 1][1]).toBeCloseTo(2 * (80 / 111), 6);
+  });
+
+  it("grounds the holo at the track's own launcher", () => {
+    state.fleet = [asset('dis:9:9:2', { lat: 10, lon: 20 })];
+    view();
+    expect(last().groundY).toBe((last().launcher as number[])[1]);
   });
 });
