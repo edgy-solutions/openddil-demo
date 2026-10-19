@@ -66,6 +66,13 @@ describe('RegionalSustainmentPosture terrain controls', () => {
     expect(screen.getByTestId('terrain-attribution').textContent).not.toMatch(/imagery/i);
   });
 
+  it('opens on relief, not holo, with nothing stored', () => {
+    view();
+    expect(screen.getByTestId('terrain-style-sat').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('terrain-style-holo').getAttribute('aria-pressed')).toBe('false');
+    expect(localStorage.getItem(TERRAIN_PREFS_KEY)).toBeNull();
+  });
+
   it('hides HOLO and SATELLITE when terrain is off, and remembers it', () => {
     view();
     fireEvent.click(screen.getByTestId('terrain-toggle'));
@@ -78,6 +85,7 @@ describe('RegionalSustainmentPosture terrain controls', () => {
 
   it('opens the holo panel from the gear', () => {
     view();
+    fireEvent.click(screen.getByTestId('terrain-style-holo'));
     expect(screen.queryByTestId('holo-panel')).toBeNull();
     fireEvent.click(screen.getByTestId('terrain-holo-gear'));
     expect(screen.getByTestId('holo-panel')).toBeTruthy();

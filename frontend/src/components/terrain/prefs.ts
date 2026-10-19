@@ -14,7 +14,8 @@ export interface TerrainPrefs {
 
 export const TERRAIN_PREFS_KEY = 'openddil.regional.terrain';
 
-export const DEFAULT_TERRAIN_PREFS: TerrainPrefs = { on: true, style: 'holo', exag: 1, holo: HOLO_DEFAULTS };
+// Relief on both maps by default; HOLO is a look a presenter picks with the layers button.
+export const DEFAULT_TERRAIN_PREFS: TerrainPrefs = { on: true, style: 'sat', exag: 1, holo: HOLO_DEFAULTS };
 
 /** Stored prefs laid over the defaults; anything missing or of the wrong type falls back. Never throws. */
 export function loadTerrainPrefs(): TerrainPrefs {
