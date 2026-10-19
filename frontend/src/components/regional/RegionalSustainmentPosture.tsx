@@ -68,7 +68,8 @@ import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
 import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale';
-import { symbolRadius } from '../../lib/symbolScale';
+import { symbolRadius, worldPerPx } from '../../lib/symbolScale';
+import { separate } from '../../lib/separate';
 import { AGG_PX, FOB_PX, HQ_PX, markerScale, regionExtent, topologyHeights } from '../../lib/topologyMarkers';
 import { SEV_RANK, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
@@ -410,33 +411,78 @@ function KindsCluster({
     return c.divideScalar(members.length);
   }, [members]);
   const { shown, hidden } = useMemo(() => kindsOf(members), [members]);
+  // One anchor per slot (each shown kind, then the "+N" chip): the mean of its members.
+  const anchors = useMemo(() => {
+    const mean = (ms: RenderableAsset[]) => {
+      const c = new THREE.Vector3();
+      for (const a of ms) c.add(new THREE.Vector3(...a.position));
+      return c.divideScalar(Math.max(1, ms.length));
+    };
+    const out = shown.map((k) => mean(k.members));
+    if (hidden.length) out.push(mean(hidden.flatMap((k) => k.members)));
+    return out;
+  }, [shown, hidden]);
   const slotRefs = useRef<(THREE.Group | null)[]>([]);
   const modelRefs = useRef<(THREE.Group | null)[]>([]);
-  const right = useMemo(() => new THREE.Vector3(), []);
   const { size } = useThree();
+  const raycaster = useMemo(() => new THREE.Raycaster(), []);
+  const plane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
+  const leaders = useMemo(() => {
+    const mat = new THREE.LineBasicMaterial({ color: '#64748b', transparent: true, opacity: 0.6, depthWrite: false });
+    return Array.from({ length: 8 }, () => {
+      const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+      const line = new THREE.Line(geo, mat);
+      line.visible = false;
+      line.frustumCulled = false;
+      line.userData.insetHidden = true;
+      return line;
+    });
+  }, []);
+  useEffect(() => () => {
+    (leaders[0].material as THREE.Material).dispose();
+    for (const l of leaders) l.geometry.dispose();
+  }, [leaders]);
 
   useFrame(({ camera }) => {
     const rSym = symbolRadius(camera.position.distanceTo(centroid), size.height, fovOf(camera));
-    // Kinds sit side by side, just clearing, across the screen; the "+N" chip takes the last slot.
-    right.setFromMatrixColumn(camera.matrixWorld, 0).setY(0).normalize();
-    const n = shown.length + (hidden.length ? 1 : 0);
-    const gap = 4 * rSym;
-    const at = (i: number) => centroid.clone().addScaledVector(right, (i - (n - 1) / 2) * gap);
+    // Symbol radius on screen as drawn (PX_R, or larger when the true-size floor applies).
+    const symPx = rSym / worldPerPx(camera.position.distanceTo(centroid), size.height, fovOf(camera));
+    const px = anchors.map((a) => {
+      const v = a.clone().project(camera);
+      return [((v.x + 1) / 2) * size.width, ((1 - v.y) / 2) * size.height] as [number, number];
+    });
+    const moved = separate(px, 2.2 * symPx);
+    const pos = anchors.map((a, i) => {
+      if (Math.hypot(moved[i][0] - px[i][0], moved[i][1] - px[i][1]) < 0.5) return a;
+      plane.constant = -a.y;
+      raycaster.setFromCamera(
+        new THREE.Vector2((moved[i][0] / size.width) * 2 - 1, 1 - (moved[i][1] / size.height) * 2), camera);
+      return raycaster.ray.intersectPlane(plane, new THREE.Vector3()) ?? a;
+    });
     // Each member's flights leave the symbol for its kind.
     const follow = (k: Kind<RenderableAsset>, p: THREE.Vector3) => {
       for (const a of k.members) offsetOf(a.asset_id).copy(p).sub(new THREE.Vector3(...a.position));
     };
     shown.forEach((k, i) => {
-      const p = at(i);
-      slotRefs.current[i]?.position.copy(p);
+      slotRefs.current[i]?.position.copy(pos[i]);
       modelRefs.current[i]?.scale.setScalar(modelScale(k.variant, rSym));
-      follow(k, p);
+      follow(k, pos[i]);
     });
     if (hidden.length) {
-      const p = at(n - 1);
-      slotRefs.current[n - 1]?.position.copy(p);
-      for (const k of hidden) follow(k, p);
+      const i = shown.length;
+      slotRefs.current[i]?.position.copy(pos[i]);
+      for (const k of hidden) follow(k, pos[i]);
     }
+    // A thin ground leader from a displaced slot back to its true place.
+    leaders.forEach((line, i) => {
+      const displaced = i < pos.length && pos[i].distanceTo(anchors[i]) > 0.6 * rSym;
+      line.visible = displaced;
+      if (!displaced) return;
+      const at = line.geometry.getAttribute('position');
+      at.setXYZ(0, pos[i].x, anchors[i].y, pos[i].z);
+      at.setXYZ(1, anchors[i].x, anchors[i].y, anchors[i].z);
+      at.needsUpdate = true;
+    });
   });
 
   const hiddenN = hidden.reduce((n, k) => n + k.members.length, 0);
@@ -461,7 +507,7 @@ function KindsCluster({
         <group
           key={k.variant ?? ''}
           ref={(el) => { slotRefs.current[i] = el; }}
-          position={centroid}
+          position={anchors[i]}
           userData={{ insetHidden: true }}
         >
           <group ref={(el) => { modelRefs.current[i] = el; }} onClick={pick(k)}>
@@ -474,7 +520,7 @@ function KindsCluster({
       {hidden.length > 0 && (
         <group
           ref={(el) => { slotRefs.current[shown.length] = el; }}
-          position={centroid}
+          position={anchors[shown.length]}
           userData={{ insetHidden: true }}
         >
           <MoreChip
@@ -485,6 +531,7 @@ function KindsCluster({
           />
         </group>
       )}
+      {leaders.map((l, i) => <primitive key={`lead${i}`} object={l} />)}
     </>
   );
 }
