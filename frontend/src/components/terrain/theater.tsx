@@ -72,14 +72,14 @@ function useSurround(b: Bounds | null, proj: Projection, source: TerrainSource):
   return data;
 }
 
-function useMask(b: Bounds | null, landUrl: string): THREE.Texture | null {
+function useMask(b: Bounds | null, landUrl: string, lakesUrl: string): THREE.Texture | null {
   const [t, setT] = useState<THREE.Texture | null>(null);
   useEffect(() => {
     if (!b) { setT(null); return; }
     let live = true;
-    landMaskTexture(b, landUrl).then((x) => { if (live) setT(x); else x?.dispose(); });
+    landMaskTexture(b, landUrl, undefined, lakesUrl).then((x) => { if (live) setT(x); else x?.dispose(); });
     return () => { live = false; };
-  }, [b, landUrl]);
+  }, [b, landUrl, lakesUrl]);
   useEffect(() => () => t?.dispose(), [t]);
   return t;
 }
@@ -97,8 +97,8 @@ export function useTheaterTerrain({ points, projection, source, exag, on }: {
 
   const theater = useTerrain(bounds, source, regional);
   const surround = useSurround(sBounds, regional, source);
-  const tMask = useMask(bounds, source.landUrl);
-  const sMask = useMask(sBounds, source.landUrl);
+  const tMask = useMask(bounds, source.landUrl, source.lakesUrl);
+  const sMask = useMask(sBounds, source.landUrl, source.lakesUrl);
   const mask = useMemo(() => ({ theater: tMask, surround: sMask }), [tMask, sMask]);
 
   const rect = useMemo<Rect | null>(() => {

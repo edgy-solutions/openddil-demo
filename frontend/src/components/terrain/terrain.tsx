@@ -162,7 +162,7 @@ export function useTerrain(b: Bounds | null, source: TerrainSource, proj: Projec
       return;
     }
     let live = true;
-    loadTerrain({ south, west, north, east }, proj, { elevationUrl, imageryUrl, attribution: '', landUrl: '' })
+    loadTerrain({ south, west, north, east }, proj, { elevationUrl, imageryUrl, attribution: '', landUrl: '', lakesUrl: '' })
       .then((d) => { if (live) setData(d); else d.texture.dispose(); })
       .catch((e) => console.error('terrain load failed', e));
     return () => { live = false; };
@@ -278,7 +278,7 @@ export function usePatches(list: PatchSpec[], source: TerrainSource): Patch[] {
     const specs: PatchSpec[] = JSON.parse(key);
     // Each patch appears as soon as it is ready.
     for (const { bounds, maxZoom } of specs) {
-      loadPatch(bounds, { elevationUrl, imageryUrl, attribution: '', landUrl: '' }, maxZoom)
+      loadPatch(bounds, { elevationUrl, imageryUrl, attribution: '', landUrl: '', lakesUrl: '' }, maxZoom)
         .then((p) => { if (live) setPatches((ps) => [...ps, p]); else p.texture.dispose(); })
         .catch((e) => console.error('patch load failed', e));
     }

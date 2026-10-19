@@ -1,5 +1,7 @@
 // A land/sea mask from Natural Earth 10 m land (world-atlas TopoJSON), so the
 // terrain shaders draw the real coast and polders below sea level stay land.
+// world-atlas land counts lakes as land, so Natural Earth 10 m lakes are cut
+// out of it; islands in a lake are holes in the lake polygon and stay land.
 import * as THREE from 'three';
 import type { Bounds } from './terrainBounds';
 import { latToTileY } from './terrainTiles';
@@ -50,7 +52,7 @@ export function mercatorV(lat: number, b: Bounds): number {
 
 // One fetch and decode per URL; a failure is dropped so the next call retries.
 const cache = new Map<string, Promise<Ring[]>>();
-function land(url: string): Promise<Ring[]> {
+function rings(url: string): Promise<Ring[]> {
   let p = cache.get(url);
   if (!p) {
     p = fetch(url).then((r) => r.json() as Promise<Topology>).then(decodeLand);
@@ -60,23 +62,20 @@ function land(url: string): Promise<Ring[]> {
   return p;
 }
 
-/** White = land, black = sea, over `b`, Web-Mercator in y, ~1.5 px blur. Null when the land file can't be had: the shaders then treat everything as land. */
-export async function landMaskTexture(b: Bounds, url: string, px = 2048): Promise<THREE.CanvasTexture | null> {
-  try {
-    const rings = await land(url);
-    const w = px;
-    const aspect = (latToTileY(b.south, 0) - latToTileY(b.north, 0)) / ((b.east - b.west) / 360);
-    const h = Math.min(4096, Math.max(1, Math.round(px * aspect)));
-    const c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    const ctx = c.getContext('2d');
-    if (!ctx) return null;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, w, h);
-    ctx.filter = 'blur(1.5px)';
-    ctx.fillStyle = '#fff';
+let lakesWarned = false;
+
+/** Draws the mask: black sea, land rings white, then lake rings black (one evenodd path each,
+ *  rings outside `b` skipped), Web-Mercator in y, ~1.5 px blur. */
+export function drawMask(
+  ctx: CanvasRenderingContext2D, b: Bounds, w: number, h: number, land: Ring[], lakes: Ring[],
+): void {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, w, h);
+  ctx.filter = 'blur(1.5px)';
+  const fillRings = (rs: Ring[], color: string) => {
+    ctx.fillStyle = color;
     ctx.beginPath();
-    for (const r of rings) {
+    for (const r of rs) {
       let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity;
       for (const [lon, lat] of r) { west = Math.min(west, lon); east = Math.max(east, lon); south = Math.min(south, lat); north = Math.max(north, lat); }
       if (east < b.west || west > b.east || north < b.south || south > b.north) continue;
@@ -88,6 +87,30 @@ export async function landMaskTexture(b: Bounds, url: string, px = 2048): Promis
       ctx.closePath();
     }
     ctx.fill('evenodd');
+  };
+  fillRings(land, '#fff');
+  if (lakes.length) fillRings(lakes, '#000');
+}
+
+/** White = land, black = sea and lakes, over `b`. Null when the land file can't be had: the shaders then treat everything as land.
+ *  A missing lakes file is warned about and the land is drawn alone. */
+export async function landMaskTexture(b: Bounds, url: string, px = 2048, lakesUrl?: string): Promise<THREE.CanvasTexture | null> {
+  try {
+    const landRings = await rings(url);
+    let lakeRings: Ring[] = [];
+    if (lakesUrl) {
+      try { lakeRings = await rings(lakesUrl); } catch (e) {
+        if (!lakesWarned) { lakesWarned = true; console.warn('lakes unavailable; drawing land only', e); }
+      }
+    }
+    const w = px;
+    const aspect = (latToTileY(b.south, 0) - latToTileY(b.north, 0)) / ((b.east - b.west) / 360);
+    const h = Math.min(4096, Math.max(1, Math.round(px * aspect)));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    if (!ctx) return null;
+    drawMask(ctx, b, w, h, landRings, lakeRings);
     const t = new THREE.CanvasTexture(c);
     t.anisotropy = 4;
     return t;

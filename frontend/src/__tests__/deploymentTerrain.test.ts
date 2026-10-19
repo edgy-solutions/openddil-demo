@@ -26,6 +26,11 @@ describe('isValidDeploymentTerrain', () => {
     expect(isValidDeploymentTerrain({ landUrl: '' })).toBe(false);
     expect(isValidDeploymentTerrain({ landUrl: 9 })).toBe(false);
   });
+  it('accepts a lakes URL that is a non-empty string, or absent', () => {
+    expect(isValidDeploymentTerrain({ lakesUrl: '/deployment-overlay/lakes.json' })).toBe(true);
+    expect(isValidDeploymentTerrain({ lakesUrl: '' })).toBe(false);
+    expect(isValidDeploymentTerrain({ lakesUrl: 9 })).toBe(false);
+  });
 });
 
 describe('resolveTerrainSource', () => {
@@ -40,6 +45,11 @@ describe('resolveTerrainSource', () => {
   });
   it('overrides the land URL on its own', () => {
     expect(resolveTerrainSource({ landUrl: '/land.json' }).landUrl).toBe('/land.json');
+  });
+  it('defaults the lakes URL to the bundled file and overrides it on its own', () => {
+    expect(resolveTerrainSource(undefined).lakesUrl).toBe('/terrain/lakes-10m.json');
+    expect(resolveTerrainSource({ lakesUrl: '/l.json' }).lakesUrl).toBe('/l.json');
+    expect(resolveTerrainSource({ landUrl: '/land.json' }).lakesUrl).toBe(DEFAULT_TERRAIN_SOURCE.lakesUrl);
   });
 });
 
