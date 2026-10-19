@@ -69,6 +69,7 @@ import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../Enga
 import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale';
 import { symbolRadius } from '../../lib/symbolScale';
+import { AGG_PX, FOB_PX, HQ_PX, markerScale, regionExtent, topologyHeights } from '../../lib/topologyMarkers';
 import { SEV_RANK, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPresets';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
@@ -697,8 +698,19 @@ function AssetCallout({ name, family, ammoText, launcherDepleted }: CalloutInfo)
 // severed, line styling + node coloring shift to red/dashed — matches the
 // DdilNetworkLink convention.
 
-const REGIONAL_AGGREGATOR_Y = 8;   // slightly elevated above FOB markers (Y=0)
-const HQ_MARKER_Y = 40;             // stacked above the regional aggregator
+/** Draws its children at a constant on-screen radius: they are authored at `radius` world units. */
+function ScreenSized({ radius, px, children }: { radius: number; px: number; children: React.ReactNode }) {
+  const ref = useRef<THREE.Group>(null);
+  const wp = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera, size }) => {
+    const g = ref.current;
+    if (!g) return;
+    g.getWorldPosition(wp);
+    const fov = (camera as THREE.PerspectiveCamera).fov;
+    g.scale.setScalar(markerScale(radius, px, camera.position.distanceTo(wp), size.height, fov));
+  });
+  return <group ref={ref}>{children}</group>;
+}
 
 function RegionalAggregatorNode({ position, label, severed }: {
   position: [number, number, number];
@@ -711,25 +723,27 @@ function RegionalAggregatorNode({ position, label, severed }: {
       {/* Solid octahedron core — logical node visual. Octahedron is
           deliberately not a shape any FOB or platform schematic uses, so
           it reads as "different category of thing." */}
-      <mesh>
-        <octahedronGeometry args={[3.5, 0]} />
-        <meshBasicMaterial color={color} transparent opacity={0.65} />
-      </mesh>
-      {/* Wireframe outer shell — gives the node a halo without solidifying */}
-      <mesh>
-        <octahedronGeometry args={[4.5, 0]} />
-        <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
-      </mesh>
-      <Html
-        position={[0, 6, 0]}
-        center
-        style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
-      >
-        <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
-          <div className="text-[9px] text-slate-400">REGIONAL AGGREGATOR</div>
-          <div className="text-slate-200 font-bold">{label}</div>
-        </div>
-      </Html>
+      <ScreenSized radius={4.5} px={AGG_PX}>
+        <mesh>
+          <octahedronGeometry args={[3.5, 0]} />
+          <meshBasicMaterial color={color} transparent opacity={0.65} />
+        </mesh>
+        {/* Wireframe outer shell — gives the node a halo without solidifying */}
+        <mesh>
+          <octahedronGeometry args={[4.5, 0]} />
+          <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
+        </mesh>
+        <Html
+          position={[0, 6, 0]}
+          center
+          style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
+        >
+          <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+            <div className="text-[9px] text-slate-400">REGIONAL AGGREGATOR</div>
+            <div className="text-slate-200 font-bold">{label}</div>
+          </div>
+        </Html>
+      </ScreenSized>
     </group>
   );
 }
@@ -743,24 +757,26 @@ function HqMarker({ position, severed }: {
     <group position={position} userData={{ insetHidden: true }}>
       {/* Pyramid form — distinct from FOB hubs and regional octahedron.
           Cone with 4 radial segments approximates a pyramid. */}
-      <mesh>
-        <coneGeometry args={[5, 10, 4]} />
-        <meshBasicMaterial color={color} transparent opacity={0.7} />
-      </mesh>
-      <mesh>
-        <coneGeometry args={[5.5, 10.5, 4]} />
-        <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
-      </mesh>
-      <Html
-        position={[0, 8, 0]}
-        center
-        style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
-      >
-        <div className="font-mono text-[10px] tracking-widest text-emerald-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
-          <div className="text-[9px] text-slate-400">UP-CHAIN</div>
-          <div className="text-slate-200 font-bold">HQ THEATER</div>
-        </div>
-      </Html>
+      <ScreenSized radius={5.5} px={HQ_PX}>
+        <mesh>
+          <coneGeometry args={[5, 10, 4]} />
+          <meshBasicMaterial color={color} transparent opacity={0.7} />
+        </mesh>
+        <mesh>
+          <coneGeometry args={[5.5, 10.5, 4]} />
+          <meshBasicMaterial color={color} wireframe transparent opacity={0.4} />
+        </mesh>
+        <Html
+          position={[0, 8, 0]}
+          center
+          style={{ pointerEvents: 'none', whiteSpace: 'nowrap' }}
+        >
+          <div className="font-mono text-[10px] tracking-widest text-emerald-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+            <div className="text-[9px] text-slate-400">UP-CHAIN</div>
+            <div className="text-slate-200 font-bold">HQ THEATER</div>
+          </div>
+        </Html>
+      </ScreenSized>
     </group>
   );
 }
@@ -1192,6 +1208,19 @@ export default function RegionalSustainmentPosture({
     return { x, z };
   }, [regionFobs, proj]);
 
+  // Stack heights follow the region's ground extent, over the ground under the centroid.
+  const topo = useMemo(() => {
+    if (!regionalCentroid) return null;
+    const { x: cx, z: cz } = regionalCentroid;
+    const pts: [number, number][] = [
+      ...regionFobs.map((f) => proj.project(f.lat, f.lon) as [number, number]),
+      ...renderables.map((a) => [a.position[0], a.position[2]] as [number, number]),
+    ];
+    const h = topologyHeights(regionExtent([cx, cz], pts));
+    const g = groundAt(cx, cz);
+    return { aggY: g + h.aggregator, hqY: g + h.hq };
+  }, [regionalCentroid, regionFobs, proj, renderables, groundAt]);
+
   const credits = terrainFailed ? ['Terrain data unavailable'] : creditLines(terrainSource, {
     style: prefs.style,
     landMask: terrainSource.basemap === 'relief' && prefs.style === 'sat' && !!terrain?.masked,
@@ -1296,8 +1325,10 @@ export default function RegionalSustainmentPosture({
             {regionFobs.map((fob) => {
               const [x, z] = proj.project(fob.lat, fob.lon);
               return (
-                <group key={`hub-${fob.edge_id}`} userData={{ insetHidden: true }}>
-                  <LogisticsHubNode position={[x, groundAt(x, z), z]} />
+                <group key={`hub-${fob.edge_id}`} position={[x, groundAt(x, z), z]} userData={{ insetHidden: true }}>
+                  <ScreenSized radius={4.7} px={FOB_PX}>
+                    <LogisticsHubNode position={[0, 0, 0]} />
+                  </ScreenSized>
                 </group>
               );
             })}
@@ -1349,7 +1380,7 @@ export default function RegionalSustainmentPosture({
               header uses, so severance toggling is consistent across
               the view. Future: per-edge bridge health would let each
               FOB->aggregator line carry its own state independently. */}
-          {regionalCentroid && (
+          {regionalCentroid && topo && (
             <>
               {regionFobs.map((fob) => {
                 const [fx, fz] = proj.project(fob.lat, fob.lon);
@@ -1357,23 +1388,23 @@ export default function RegionalSustainmentPosture({
                   <DdilNetworkLink
                     key={`fob-link-${fob.edge_id}`}
                     start={new THREE.Vector3(fx, groundAt(fx, fz), fz)}
-                    end={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
+                    end={new THREE.Vector3(regionalCentroid.x, topo.aggY, regionalCentroid.z)}
                     status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
                   />
                 );
               })}
               <DdilNetworkLink
-                start={new THREE.Vector3(regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z)}
-                end={new THREE.Vector3(regionalCentroid.x, HQ_MARKER_Y, regionalCentroid.z)}
+                start={new THREE.Vector3(regionalCentroid.x, topo.aggY, regionalCentroid.z)}
+                end={new THREE.Vector3(regionalCentroid.x, topo.hqY, regionalCentroid.z)}
                 status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
               />
               <RegionalAggregatorNode
-                position={[regionalCentroid.x, REGIONAL_AGGREGATOR_Y, regionalCentroid.z]}
+                position={[regionalCentroid.x, topo.aggY, regionalCentroid.z]}
                 label={(regionId ?? '').toUpperCase()}
                 severed={!uplinkUp}
               />
               <HqMarker
-                position={[regionalCentroid.x, HQ_MARKER_Y, regionalCentroid.z]}
+                position={[regionalCentroid.x, topo.hqY, regionalCentroid.z]}
                 severed={!uplinkUp}
               />
             </>
