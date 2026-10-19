@@ -55,6 +55,7 @@ import { useMunitionTrails } from '../../hooks/useMunitionTrails';
 import EngagementInset, { EngagementInsetFrame, type InsetMarker } from '../EngagementInset';
 import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, heightAboveLaunch } from '../../lib/engagementFrame';
 import { LinkChips } from '../network/LinkChips';
+import { PostureHeader } from '../PostureHeader';
 import {
   linkStateWord,
   type LinkReading,
@@ -575,27 +576,30 @@ export default function TheaterReadinessPosture() {
   // The inset's ground is the first launcher's, as in regional.
   const insetGround = trails.find((m) => m.launcher)?.launcher?.[1] ?? 0;
   const insetFrame = frameOf(insetFocus, insetGround);
-  const insetLabel = `ENGAGEMENT · ${trails.filter((m) => !m.ending).length} IN FLIGHT${
+  const inflightCount = trails.filter((m) => !m.ending).length;
+  const insetLabel = `ENGAGEMENT · ${inflightCount} IN FLIGHT${
     insetFrame ? ` · GRID ${gridStepKm(insetFrame.r, HQ_UNITS_PER_KM)} KM` : ''}`;
 
   return (
     <div className={`col-span-2 panel flex flex-col relative overflow-hidden transition-all duration-500 ${severed ? 'border-rose-900 shadow-[inset_0_0_30px_rgba(225,29,72,0.2)]' : ''}`} id="panel-theater-readiness">
-      <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
-        <div>
-          <h1 className={`glitch-text text-3xl font-bold transition-colors ${!severed ? 'text-emerald-400 shadow-[0_0_10px_#10b981]' : 'text-rose-500 shadow-[0_0_10px_#f43f5e]'}`} style={{ textShadow: !severed ? '0 0 10px #10b981' : '0 0 10px #f43f5e' }}>
-            THEATER READINESS POSTURE
-          </h1>
-          <p className="text-[10px] font-mono tracking-widest text-slate-400 mt-1">
+      <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start gap-4">
+        <PostureHeader
+          eyebrow="HQ · THEATER"
+          title="THEATER READINESS POSTURE"
+          severed={severed}
+          meta={<>
             {/* "0 FOBS // 14 ASSETS" invited the reading that fourteen
                 assets had lost their sites. FOBs are deployment-supplied
                 map topology; assets are live data. An empty FOB list is a
                 deployment that did not configure a map, and saying so is
                 shorter than the confusion it prevents. */}
-            GLOBAL FLEET // {fobs.length > 0
-              ? `${fobs.length} FOB${fobs.length === 1 ? '' : 'S'}`
-              : 'no FOB topology'} // {fleet.data.length} ASSET{fleet.data.length === 1 ? '' : 'S'}
-          </p>
-        </div>
+            {fobs.length > 0 ? `${fobs.length} FOB${fobs.length === 1 ? '' : 'S'}` : 'no FOB topology'}
+            <span className="ml-3 opacity-60">{fleet.data.length} ASSET{fleet.data.length === 1 ? '' : 'S'}</span>
+            {inflightCount > 0 && (
+              <span className="ml-3 text-amber-400">· {inflightCount} IN FLIGHT</span>
+            )}
+          </>}
+        />
         {/* The right-hand panels' look (.panel: zinc-800 border, rounded-xl, zinc-900/40 fill), spelled as
             utilities: .panel is unlayered CSS, so it would beat any bg/border utility here. The fill is
             .panel's zinc-900/40 over the page's slate-950, made opaque so the map behind the card

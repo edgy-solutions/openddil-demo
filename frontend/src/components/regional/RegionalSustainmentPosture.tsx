@@ -36,6 +36,7 @@ import DdilNetworkLink from '../DdilNetworkLink';
 import AssetVisual from '../AssetVisual';
 import LogisticsHubNode from '../LogisticsHubNode';
 import { LinkChips } from '../network/LinkChips';
+import { PostureHeader } from '../PostureHeader';
 import { deployment, moveInputs, type Fob } from '../../deployment';
 import { buildMunitionsLedger } from '../../lib/munitionsLedger';
 import { calloutAmmo } from '../../lib/calloutAmmo';
@@ -1115,19 +1116,21 @@ export default function RegionalSustainmentPosture({
 
   return (
     <div className="col-span-2 panel flex flex-col relative overflow-hidden">
-      <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start">
-        <div>
-          <h1 className="glitch-text text-2xl font-bold text-emerald-400">REGIONAL SUSTAINMENT POSTURE</h1>
-          <p className="text-[10px] font-mono tracking-widest text-slate-400">
-            AREA OF RESPONSIBILITY: {(regionId ?? '—').toUpperCase()}
-            <span className="ml-3 opacity-60">{aorAssetCount} ASSET{aorAssetCount === 1 ? '' : 'S'}</span>
+      <div className="absolute top-4 left-4 z-10 pointer-events-none w-full pr-8 flex justify-between items-start gap-4">
+        <PostureHeader
+          eyebrow={`REGION · ${(regionId ?? '—').toUpperCase()}`}
+          title="REGIONAL SUSTAINMENT POSTURE"
+          severed={!uplinkUp}
+          meta={<>
+            {aorAssetCount} ASSET{aorAssetCount === 1 ? '' : 'S'}
             <span className="ml-3 opacity-60">{renderables.length} ON MAP</span>
             {inflightCount > 0 && (
               <span className="ml-3 text-amber-400">
                 · {inflightCount} IN FLIGHT
               </span>
             )}
-          </p>
+          </>}
+        >
           {presets.length > 0 && (
             <div data-testid="camera-presets" className="mt-2 flex max-w-xl flex-wrap gap-1 pointer-events-auto">
               {presets.map((p) => (
@@ -1142,7 +1145,7 @@ export default function RegionalSustainmentPosture({
               ))}
             </div>
           )}
-        </div>
+        </PostureHeader>
         {/* Same card and chips as the HQ posture HUD (TheaterReadinessPosture), same opaque
             .panel-over-page fill so it matches the right column. */}
         <div
