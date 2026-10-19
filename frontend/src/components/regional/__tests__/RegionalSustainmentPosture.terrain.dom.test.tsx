@@ -58,11 +58,11 @@ describe('RegionalSustainmentPosture terrain controls', () => {
     expect(screen.getByTestId('terrain-attribution')).toBeTruthy();
   });
 
-  it('labels the second style button RELIEF by default and shows only the elevation credit', () => {
+  it('labels the second style button RELIEF by default and shows no credit line the config does not state', () => {
     view();
     expect(screen.getByTestId('terrain-style-sat').textContent).toBe('RELIEF');
     const lines = Array.from(screen.getByTestId('terrain-attribution').children).map((c) => c.textContent);
-    expect(lines).toEqual(['Elevation: Terrain Tiles (AWS / Mapzen)']);
+    expect(lines).toEqual([]);
     expect(screen.getByTestId('terrain-attribution').textContent).not.toMatch(/imagery/i);
   });
 

@@ -72,16 +72,13 @@ export const TERRAIN_DEFAULTS: TerrainSource = {
   waterUrl: '/deployment-overlay/terrain/water.json',
   reliefPalette: 'sand',
   credits: {
-    elevation: 'Elevation: Terrain Tiles (AWS / Mapzen)',
+    elevation: '',
     imagery: '',
     patchImagery: '',
     land: 'Coastline: Natural Earth',
-    water: 'Water: © OpenStreetMap contributors (ODbL)',
+    water: '',
   },
 };
-
-const IMAGERY_CREDIT = 'Imagery: Sentinel-2 cloudless 2016 by EOX IT Services GmbH (contains modified Copernicus Sentinel data 2016), CC BY 4.0';
-const LICENSED_CREDIT = 'Imagery: deployment-supplied source';
 
 /** Any scheme URL or protocol-relative URL. */
 export function isRemoteUrl(u: string): boolean {
@@ -104,7 +101,7 @@ export function resolveTerrainSource(cfg?: DeploymentTerrain | null): TerrainSou
     imageryMaxZoom: cfg?.imageryMaxZoom ?? (basemap === 'licensed' ? 19 : 14),
     patchMaxZoom: cfg?.patchMaxZoom ?? TERRAIN_DEFAULTS.patchMaxZoom,
     reliefPalette: cfg?.reliefPalette ?? TERRAIN_DEFAULTS.reliefPalette,
-    credits: { ...TERRAIN_DEFAULTS.credits, imagery: basemap === 'licensed' ? LICENSED_CREDIT : basemap === 'imagery' ? IMAGERY_CREDIT : '' },
+    credits: { ...TERRAIN_DEFAULTS.credits },
   };
   for (const k of URL_FIELDS) {
     const v = cfg?.[k];
@@ -114,6 +111,8 @@ export function resolveTerrainSource(cfg?: DeploymentTerrain | null): TerrainSou
       continue;
     }
     out[k] = v;
+    // The packaged coastline's credit does not describe a different file.
+    if (k === 'landUrl' || k === 'lakesUrl') out.credits.land = '';
   }
   // A licensed patch layer defaults to the effective base layer.
   if (basemap === 'licensed' && cfg?.patchImageryUrl === undefined) out.patchImageryUrl = out.imageryUrl;
@@ -132,12 +131,20 @@ export function creditLines(
   src: TerrainSource, use: { style: 'holo' | 'sat'; landMask: boolean; water: boolean },
 ): string[] {
   const c = src.credits;
+  // A source in use with no credit in the config is a config gap; say so once.
+  const need = (key: 'elevation' | 'imagery' | 'land' | 'water') => {
+    if (c[key] || warned.has(`credit:${key}`)) return;
+    warned.add(`credit:${key}`);
+    console.warn(`terrain: ${key} is in use with no credit in the deployment config`);
+  };
+  need('elevation');
   const lines = [c.elevation];
   if (use.style === 'sat' && src.basemap !== 'relief') {
+    need('imagery');
     lines.push(c.imagery);
     if (c.patchImagery && src.patchImageryUrl) lines.push(c.patchImagery);
   }
-  if (use.landMask) lines.push(c.land);
-  if (use.water) lines.push(c.water);
+  if (use.landMask) { need('land'); lines.push(c.land); }
+  if (use.water) { need('water'); lines.push(c.water); }
   return lines.filter((l, i) => l && lines.indexOf(l) === i);
 }

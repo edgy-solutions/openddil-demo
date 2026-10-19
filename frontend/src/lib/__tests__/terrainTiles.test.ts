@@ -79,11 +79,11 @@ describe('resolveTerrainSource', () => {
     expect(im.imageryMaxZoom).toBe(14);
     expect(im.patchImageryUrl).toBe('');
     expect(im.imageryUrl).toBe('/deployment-overlay/terrain/imagery/{z}/{x}/{y}.jpg');
-    expect(im.credits.imagery).toContain('Sentinel-2 cloudless 2016');
+    expect(im.credits.imagery).toBe('');
     const li = resolveTerrainSource({ basemap: 'licensed', network: true, imageryUrl: T });
     expect(li.imageryMaxZoom).toBe(19);
     expect(li.patchImageryUrl).toBe(T);
-    expect(li.credits.imagery).toBe('Imagery: deployment-supplied source');
+    expect(li.credits.imagery).toBe('');
     expect(resolveTerrainSource({ basemap: 'imagery', imageryMaxZoom: 12 }).imageryMaxZoom).toBe(12);
   });
   it('clears the imagery URLs for relief', () => {
@@ -94,32 +94,53 @@ describe('resolveTerrainSource', () => {
   it('lets config credits override per key', () => {
     const s = resolveTerrainSource({ credits: { land: 'Land: x' } });
     expect(s.credits.land).toBe('Land: x');
-    expect(s.credits.elevation).toBe(TERRAIN_DEFAULTS.credits.elevation);
+    expect(s.credits.elevation).toBe('');
+  });
+  it('has no packaged elevation, imagery or water credit; land only for the packaged coastline', () => {
+    expect(TERRAIN_DEFAULTS.credits).toEqual({ elevation: '', imagery: '', patchImagery: '', land: 'Coastline: Natural Earth', water: '' });
+    expect(resolveTerrainSource({ landUrl: '/my/land.json' }).credits.land).toBe('');
+    expect(resolveTerrainSource({ lakesUrl: '/my/lakes.json' }).credits.land).toBe('');
+    expect(resolveTerrainSource({ landUrl: '/my/land.json', credits: { land: 'Land: mine' } }).credits.land).toBe('Land: mine');
   });
 });
 
 describe('creditLines', () => {
   const none = { style: 'holo', landMask: false, water: false } as const;
   it('is the elevation credit alone on holo with no masks', () => {
-    expect(creditLines(resolveTerrainSource(undefined), none)).toEqual([TERRAIN_DEFAULTS.credits.elevation]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(creditLines(resolveTerrainSource(undefined), none)).toEqual([]);
+    warn.mockRestore();
+  });
+  it('shows the elevation credit when the config states it', () => {
+    const s = resolveTerrainSource({ credits: { elevation: 'Elevation: x' } });
+    expect(creditLines(s, none)).toEqual(['Elevation: x']);
   });
   it('adds the coast and water credits for relief with masks', () => {
-    expect(creditLines(resolveTerrainSource(undefined), { style: 'sat', landMask: true, water: true })).toEqual([
-      TERRAIN_DEFAULTS.credits.elevation, TERRAIN_DEFAULTS.credits.land, TERRAIN_DEFAULTS.credits.water,
+    const s = resolveTerrainSource({ credits: { elevation: 'Elevation: x', water: 'Water: y' } });
+    expect(creditLines(s, { style: 'sat', landMask: true, water: true })).toEqual([
+      'Elevation: x', TERRAIN_DEFAULTS.credits.land, 'Water: y',
     ]);
   });
   it('adds the imagery and patch credits for imagery on the sat style only', () => {
-    const s = resolveTerrainSource({ basemap: 'imagery', patchImageryUrl: '/p/{z}/{x}/{y}.jpg', credits: { patchImagery: 'Aerial: national survey' } });
+    const s = resolveTerrainSource({ basemap: 'imagery', patchImageryUrl: '/p/{z}/{x}/{y}.jpg', credits: { elevation: 'Elevation: x', imagery: 'Imagery: z', patchImagery: 'Aerial: national survey' } });
     const lines = creditLines(s, { style: 'sat', landMask: false, water: false });
     expect(lines).toEqual([s.credits.elevation, s.credits.imagery, 'Aerial: national survey']);
     expect(creditLines(s, none)).toEqual([s.credits.elevation]);
   });
-  it('shows the default licensed credit', () => {
-    const s = resolveTerrainSource({ basemap: 'licensed', network: true, imageryUrl: 'https://t.example/{z}/{x}/{y}.jpg' });
-    expect(creditLines(s, { style: 'sat', landMask: false, water: false })).toContain('Imagery: deployment-supplied source');
+  it('licensed basemap without an imagery credit: no imagery line and one warn per key', async () => {
+    vi.resetModules();
+    const m = await import('../terrainTiles');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const s = m.resolveTerrainSource({ basemap: 'licensed', network: true, imageryUrl: 'https://t.example/{z}/{x}/{y}.jpg', credits: { elevation: 'Elevation: x' } });
+    const use = { style: 'sat', landMask: false, water: false } as const;
+    expect(m.creditLines(s, use)).toEqual(['Elevation: x']);
+    m.creditLines(s, use);
+    const msgs = warn.mock.calls.map((c) => c[0]);
+    expect(msgs).toEqual(['terrain: imagery is in use with no credit in the deployment config']);
+    warn.mockRestore();
   });
   it('drops duplicates', () => {
-    const s = resolveTerrainSource({ credits: { land: 'Elevation: Terrain Tiles (AWS / Mapzen)' } });
+    const s = resolveTerrainSource({ credits: { elevation: 'Same line', land: 'Same line' } });
     expect(creditLines(s, { style: 'holo', landMask: true, water: false })).toEqual([s.credits.elevation]);
   });
 });

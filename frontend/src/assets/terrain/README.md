@@ -31,7 +31,7 @@ Every key is optional.
 | `lakesUrl` | bundled `lakes-10m.json` | Natural Earth lakes, cut out of the land. |
 | `waterUrl` | `/deployment-overlay/terrain/water.json` | OSM water polygons; used in place of Natural Earth inside the file's own coverage (see below). |
 | `reliefPalette` | `sand` | `sand` or `slate` (dark). |
-| `credits` | see below | Per-source credit lines: `elevation`, `imagery`, `patchImagery`, `land`, `water`. |
+| `credits` | none (land: `Coastline: Natural Earth` while the packaged coastline is used) | Per-source credit lines: `elevation`, `imagery`, `patchImagery`, `land`, `water`. A credit is shown only when the config states it; a source in use without one logs a console warning once. |
 
 `network: false` is the default: a remote URL in any URL key is refused with a console warning and the
 packaged default is used instead. A source on another host needs `network: true`.

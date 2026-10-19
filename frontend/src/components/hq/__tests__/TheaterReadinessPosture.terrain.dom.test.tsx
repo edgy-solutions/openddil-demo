@@ -87,10 +87,10 @@ describe('TheaterReadinessPosture terrain controls', () => {
     expect(screen.getByTestId('hq-terrain-style-sat').textContent).toBe('RELIEF');
   });
 
-  it('shows the elevation and coastline credits, one line each, in both styles', () => {
+  it('shows only the coastline credit the packaged config states, in both styles', () => {
     render(<TheaterReadinessPosture />);
     const lines = () => Array.from(screen.getByTestId('hq-terrain-attribution').children).map((c) => c.textContent);
-    const want = [TERRAIN_DEFAULTS.credits.elevation, TERRAIN_DEFAULTS.credits.land];
+    const want = [TERRAIN_DEFAULTS.credits.land];
     expect(lines()).toEqual(want);
     fireEvent.click(screen.getByTestId('hq-terrain-style-holo'));
     expect(lines()).toEqual(want);
