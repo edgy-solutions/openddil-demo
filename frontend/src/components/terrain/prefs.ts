@@ -10,11 +10,18 @@ export interface TerrainPrefs {
   style: TerrainStyle;
   exag: Exaggeration;
   holo: HoloOpts;
+  /** Satellite drape brightness, multiplied into the shaded colour. */
+  satBrightness: number;
 }
 
 export const TERRAIN_PREFS_KEY = 'openddil.regional.terrain';
 
-export const DEFAULT_TERRAIN_PREFS: TerrainPrefs = { on: true, style: 'holo', exag: 1, holo: HOLO_DEFAULTS };
+export const SAT_BRIGHTNESS_MIN = 0.4;
+export const SAT_BRIGHTNESS_MAX = 1.2;
+
+export const DEFAULT_TERRAIN_PREFS: TerrainPrefs = {
+  on: true, style: 'holo', exag: 1, holo: HOLO_DEFAULTS, satBrightness: 0.75,
+};
 
 /** Stored prefs laid over the defaults; anything missing or of the wrong type falls back. Never throws. */
 export function loadTerrainPrefs(): TerrainPrefs {
@@ -34,6 +41,9 @@ export function loadTerrainPrefs(): TerrainPrefs {
       style: j.style === 'sat' || j.style === 'holo' ? j.style : DEFAULT_TERRAIN_PREFS.style,
       exag: (EXAGGERATIONS as readonly unknown[]).includes(j.exag) ? (j.exag as Exaggeration) : DEFAULT_TERRAIN_PREFS.exag,
       holo: holo as unknown as HoloOpts,
+      satBrightness: typeof j.satBrightness === 'number' && Number.isFinite(j.satBrightness)
+        ? Math.min(SAT_BRIGHTNESS_MAX, Math.max(SAT_BRIGHTNESS_MIN, j.satBrightness))
+        : DEFAULT_TERRAIN_PREFS.satBrightness,
     };
   } catch {
     return DEFAULT_TERRAIN_PREFS;

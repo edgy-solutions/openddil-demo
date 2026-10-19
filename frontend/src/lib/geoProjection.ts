@@ -19,6 +19,8 @@ import type { Fob } from '../deployment';
 export interface Projection {
   /** Project (lat, lon) -> (x, z) in scene units. */
   project: (lat: number, lon: number) => [number, number];
+  /** Inverse of `project`: (x, z) in scene units -> [lat, lon]. */
+  unproject: (x: number, z: number) => [number, number];
   /** Geographic center of the projection (also the (0, 0) scene point). */
   center: { lat: number; lon: number };
 }
@@ -69,7 +71,13 @@ export function makeProjection(
     return [x, z];
   }
 
-  return { project, center };
+  function unproject(x: number, z: number): [number, number] {
+    const lat = center.lat - z / scaleUnitsPerDegLat;
+    const lon = center.lon + x / (scaleUnitsPerDegLat * cosLat);
+    return [lat, lon];
+  }
+
+  return { project, unproject, center };
 }
 
 const WGS84_A = 6378137;

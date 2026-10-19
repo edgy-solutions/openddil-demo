@@ -100,3 +100,36 @@ void main() {
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
+
+// The regional satellite drape: the HQ satellite shading (unlit, cool tint, a soft sun term)
+// with a flat sea colour from the mask on the base layer, and a brightness control. Patches
+// carry no mask and keep the texture's alpha so their feathered edges blend into the base.
+export const REGIONAL_SAT_VERT = /* glsl */ `
+varying vec2 vUv; varying vec3 vN;
+#include <fog_pars_vertex>
+void main() {
+  vUv = uv; vN = normalize(mat3(modelMatrix) * normal);
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  #include <fog_vertex>
+}`;
+
+export const REGIONAL_SAT_FRAG = /* glsl */ `
+uniform sampler2D uMap, uMask; uniform float uHasMask, uBright;
+varying vec2 vUv; varying vec3 vN;
+#include <fog_pars_fragment>
+void main() {
+  vec4 tex = texture2D(uMap, vUv);
+  vec3 col = tex.rgb * vec3(0.66, 0.71, 0.77);
+  col *= 0.6 + 0.4 * max(dot(normalize(vN), normalize(vec3(0.4, 1.0, 0.4))), 0.0);
+  if (uHasMask > 0.5) {
+    float land = smoothstep(0.35, 0.65, texture2D(uMask, vUv).r);
+    col = mix(vec3(0.035, 0.06, 0.095), col, land);
+  }
+  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col = mix(col, vec3(lum), 0.25) * uBright;
+  gl_FragColor = vec4(col, tex.a);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+  #include <fog_fragment>
+}`;

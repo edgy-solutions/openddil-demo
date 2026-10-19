@@ -76,11 +76,13 @@ import { assetFocus, buildPresets, type CameraPreset } from '../../lib/mapPreset
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
 import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
 import {
-  TerrainMesh, PatchMesh, boundsAround, usePatches, useTerrain, type PatchSpec,
+  TerrainMesh, PatchMesh, usePatches, useTerrain, type PatchSpec,
 } from '../terrain/terrain';
+import { ViewTiles } from '../terrain/ViewTiles';
+import { tileBoxBounds, type TileBox } from '../../lib/viewTiles';
 import { HoloPanel, HoloTerrain, type HoloOpts } from '../terrain/holo';
 import {
-  EXAGGERATIONS, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
+  EXAGGERATIONS, SAT_BRIGHTNESS_MAX, SAT_BRIGHTNESS_MIN, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
 } from '../terrain/prefs';
 import { segBtn, styleLabel } from '../terrain/segBtn';
 
@@ -283,8 +285,43 @@ interface CalloutInfo {
   launcherDepleted: boolean;
 }
 
+// A soft dark disc under a symbol, so it reads on bright ground: opaque to 0.6 of the radius, then falling to 0.
+let haloAlpha: THREE.CanvasTexture | null = null;
+function haloAlphaMap(): THREE.CanvasTexture | null {
+  if (haloAlpha) return haloAlpha;
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  if (!ctx) return null; // no 2D canvas (a test DOM): the disc is a flat tint
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, '#fff');
+  g.addColorStop(0.6, '#fff');
+  g.addColorStop(1, '#000');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  haloAlpha = new THREE.CanvasTexture(c);
+  return haloAlpha;
+}
+
+/** Flat contrast disc on the ground at the model's origin, in the model's own units. Takes no clicks. */
+function GroundHalo({ variant }: { variant: string | null }) {
+  const r = 1.6 * resolveRingRadius(variant, 1);
+  const alphaMap = useMemo(() => haloAlphaMap(), []);
+  return (
+    <mesh position={[0, 0.005, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={30} raycast={() => null}>
+      <circleGeometry args={[r, 48]} />
+      <meshBasicMaterial
+        color="#020617" transparent opacity={0.6} alphaMap={alphaMap} depthWrite={false}
+        polygonOffset polygonOffsetFactor={-4} polygonOffsetUnits={-4}
+      />
+    </mesh>
+  );
+}
+
 function Model({ a, sev, selected }: { a: RenderableAsset; sev?: string; selected?: boolean }) {
   return (
+    <>
+    <GroundHalo variant={a.platform_variant} />
     <AssetVisual
       platformVariant={a.platform_variant}
       severity={sev ?? a.severity}
@@ -294,6 +331,7 @@ function Model({ a, sev, selected }: { a: RenderableAsset; sev?: string; selecte
       operationalState={a.operational_state}
       tier={a.tier}
     />
+    </>
   );
 }
 
@@ -893,10 +931,6 @@ function FogController({ isZoomed }: { isZoomed: boolean }) {
 }
 
 const SNAP_DEG = 0.1;          // terrain box grid: a moving asset does not reload the DEM
-const CLUSTER_PATCH_STEP = 0.01;
-const ASSET_PATCH_STEP = 0.0005;
-const MAX_CLUSTER_PATCHES = 8;
-const MAX_ASSET_PATCHES = 32;
 const quantise = (v: number, step: number) => Number((Math.round(v / step) * step).toFixed(6));
 
 export default function RegionalSustainmentPosture({
@@ -1213,33 +1247,13 @@ export default function RegionalSustainmentPosture({
     if (a) fly(assetFocus(a.position));
   }, [selectedAssetId, fly]);
 
-  // Sharp imagery (satellite style only): z17 around each cluster, z19 at each
-  // asset with a real position. Centres are quantised so a moving asset does
-  // not reload its patch every update.
+  // Sharp imagery (satellite style only): tile rings around where the camera looks,
+  // finer as it closes in (see ViewTiles).
+  const [viewBoxes, setViewBoxes] = useState<TileBox[]>([]);
   const patchSpecs = useMemo<PatchSpec[]>(() => {
     if (!terrain || prefs.style !== 'sat' || terrainSource.patchImageryUrl === '') return [];
-    const seen = new Set<string>();
-    const out: PatchSpec[] = [];
-    const add = (lat: number, lon: number, halfKm: number, maxZoom: number) => {
-      const key = `${maxZoom}:${lat}:${lon}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      out.push({ bounds: boundsAround(lat, lon, halfKm), maxZoom });
-      return true;
-    };
-    let n = 0;
-    for (const c of clusters) {
-      if (n >= MAX_CLUSTER_PATCHES) break;
-      if (add(quantise(c.lat, CLUSTER_PATCH_STEP), quantise(c.lon, CLUSTER_PATCH_STEP), 1.2, 17)) n++;
-    }
-    n = 0;
-    for (const a of renderables) {
-      if (n >= MAX_ASSET_PATCHES) break;
-      if (a.homedAtFob) continue;
-      if (add(quantise(a.lat, ASSET_PATCH_STEP), quantise(a.lon, ASSET_PATCH_STEP), 0.1, 19)) n++;
-    }
-    return out;
-  }, [terrain, prefs.style, terrainSource.patchImageryUrl, clusters, renderables]);
+    return viewBoxes.map((b) => ({ bounds: tileBoxBounds(b), maxZoom: b.z, zoom: b.z }));
+  }, [terrain, prefs.style, terrainSource.patchImageryUrl, viewBoxes]);
   const patches = usePatches(patchSpecs, terrainSource);
 
   // Regional aggregator position — centroid of the region's FOBs in scene
@@ -1355,8 +1369,11 @@ export default function RegionalSustainmentPosture({
           {!terrain && <Terrain />}
           {terrain && prefs.style === 'sat' && (
             <>
-              <TerrainMesh data={terrain} exag={exag} />
-              {patches.map((p, i) => <PatchMesh key={`${p.zoom}-${i}`} data={terrain} patch={p} exag={exag} />)}
+              <TerrainMesh data={terrain} exag={exag} brightness={prefs.satBrightness} />
+              {patches.map((p) => <PatchMesh key={p.key} data={terrain} patch={p} exag={exag} brightness={prefs.satBrightness} />)}
+              {terrainSource.patchImageryUrl !== '' && (
+                <ViewTiles proj={terrain.proj} minZ={terrain.baseZoom + 1} maxZ={terrainSource.patchMaxZoom} onChange={setViewBoxes} />
+              )}
             </>
           )}
           {terrain && prefs.style === 'holo' && (
@@ -1531,6 +1548,22 @@ export default function RegionalSustainmentPosture({
                   </button>
                 ))}
               </div>
+              {prefs.style === 'sat' && (
+                <label className="flex items-center gap-1">
+                  <span className="text-slate-500">BRIGHTNESS</span>
+                  <input
+                    type="range"
+                    data-testid="terrain-sat-brightness"
+                    aria-label="Satellite brightness"
+                    min={SAT_BRIGHTNESS_MIN}
+                    max={SAT_BRIGHTNESS_MAX}
+                    step={0.05}
+                    value={prefs.satBrightness}
+                    onChange={(e) => updatePrefs({ satBrightness: Number(e.target.value) })}
+                    className="w-20 accent-cyan-400"
+                  />
+                </label>
+              )}
             </>
           )}
         </div>
