@@ -50,6 +50,7 @@ import {
 import { type AssetClass } from '../../lib/assetClass';
 import { makeProjection } from '../../lib/geoProjection';
 import { buildNodePos, hqLabelText, hqScenePos } from '../../lib/hqPosition';
+import { groupByPosition } from '../../lib/coSite';
 import { trackLatLon } from '../../lib/munitionTrackLayout';
 import MunitionTrackHolo, { CURTAIN_MAX_TRACKS, type Vec3 } from '../MunitionTrackHolo';
 import { useMunitionTrails } from '../../hooks/useMunitionTrails';
@@ -62,7 +63,7 @@ import {
   type LinkReading,
   type LinkState,
 } from '../../lib/linkStatus';
-import { buildTheaterTopology, type EdgeState } from '../../lib/theaterTopology';
+import { buildTheaterTopology, HQ_NODE, type EdgeState } from '../../lib/theaterTopology';
 
 // Scene scale: HQ canvas spans ~2000 units; ~400 units per deg of lat
 // puts a regional-sized bbox (~3°) at ~1200 units across — comfortably
@@ -73,6 +74,10 @@ const HQ_INSET_RECT = { ...INSET_RECT, y: INSET_RECT.y + 36 };
 // Markers sit on the terrain (y = 0 with terrain off); tracks rise from their
 // launcher's ground by their ellipsoidal height (units per km = units per deg / 111).
 const HQ_UNITS_PER_KM = HQ_SCENE_SCALE_UNITS_PER_DEG / 111;
+/** Two sites within 0.5 km (in scene units) are drawn as one: one hub, one ring, one label stack. */
+const SHARED_EPS = (HQ_SCENE_SCALE_UNITS_PER_DEG / 111.32) * 0.5;
+/** Group key of the HQ marker; a symbol cannot clash with a node id. */
+const HQ_KEY: unique symbol = Symbol('hq');
 
 // Per-FOB composition breakdown, driven by the asset_class discriminator
 // (src/lib/assetClass.ts) rather than by platform_variant pattern-matching.
@@ -344,7 +349,7 @@ const DDIL_STATUS: Record<EdgeState, 'NOMINAL' | 'IDLE' | 'SEVERED' | 'UNKNOWN' 
 };
 
 export function FobLabel({
-  position, label, total, composition, attachment, link, unreachableVia,
+  position, label, total, composition, attachment, link, unreachableVia, above,
 }: {
   position: [number, number, number];
   label: string;
@@ -361,6 +366,9 @@ export function FobLabel({
   /** Set when an ancestor link is down: the link then reads UNREACHABLE
    *  through that ancestor, whatever its own row says. */
   unreachableVia?: string;
+  /** Chips stacked above the badge (HQ and region labels sharing this FOB's
+   *  site). The badge itself keeps its position; they grow upward. */
+  above?: React.ReactNode;
 }) {
   const reading: LinkReading = link ?? { state: 'unknown', declaredIdle: false };
   const word = unreachableVia ? `UNREACHABLE via ${unreachableVia}` : linkStateWord(reading);
@@ -372,6 +380,52 @@ export function FobLabel({
   // Legacy DIS / unresolved variants fall through to `other`.
   const hasOrbatComposition =
       composition.sensors > 0 || composition.launchers > 0 || composition.facilities > 0;
+  const badge = (
+    <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+      <div className="text-slate-200 font-bold">
+        {label}
+        {attachment === 'hq' && (
+          <span
+            className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-cyan-700/50 bg-cyan-900/30 text-cyan-300 uppercase rounded-sm cursor-help"
+            title="Writes straight to HQ. No edge store: this is not edge data that survives a WAN cut."
+          >
+            HQ-ATTACHED
+          </span>
+        )}
+        <span
+          className={`ml-2 text-[9px] tracking-widest ${wordClass}`}
+          data-link-state={word}
+        >
+          {word}
+        </span>
+      </div>
+      {hasOrbatComposition ? (
+        <div className="flex gap-2 text-[9px] mt-0.5">
+          {composition.sensors > 0 && (
+            <span className="text-cyan-300">{composition.sensors} SENS</span>
+          )}
+          {composition.launchers > 0 && (
+            <span className="text-amber-300">{composition.launchers} LNCH</span>
+          )}
+          {composition.facilities > 0 && (
+            <span className="text-slate-400">{composition.facilities} FAC</span>
+          )}
+          {composition.other > 0 && (
+            <span className="text-slate-500">{composition.other} OTHER</span>
+          )}
+          {composition.inflight > 0 && (
+            <span className="text-amber-500 border-l border-slate-700 pl-2">
+              {composition.inflight} FLT
+            </span>
+          )}
+        </div>
+      ) : (
+        <div className="text-[9px] text-slate-400">
+          {total} ASSET{total === 1 ? '' : 'S'}
+        </div>
+      )}
+    </div>
+  );
   return (
     <Html
       position={position}
@@ -384,50 +438,12 @@ export function FobLabel({
         whiteSpace: 'nowrap',
       }}
     >
-      <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
-        <div className="text-slate-200 font-bold">
-          {label}
-          {attachment === 'hq' && (
-            <span
-              className="ml-2 text-[9px] tracking-widest px-1.5 py-0.5 border border-cyan-700/50 bg-cyan-900/30 text-cyan-300 uppercase rounded-sm cursor-help"
-              title="Writes straight to HQ. No edge store: this is not edge data that survives a WAN cut."
-            >
-              HQ-ATTACHED
-            </span>
-          )}
-          <span
-            className={`ml-2 text-[9px] tracking-widest ${wordClass}`}
-            data-link-state={word}
-          >
-            {word}
-          </span>
+      {above ? (
+        <div className="relative">
+          {badge}
+          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1">{above}</div>
         </div>
-        {hasOrbatComposition ? (
-          <div className="flex gap-2 text-[9px] mt-0.5">
-            {composition.sensors > 0 && (
-              <span className="text-cyan-300">{composition.sensors} SENS</span>
-            )}
-            {composition.launchers > 0 && (
-              <span className="text-amber-300">{composition.launchers} LNCH</span>
-            )}
-            {composition.facilities > 0 && (
-              <span className="text-slate-400">{composition.facilities} FAC</span>
-            )}
-            {composition.other > 0 && (
-              <span className="text-slate-500">{composition.other} OTHER</span>
-            )}
-            {composition.inflight > 0 && (
-              <span className="text-amber-500 border-l border-slate-700 pl-2">
-                {composition.inflight} FLT
-              </span>
-            )}
-          </div>
-        ) : (
-          <div className="text-[9px] text-slate-400">
-            {total} ASSET{total === 1 ? '' : 'S'}
-          </div>
-        )}
-      </div>
+      ) : badge}
     </Html>
   );
 }
@@ -525,6 +541,18 @@ export default function TheaterReadinessPosture() {
     [metrics, topo.nodes],
   );
   const edgeById = useMemo(() => new Map(topo.edges.map((e) => [e.id, e])), [topo.edges]);
+  // Sites within SHARED_EPS draw as one. Input order puts a FOB's node first so the
+  // group sits at the FOB, then HQ, then the nodes with no FOB.
+  const siteGroups = useMemo(() => groupByPosition<string | typeof HQ_KEY>([
+    ...topo.nodes.filter((n) => n.fob).map((n) => ({ key: n.id, pos: nodePos.get(n.id)! })),
+    { key: HQ_KEY, pos: hqPos },
+    ...topo.nodes.filter((n) => !n.fob).map((n) => ({ key: n.id, pos: nodePos.get(n.id)! })),
+  ], SHARED_EPS), [topo.nodes, nodePos, hqPos]);
+  const groupOf = useMemo(() => {
+    const m = new Map<string | typeof HQ_KEY, number>();
+    siteGroups.forEach((g, i) => g.keys.forEach((k) => m.set(k, i)));
+    return m;
+  }, [siteGroups]);
 
   // The launcher's own fleet position, projected to the ground, when it has
   // one; otherwise its FOB (this map draws FOBs, not individual assets).
@@ -818,14 +846,20 @@ export default function TheaterReadinessPosture() {
             <AbstractContinents />
           </>)}
 
-          {/* Tier nodes: a hub per FOB-placed tier, plus a ring on every tier
-              that rolls up children (a derived region has the ring alone). */}
-          {topo.nodes.map((n) => {
-            const [x, z] = nodePos.get(n.id)!;
+          {/* One hub and ring per site: tiers and HQ sharing a spot draw once. A hub for
+              any HQ or non-derived tier; a ring for HQ or any tier that rolls up children
+              (a derived region without children draws nothing). */}
+          {siteGroups.map((g, gi) => {
+            const [x, z] = g.pos;
+            const nodes = g.keys.flatMap((k) => (k === HQ_KEY ? [] : [topo.nodes.find((n) => n.id === k)!]));
+            const hasHq = g.keys.includes(HQ_KEY);
+            const hub = hasHq || nodes.some((n) => !n.derived);
+            const ring = hasHq || nodes.some((n) => n.hasChildren);
+            if (!hub && !ring) return null;
             return (
-              <group key={`node-${n.id}`} userData={{ insetHidden: true }}>
-                {!n.derived && <LogisticsHubNode position={[x, groundY(x, z), z]} />}
-                {n.hasChildren && (
+              <group key={`site-${gi}`} userData={{ insetHidden: true }}>
+                {hub && <LogisticsHubNode position={[x, groundY(x, z), z]} />}
+                {ring && (
                   <mesh position={[x, groundY(x, z) + 0.5, z]} rotation={[-Math.PI / 2, 0, 0]}>
                     <ringGeometry args={[7, 8.5, 32]} />
                     <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
@@ -835,26 +869,11 @@ export default function TheaterReadinessPosture() {
             );
           })}
 
-          {/* HQ marker: always drawn, at the configured location or the FOB centre. */}
-          <group userData={{ insetHidden: true }}>
-            <LogisticsHubNode position={[hqPos[0], groundY(hqPos[0], hqPos[1]), hqPos[1]]} />
-            <mesh position={[hqPos[0], groundY(hqPos[0], hqPos[1]) + 0.5, hqPos[1]]} rotation={[-Math.PI / 2, 0, 0]}>
-              <ringGeometry args={[7, 8.5, 32]} />
-              <meshBasicMaterial color={0x22d3ee} transparent opacity={0.8} side={THREE.DoubleSide} />
-            </mesh>
-          </group>
-          <Html position={[hqPos[0], groundY(hqPos[0], hqPos[1]), hqPos[1]]} center
-                style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
-            <div data-testid="hq-node-label"
-                 className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
-              <span className="text-slate-200 font-bold">{hqLabelText(hq)}</span>
-            </div>
-          </Html>
-
           {/* DDIL links: each drawn tier to its parent's node (HQ = its marker). */}
           {topo.edges.map((e) => {
             const [sx, sz] = nodePos.get(e.id)!;
             const [ex, ez] = nodePos.get(e.to) ?? hqPos;
+            if (groupOf.get(e.id) === groupOf.get(e.to === HQ_NODE ? HQ_KEY : e.to)) return null; // same site: zero length
             return (
               <DdilNetworkLink
                 key={`link-${e.id}`}
@@ -867,33 +886,64 @@ export default function TheaterReadinessPosture() {
             );
           })}
 
-          {/* Per-FOB label + composition breakdown. A tier with no FOB (derived,
-              or placed by its site row) gets the id + link label below. */}
-          {drawnMetrics.map((m) => (
-            <FobLabel
-              key={`label-${m.fob.edge_id}`}
-              position={[m.scenePos[0], groundY(m.scenePos[0], m.scenePos[1]), m.scenePos[1]]}
-              label={m.fob.label || m.fob.edge_id}
-              total={m.total}
-              composition={m.composition}
-              attachment={m.attachment}
-              link={edgeById.get(m.fob.edge_id)?.reading}
-              unreachableVia={edgeById.get(m.fob.edge_id)?.via}
-            />
-          ))}
-          {topo.nodes.filter((n) => !n.fob).map((n) => {
-            const [x, z] = nodePos.get(n.id)!;
-            const e = edgeById.get(n.id);
-            const word = e ? (e.via ? `UNREACHABLE via ${e.via}` : linkStateWord(e.reading)) : '';
-            return (
-              <Html key={`region-label-${n.id}`} position={[x, groundY(x, z), z]} center
-                    style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
-                <div className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+          {/* One label stack per site, top to bottom: HQ, each tier without a FOB, then the
+              FOB's own label + composition breakdown. The FOB badge keeps its screen
+              position (the chips grow upward from it). A site with no FOB anchors its
+              bottom chip where a lone chip sits. */}
+          {siteGroups.map((g, gi) => {
+            const nodes = g.keys.flatMap((k) => (k === HQ_KEY ? [] : [topo.nodes.find((n) => n.id === k)!]));
+            const chips: React.ReactNode[] = [];
+            if (g.keys.includes(HQ_KEY)) {
+              chips.push(
+                <div key="hq" data-testid="hq-node-label"
+                     className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
+                  <span className="text-slate-200 font-bold">{hqLabelText(hq)}</span>
+                </div>,
+              );
+            }
+            for (const n of nodes.filter((nn) => !nn.fob)) {
+              const e = edgeById.get(n.id);
+              const word = e ? (e.via ? `UNREACHABLE via ${e.via}` : linkStateWord(e.reading)) : '';
+              chips.push(
+                <div key={`region-${n.id}`} className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
                   <span className="text-slate-200 font-bold">{n.id}</span>
                   {e && <span className="ml-2 text-[9px]" data-link-state={word}>{word}</span>}
-                </div>
-              </Html>
-            );
+                </div>,
+              );
+            }
+            const fobMetrics = nodes.filter((nn) => nn.fob).map((nn) => drawnMetrics.find((m) => m.fob === nn.fob)).filter((m) => !!m);
+            if (fobMetrics.length === 0) {
+              if (chips.length === 0) return null;
+              const [x, z] = g.pos;
+              const bottom = chips[chips.length - 1];
+              const rest = chips.slice(0, -1);
+              return (
+                <Html key={`site-label-${gi}`} position={[x, groundY(x, z), z]} center
+                      style={{ pointerEvents: 'none', transform: 'translateY(-24px)', whiteSpace: 'nowrap' }}>
+                  <div className="relative">
+                    {bottom}
+                    {rest.length > 0 && (
+                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 flex flex-col items-center gap-1">{rest}</div>
+                    )}
+                  </div>
+                </Html>
+              );
+            }
+            return fobMetrics.map((m, mi) => (
+              <FobLabel
+                key={`label-${m.fob.edge_id}`}
+                position={[m.scenePos[0], groundY(m.scenePos[0], m.scenePos[1]), m.scenePos[1]]}
+                label={m.fob.label || m.fob.edge_id}
+                total={m.total}
+                composition={m.composition}
+                attachment={m.attachment}
+                link={edgeById.get(m.fob.edge_id)?.reading}
+                unreachableVia={edgeById.get(m.fob.edge_id)?.via}
+                above={mi === 0 && chips.length > 0
+                  ? <div className="flex flex-col items-center gap-1">{chips}</div>
+                  : undefined}
+              />
+            ));
           })}
 
           {/* In-flight munition tracks (ADR-0049): a holographic track drawn in

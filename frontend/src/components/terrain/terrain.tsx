@@ -3,11 +3,11 @@
 import { useEffect, useMemo } from 'react';
 import '@react-three/fiber'; // JSX intrinsics for mesh
 import * as THREE from 'three';
-import { REGIONAL_SAT_FRAG, REGIONAL_SAT_VERT } from './theaterShaders';
+import { REGIONAL_SAT_FRAG, REGIONAL_SAT_VERT, type EdgeRamp } from './theaterShaders';
 import { drape, type Patch, type TerrainData } from './terrainData';
 
 /** The unlit satellite material (HQ shading, brightness control, fog). Memoised per texture and mask. */
-function useSatMaterial(map: THREE.Texture, maskCanvas: HTMLCanvasElement | null, brightness: number, patch: boolean) {
+function useSatMaterial(map: THREE.Texture, maskCanvas: HTMLCanvasElement | null, brightness: number, patch: boolean, edge?: EdgeRamp) {
   const maskTex = useMemo(() => (maskCanvas ? new THREE.CanvasTexture(maskCanvas) : null), [maskCanvas]);
   useEffect(() => () => { maskTex?.dispose(); }, [maskTex]);
   const material = useMemo(() => {
@@ -16,6 +16,7 @@ function useSatMaterial(map: THREE.Texture, maskCanvas: HTMLCanvasElement | null
       ...THREE.UniformsUtils.merge([THREE.UniformsLib.fog]),
       uMap: { value: map }, uMask: { value: maskTex },
       uHasMask: { value: maskTex ? 1 : 0 }, uBright: { value: 1 },
+      uEdge: { value: 0 }, uEdgeNear: { value: 0 }, uEdgeFar: { value: 1 }, uTheater: { value: new THREE.Vector4() },
     };
     return new THREE.ShaderMaterial({
       uniforms,
@@ -32,13 +33,21 @@ function useSatMaterial(map: THREE.Texture, maskCanvas: HTMLCanvasElement | null
   useEffect(() => () => material.dispose(), [material]);
   // eslint-disable-next-line react-hooks/immutability -- three.js uniforms are GPU state set imperatively (R3F)
   useEffect(() => { material.uniforms.uBright.value = brightness; }, [material, brightness]);
+  /* eslint-disable react-hooks/immutability -- three.js uniforms are GPU state set imperatively (R3F) */
+  useEffect(() => {
+    const u = material.uniforms;
+    u.uEdge.value = edge ? 1 : 0;
+    if (edge) { u.uEdgeNear.value = edge.near; u.uEdgeFar.value = edge.far; u.uTheater.value.set(...edge.rect); }
+  }, [material, edge]);
+  /* eslint-enable react-hooks/immutability */
   return material;
 }
 
-export function TerrainMesh({ data, exag = 1, segments = 400, brightness = 1 }: { data: TerrainData; exag?: number; segments?: number; brightness?: number }) {
+/** `edge`: mute towards the rect edge like the surround does (set only while a surround is drawn). */
+export function TerrainMesh({ data, exag = 1, segments = 400, brightness = 1, edge }: { data: TerrainData; exag?: number; segments?: number; brightness?: number; edge?: EdgeRamp }) {
   const geometry = useMemo(() => drape(data.heightM, data.bounds, data.proj, segments, exag), [data, exag, segments]);
   useEffect(() => () => geometry.dispose(), [geometry]);
-  const material = useSatMaterial(data.texture, data.mask, brightness, false);
+  const material = useSatMaterial(data.texture, data.mask, brightness, false, edge);
 
   return (
     // Drawn only in the main view, not in the engagement inset.
@@ -49,13 +58,13 @@ export function TerrainMesh({ data, exag = 1, segments = 400, brightness = 1 }: 
 }
 
 /** A patch draped on the same heightfield, drawn over the base imagery; sharper patches draw on top. */
-export function PatchMesh({ data, patch, exag = 1, brightness = 1 }: { data: TerrainData; patch: Patch; exag?: number; brightness?: number }) {
+export function PatchMesh({ data, patch, exag = 1, brightness = 1, edge }: { data: TerrainData; patch: Patch; exag?: number; brightness?: number; edge?: EdgeRamp }) {
   // Vehicle patches are ~200 m: 16 segments still follow the ~45 m DEM.
   const segs = patch.zoom >= 19 ? 16 : 96;
   const geometry = useMemo(() => drape(data.heightM, patch.bounds, data.proj, segs, exag), [data, patch, exag, segs]);
   useEffect(() => () => geometry.dispose(), [geometry]);
   useEffect(() => () => patch.texture.dispose(), [patch]);
-  const material = useSatMaterial(patch.texture, null, brightness, true);
+  const material = useSatMaterial(patch.texture, null, brightness, true, edge);
   return (
     <mesh geometry={geometry} renderOrder={patch.zoom} userData={{ insetHidden: true }}>
       <primitive object={material} attach="material" />

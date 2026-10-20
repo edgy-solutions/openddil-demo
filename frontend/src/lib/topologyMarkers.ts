@@ -25,3 +25,18 @@ export function regionExtent(center: [number, number], points: [number, number][
   for (const [x, z] of points) m = Math.max(m, Math.hypot(x - center[0], z - center[1]));
   return m;
 }
+
+/** Authored height of a FOB hub incl. its beacon, in the hub's own units (the hub's radius is 4.7). */
+export const HUB_TOP = 3;
+const HUB_RADIUS = 4.7;
+const STACK_GAP = 0.5;
+
+/**
+ * Extra lift, in a marker's own authored units, that puts the base of a marker (authored at
+ * `radius`, drawn `px` on screen) just above the top of a FOB hub drawn `fobPx` on screen.
+ * Each sits in its own ScreenSized group, so the hub's height is converted through screen pixels.
+ */
+export function stackLift(radius: number, px: number, fobPx: number = FOB_PX * 1.25): number {
+  const hubTopPx = (HUB_TOP * fobPx) / HUB_RADIUS;
+  return (hubTopPx * radius) / px + STACK_GAP;
+}

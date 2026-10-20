@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { UNITS_PER_KM } from '../../lib/sceneScale';
 import { drape, type TerrainData } from './terrainData';
 import { HUES, HOLO_DEFAULTS, type HoloOpts } from './holoOpts';
+import type { EdgeRamp } from './theaterShaders';
 
 const VERT = /* glsl */ `
 attribute float hraw;
@@ -30,6 +31,8 @@ uniform float uContours, uCoast, uDepth, uGrid, uDots, uSweep;
 uniform vec2 uCenter;
 uniform sampler2D uMask;
 uniform float uHasMask;
+// Optional edge mute, the surround's (see HOLO_FRAG in theaterShaders.ts): on only while a surround is drawn.
+uniform float uEdge, uEdgeNear, uEdgeFar; uniform vec4 uTheater;
 varying float vH;
 varying vec3 vW;
 varying vec2 vUv;
@@ -74,7 +77,13 @@ void main() {
     float pt = (1.0 - smoothstep(1.5, 2.5, r)) * (1.0 - smoothstep(0.15, 0.4, px));
     glow += pt * land * (0.35 + 0.65 * clamp(vH / 15.0, 0.0, 1.0));
   }
-  col += uColor * (glow * uGlow * (1.0 + 2.5 * s) + 0.06 * s);
+  vec2 qd = max(uTheater.xy - vW.xz, vW.xz - uTheater.zw);
+  float sd = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0);
+  float em = uEdge * smoothstep(uEdgeNear, uEdgeFar, sd);
+  col += uColor * (glow * uGlow * (1.0 + 2.5 * s) * (1.0 - 0.75 * em) + 0.06 * s);
+  // As the surround: outside the rect stay under the bloom threshold.
+  float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col *= min(1.0, mix(1000.0, 0.14, em) / max(lum, 1e-5));
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -104,9 +113,9 @@ function blur(src: Float32Array, n: number, r: number): Float32Array {
   return a;
 }
 
-/** `center` is the scene (x, z) the scan sweep radiates from. */
-export function HoloTerrain({ data, exag, opts, center }: {
-  data: TerrainData; exag: number; opts: HoloOpts; center: [number, number];
+/** `center` is the scene (x, z) the scan sweep radiates from. `edge`: mute towards the rect edge like the surround. */
+export function HoloTerrain({ data, exag, opts, center, edge }: {
+  data: TerrainData; exag: number; opts: HoloOpts; center: [number, number]; edge?: EdgeRamp;
 }) {
   const geometry = useMemo(() => drape(data.heightM, data.bounds, data.proj, SEG, exag, data.rawM), [data, exag]);
   const raw = useMemo(() => (geometry.getAttribute('hraw').array as Float32Array).slice(), [geometry]);
@@ -127,6 +136,7 @@ export function HoloTerrain({ data, exag, opts, center }: {
       uContours: { value: 1 }, uCoast: { value: 1 }, uDepth: { value: 1 }, uGrid: { value: 1 }, uDots: { value: 0 },
       uSweep: { value: 1 }, uCenter: { value: new THREE.Vector2() },
       uMask: { value: null as THREE.Texture | null }, uHasMask: { value: 0 },
+      uEdge: { value: 0 }, uEdgeNear: { value: 0 }, uEdgeFar: { value: 1 }, uTheater: { value: new THREE.Vector4() },
     },
   }), []);
   useEffect(() => () => material.dispose(), [material]);
@@ -139,6 +149,8 @@ export function HoloTerrain({ data, exag, opts, center }: {
   u.uGrid.value = f(opts.grid); u.uDots.value = f(opts.dots); u.uSweep.value = f(opts.sweep);
   u.uCenter.value.set(center[0], center[1]);
   u.uMask.value = maskTex; u.uHasMask.value = maskTex ? 1 : 0;
+  u.uEdge.value = edge ? 1 : 0;
+  if (edge) { u.uEdgeNear.value = edge.near; u.uEdgeFar.value = edge.far; u.uTheater.value.set(...edge.rect); }
   /* eslint-enable react-hooks/immutability */
   // eslint-disable-next-line react-hooks/immutability -- three.js uniforms are GPU state set imperatively (R3F)
   useFrame(({ clock }) => { u.uTime.value = clock.elapsedTime; });
