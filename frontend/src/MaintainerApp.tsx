@@ -26,6 +26,7 @@ import AlertFeed from './components/AlertFeed';
 import Inventory from './components/Inventory';
 import { ArrivalsView } from './components/ArrivalsPanel';
 import { useArrivals } from './hooks/useArrivals';
+import { useArrivalsSummary } from './hooks/useArrivalsSummary';
 import { arrivalsCounts } from './lib/arrivals';
 import CmStateCard from './components/CmStateCard';
 import { WeaponsCapabilityCard } from './components/WeaponsCapabilityCard';
@@ -176,6 +177,10 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // already subscribes to elsewhere) and stays current as new edges
   // come online.
   const fleetAll = useFleetAssets();
+  // Per-edge arrivals counts: the only place an edge whose assets are all
+  // withheld (unlabelled) is visible, since fleetAll carries none of them.
+  const arrivalsSummary = useArrivalsSummary();
+  const summaryResolved = arrivalsSummary !== null;
   // Edge-scoped fleet — drives the Header's asset picker. When
   // selectedEdge is null (URL had no ?edge= AND default not yet
   // resolved), falls back to the unfiltered shape so the picker isn't
@@ -290,14 +295,19 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // Available edges for the pulldown — distinct edge_ids actually
   // observed in the pipeline. Sorted alphabetically. Symmetric with
   // RegionalApp's region-from-summary pattern.
-  const availableEdges = useMemo(
-    () => Array.from(new Set(
-      fleetAll.data
-        .map((a) => a.edge_id)
-        .filter((e): e is string => !!e && e !== 'edge-unspecified'),
-    )).sort(),
-    [fleetAll.data],
-  );
+  const availableEdges = useMemo(() => {
+    const ids: (string | null | undefined)[] = fleetAll.data.map((a) => a.edge_id);
+    // An edge whose only assets are withheld has no fleet rows; the arrivals
+    // summary counts them (undeclared / expected), so it joins the picker.
+    if (arrivalsSummary?.kind === 'ok') {
+      for (const e of arrivalsSummary.data) {
+        if (e.undeclared + e.expected > 0) ids.push(e.edge_id);
+      }
+    }
+    return Array.from(new Set(
+      ids.filter((e): e is string => !!e && e !== 'edge-unspecified'),
+    )).sort();
+  }, [fleetAll.data, arrivalsSummary]);
 
   // Default-on-first-load for the edge pulldown: first observed edge
   // alphabetically, if no ?edge= URL param resolved one. Cold-start
@@ -309,7 +319,8 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
   // leave selectedEdge pointing at nothing while ScopeControl's label
   // names a different, real edge (available[0] in the single-scope case)
   // -- scoped-to-nothing under a label that says otherwise. Wait for
-  // fleetAll to finish loading first so a mid-flight empty availableEdges
+  // fleetAll and the arrivals summary to resolve first (a ?edge= naming a
+  // withheld-only edge is valid only once the summary lands) so a mid-flight empty availableEdges
   // doesn't get mistaken for "this edge doesn't exist".
   useEffect(() => {
     if (!selectedEdge) {
@@ -317,12 +328,12 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
       setSelectedEdge(availableEdges[0]);
       return;
     }
-    if (fleetAll.isLoading) return;
+    if (fleetAll.isLoading || !summaryResolved) return;
     if (availableEdges.length === 0) return;
     if (!availableEdges.includes(selectedEdge)) {
       setSelectedEdge(availableEdges[0]);
     }
-  }, [availableEdges, selectedEdge, fleetAll.isLoading]);
+  }, [availableEdges, selectedEdge, fleetAll.isLoading, summaryResolved]);
 
   // Keep ?edge= in sync so reload / shared link lands on the same scope.
   useEffect(() => {
