@@ -28,7 +28,7 @@
 //
 // Phase B remaining: per-edge labels, honesty badges, color/style tuning.
 // =============================================================================
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Html, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -526,7 +526,7 @@ function KindsCluster({
     for (const l of leaders) l.geometry.dispose();
   }, [leaders]);
 
-  useFrame(({ camera }) => {
+  const place = (camera: THREE.Camera) => {
     const rSym = symbolRadius(camera.position.distanceTo(centroid), size.height, fovOf(camera));
     // Symbol radius on screen as drawn (PX_R, or larger when the true-size floor applies).
     const symPx = rSym / worldPerPx(camera.position.distanceTo(centroid), size.height, fovOf(camera));
@@ -566,7 +566,14 @@ function KindsCluster({
       at.setXYZ(1, anchors[i].x, anchors[i].y, anchors[i].z);
       at.needsUpdate = true;
     });
-  });
+  };
+  useFrame(({ camera }) => place(camera));
+  // A new or re-rendered slot is put in its decluttered place before the next frame.
+  const getThree = useThree((s) => s.get);
+  useLayoutEffect(() => {
+    place(getThree().camera);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- place closes over these; it is re-run when they change
+  }, [anchors, shown, hidden, size, centroid, getThree]);
 
   const hiddenN = hidden.reduce((n, k) => n + k.members.length, 0);
   const hiddenSev = Math.max(0, ...hidden.map((k) => SEV_RANK[k.sev] ?? 0));
@@ -590,7 +597,8 @@ function KindsCluster({
         <group
           key={k.variant ?? ''}
           ref={(el) => { slotRefs.current[i] = el; }}
-          position={anchors[i]}
+          // No position prop: place() owns the slot position. A prop would be re-applied on every
+          // data refresh and undo the declutter for a frame.
           userData={{ insetHidden: true }}
         >
           <group ref={(el) => { modelRefs.current[i] = el; }} onClick={pick(k)}>
@@ -603,7 +611,7 @@ function KindsCluster({
       {hidden.length > 0 && (
         <group
           ref={(el) => { slotRefs.current[shown.length] = el; }}
-          position={anchors[shown.length]}
+          // No position prop: see the slot group above.
           userData={{ insetHidden: true }}
         >
           <MoreChip
