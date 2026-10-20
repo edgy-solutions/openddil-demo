@@ -70,10 +70,10 @@ import { INSET_RECT, clearOfGround, engagementFocus, frameOf, gridStepKm, height
 import { M, SCENE_SCALE_UNITS_PER_DEG, UNITS_PER_KM } from '../../lib/sceneScale';
 import { symbolRadius, worldPerPx } from '../../lib/symbolScale';
 import { separate } from '../../lib/separate';
-import { AGG_PX, FOB_PX, HQ_PX, markerScale, regionExtent, topologyHeights } from '../../lib/topologyMarkers';
+import { AGG_PX, FOB_PX, HQ_PX, markerScale, regionExtent, stackLift, topologyHeights } from '../../lib/topologyMarkers';
 import { SEV_RANK, fogDensity, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, controlsMaxDistance, type CameraPreset } from '../../lib/mapPresets';
-import { formatKm, framedRect, planTopology, resolveSites } from '../../lib/regionalSites';
+import { distanceKm, formatKm, framedRect, planTopology, resolveSites, sameSite } from '../../lib/regionalSites';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
 import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
 import { TerrainMesh, PatchMesh } from '../terrain/terrain';
@@ -81,6 +81,10 @@ import { usePatches, useTerrain, type PatchSpec } from '../terrain/terrainData';
 import { ViewTiles } from '../terrain/ViewTiles';
 import { tileBoxBounds, type TileBox } from '../../lib/viewTiles';
 import { HoloPanel, HoloTerrain } from '../terrain/holo';
+import { RegionalSurround } from '../terrain/theater';
+import { edgeRamp } from '../terrain/theaterShaders';
+import { HQ_SCALE, surroundBounds, useMask, useSurround, type Rect } from '../terrain/theaterData';
+import { screenArrowDeg } from '../../lib/screenArrow';
 import type { HoloOpts } from '../terrain/holoOpts';
 import {
   EXAGGERATIONS, SAT_BRIGHTNESS_MAX, SAT_BRIGHTNESS_MIN, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
@@ -417,9 +421,28 @@ function CountChip({ text, sev }: { text: string; sev: number }) {
 }
 
 /** The off-map HQ marker: a plate at the map border giving the distance and bearing; a button when it can open HQ. */
-function HqChip({ km, bearing, onOpen }: { km: number; bearing: number; onOpen?: () => void }) {
+function HqChip({ km, bearing, from, at, onOpen }: {
+  km: number; bearing: number; onOpen?: () => void;
+  /** World points of the link: the regional node's ground point and the chip's own (the exit). */
+  from: THREE.Vector3; at: THREE.Vector3;
+}) {
   const { g, el } = useFogFade();
-  const text = `HQ · ${formatKm(km)} →`;
+  // The arrow turns to run along the link on screen as the camera moves; set through a ref, not React state.
+  const arrow = useRef<HTMLSpanElement>(null);
+  const lastDeg = useRef(Number.NaN);
+  const pf = useMemo(() => new THREE.Vector3(), []);
+  const pt = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera }) => {
+    if (!arrow.current) return;
+    pf.copy(from).project(camera);
+    pt.copy(at).project(camera);
+    const deg = screenArrowDeg(pf, pt);
+    if (Number.isFinite(lastDeg.current) && Math.abs(deg - lastDeg.current) < 1) return;
+    lastDeg.current = deg;
+    arrow.current.style.transform = `rotate(${deg}deg)`;
+  });
+  const label = `HQ · ${formatKm(km)} `;
+  const text = <>{label}<span ref={arrow} style={{ display: 'inline-block' }}>→</span></>;
   const name = `HQ, ${formatKm(km)}, bearing ${Math.round(bearing)}°`;
   const cls = 'whitespace-nowrap rounded-sm bg-slate-950/75 px-1.5 py-0.5 font-mono text-[10px] text-slate-300';
   return (
@@ -819,7 +842,7 @@ function ScreenSized({ radius, px, children }: { radius: number; px: number; chi
   return <group ref={ref}>{children}</group>;
 }
 
-function RegionalAggregatorNode({ position, label, kicker = 'REGIONAL AGGREGATOR', severed, grounded }: {
+function RegionalAggregatorNode({ position, label, kicker = 'REGIONAL AGGREGATOR', severed, grounded, stack }: {
   position: [number, number, number];
   label: string;
   /** The small line above the label; "REGIONAL · HQ" when HQ shares the regional node's site. */
@@ -827,6 +850,8 @@ function RegionalAggregatorNode({ position, label, kicker = 'REGIONAL AGGREGATOR
   severed: boolean;
   /** Lift the meshes so their base sits on the group origin (a node standing on the ground). */
   grounded?: boolean;
+  /** With `grounded`: stand on top of a FOB hub at the same site instead of inside it. */
+  stack?: boolean;
 }) {
   const color = severed ? 0xf43f5e : 0x22d3ee;
   return (
@@ -835,7 +860,7 @@ function RegionalAggregatorNode({ position, label, kicker = 'REGIONAL AGGREGATOR
           deliberately not a shape any FOB or platform schematic uses, so
           it reads as "different category of thing." */}
       <ScreenSized radius={4.5} px={AGG_PX}>
-       <group position={[0, grounded ? 4.5 : 0, 0]}>
+       <group position={[0, grounded ? 4.5 + (stack ? stackLift(4.5, AGG_PX) : 0) : 0, 0]}>
         <mesh>
           <octahedronGeometry args={[3.5, 0]} />
           <meshBasicMaterial color={color} transparent opacity={0.65} />
@@ -861,11 +886,13 @@ function RegionalAggregatorNode({ position, label, kicker = 'REGIONAL AGGREGATOR
   );
 }
 
-function HqMarker({ position, severed, grounded, label = 'HQ THEATER' }: {
+function HqMarker({ position, severed, grounded, stack, label = 'HQ THEATER' }: {
   position: [number, number, number];
   severed: boolean;
   /** Lift the meshes so their base sits on the group origin. */
   grounded?: boolean;
+  /** With `grounded`: stand on top of a FOB hub at the same site instead of inside it. */
+  stack?: boolean;
   label?: string;
 }) {
   const color = severed ? 0xf43f5e : 0x10b981;
@@ -874,7 +901,7 @@ function HqMarker({ position, severed, grounded, label = 'HQ THEATER' }: {
       {/* Pyramid form — distinct from FOB hubs and regional octahedron.
           Cone with 4 radial segments approximates a pyramid. */}
       <ScreenSized radius={5.5} px={HQ_PX}>
-       <group position={[0, grounded ? 5.25 : 0, 0]}>
+       <group position={[0, grounded ? 5.25 + (stack ? stackLift(5.5, HQ_PX) : 0) : 0, 0]}>
         <mesh>
           <coneGeometry args={[5, 10, 4]} />
           <meshBasicMaterial color={color} transparent opacity={0.7} />
@@ -971,6 +998,13 @@ function FogController({ isZoomed }: { isZoomed: boolean }) {
   return null;
 }
 
+/** An on-map HQ farther than this from the regional site is left out of the terrain area. */
+const HQ_FRAME_MAX_KM = 150;
+/**
+ * How far a ground-following link rides above the terrain, in scene units. HQ's 3 units is ~0.8 km at 400
+ * units/deg; the same 3 here (80 units/deg, 0.72 units/km) would be ~4 km, so the regional map uses ~0.2 km.
+ */
+const REGIONAL_LINK_CLEAR = 0.15;
 const SNAP_DEG = 0.1;          // terrain box grid: a moving asset does not reload the DEM
 const quantise = (v: number, step: number) => Number((Math.round(v / step) * step).toFixed(6));
 
@@ -1145,13 +1179,40 @@ export default function RegionalSustainmentPosture({
     });
   }, []);
   const terrainSource = useMemo(() => resolveTerrainSource(dep.terrain), [dep.terrain]);
-  const rawBounds = terrainBounds([...regionFobs, ...fleetPositions]);
+  // Where the regional node and HQ sit: the sites plan, or the abstract fallback.
+  const sites = useMemo(() => resolveSites(dep, regionId), [dep, regionId]);
+  // The regional site always counts; HQ only when it is near (an off-map HQ must not blow the area up).
+  const siteBounds: { lat: number; lon: number }[] = [];
+  if (sites.regional) siteBounds.push(sites.regional);
+  if (sites.hq && (!sites.regional || distanceKm(sites.regional, sites.hq) <= HQ_FRAME_MAX_KM)) siteBounds.push(sites.hq);
+  const rawBounds = terrainBounds([...regionFobs, ...fleetPositions, ...siteBounds]);
   const bounds = rawBounds ? snapBounds(rawBounds, SNAP_DEG) : null;
   // The slate relief is dark: lift it to read under the scene.
   const reliefGain = terrainSource.reliefPalette === 'slate' ? 1.6 : 1;
   const { data: terrainData, failed: terrainFailed } = useTerrain(prefs.on ? bounds : null, terrainSource, proj, reliefGain);
   const terrain = prefs.on ? terrainData : null;
   const exag = prefs.exag;
+  // The muted surround around the terrain: same loader as the HQ map, centred on the terrain's bounds.
+  const surroundLat = bounds ? (bounds.north + bounds.south) / 2 : null;
+  const surroundLon = bounds ? (bounds.east + bounds.west) / 2 : null;
+  const sBounds = useMemo(
+    () => (prefs.on && surroundLat !== null && surroundLon !== null ? surroundBounds({ lat: surroundLat, lon: surroundLon }) : null),
+    [prefs.on, surroundLat, surroundLon],
+  );
+  const surround = useSurround(sBounds, proj, terrainSource);
+  const surroundMask = useMask(sBounds, terrainSource);
+  const terrainRect = useMemo<Rect | null>(() => {
+    if (!terrain) return null;
+    const b = terrain.bounds;
+    const [x0, z0] = proj.project(b.north, b.west);
+    const [x1, z1] = proj.project(b.south, b.east);
+    return [Math.min(x0, x1), Math.min(z0, z1), Math.max(x0, x1), Math.max(z0, z1)];
+  }, [terrain, proj]);
+  // The terrain mutes towards its edge like the surround, but only while the surround is drawn.
+  const edge = useMemo(
+    () => (surround && terrainRect ? edgeRamp(terrainRect, 1 / HQ_SCALE) : undefined),
+    [surround, terrainRect],
+  );
   /** Ground height at a scene point: the terrain's, or 0 on the flat ground. */
   const groundAt = useCallback<GroundFn>(
     (x, z) => (terrain ? terrain.heightM(x, z) * M * exag : 0),
@@ -1242,8 +1303,7 @@ export default function RegionalSustainmentPosture({
     [onAssetSelect],
   );
 
-  // Where the regional node and HQ sit: the sites plan, or the abstract fallback.
-  const sites = useMemo(() => resolveSites(dep, regionId), [dep, regionId]);
+  // The plan below: the sites plan, or the abstract fallback.
   const plan = useMemo(() => {
     const regionalXZ = sites.regional ? proj.project(sites.regional.lat, sites.regional.lon) as [number, number] : null;
     const rect = framedRect([
@@ -1367,8 +1427,9 @@ export default function RegionalSustainmentPosture({
   const usesMask = !!terrain?.mask && (prefs.style === 'holo' || terrainSource.basemap === 'relief');
   const credits = terrainFailed ? ['Terrain data unavailable'] : creditLines(terrainSource, {
     style: prefs.style,
-    landMask: usesMask,
-    water: usesMask && !!terrain?.water,
+    // The surround draws the land/sea mask (and the water file) too, so its sources are credited.
+    landMask: usesMask || (!!surround && !!surroundMask.texture),
+    water: (usesMask && !!terrain?.water) || (!!surround && (surround.water || surroundMask.water)),
   });
 
   return (
@@ -1450,17 +1511,21 @@ export default function RegionalSustainmentPosture({
               (sensor coverage, terrain, towns), per ADR-0017's
               context-honesty discipline. */}
           {!terrain && <Terrain />}
+          {surround && terrainRect && (
+            <RegionalSurround data={surround} style={prefs.style} exag={exag} rect={terrainRect} mask={surroundMask.texture} cut={!!terrain}
+              brightness={prefs.satBrightness} holo={prefs.holo} />
+          )}
           {terrain && prefs.style === 'sat' && (
             <>
-              <TerrainMesh data={terrain} exag={exag} brightness={prefs.satBrightness} />
-              {patches.map((p) => <PatchMesh key={p.key} data={terrain} patch={p} exag={exag} brightness={prefs.satBrightness} />)}
+              <TerrainMesh data={terrain} exag={exag} brightness={prefs.satBrightness} edge={edge} />
+              {patches.map((p) => <PatchMesh key={p.key} data={terrain} patch={p} exag={exag} brightness={prefs.satBrightness} edge={edge} />)}
               {terrainSource.patchImageryUrl !== '' && (
                 <ViewTiles proj={terrain.proj} minZ={terrain.baseZoom + 1} maxZ={terrainSource.patchMaxZoom} onChange={setViewBoxes} />
               )}
             </>
           )}
           {terrain && prefs.style === 'holo' && (
-            <HoloTerrain data={terrain} exag={exag} opts={prefs.holo} center={sweepCenter} />
+            <HoloTerrain data={terrain} exag={exag} opts={prefs.holo} center={sweepCenter} edge={edge} />
           )}
 
           {/* Everything standing on the ground remounts when the terrain
@@ -1572,9 +1637,13 @@ export default function RegionalSustainmentPosture({
             const nodeV = new THREE.Vector3(node.x, nodeG, node.z);
             const hq = plan.hq;
             const kicker = hq.mode === 'colocated' ? 'REGIONAL · HQ' : undefined;
+            // A region FOB at the regional site (or at the on-map HQ) shares its spot: the marker
+            // stands on that FOB's hub and the zero-length link to it is skipped.
+            const regFob = sites.regional ? regionFobs.find((f) => sameSite(f, sites.regional!)) : undefined;
+            const hqFob = hq.mode === 'onmap' && sites.hq ? regionFobs.find((f) => sameSite(f, sites.hq!)) : undefined;
             return (
               <>
-                {regionFobs.map((fob) => {
+                {regionFobs.filter((fob) => fob !== regFob).map((fob) => {
                   const [fx, fz] = proj.project(fob.lat, fob.lon);
                   return (
                     <DdilNetworkLink
@@ -1582,12 +1651,13 @@ export default function RegionalSustainmentPosture({
                       start={new THREE.Vector3(fx, groundAt(fx, fz), fz)}
                       end={nodeV}
                       groundY={groundAt}
+                      clearance={REGIONAL_LINK_CLEAR}
                       status={status}
                       dim={focusEdge !== null && focusEdge !== fob.edge_id}
                     />
                   );
                 })}
-                <RegionalAggregatorNode position={[node.x, nodeG, node.z]} label={node.label} kicker={kicker} severed={!uplinkUp} grounded />
+                <RegionalAggregatorNode position={[node.x, nodeG, node.z]} label={node.label} kicker={kicker} severed={!uplinkUp} grounded stack={!!regFob} />
                 {hq.mode === 'abstract' && topo && (
                   <>
                     <DdilNetworkLink
@@ -1604,12 +1674,14 @@ export default function RegionalSustainmentPosture({
                       start={nodeV}
                       end={new THREE.Vector3(hq.x, groundAt(hq.x, hq.z), hq.z)}
                       groundY={groundAt}
+                      clearance={REGIONAL_LINK_CLEAR}
                       status={status}
                     />
                     <HqMarker
                       position={[hq.x, groundAt(hq.x, hq.z), hq.z]}
                       severed={!uplinkUp}
                       grounded
+                      stack={!!hqFob}
                       label={sites.hq?.label ?? 'HQ'}
                     />
                   </>
@@ -1620,10 +1692,11 @@ export default function RegionalSustainmentPosture({
                       start={nodeV}
                       end={new THREE.Vector3(hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1])}
                       groundY={groundAt}
+                      clearance={REGIONAL_LINK_CLEAR}
                       status={status}
                     />
                     <group position={[hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1]]}>
-                      <HqChip km={hq.km} bearing={hq.bearing} onOpen={onOpenHq} />
+                      <HqChip km={hq.km} bearing={hq.bearing} from={nodeV} at={new THREE.Vector3(hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1])} onOpen={onOpenHq} />
                     </group>
                   </>
                 )}

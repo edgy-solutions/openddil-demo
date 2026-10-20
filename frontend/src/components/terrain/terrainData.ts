@@ -42,12 +42,21 @@ export type TerrainData = {
 
 const MAX_INFLIGHT = 8;
 
-function loadImage(url: string): Promise<HTMLImageElement | null> {
+export const TILE_TIMEOUT_MS = 15000;
+
+/** Loads a tile; resolves null on error or after `timeoutMs` (a blank tile). */
+export function loadImage(url: string, timeoutMs = TILE_TIMEOUT_MS): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null); // a bad tile stays blank
+    const timer = setTimeout(() => {
+      img.onload = null;
+      img.onerror = null;
+      img.src = '';
+      resolve(null);
+    }, timeoutMs);
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = () => { clearTimeout(timer); resolve(null); }; // a bad tile stays blank
     img.src = url;
   });
 }

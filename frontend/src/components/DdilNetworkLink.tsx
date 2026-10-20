@@ -19,16 +19,18 @@ interface DdilNetworkLinkProps {
   groundY?: (x: number, z: number) => number;
   /** Draw the line at 0.35 of its usual opacity (another link has the focus). */
   dim?: boolean;
+  /** Height the arc keeps above the ground away from its ends (default 3, the HQ map's scale). */
+  clearance?: number;
 }
 
-export default function DdilNetworkLink({ start, end, status, via, groundY, dim }: DdilNetworkLinkProps) {
+export default function DdilNetworkLink({ start, end, status, via, groundY, dim, clearance }: DdilNetworkLinkProps) {
   const bufferRingRef = useRef<THREE.Mesh>(null);
   
   const points = useMemo(
     () => groundY
-      ? linkArc(start.toArray(), end.toArray(), groundY).map(([x, y, z]) => new THREE.Vector3(x, y, z))
+      ? linkArc(start.toArray(), end.toArray(), groundY, undefined, clearance).map(([x, y, z]) => new THREE.Vector3(x, y, z))
       : [start, end],
-    [start, end, groundY],
+    [start, end, groundY, clearance],
   );
   const mid = useMemo(
     () => (groundY ? points[points.length >> 1] : start.clone().lerp(end, 0.5)),

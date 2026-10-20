@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { markerScale, regionExtent, topologyHeights } from '../topologyMarkers';
+import { AGG_PX, FOB_PX, HQ_PX, HUB_TOP, markerScale, regionExtent, stackLift, topologyHeights } from '../topologyMarkers';
 
 describe('markerScale', () => {
   const base = markerScale(4, 20, 100, 800, 50);
@@ -28,5 +28,17 @@ describe('regionExtent', () => {
   it('is the farthest point distance', () => {
     expect(regionExtent([0, 0], [[3, 4], [1, 1], [-2, 0]])).toBe(5);
     expect(regionExtent([0, 0], [[0.5, 0.5]])).toBe(2);
+  });
+});
+
+describe('stackLift', () => {
+  it('lifts a marker clear of the hub top, through screen pixels', () => {
+    const hubTopPx = (HUB_TOP * FOB_PX * 1.25) / 4.7;
+    expect(stackLift(4.5, AGG_PX)).toBeCloseTo((hubTopPx * 4.5) / AGG_PX + 0.5);
+    expect(stackLift(5.5, HQ_PX)).toBeCloseTo((hubTopPx * 5.5) / HQ_PX + 0.5);
+  });
+  it('grows with the hub size and shrinks with the marker size on screen', () => {
+    expect(stackLift(4.5, 18, 44)).toBeGreaterThan(stackLift(4.5, 18, 22));
+    expect(stackLift(4.5, 36, 22)).toBeLessThan(stackLift(4.5, 18, 22));
   });
 });

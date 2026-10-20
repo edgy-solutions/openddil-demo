@@ -4,26 +4,41 @@
 // ramp starts inside the theater and the seam has no brightness step. uMask is the
 // land/sea mask over the layer's own bounds (white = land).
 
+/** The mute ramp of an inner regional layer, so it meets the surround: the rect it ramps from (world x/z) and the distances. */
+export interface EdgeRamp { rect: [number, number, number, number]; near: number; far: number }
+/** The HQ ramp (-60..400 HQ units) at `unit` world units per HQ unit. */
+export function edgeRamp(rect: [number, number, number, number], unit: number): EdgeRamp {
+  return { rect, near: -60 * unit, far: 400 * unit };
+}
+
 export const SAT_VERT = /* glsl */ `
 varying vec2 vUv; varying vec3 vW; varying vec3 vN;
+#include <fog_pars_vertex>
 void main() {
   vUv = uv; vN = normalize(mat3(modelMatrix) * normal);
   vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz;
-  gl_Position = projectionMatrix * viewMatrix * w;
+  vec4 mvPosition = viewMatrix * w;
+  gl_Position = projectionMatrix * mvPosition;
+  #include <fog_vertex>
 }`;
 
 export const SAT_FRAG = /* glsl */ `
-uniform sampler2D uMap, uMask; uniform vec4 uTheater; uniform vec3 uFadeColor; uniform float uSurround;
+uniform sampler2D uMap, uMask; uniform vec4 uTheater; uniform vec3 uFadeColor; uniform float uSurround, uCut;
+// Distances in the layer's world units (HQ values by default; the regional map scales them): the edge
+// mute ramp (uEdgeNear..uEdgeFar) and the fade to the background (uFadeNear..uFadeFar).
+uniform float uEdgeNear, uEdgeFar, uFadeNear, uFadeFar;
+uniform float uDesat, uBright; // the unmuted desaturation and brightness (0 and 1 at HQ; the regional layer's own)
 varying vec2 vUv; varying vec3 vW; varying vec3 vN;
+#include <fog_pars_fragment>
 void main() {
   vec2 p = vW.xz;
-  if (uSurround > 0.5) {
+  if (uSurround > 0.5 && uCut > 0.5) {
     vec2 inset = 0.01 * (uTheater.zw - uTheater.xy);
     if (all(greaterThan(p, uTheater.xy + inset)) && all(lessThan(p, uTheater.zw - inset))) discard;
   }
   vec2 qd = max(uTheater.xy - p, p - uTheater.zw);
   float sd = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0);
-  float m = smoothstep(-60.0, 400.0, sd);
+  float m = smoothstep(uEdgeNear, uEdgeFar, sd);
   vec3 col = texture2D(uMap, vUv).rgb * vec3(0.66, 0.71, 0.77);
   col *= 0.6 + 0.4 * max(dot(normalize(vN), normalize(vec3(0.4, 1.0, 0.4))), 0.0);
   // One flat sea colour from the land mask: a tile source's sea tone can change between zooms,
@@ -31,11 +46,12 @@ void main() {
   float land = smoothstep(0.35, 0.65, texture2D(uMask, vUv).r);
   col = mix(vec3(0.035, 0.06, 0.095), col, land);
   float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  col = mix(col, vec3(lum), 0.8 * m) * (1.0 - 0.55 * m);
-  col = mix(col, uFadeColor, smoothstep(1200.0, 3000.0, length(p)) * uSurround);
+  col = mix(col, vec3(lum), uDesat + (0.8 - uDesat) * m) * (1.0 - 0.55 * m) * uBright;
+  col = mix(col, uFadeColor, smoothstep(uFadeNear, uFadeFar, length(p)) * uSurround);
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
+  #include <fog_fragment>
 }`;
 
 export const HOLO_VERT = /* glsl */ `
@@ -43,22 +59,28 @@ attribute float hraw;
 varying float vH;
 varying vec3 vW;
 varying vec2 vUv;
+#include <fog_pars_vertex>
 void main() {
   vH = hraw;
   vUv = uv;
   vec4 w = modelMatrix * vec4(position, 1.0);
   vW = w.xyz;
-  gl_Position = projectionMatrix * viewMatrix * w;
+  vec4 mvPosition = viewMatrix * w;
+  gl_Position = projectionMatrix * mvPosition;
+  #include <fog_vertex>
 }`;
 
 export const HOLO_FRAG = /* glsl */ `
 uniform vec3 uColor, uFadeColor;
-uniform float uFloor, uStep, uSeaStep, uKm, uGlow, uSurround, uMute;
+uniform float uFloor, uStep, uSeaStep, uKm, uGlow, uSurround, uMute, uCut;
+uniform float uEdgeNear, uEdgeFar, uFadeNear, uFadeFar; // as in SAT_FRAG
+uniform float uContours, uDepth, uCoast, uGrid; // 1 = draw (always at HQ)
 uniform vec4 uTheater; // world xz rect: minX, minZ, maxX, maxZ
 uniform sampler2D uMask;
 varying float vH;
 varying vec3 vW;
 varying vec2 vUv;
+#include <fog_pars_fragment>
 
 float isoLine(float v, float w) {
   float d = abs(fract(v - 0.5) - 0.5) / max(fwidth(v), 1e-6);
@@ -70,8 +92,8 @@ void main() {
   vec2 p = vW.xz;
   vec2 qd = max(uTheater.xy - p, p - uTheater.zw);
   float sd = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0);
-  float m = uMute * smoothstep(-60.0, 400.0, sd);
-  if (uSurround > 0.5) {
+  float m = uMute * smoothstep(uEdgeNear, uEdgeFar, sd);
+  if (uSurround > 0.5 && uCut > 0.5) {
     vec2 inset = 0.01 * (uTheater.zw - uTheater.xy);
     if (all(greaterThan(p, uTheater.xy + inset)) && all(lessThan(p, uTheater.zw - inset))) discard;
   }
@@ -80,35 +102,37 @@ void main() {
   float lift = clamp(vH / 20.0, 0.0, 1.0);
   vec3 col = mix(uColor * 0.012, uColor * (0.045 + 0.06 * lift), land);
   float glow = 0.0;
-  { float v = vH / uStep; glow += 0.45 * land * smoothstep(uFloor - 0.5, uFloor, vH) * isoLine(v, 1.0) * sparse(v); }
-  if (land < 0.5) { float v = vH / uSeaStep; glow += 0.3 * (1.0 - land) * isoLine(v, 1.0) * sparse(v); }
+  { float v = vH / uStep; glow += uContours * 0.45 * land * smoothstep(uFloor - 0.5, uFloor, vH) * isoLine(v, 1.0) * sparse(v); }
+  if (land < 0.5) { float v = vH / uSeaStep; glow += uDepth * 0.3 * (1.0 - land) * isoLine(v, 1.0) * sparse(v); }
   {
     float e = abs(mask - 0.5) / max(fwidth(mask), 1e-4);
-    glow += 1.2 * (1.0 - clamp(e / 1.5, 0.0, 1.0)) + 0.35 * exp(-e / 6.0);
+    glow += uCoast * (1.2 * (1.0 - clamp(e / 1.5, 0.0, 1.0)) + 0.35 * exp(-e / 6.0));
   }
   {
     vec2 g = p / uKm;
-    glow += 0.12 * max(isoLine(g.x, 1.0) * sparse(g.x), isoLine(g.y, 1.0) * sparse(g.y));
+    glow += uGrid * 0.12 * max(isoLine(g.x, 1.0) * sparse(g.x), isoLine(g.y, 1.0) * sparse(g.y));
   }
   col += uColor * glow * uGlow * (1.0 - 0.75 * m);
   // Outside the theater: stay under the bloom threshold (luminance 0.2), so only the coast reads, dimly.
   float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
   float cap = mix(1000.0, 0.14, m);
   col *= min(1.0, cap / max(lum, 1e-5));
-  col = mix(col, uFadeColor, smoothstep(1200.0, 3000.0, length(p)) * uSurround);
+  col = mix(col, uFadeColor, smoothstep(uFadeNear, uFadeFar, length(p)) * uSurround);
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
+  #include <fog_fragment>
 }`;
 
 // The regional satellite drape: the HQ satellite shading (unlit, cool tint, a soft sun term)
 // with a flat sea colour from the mask on the base layer, and a brightness control. Patches
 // carry no mask and keep the texture's alpha so their feathered edges blend into the base.
 export const REGIONAL_SAT_VERT = /* glsl */ `
-varying vec2 vUv; varying vec3 vN;
+varying vec2 vUv; varying vec3 vN; varying vec3 vW;
 #include <fog_pars_vertex>
 void main() {
   vUv = uv; vN = normalize(mat3(modelMatrix) * normal);
+  vW = (modelMatrix * vec4(position, 1.0)).xyz;
   vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
@@ -116,7 +140,9 @@ void main() {
 
 export const REGIONAL_SAT_FRAG = /* glsl */ `
 uniform sampler2D uMap, uMask; uniform float uHasMask, uBright;
-varying vec2 vUv; varying vec3 vN;
+// Optional edge mute, the surround's: on only while the surround is drawn, so the two meet without a seam.
+uniform float uEdge, uEdgeNear, uEdgeFar; uniform vec4 uTheater;
+varying vec2 vUv; varying vec3 vN; varying vec3 vW;
 #include <fog_pars_fragment>
 void main() {
   vec4 tex = texture2D(uMap, vUv);
@@ -127,7 +153,10 @@ void main() {
     col = mix(vec3(0.035, 0.06, 0.095), col, land);
   }
   float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-  col = mix(col, vec3(lum), 0.25) * uBright;
+  vec2 qd = max(uTheater.xy - vW.xz, vW.xz - uTheater.zw);
+  float sd = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0);
+  float m = uEdge * smoothstep(uEdgeNear, uEdgeFar, sd);
+  col = mix(col, vec3(lum), 0.25 + 0.55 * m) * (1.0 - 0.55 * m) * uBright;
   gl_FragColor = vec4(col, tex.a);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>

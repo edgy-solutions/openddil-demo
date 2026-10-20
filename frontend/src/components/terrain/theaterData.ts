@@ -53,7 +53,8 @@ export interface TheaterTerrainData {
   groundY: (x: number, z: number) => number;
 }
 
-function useSurround(b: Bounds | null, proj: Projection, source: TerrainSource): TerrainData | null {
+/** Loads the muted surround terrain for `b` (null: none). Shared by the HQ and regional maps. */
+export function useSurround(b: Bounds | null, proj: Projection, source: TerrainSource): TerrainData | null {
   const [data, setData] = useState<TerrainData | null>(null);
   const { elevationUrl, imageryUrl, landUrl, lakesUrl, waterUrl, basemap, reliefPalette, imageryMaxZoom } = source;
   useEffect(() => {
@@ -72,7 +73,8 @@ function useSurround(b: Bounds | null, proj: Projection, source: TerrainSource):
   return data;
 }
 
-function useMask(b: Bounds | null, source: TerrainSource): { texture: THREE.Texture | null; water: boolean } {
+/** Loads the land/sea mask over `b` (null: none). */
+export function useMask(b: Bounds | null, source: TerrainSource): { texture: THREE.Texture | null; water: boolean } {
   const [m, setM] = useState<{ texture: THREE.Texture; water: boolean } | null>(null);
   const { landUrl, lakesUrl, waterUrl } = source;
   useEffect(() => {
