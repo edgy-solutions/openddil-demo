@@ -320,6 +320,47 @@ describe('B4 approval chain on the pane', () => {
     expect(screen.getByTestId('approval-chain-unreadable').textContent).toBe('1 entry unreadable');
   });
 
+  const lines = () => screen.getAllByTestId('approval-chain-step').map((l) => l.textContent);
+  const labStep = (sub: string, at: string) => ({
+    role: 'approver', approver_sub: sub, decision: 'approved', decided_at: at,
+  });
+
+  it('lab producer shape (no step): numbered by position, none unreadable', () => {
+    view(rec({ approval_chain: [labStep('sub-a', 't1'), labStep('sub-b', 't2')] }));
+    expect(lines()).toEqual([
+      '1 · approver · sub-a · approved · t1',
+      '2 · approver · sub-b · approved · t2',
+    ]);
+    expect(screen.queryByTestId('approval-chain-unreadable')).toBeNull();
+  });
+
+  it('schema-minimal {approver_sub} is readable and omits absent parts', () => {
+    view(rec({ approval_chain: [{ approver_sub: 'sub-a' }] }));
+    expect(lines()).toEqual(['1 · sub-a']);
+    expect(screen.queryByTestId('approval-chain-unreadable')).toBeNull();
+  });
+
+  it('an entry without approver_sub is unreadable', () => {
+    view(rec({ approval_chain: [{ role: 'r', decision: 'approved' }, { approver_sub: '' }, { approver_sub: 'sub-a' }] }));
+    expect(lines()).toEqual(['1 · sub-a']);
+    expect(screen.getByTestId('approval-chain-unreadable').textContent).toBe('2 entries unreadable');
+  });
+
+  it('mixed step presence keeps array order; own step is shown, else position', () => {
+    view(rec({ approval_chain: [{ approver_sub: 'a', step: 5 }, { approver_sub: 'b' }, { approver_sub: 'c', step: 1 }] }));
+    expect(lines()).toEqual(['5 · a', '2 · b', '1 · c']);
+  });
+
+  it('every entry with a step sorts by step; wrong-typed optionals are absent', () => {
+    view(rec({ approval_chain: [{ approver_sub: 'b', step: 2, role: 7 }, { approver_sub: 'a', step: 1, decided_at: 3 }] }));
+    expect(lines()).toEqual(['1 · a', '2 · b']);
+  });
+
+  it('shows an unknown decision verbatim', () => {
+    view(rec({ approval_chain: [{ approver_sub: 'a', decision: 'release' }] }));
+    expect(lines()).toEqual(['1 · a · release']);
+  });
+
   it('no chain, nothing extra', () => {
     view(rec({}));
     expect(screen.queryByTestId('approval-chain')).toBeNull();

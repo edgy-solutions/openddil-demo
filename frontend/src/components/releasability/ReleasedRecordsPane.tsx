@@ -30,7 +30,7 @@
 // endpoint-shaped fixture without exercising the fetch hook
 // (react-dom/server's renderToStaticMarkup — no @testing-library/react, no
 // jsdom, see vitest.config.ts).
-import { Fragment, useState } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import {
   useEgressAdmission,
   type DecisionRecord,
@@ -135,72 +135,99 @@ function Cell({ value }: { value: unknown }) {
 }
 
 export interface ApprovalStep {
+  /** Displayed number: the entry's own `step` if it sent one, else its
+   *  1-based position among the readable entries in display order. */
   step: number;
-  role: string;
+  /** Whether the entry carried a numeric `step` itself. */
+  hasStep: boolean;
   approver_sub: string;
-  decision: 'approved' | 'rejected';
-  decided_at: string;
+  role?: string;
+  decision?: string;
+  decided_at?: string;
 }
 
 /** Reads `body.approval_chain` generically (it is a list, not a configured
- *  pointer). Returns the readable steps sorted by `step` and the count of
- *  entries skipped as malformed, or null when the body has no non-empty
- *  chain. Never throws. */
+ *  pointer), following the kind schema: an entry is readable iff it is a
+ *  plain object with a non-empty string `approver_sub` (the schema's only
+ *  required key). `decided_at`, `role`, `decision` (any non-empty string,
+ *  shown verbatim) and `step` are optional; a wrong-typed optional field is
+ *  treated as absent. No producer on the lab sends `step`, so requiring it
+ *  made every row read "unreadable". Order: by `step` (stable) only when
+ *  EVERY readable entry has one, else array order. Returns the readable steps
+ *  and the count of unreadable entries, or null when the body has no
+ *  non-empty chain. Never throws. */
 function readApprovalChain(
   body: unknown,
 ): { steps: ApprovalStep[]; unreadable: number } | null {
   const chain = resolvePointer(body, '/approval_chain');
   if (!Array.isArray(chain) || chain.length === 0) return null;
-  const steps: ApprovalStep[] = [];
+  const entries: { n: number | null; e: Omit<ApprovalStep, 'step' | 'hasStep'> }[] = [];
   let unreadable = 0;
   for (const e of chain) {
-    if (
-      isPlainObject(e)
-      && typeof e.step === 'number' && Number.isFinite(e.step)
-      && typeof e.role === 'string'
-      && typeof e.approver_sub === 'string'
-      && (e.decision === 'approved' || e.decision === 'rejected')
-      && typeof e.decided_at === 'string'
-    ) {
-      steps.push({
-        step: e.step, role: e.role, approver_sub: e.approver_sub,
-        decision: e.decision, decided_at: e.decided_at,
-      });
-    } else {
+    if (!isPlainObject(e) || typeof e.approver_sub !== 'string' || e.approver_sub === '') {
       unreadable += 1;
+      continue;
     }
+    entries.push({
+      n: typeof e.step === 'number' && Number.isFinite(e.step) ? e.step : null,
+      e: {
+        approver_sub: e.approver_sub,
+        role: typeof e.role === 'string' && e.role !== '' ? e.role : undefined,
+        decision: typeof e.decision === 'string' && e.decision !== '' ? e.decision : undefined,
+        decided_at: typeof e.decided_at === 'string' && e.decided_at !== '' ? e.decided_at : undefined,
+      },
+    });
   }
-  steps.sort((a, b) => a.step - b.step);
+  if (entries.length > 0 && entries.every((x) => x.n !== null)) {
+    entries.sort((a, b) => (a.n as number) - (b.n as number));
+  }
+  const steps = entries.map((x, i) => ({
+    ...x.e, step: x.n ?? i + 1, hasStep: x.n !== null,
+  }));
   return { steps, unreadable };
 }
 
 /** The approval chain under a row, one line per step:
- *  step · role · approver_sub · decision · decided_at. `decided_at` is shown
- *  verbatim, as every other cell in this pane is. */
+ *  step · role · approver_sub · decision · decided_at, omitting absent
+ *  optional parts. `decided_at` is shown verbatim, as every other cell in
+ *  this pane is. */
 function ApprovalChain({ chain }: { chain: { steps: ApprovalStep[]; unreadable: number } }) {
   return (
     <ul className="space-y-0.5 text-[11px] text-slate-400" data-testid="approval-chain">
-      {chain.steps.map((s, i) => (
-        <li key={i} className="whitespace-nowrap" data-testid="approval-chain-step">
-          <span className="text-slate-300">{s.step}</span>
-          <span className="text-slate-600"> · </span>
-          <span>{s.role}</span>
-          <span className="text-slate-600"> · </span>
-          <span>{s.approver_sub}</span>
-          <span className="text-slate-600"> · </span>
-          <span
-            className={
-              s.decision === 'approved'
-                ? 'rounded border border-emerald-800/70 bg-emerald-950/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-emerald-300'
-                : 'rounded border border-rose-900/70 bg-rose-950/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-rose-300'
-            }
-          >
-            {s.decision}
-          </span>
-          <span className="text-slate-600"> · </span>
-          <span>{s.decided_at}</span>
-        </li>
-      ))}
+      {chain.steps.map((s, i) => {
+        const parts: ReactNode[] = [
+          <span key="step" className="text-slate-300">{s.step}</span>,
+        ];
+        if (s.role !== undefined) parts.push(<span key="role">{s.role}</span>);
+        parts.push(<span key="sub">{s.approver_sub}</span>);
+        if (s.decision !== undefined) {
+          const tone =
+            s.decision === 'approved'
+              ? 'border-emerald-800/70 bg-emerald-950/40 text-emerald-300'
+              : s.decision === 'rejected'
+                ? 'border-rose-900/70 bg-rose-950/40 text-rose-300'
+                : 'border-slate-700 bg-slate-900/40 text-slate-300';
+          parts.push(
+            <span
+              key="decision"
+              className={`rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wider ${tone}`}
+            >
+              {s.decision}
+            </span>,
+          );
+        }
+        if (s.decided_at !== undefined) parts.push(<span key="at">{s.decided_at}</span>);
+        return (
+          <li key={i} className="whitespace-nowrap" data-testid="approval-chain-step">
+            {parts.map((p, k) => (
+              <Fragment key={k}>
+                {k > 0 && <span className="text-slate-600"> · </span>}
+                {p}
+              </Fragment>
+            ))}
+          </li>
+        );
+      })}
       {chain.unreadable > 0 && (
         <li className="text-amber-300" data-testid="approval-chain-unreadable">
           {chain.unreadable} {chain.unreadable === 1 ? 'entry' : 'entries'} unreadable
