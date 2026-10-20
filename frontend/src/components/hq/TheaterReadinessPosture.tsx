@@ -60,6 +60,8 @@ import { LinkChips } from '../network/LinkChips';
 import { PostureHeader } from '../PostureHeader';
 import {
   linkStateWord,
+  ddilStatusOfLink,
+  type DdilLinkStatus,
   type LinkReading,
   type LinkState,
 } from '../../lib/linkStatus';
@@ -340,16 +342,16 @@ const LINK_WORD_CLASS: Record<LinkState, string> = {
   unknown: 'text-slate-400',
 };
 
-const DDIL_STATUS: Record<EdgeState, 'NOMINAL' | 'IDLE' | 'SEVERED' | 'UNKNOWN' | 'UNREACHABLE'> = {
-  up: 'NOMINAL',
-  idle: 'IDLE',
-  down: 'SEVERED',
-  unknown: 'UNKNOWN',
+const DDIL_STATUS: Record<EdgeState, DdilLinkStatus> = {
+  up: ddilStatusOfLink('up'),
+  idle: ddilStatusOfLink('idle'),
+  down: ddilStatusOfLink('down'),
+  unknown: ddilStatusOfLink('unknown'),
   unreachable: 'UNREACHABLE',
 };
 
 export function FobLabel({
-  position, label, total, composition, attachment, link, unreachableVia, above,
+  position, label, total, composition, attachment, link, unreachableVia, linkTo, above,
 }: {
   position: [number, number, number];
   label: string;
@@ -366,6 +368,9 @@ export function FobLabel({
   /** Set when an ancestor link is down: the link then reads UNREACHABLE
    *  through that ancestor, whatever its own row says. */
   unreachableVia?: string;
+  /** Set when this FOB sits at its parent's site, so its link is not drawn:
+   *  names the parent after the word ("HQ" or a tier id). */
+  linkTo?: string;
   /** Chips stacked above the badge (HQ and region labels sharing this FOB's
    *  site). The badge itself keeps its position; they grow upward. */
   above?: React.ReactNode;
@@ -398,6 +403,9 @@ export function FobLabel({
         >
           {word}
         </span>
+        {linkTo && (
+          <span className="ml-1 text-[9px] tracking-widest text-slate-400" data-link-to={linkTo}>→ {linkTo}</span>
+        )}
       </div>
       {hasOrbatComposition ? (
         <div className="flex gap-2 text-[9px] mt-0.5">
@@ -553,6 +561,12 @@ export default function TheaterReadinessPosture() {
     siteGroups.forEach((g, i) => g.keys.forEach((k) => m.set(k, i)));
     return m;
   }, [siteGroups]);
+  // A tier at its parent's site has a zero-length link: not drawn, and its
+  // label names the parent instead.
+  const coSitedWithParent = useCallback(
+    (id: string, to: string) => groupOf.get(id) === groupOf.get(to === HQ_NODE ? HQ_KEY : to),
+    [groupOf],
+  );
 
   // The launcher's own fleet position, projected to the ground, when it has
   // one; otherwise its FOB (this map draws FOBs, not individual assets).
@@ -873,7 +887,7 @@ export default function TheaterReadinessPosture() {
           {topo.edges.map((e) => {
             const [sx, sz] = nodePos.get(e.id)!;
             const [ex, ez] = nodePos.get(e.to) ?? hqPos;
-            if (groupOf.get(e.id) === groupOf.get(e.to === HQ_NODE ? HQ_KEY : e.to)) return null; // same site: zero length
+            if (coSitedWithParent(e.id, e.to)) return null; // same site: zero length
             return (
               <DdilNetworkLink
                 key={`link-${e.id}`}
@@ -904,10 +918,13 @@ export default function TheaterReadinessPosture() {
             for (const n of nodes.filter((nn) => !nn.fob)) {
               const e = edgeById.get(n.id);
               const word = e ? (e.via ? `UNREACHABLE via ${e.via}` : linkStateWord(e.reading)) : '';
+              const linkTo = e && !e.via && coSitedWithParent(e.id, e.to)
+                ? (e.to === HQ_NODE ? 'HQ' : e.to) : undefined;
               chips.push(
                 <div key={`region-${n.id}`} className="font-mono text-[10px] tracking-widest text-cyan-200 bg-slate-900/80 border border-slate-700 px-2 py-1 rounded-sm">
                   <span className="text-slate-200 font-bold">{n.id}</span>
                   {e && <span className="ml-2 text-[9px]" data-link-state={word}>{word}</span>}
+                  {linkTo && <span className="ml-1 text-[9px] tracking-widest text-slate-400" data-link-to={linkTo}>→ {linkTo}</span>}
                 </div>,
               );
             }
@@ -939,6 +956,11 @@ export default function TheaterReadinessPosture() {
                 attachment={m.attachment}
                 link={edgeById.get(m.fob.edge_id)?.reading}
                 unreachableVia={edgeById.get(m.fob.edge_id)?.via}
+                linkTo={(() => {
+                  const fe = edgeById.get(m.fob.edge_id);
+                  return fe && !fe.via && coSitedWithParent(fe.id, fe.to)
+                    ? (fe.to === HQ_NODE ? 'HQ' : fe.to) : undefined;
+                })()}
                 above={mi === 0 && chips.length > 0
                   ? <div className="flex flex-col items-center gap-1">{chips}</div>
                   : undefined}

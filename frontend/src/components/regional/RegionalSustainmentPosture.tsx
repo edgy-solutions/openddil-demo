@@ -148,7 +148,10 @@ import { useLinkIndicator } from '../../hooks/useLinkIndicator';
 import type { UseLinkControlResult } from '../../hooks/useLinkControl';
 import {
   classifyLink,
+  ddilStatusOfLink,
+  ddilStatusOfIndicator,
   summarizeLinks,
+  type DdilLinkStatus,
   type LinkReading,
 } from '../../lib/linkStatus';
 
@@ -1154,6 +1157,17 @@ export default function RegionalSustainmentPosture({
     () => (regionId ? fobs.filter((f) => f.region_id === regionId) : fobs),
     [fobs, regionId],
   );
+  // Line status per FOB -> regional link: the same link_status row the
+  // pull-down reads for that FOB.
+  const fobLineStatus = useMemo(() => {
+    const m = new Map<string, DdilLinkStatus>();
+    for (const f of regionFobs) {
+      m.set(f.edge_id, ddilStatusOfLink(classifyLink(linkRows.links.get(f.edge_id), linkNowMs).state));
+    }
+    return m;
+  }, [regionFobs, linkRows.links, linkNowMs]);
+  // Regional -> HQ line: the uplink indicator the header's uplink row uses.
+  const uplinkLineStatus = ddilStatusOfIndicator(uplinkIndicator);
   // With no FOBs, centre on the fleet itself so live assets stay on screen. The
   // centre is rounded to 0.01 deg: terrain and the scene are registered to the
   // projection, so a creeping centre would reload them on every position update.
@@ -1492,6 +1506,10 @@ export default function RegionalSustainmentPosture({
           <div className="w-3 h-3 bg-emerald-500"></div>
           <span className="text-slate-300">NOMINAL LINK</span>
         </div>
+        <div className="flex items-center gap-2 mb-2">
+          <div className="w-3 h-3 bg-amber-500"></div>
+          <span className="text-slate-300">IDLE LINK</span>
+        </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 bg-rose-500"></div>
           <span className="text-slate-300">SEVERED LINK</span>
@@ -1604,10 +1622,9 @@ export default function RegionalSustainmentPosture({
               The lines below DO represent real topology: FOBs are real
               network endpoints (per-edge bridges), regional aggregators
               are real logical infrastructure, HQ is the up-chain. Link
-              state comes from the same edge_buffer_status flag the
-              header uses, so severance toggling is consistent across
-              the view. Future: per-edge bridge health would let each
-              FOB->aggregator line carry its own state independently. */}
+              state comes from the pull-down's sources: each FOB line from
+              that FOB's link_status row, the regional->HQ line from the
+              uplink indicator. Unobserved reads UNKNOWN, never green. */}
           {plan.kind === 'fallback' && regionalCentroid && topo && (
             <>
               {regionFobs.map((fob) => {
@@ -1617,7 +1634,7 @@ export default function RegionalSustainmentPosture({
                     key={`fob-link-${fob.edge_id}`}
                     start={new THREE.Vector3(fx, groundAt(fx, fz), fz)}
                     end={new THREE.Vector3(regionalCentroid.x, topo.aggY, regionalCentroid.z)}
-                    status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
+                    status={fobLineStatus.get(fob.edge_id) ?? 'UNKNOWN'}
                     dim={focusEdge !== null && focusEdge !== fob.edge_id}
                   />
                 );
@@ -1625,7 +1642,7 @@ export default function RegionalSustainmentPosture({
               <DdilNetworkLink
                 start={new THREE.Vector3(regionalCentroid.x, topo.aggY, regionalCentroid.z)}
                 end={new THREE.Vector3(regionalCentroid.x, topo.hqY, regionalCentroid.z)}
-                status={uplinkUp ? 'NOMINAL' : 'SEVERED'}
+                status={uplinkLineStatus}
               />
               <RegionalAggregatorNode
                 position={[regionalCentroid.x, topo.aggY, regionalCentroid.z]}
@@ -1639,7 +1656,8 @@ export default function RegionalSustainmentPosture({
             </>
           )}
           {plan.kind === 'sites' && (() => {
-            const status = uplinkUp ? 'NOMINAL' : 'SEVERED';
+            // Regional -> HQ lines use the uplink indicator; FOB lines use fobLineStatus.
+            const status = uplinkLineStatus;
             const node = plan.regional;
             const nodeG = groundAt(node.x, node.z);
             const nodeV = new THREE.Vector3(node.x, nodeG, node.z);
@@ -1660,7 +1678,7 @@ export default function RegionalSustainmentPosture({
                       end={nodeV}
                       groundY={groundAt}
                       clearance={REGIONAL_LINK_CLEAR}
-                      status={status}
+                      status={fobLineStatus.get(fob.edge_id) ?? 'UNKNOWN'}
                       dim={focusEdge !== null && focusEdge !== fob.edge_id}
                     />
                   );

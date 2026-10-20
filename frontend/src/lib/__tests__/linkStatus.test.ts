@@ -8,6 +8,8 @@ import {
   summarizeLinks,
   summaryText,
   allLinksDown,
+  ddilStatusOfLink,
+  ddilStatusOfIndicator,
   type LinkStatusRow,
 } from '../linkStatus';
 
@@ -122,5 +124,24 @@ describe('formatDataAge', () => {
     expect(formatDataAge(2.5)).toBe('2.5s');
     expect(formatDataAge(0)).toBe('0.0s');
     expect(formatDataAge(null)).toBe('—');
+  });
+});
+
+describe('ddilStatusOfLink', () => {
+  it('maps every link state', () => {
+    expect(ddilStatusOfLink('up')).toBe('NOMINAL');
+    expect(ddilStatusOfLink('idle')).toBe('IDLE');
+    expect(ddilStatusOfLink('down')).toBe('SEVERED');
+    expect(ddilStatusOfLink('unknown')).toBe('UNKNOWN');
+  });
+});
+
+describe('ddilStatusOfIndicator', () => {
+  it('is green only when observed up', () => {
+    expect(ddilStatusOfIndicator('up')).toBe('NOMINAL');
+    expect(ddilStatusOfIndicator('severed')).toBe('SEVERED');
+    expect(ddilStatusOfIndicator('unknown')).toBe('UNKNOWN');
+    expect(ddilStatusOfIndicator('stale')).toBe('UNKNOWN');
+    expect(ddilStatusOfIndicator('probe_down')).toBe('UNKNOWN');
   });
 });
