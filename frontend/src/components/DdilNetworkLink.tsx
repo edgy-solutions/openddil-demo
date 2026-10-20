@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber';
 import { Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { linkArc } from '../lib/linkArc';
+import type { DdilLinkStatus } from '../lib/linkStatus';
 
 // NOMINAL up, IDLE up with no traffic (amber, solid), SEVERED down, UNKNOWN not
 // measured (slate, dashed), UNREACHABLE an ancestor link is down so this one cannot
@@ -12,7 +13,7 @@ const LINK_COLOR = { NOMINAL: '#10b981', IDLE: '#f59e0b', SEVERED: '#f43f5e', UN
 interface DdilNetworkLinkProps {
   start: THREE.Vector3;
   end: THREE.Vector3;
-  status: 'NOMINAL' | 'SEVERED' | 'IDLE' | 'UNKNOWN' | 'UNREACHABLE';
+  status: DdilLinkStatus;
   /** For UNREACHABLE: the nearest down ancestor, named in the label. */
   via?: string;
   /** Ground height at (x, z). When given, the link arcs over the ground instead of running straight. */

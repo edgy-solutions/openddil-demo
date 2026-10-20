@@ -9,7 +9,30 @@
 // Absence is never "up". A missing row, a row the monitor has stopped
 // refreshing, or a state this code does not recognise all read 'unknown'.
 
+import type { LinkIndicatorKind } from './linkIndicator';
+
 export type LinkState = 'up' | 'idle' | 'down' | 'unknown';
+
+/** What DdilNetworkLink can draw. UNREACHABLE is drawn only for a link whose
+ *  ancestor is down; it has no source in a link reading. */
+export type DdilLinkStatus = 'NOMINAL' | 'SEVERED' | 'IDLE' | 'UNKNOWN' | 'UNREACHABLE';
+
+/** The line status for a link_status reading. */
+export function ddilStatusOfLink(state: LinkState): DdilLinkStatus {
+  switch (state) {
+    case 'up': return 'NOMINAL';
+    case 'idle': return 'IDLE';
+    case 'down': return 'SEVERED';
+    default: return 'UNKNOWN';
+  }
+}
+
+/** The line status for an uplink indicator: green only when observed up. */
+export function ddilStatusOfIndicator(kind: LinkIndicatorKind): DdilLinkStatus {
+  if (kind === 'up') return 'NOMINAL';
+  if (kind === 'severed') return 'SEVERED';
+  return 'UNKNOWN';
+}
 
 export interface LinkStatusRow {
   id: string;

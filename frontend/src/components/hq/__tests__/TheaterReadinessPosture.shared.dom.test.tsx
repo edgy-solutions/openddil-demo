@@ -6,6 +6,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 
 const mockFobs: unknown[] = [];
 let mockDep: Record<string, unknown> = {};
+const mockLinks = new Map<string, unknown>();
 vi.mock('../../../hooks/useLinkControl', () => ({
   useLinkControl: () => ({ status: 'ready', uplink: null, children: [], set: () => {}, setToxics: () => {} }),
 }));
@@ -15,7 +16,7 @@ vi.mock('../../../hooks', () => ({
   useMunitionTrackFeed: () => ({ data: [], isLoading: false }),
   useAllEffectorLaunches: () => ({ data: [], isLoading: false }),
   useAllLogisticsStatus: () => ({ data: [], isLoading: false }),
-  useLinkStatus: () => ({ links: new Map(), isLoading: false, isError: false }),
+  useLinkStatus: () => ({ links: mockLinks, isLoading: false, isError: false }),
 }));
 vi.mock('../../../deployment', () => ({
   deployment: () => ({ fobs: mockFobs, ...mockDep }),
@@ -69,5 +70,36 @@ describe('TheaterReadinessPosture shared sites', () => {
     render(<TheaterReadinessPosture />);
     expect(screen.getAllByTestId('hq-node-label')).toHaveLength(1);
     expect(screen.getAllByText('edge-01')).toHaveLength(1);
+  });
+
+  it('names the parent on a co-sited FOB whose link is not drawn', () => {
+    const fresh = new Date().toISOString();
+    mockLinks.clear();
+    mockLinks.set('edge-01', {
+      id: 'edge-01', link_state: 'idle', traffic: '', declared_idle: false, heartbeat_age_s: 1,
+      last_heartbeat_at: fresh, bridge_lag: 0, updated_at: fresh,
+    });
+    mockFobs.length = 0;
+    mockFobs.push({ edge_id: 'edge-01', region_id: 'r1', lat: 10, lon: 20, name: 'f' });
+    mockDep = {
+      hq: { lat: 10, lon: 20 },
+      tiers: [{ id: 'edge-01', parent: null, hasChildren: false }],
+    };
+    const { container } = render(<TheaterReadinessPosture />);
+    expect(container.querySelector('[data-link-state="IDLE"]')).not.toBeNull();
+    expect(container.querySelector('[data-link-to="HQ"]')).not.toBeNull();
+    cleanup();
+    mockLinks.clear();
+  });
+
+  it('shows no parent suffix on a FOB elsewhere', () => {
+    mockFobs.length = 0;
+    mockFobs.push({ edge_id: 'edge-01', region_id: 'r1', lat: 10, lon: 20, name: 'f' });
+    mockDep = {
+      hq: { lat: 11, lon: 21 },
+      tiers: [{ id: 'edge-01', parent: null, hasChildren: false }],
+    };
+    const { container } = render(<TheaterReadinessPosture />);
+    expect(container.querySelector('[data-link-to]')).toBeNull();
   });
 });
