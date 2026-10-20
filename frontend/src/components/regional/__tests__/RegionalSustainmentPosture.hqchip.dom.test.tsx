@@ -22,7 +22,7 @@ vi.mock('../../../hooks/useEffectorLaunches', () => ({ useMunitionLaunches: () =
 vi.mock('../../../hooks/useLinkIndicator', () => ({ useLinkIndicator: () => 'up' }));
 vi.mock('../../terrain/terrain', async (orig) => ({ ...(await orig<typeof import('../../terrain/terrain')>()), useTerrain: () => ({ data: null, failed: false }), usePatches: () => [] }));
 vi.mock('@react-three/fiber', () => ({
-  Canvas: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Canvas: ({ children }: { children?: ReactNode }) => <div data-testid="canvas">{children}</div>,
   useFrame: () => {},
   useThree: () => ({ size: { width: 800, height: 600 }, gl: { getPixelRatio: () => 1 } }),
 }));
@@ -74,5 +74,17 @@ describe('off-map HQ chip', () => {
   it('is plain text when nothing can open HQ', () => {
     view();
     expect(screen.getByTestId('hq-chip').tagName).toBe('SPAN');
+  });
+});
+
+describe('off-map HQ chip placement', () => {
+  afterEach(() => cleanup());
+
+  it('is a DOM overlay outside the Canvas, with the same text and label', () => {
+    view(() => {});
+    const chip = screen.getByTestId('hq-chip');
+    expect(screen.getByTestId('canvas').contains(chip)).toBe(false);
+    expect(chip.textContent).toMatch(/^HQ · \d+ km →$/);
+    expect(chip.getAttribute('aria-label')).toMatch(/^HQ, \d+ km, bearing \d+°$/);
   });
 });

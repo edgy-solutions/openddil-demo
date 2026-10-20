@@ -84,7 +84,7 @@ import { HoloPanel, HoloTerrain } from '../terrain/holo';
 import { RegionalSurround } from '../terrain/theater';
 import { edgeRamp } from '../terrain/theaterShaders';
 import { HQ_SCALE, surroundBounds, useMask, useSurround, type Rect } from '../terrain/theaterData';
-import { screenArrowDeg } from '../../lib/screenArrow';
+import { paneEdgePoint, screenArrowDeg } from '../../lib/screenArrow';
 import type { HoloOpts } from '../terrain/holoOpts';
 import {
   EXAGGERATIONS, SAT_BRIGHTNESS_MAX, SAT_BRIGHTNESS_MIN, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
@@ -420,43 +420,85 @@ function CountChip({ text, sev }: { text: string; sev: number }) {
   );
 }
 
-/** The off-map HQ marker: a plate at the map border giving the distance and bearing; a button when it can open HQ. */
-function HqChip({ km, bearing, from, at, onOpen }: {
-  km: number; bearing: number; onOpen?: () => void;
-  /** World points of the link: the regional node's ground point and the chip's own (the exit). */
+const HQ_CHIP_MARGIN_PX = 12;
+
+interface HqChipState { x: number; y: number; deg: number }
+
+/** One frame of the HQ chip: project, clamp to the pane edge, write the DOM. Plain function, so refs stay out of render rules. */
+function placeHqChip(
+  st: HqChipState, el: HTMLElement | null, arrow: HTMLElement | null,
+  from: THREE.Vector3, at: THREE.Vector3, camera: THREE.Camera,
+  size: { width: number; height: number }, pf: THREE.Vector3, pt: THREE.Vector3,
+) {
+  if (!el) return;
+  // A point one world unit from the node toward HQ keeps both points in front of the camera.
+  let dx = at.x - from.x;
+  let dz = at.z - from.z;
+  const len = Math.hypot(dx, dz);
+  if (len > 0) { dx /= len; dz /= len; } else { dx = 1; dz = 0; }
+  pf.copy(from).project(camera);
+  pt.set(from.x + dx, from.y, from.z + dz).project(camera);
+  const sx = ((pt.x - pf.x) * size.width) / 2;
+  const sy = (-(pt.y - pf.y) * size.height) / 2;
+  const origin = { x: ((pf.x + 1) / 2) * size.width, y: ((1 - pf.y) / 2) * size.height };
+  const p = paneEdgePoint(origin, { x: sx, y: sy }, { w: size.width, h: size.height }, HQ_CHIP_MARGIN_PX, { w: el.offsetWidth, h: el.offsetHeight });
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
+  if (!(Math.abs(p.x - st.x) < 0.5 && Math.abs(p.y - st.y) < 0.5)) {
+    st.x = p.x; st.y = p.y;
+    el.style.left = `${p.x}px`;
+    el.style.top = `${p.y}px`;
+    el.style.visibility = 'visible';
+  }
+  if (arrow) {
+    const deg = screenArrowDeg({ x: 0, y: 0 }, { x: sx, y: -sy });
+    if (!Number.isFinite(st.deg) || Math.abs(deg - st.deg) >= 1) {
+      st.deg = deg;
+      arrow.style.transform = `rotate(${deg}deg)`;
+    }
+  }
+}
+
+/**
+ * Pins the off-map HQ chip (a DOM overlay outside the Canvas) to the pane edge, in screen space:
+ * along the on-screen direction from the regional node toward HQ, clamped inside the pane, whatever
+ * the camera does. Renders nothing; writes the overlay's style through refs, not React state.
+ */
+function HqChipTracker({ from, at, overlay, arrow }: {
+  /** World points of the link: the regional node's ground point and the exit toward HQ. */
   from: THREE.Vector3; at: THREE.Vector3;
+  overlay: React.RefObject<HTMLDivElement | null>; arrow: React.RefObject<HTMLSpanElement | null>;
 }) {
-  const { g, el } = useFogFade();
-  // The arrow turns to run along the link on screen as the camera moves; set through a ref, not React state.
-  const arrow = useRef<HTMLSpanElement>(null);
-  const lastDeg = useRef(Number.NaN);
+  const size = useThree((st) => st.size);
+  const state = useRef<HqChipState>({ x: Number.NaN, y: Number.NaN, deg: Number.NaN });
   const pf = useMemo(() => new THREE.Vector3(), []);
   const pt = useMemo(() => new THREE.Vector3(), []);
   useFrame(({ camera }) => {
-    if (!arrow.current) return;
-    pf.copy(from).project(camera);
-    pt.copy(at).project(camera);
-    const deg = screenArrowDeg(pf, pt);
-    if (Number.isFinite(lastDeg.current) && Math.abs(deg - lastDeg.current) < 1) return;
-    lastDeg.current = deg;
-    arrow.current.style.transform = `rotate(${deg}deg)`;
+    placeHqChip(state.current, overlay.current, arrow.current, from, at, camera, size, pf, pt);
   });
+  return null;
+}
+
+/** The off-map HQ marker: a plate on the pane edge giving the distance and bearing; a button when it can open HQ. */
+function HqChipOverlay({ km, bearing, onOpen, overlay, arrow }: {
+  km: number; bearing: number; onOpen?: () => void;
+  overlay: React.RefObject<HTMLDivElement | null>; arrow: React.RefObject<HTMLSpanElement | null>;
+}) {
   const label = `HQ · ${formatKm(km)} `;
   const text = <>{label}<span ref={arrow} style={{ display: 'inline-block' }}>→</span></>;
   const name = `HQ, ${formatKm(km)}, bearing ${Math.round(bearing)}°`;
   const cls = 'whitespace-nowrap rounded-sm bg-slate-950/75 px-1.5 py-0.5 font-mono text-[10px] text-slate-300';
   return (
-    <group ref={g}>
-      <Html center style={{ pointerEvents: onOpen ? 'auto' : 'none' }}>
-        <div ref={el}>
-          {onOpen ? (
-            <button type="button" data-testid="hq-chip" title={name} aria-label={name} onClick={onOpen} className={`${cls} cursor-pointer hover:text-emerald-300`}>{text}</button>
-          ) : (
-            <span data-testid="hq-chip" title={name} aria-label={name} className={cls}>{text}</span>
-          )}
-        </div>
-      </Html>
-    </group>
+    <div
+      ref={overlay}
+      className="pointer-events-none absolute z-[5]"
+      style={{ left: 0, top: 0, transform: 'translate(-50%,-50%)', visibility: 'hidden' }}
+    >
+      {onOpen ? (
+        <button type="button" data-testid="hq-chip" title={name} aria-label={name} onClick={onOpen} className={`${cls} pointer-events-auto cursor-pointer hover:text-emerald-300`}>{text}</button>
+      ) : (
+        <span data-testid="hq-chip" title={name} aria-label={name} className={cls}>{text}</span>
+      )}
+    </div>
   );
 }
 
@@ -1327,13 +1369,15 @@ export default function RegionalSustainmentPosture({
     });
     if (plan.kind === 'sites') {
       pts.push([plan.regional.x, groundAt(plan.regional.x, plan.regional.z), plan.regional.z]);
-      // The HQ chip sits on the padded rect's border; keep it inside the overview.
+      // An on-map HQ frames the overview; the off-map HQ chip is pinned to the pane edge in screen
+      // space, so the framing does not chase it.
       const h = plan.hq;
-      if (h.mode === 'offmap') pts.push([h.exit[0], groundAt(h.exit[0], h.exit[1]), h.exit[1]]);
-      else if (h.mode === 'onmap') pts.push([h.x, groundAt(h.x, h.z), h.z]);
+      if (h.mode === 'onmap') pts.push([h.x, groundAt(h.x, h.z), h.z]);
     }
     return pts;
   }, [regionFobs, proj, plan, groundAt]);
+  const hqChipEl = useRef<HTMLDivElement>(null);
+  const hqChipArrow = useRef<HTMLSpanElement>(null);
   const [aspect, setAspect] = useState(1.6);
   // The FOB whose edge preset was last chosen: its hub is emphasised, the other FOB links dim.
   const [focusEdge, setFocusEdge] = useState<string | null>(null);
@@ -1695,9 +1739,7 @@ export default function RegionalSustainmentPosture({
                       clearance={REGIONAL_LINK_CLEAR}
                       status={status}
                     />
-                    <group position={[hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1]]}>
-                      <HqChip km={hq.km} bearing={hq.bearing} from={nodeV} at={new THREE.Vector3(hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1])} onOpen={onOpenHq} />
-                    </group>
+                    <HqChipTracker from={nodeV} at={new THREE.Vector3(hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1])} overlay={hqChipEl} arrow={hqChipArrow} />
                   </>
                 )}
               </>
@@ -1706,6 +1748,9 @@ export default function RegionalSustainmentPosture({
           <EngagementInset focus={insetFocus} markers={insetMarkers} groundY={insetGround} unitsPerKm={UNITS_PER_KM} rect={REGIONAL_INSET_RECT} renderMain />
         </Canvas>
         <EngagementInsetFrame visible={insetFocus.length > 0} label={insetLabel} rect={REGIONAL_INSET_RECT} />
+        {plan.kind === 'sites' && plan.hq.mode === 'offmap' && (
+          <HqChipOverlay km={plan.hq.km} bearing={plan.hq.bearing} onOpen={onOpenHq} overlay={hqChipEl} arrow={hqChipArrow} />
+        )}
       </div>
 
       {/* Terrain controls, above the mouse hint. */}
