@@ -7,17 +7,20 @@ import { useEffect, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { UNITS_PER_KM } from '../../lib/sceneScale';
-import { drape, type TerrainData } from './terrainData';
+import { drape, sampleGrid, type TerrainData } from './terrainData';
 import { HUES, HOLO_DEFAULTS, type HoloOpts } from './holoOpts';
 import type { EdgeRamp } from './theaterShaders';
 
 const VERT = /* glsl */ `
 attribute float hraw;
+attribute float hsur;
 varying float vH;
+varying float vHs;
 varying vec3 vW;
 varying vec2 vUv;
 void main() {
   vH = hraw;
+  vHs = hsur;
   vUv = uv;
   vec4 w = modelMatrix * vec4(position, 1.0);
   vW = w.xyz;
@@ -31,6 +34,9 @@ uniform float uContours, uCoast, uDepth, uGrid, uDots, uSweep;
 uniform vec2 uCenter;
 uniform sampler2D uMask;
 uniform float uHasMask;
+// Near the rect edge the heights blend to the surround's (vHs), so the contour pattern is continuous across the seam.
+uniform float uBlend, uBand;
+varying float vHs;
 // Optional edge mute, the surround's (see HOLO_FRAG in theaterShaders.ts): on only while a surround is drawn.
 uniform float uEdge, uEdgeNear, uEdgeFar; uniform vec4 uTheater;
 varying float vH;
@@ -46,9 +52,13 @@ float isoLine(float v, float w) {
 float sparse(float v) { return 1.0 - smoothstep(0.08, 0.25, fwidth(v)); }
 
 void main() {
+  vec2 qd = max(uTheater.xy - vW.xz, vW.xz - uTheater.zw);
+  float sd = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0);
+  float w = uBlend * smoothstep(-uBand, 0.0, sd);
+  float h = mix(vH, vHs, w);
   float m = texture2D(uMask, vUv).r;
-  float land = uHasMask > 0.5 ? smoothstep(0.35, 0.65, m) : smoothstep(uSeaLevel - 0.3, uSeaLevel + 0.3, vH);
-  float lift = clamp(vH / 20.0, 0.0, 1.0);
+  float land = uHasMask > 0.5 ? smoothstep(0.35, 0.65, m) : smoothstep(uSeaLevel - 0.3, uSeaLevel + 0.3, h);
+  float lift = clamp(h / 20.0, 0.0, 1.0);
   vec3 col = mix(uColor * 0.012, uColor * (0.045 + 0.06 * lift), land);
   float glow = 0.0;
 
@@ -59,11 +69,12 @@ void main() {
     float d = front - length(vW.xz - uCenter);
     s = d > 0.0 ? exp(-d / 1.2) : 0.0;
     s *= 1.0 - smoothstep(30.0, 40.0, front);
+    s *= 1.0 - w;
   }
-  if (uContours > 0.5) { float v = vH / uStep; glow += 0.45 * land * smoothstep(uFloor - 0.5, uFloor, vH) * isoLine(v, 1.0) * sparse(v); }
-  if (uDepth > 0.5) { float v = vH / uSeaStep; glow += 0.3 * (1.0 - land) * isoLine(v, 1.0) * sparse(v); }
+  if (uContours > 0.5) { float v = h / uStep; glow += 0.45 * land * smoothstep(uFloor - 0.5, uFloor, h) * isoLine(v, 1.0) * sparse(v); }
+  if (uDepth > 0.5) { float v = h / uSeaStep; glow += 0.3 * (1.0 - land) * isoLine(v, 1.0) * sparse(v); }
   if (uCoast > 0.5) {
-    float e = uHasMask > 0.5 ? abs(m - 0.5) / max(fwidth(m), 1e-4) : abs(vH - uSeaLevel) / max(fwidth(vH), 1e-4);
+    float e = uHasMask > 0.5 ? abs(m - 0.5) / max(fwidth(m), 1e-4) : abs(h - uSeaLevel) / max(fwidth(h), 1e-4);
     glow += 1.2 * (1.0 - clamp(e / 1.5, 0.0, 1.0)) + 0.35 * exp(-e / 6.0);
   }
   if (uGrid > 0.5) {
@@ -75,10 +86,8 @@ void main() {
     float px = max(fwidth(p.x), 1e-6);
     float r = length(fract(p) - 0.5) / px; // pixels from the dot centre
     float pt = (1.0 - smoothstep(1.5, 2.5, r)) * (1.0 - smoothstep(0.15, 0.4, px));
-    glow += pt * land * (0.35 + 0.65 * clamp(vH / 15.0, 0.0, 1.0));
+    glow += pt * land * (0.35 + 0.65 * clamp(h / 15.0, 0.0, 1.0));
   }
-  vec2 qd = max(uTheater.xy - vW.xz, vW.xz - uTheater.zw);
-  float sd = length(max(qd, 0.0)) + min(max(qd.x, qd.y), 0.0);
   float em = uEdge * smoothstep(uEdgeNear, uEdgeFar, sd);
   col += uColor * (glow * uGlow * (1.0 + 2.5 * s) * (1.0 - 0.75 * em) + 0.06 * s);
   // As the surround: outside the rect stay under the bloom threshold.
@@ -113,17 +122,61 @@ function blur(src: Float32Array, n: number, r: number): Float32Array {
   return a;
 }
 
-/** `center` is the scene (x, z) the scan sweep radiates from. `edge`: mute towards the rect edge like the surround. */
-export function HoloTerrain({ data, exag, opts, center, edge }: {
-  data: TerrainData; exag: number; opts: HoloOpts; center: [number, number]; edge?: EdgeRamp;
+const SUR_SEG = 400; // the surround's grid (HoloLayer, surround)
+const BLEND_BAND = 0.25; // fraction of the rect's smaller half-extent over which heights blend to the surround's
+
+/** The surround's blurred height grid (as HoloLayer builds its hraw), computed directly from rawM. */
+function surroundHeights(s: TerrainData, smooth: number): Float32Array | null {
+  if (!s.rawM) return null;
+  const n = SUR_SEG + 1;
+  const { south, west, north, east } = s.bounds;
+  const h = new Float32Array(n * n);
+  for (let j = 0; j < n; j++) {
+    const lat = north + ((south - north) * j) / SUR_SEG;
+    for (let i = 0; i < n; i++) {
+      const [x, z] = s.proj.project(lat, west + ((east - west) * i) / SUR_SEG);
+      h[j * n + i] = s.rawM(x, z);
+    }
+  }
+  return blur(h, n, smooth);
+}
+
+/**
+ * `center` is the scene (x, z) the scan sweep radiates from. `edge`: mute towards the rect edge like the surround.
+ * `surround` (with `edge`): near the edge the contours use the surround's smoothed heights (attribute hsur) and the
+ * sweep fades, so the pattern is continuous across the seam.
+ */
+export function HoloTerrain({ data, exag, opts, center, edge, surround }: {
+  data: TerrainData; exag: number; opts: HoloOpts; center: [number, number]; edge?: EdgeRamp; surround?: TerrainData;
 }) {
   const geometry = useMemo(() => drape(data.heightM, data.bounds, data.proj, SEG, exag, data.rawM), [data, exag]);
-  const raw = useMemo(() => (geometry.getAttribute('hraw').array as Float32Array).slice(), [geometry]);
+  const raw = useMemo(() => {
+    const r = (geometry.getAttribute('hraw').array as Float32Array).slice();
+    geometry.setAttribute('hsur', new THREE.BufferAttribute(r.slice(), 1));
+    return r;
+  }, [geometry]);
+  const smooth = Math.round(opts.smooth);
+  const hasEdge = !!edge;
+  const sur = useMemo(() => (hasEdge && surround ? surroundHeights(surround, smooth) : null), [hasEdge, surround, smooth]);
   useEffect(() => {
     const a = geometry.getAttribute('hraw') as THREE.BufferAttribute;
-    (a.array as Float32Array).set(blur(raw, SEG + 1, Math.round(opts.smooth)));
+    const inner = blur(raw, SEG + 1, smooth);
+    (a.array as Float32Array).set(inner);
     a.needsUpdate = true;
-  }, [geometry, raw, opts.smooth]);
+    let hs = inner;
+    if (sur && surround) {
+      const n = SEG + 1;
+      const { south, west, north, east } = data.bounds;
+      hs = new Float32Array(n * n);
+      for (let j = 0; j < n; j++) {
+        const lat = north + ((south - north) * j) / SEG;
+        for (let i = 0; i < n; i++) hs[j * n + i] = sampleGrid(sur, SUR_SEG + 1, surround.bounds, lat, west + ((east - west) * i) / SEG);
+      }
+    }
+    const b = geometry.getAttribute('hsur') as THREE.BufferAttribute;
+    (b.array as Float32Array).set(hs);
+    b.needsUpdate = true;
+  }, [geometry, raw, smooth, sur, surround, data.bounds]);
   const wireGeo = useMemo(() => drape(data.heightM, data.bounds, data.proj, 120, exag), [data, exag]);
   useEffect(() => () => { geometry.dispose(); wireGeo.dispose(); }, [geometry, wireGeo]);
   const maskTex = useMemo(() => (data.mask ? new THREE.CanvasTexture(data.mask) : null), [data.mask]);
@@ -137,6 +190,7 @@ export function HoloTerrain({ data, exag, opts, center, edge }: {
       uSweep: { value: 1 }, uCenter: { value: new THREE.Vector2() },
       uMask: { value: null as THREE.Texture | null }, uHasMask: { value: 0 },
       uEdge: { value: 0 }, uEdgeNear: { value: 0 }, uEdgeFar: { value: 1 }, uTheater: { value: new THREE.Vector4() },
+      uBlend: { value: 0 }, uBand: { value: 1 },
     },
   }), []);
   useEffect(() => () => material.dispose(), [material]);
@@ -151,6 +205,8 @@ export function HoloTerrain({ data, exag, opts, center, edge }: {
   u.uMask.value = maskTex; u.uHasMask.value = maskTex ? 1 : 0;
   u.uEdge.value = edge ? 1 : 0;
   if (edge) { u.uEdgeNear.value = edge.near; u.uEdgeFar.value = edge.far; u.uTheater.value.set(...edge.rect); }
+  u.uBlend.value = edge && sur ? 1 : 0;
+  if (edge) u.uBand.value = (Math.min(edge.rect[2] - edge.rect[0], edge.rect[3] - edge.rect[1]) / 2) * BLEND_BAND;
   /* eslint-enable react-hooks/immutability */
   // eslint-disable-next-line react-hooks/immutability -- three.js uniforms are GPU state set imperatively (R3F)
   useFrame(({ clock }) => { u.uTime.value = clock.elapsedTime; });

@@ -384,3 +384,19 @@ export function usePatches(list: PatchSpec[], source: TerrainSource): Patch[] {
   }, [key, patchImageryUrl, patchMaxZoom]);
   return patches;
 }
+
+/**
+ * Bilinear sample of a regular lat/lon grid as `drape` lays it out (n×n, row 0 = north, column 0 = west),
+ * clamped to the grid's edges.
+ */
+export function sampleGrid(grid: ArrayLike<number>, n: number, b: Bounds, lat: number, lon: number): number {
+  const c = (v: number) => Math.min(n - 1, Math.max(0, v));
+  const fj = c(((b.north - lat) / (b.north - b.south)) * (n - 1));
+  const fi = c(((lon - b.west) / (b.east - b.west)) * (n - 1));
+  const j0 = Math.floor(fj), i0 = Math.floor(fi);
+  const j1 = Math.min(n - 1, j0 + 1), i1 = Math.min(n - 1, i0 + 1);
+  const tj = fj - j0, ti = fi - i0;
+  const top = grid[j0 * n + i0] * (1 - ti) + grid[j0 * n + i1] * ti;
+  const bot = grid[j1 * n + i0] * (1 - ti) + grid[j1 * n + i1] * ti;
+  return top * (1 - tj) + bot * tj;
+}
