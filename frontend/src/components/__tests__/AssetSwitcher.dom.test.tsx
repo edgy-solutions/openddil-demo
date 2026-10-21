@@ -158,12 +158,12 @@ describe('AssetSwitcher', () => {
 
 describe('AssetSwitcher arrivals', () => {
   type C = { undeclared: number; expected: number; overdue: number } | null;
-  function withArrivals(counts: C, unavailable = false, view: ReactNode = <input data-testid="av-input" />) {
+  function withArrivals(counts: C, stale: string | null = null, view: ReactNode = <input data-testid="av-input" />) {
     const set = vi.fn();
     render(
       <AssetSwitcher
         fleet={FLEET} fleetTiers={TIERS} selectedAsset="dis:1:1:1001" setSelectedAsset={set}
-        arrivals={{ counts, unavailable, view }}
+        arrivals={{ counts, stale, view }}
       />,
     );
     return set;
@@ -233,9 +233,33 @@ describe('AssetSwitcher arrivals', () => {
     expect(set).not.toHaveBeenCalled();
   });
 
-  it('shows an unavailable line on error', () => {
-    withArrivals(null, true);
-    expect(screen.getByTestId('arrivals-unavailable').textContent).toBe('arrivals unavailable');
+  it('draws no grey dot when counts are null, the total is 0, or stale is set with counts null', () => {
+    withArrivals(null);
+    expect(screen.queryByTestId('arrivals-unavailable')).toBeNull();
     expect(screen.queryByTestId('arrivals-badge')).toBeNull();
+    cleanup();
+    withArrivals({ undeclared: 0, expected: 0, overdue: 0 });
+    expect(screen.queryByTestId('arrivals-unavailable')).toBeNull();
+    expect(screen.queryByTestId('arrivals-badge')).toBeNull();
+    cleanup();
+    withArrivals(null, 'boom');
+    expect(screen.queryByTestId('arrivals-unavailable')).toBeNull();
+    expect(screen.queryByTestId('arrivals-badge')).toBeNull();
+    expect(screen.queryByTitle('arrivals unavailable')).toBeNull();
+  });
+
+  it('badge title says "not refreshed" when stale is set with counts', () => {
+    withArrivals({ undeclared: 1, expected: 2, overdue: 0 }, 'HTTP 503');
+    const b = screen.getByTestId('arrivals-badge');
+    expect(b.getAttribute('title')).toContain('not refreshed: HTTP 503');
+    expect(b.getAttribute('aria-label')).toBe('Arrivals: 1 undeclared · 2 expected');
+  });
+
+  it('typing in the Filter assets box keeps the badge and the Arrivals tab', () => {
+    withArrivals({ undeclared: 1, expected: 2, overdue: 0 });
+    fireEvent.keyDown(document.body, { key: '/' });
+    fireEvent.change(screen.getByLabelText('Filter assets'), { target: { value: 'zzz' } });
+    expect(screen.getByTestId('arrivals-badge')).toBeTruthy();
+    expect(screen.getAllByRole('tab')[1].textContent).toBe('Arrivals 3');
   });
 });
