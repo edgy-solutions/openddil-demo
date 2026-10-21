@@ -73,7 +73,7 @@ import { separate } from '../../lib/separate';
 import { AGG_PX, FOB_PX, HQ_PX, markerScale, regionExtent, stackLift, topologyHeights } from '../../lib/topologyMarkers';
 import { SEV_RANK, fogDensity, fogVisibility, groupsOf, kindsOf, mstEdges, nextMerged, type Kind } from '../../lib/clusterKinds';
 import { assetFocus, buildPresets, controlsMaxDistance, type CameraPreset } from '../../lib/mapPresets';
-import { distanceKm, formatKm, framedRect, planTopology, resolveSites, sameSite } from '../../lib/regionalSites';
+import { distanceKm, formatKm, framedRect, planTopology, rectExit, resolveSites, sameSite, type Rect as SiteRect } from '../../lib/regionalSites';
 import { snapBounds, terrainBounds } from '../../lib/terrainBounds';
 import { creditLines, resolveTerrainSource } from '../../lib/terrainTiles';
 import { TerrainMesh, PatchMesh } from '../terrain/terrain';
@@ -84,7 +84,7 @@ import { HoloPanel, HoloTerrain } from '../terrain/holo';
 import { RegionalSurround } from '../terrain/theater';
 import { edgeRamp } from '../terrain/theaterShaders';
 import { HQ_SCALE, surroundBounds, useMask, useSurround, type Rect } from '../terrain/theaterData';
-import { paneEdgePoint, screenArrowDeg } from '../../lib/screenArrow';
+import { placeHqChip, type HqChipState } from './hqChipPlace';
 import type { HoloOpts } from '../terrain/holoOpts';
 import {
   EXAGGERATIONS, SAT_BRIGHTNESS_MAX, SAT_BRIGHTNESS_MIN, loadTerrainPrefs, saveTerrainPrefs, type Exaggeration, type TerrainPrefs, type TerrainStyle,
@@ -423,52 +423,27 @@ function CountChip({ text, sev }: { text: string; sev: number }) {
   );
 }
 
-const HQ_CHIP_MARGIN_PX = 12;
-
-interface HqChipState { x: number; y: number; deg: number }
-
-/** One frame of the HQ chip: project, clamp to the pane edge, write the DOM. Plain function, so refs stay out of render rules. */
-function placeHqChip(
-  st: HqChipState, el: HTMLElement | null, arrow: HTMLElement | null,
-  from: THREE.Vector3, at: THREE.Vector3, camera: THREE.Camera,
-  size: { width: number; height: number }, pf: THREE.Vector3, pt: THREE.Vector3,
-) {
-  if (!el) return;
-  // A point one world unit from the node toward HQ keeps both points in front of the camera.
-  let dx = at.x - from.x;
-  let dz = at.z - from.z;
-  const len = Math.hypot(dx, dz);
-  if (len > 0) { dx /= len; dz /= len; } else { dx = 1; dz = 0; }
-  pf.copy(from).project(camera);
-  pt.set(from.x + dx, from.y, from.z + dz).project(camera);
-  const sx = ((pt.x - pf.x) * size.width) / 2;
-  const sy = (-(pt.y - pf.y) * size.height) / 2;
-  const origin = { x: ((pf.x + 1) / 2) * size.width, y: ((1 - pf.y) / 2) * size.height };
-  const p = paneEdgePoint(origin, { x: sx, y: sy }, { w: size.width, h: size.height }, HQ_CHIP_MARGIN_PX, { w: el.offsetWidth, h: el.offsetHeight });
-  if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
-  if (!(Math.abs(p.x - st.x) < 0.5 && Math.abs(p.y - st.y) < 0.5)) {
-    st.x = p.x; st.y = p.y;
-    el.style.left = `${p.x}px`;
-    el.style.top = `${p.y}px`;
-    el.style.visibility = 'visible';
-  }
-  if (arrow) {
-    const deg = screenArrowDeg({ x: 0, y: 0 }, { x: sx, y: -sy });
-    if (!Number.isFinite(st.deg) || Math.abs(deg - st.deg) >= 1) {
-      st.deg = deg;
-      arrow.style.transform = `rotate(${deg}deg)`;
-    }
-  }
+/** A small name plate under an edge FOB's hub (the regional FOB has the banner instead). Below the point, so it stays off the assets above the hub. */
+function FobCallout({ position, label, edgeId, dim }: { position: Vec3; label?: string; edgeId: string; dim: boolean }) {
+  const text = label && label !== edgeId ? `${label} · ${edgeId}` : edgeId;
+  return (
+    <Html position={position} style={{ pointerEvents: 'none', transform: 'translate3d(-50%, 10px, 0)', opacity: dim ? 0.45 : 1 }}>
+      <div data-testid="fob-callout" data-edge={edgeId} className="whitespace-nowrap rounded-sm bg-slate-950/75 px-1.5 py-0.5 font-mono text-[10px] text-slate-300">
+        {text}
+      </div>
+    </Html>
+  );
 }
 
 /**
- * Pins the off-map HQ chip (a DOM overlay outside the Canvas) to the pane edge, in screen space:
- * along the on-screen direction from the regional node toward HQ, clamped inside the pane, whatever
- * the camera does. Renders nothing; writes the overlay's style through refs, not React state.
+ * Pins the off-map HQ chip (a DOM overlay outside the Canvas) in screen space: on the far end of the
+ * faded link line while that is inside the pane, else clamped to the pane edge along the on-screen
+ * direction from the regional node toward HQ, whatever the camera does. Renders nothing; writes the
+ * overlay's style through refs, not React state.
  */
-function HqChipTracker({ from, at, overlay, arrow }: {
-  /** World points of the link: the regional node's ground point and the exit toward HQ. */
-  from: THREE.Vector3; at: THREE.Vector3;
+function HqChipTracker({ from, at, end, overlay, arrow }: {
+  /** World points of the link: the regional node's ground point, the exit toward HQ (direction), and the far end of the line (chip spot). */
+  from: THREE.Vector3; at: THREE.Vector3; end: THREE.Vector3;
   overlay: React.RefObject<HTMLDivElement | null>; arrow: React.RefObject<HTMLSpanElement | null>;
 }) {
   const size = useThree((st) => st.size);
@@ -476,7 +451,7 @@ function HqChipTracker({ from, at, overlay, arrow }: {
   const pf = useMemo(() => new THREE.Vector3(), []);
   const pt = useMemo(() => new THREE.Vector3(), []);
   useFrame(({ camera }) => {
-    placeHqChip(state.current, overlay.current, arrow.current, from, at, camera, size, pf, pt);
+    placeHqChip(state.current, overlay.current, arrow.current, from, at, end, camera, size, pf, pt);
   });
   return null;
 }
@@ -1383,6 +1358,21 @@ export default function RegionalSustainmentPosture({
       rect,
     });
   }, [sites, proj, regionFobs, renderables, regionId]);
+  // Where the off-map HQ line ends: its ray from the regional node leaves the ground the scene draws
+  // (the surround while it is drawn, else the terrain-off plane, +-200), well past the framed data box.
+  // Inside that ground (HQ itself, or no ray) it falls back to the data-box exit.
+  const farExit = useMemo<[number, number] | null>(() => {
+    if (plan.kind !== 'sites' || plan.hq.mode !== 'offmap' || !sites.hq) return null;
+    let outer: SiteRect = { x0: -200, z0: -200, x1: 200, z1: 200 };
+    if (surround) {
+      const b = surround.bounds;
+      const [x0, z0] = proj.project(b.north, b.west);
+      const [x1, z1] = proj.project(b.south, b.east);
+      outer = { x0: Math.min(x0, x1), z0: Math.min(z0, z1), x1: Math.max(x0, x1), z1: Math.max(z0, z1) };
+    }
+    const hqXZ = proj.project(sites.hq.lat, sites.hq.lon) as [number, number];
+    return rectExit([plan.regional.x, plan.regional.z], hqXZ, outer) ?? plan.hq.exit;
+  }, [plan, sites.hq, surround, proj]);
   // The FOB hubs and the regional node frame the overview, not just the assets.
   const framePoints = useMemo<Vec3[]>(() => {
     const pts: Vec3[] = regionFobs.map((f) => {
@@ -1683,6 +1673,18 @@ export default function RegionalSustainmentPosture({
                   />
                 );
               })}
+              {regionFobs.map((fob) => {
+                const [fx, fz] = proj.project(fob.lat, fob.lon);
+                return (
+                  <FobCallout
+                    key={`fob-callout-${fob.edge_id}`}
+                    position={[fx, groundAt(fx, fz), fz]}
+                    label={fob.label}
+                    edgeId={fob.edge_id}
+                    dim={focusEdge !== null && focusEdge !== fob.edge_id}
+                  />
+                );
+              })}
               <DdilNetworkLink
                 start={new THREE.Vector3(regionalCentroid.x, topo.aggY, regionalCentroid.z)}
                 end={new THREE.Vector3(regionalCentroid.x, topo.hqY, regionalCentroid.z)}
@@ -1727,6 +1729,18 @@ export default function RegionalSustainmentPosture({
                     />
                   );
                 })}
+                {regionFobs.filter((fob) => fob !== regFob).map((fob) => {
+                  const [fx, fz] = proj.project(fob.lat, fob.lon);
+                  return (
+                    <FobCallout
+                      key={`fob-callout-${fob.edge_id}`}
+                      position={[fx, groundAt(fx, fz), fz]}
+                      label={fob.label}
+                      edgeId={fob.edge_id}
+                      dim={focusEdge !== null && focusEdge !== fob.edge_id}
+                    />
+                  );
+                })}
                 <RegionalAggregatorNode position={[node.x, nodeG, node.z]} label={node.label} kicker={kicker} severed={!uplinkUp} grounded stack={!!regFob} />
                 {hq.mode === 'abstract' && topo && (
                   <>
@@ -1756,18 +1770,31 @@ export default function RegionalSustainmentPosture({
                     />
                   </>
                 )}
-                {hq.mode === 'offmap' && (
-                  <>
-                    <DdilNetworkLink
-                      start={nodeV}
-                      end={new THREE.Vector3(hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1])}
-                      groundY={groundAt}
-                      clearance={REGIONAL_LINK_CLEAR}
-                      status={status}
-                    />
-                    <HqChipTracker from={nodeV} at={new THREE.Vector3(hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1])} overlay={hqChipEl} arrow={hqChipArrow} />
-                  </>
-                )}
+                {hq.mode === 'offmap' && (() => {
+                  // The line runs on past the data box (`hq.exit`, kept for km and bearing) to the edge of the
+                  // drawn ground and fades out; the HQ chip sits on that far end when it is in view.
+                  const fe = farExit ?? hq.exit;
+                  const farV = new THREE.Vector3(fe[0], groundAt(fe[0], fe[1]), fe[1]);
+                  return (
+                    <>
+                      <DdilNetworkLink
+                        start={nodeV}
+                        end={farV}
+                        groundY={groundAt}
+                        clearance={REGIONAL_LINK_CLEAR}
+                        status={status}
+                        fadeEnd={0.3}
+                      />
+                      <HqChipTracker
+                        from={nodeV}
+                        at={new THREE.Vector3(hq.exit[0], groundAt(hq.exit[0], hq.exit[1]), hq.exit[1])}
+                        end={farV}
+                        overlay={hqChipEl}
+                        arrow={hqChipArrow}
+                      />
+                    </>
+                  );
+                })()}
               </>
             );
           })()}

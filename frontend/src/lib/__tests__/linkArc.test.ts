@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { linkArc } from '../linkArc';
+import { fadeAlphas, linkArc } from '../linkArc';
 
 const flat = () => 0;
 
@@ -54,5 +54,22 @@ describe('linkArc', () => {
   it('eases the clearance in near the ends', () => {
     const a = linkArc([0, 0, 0], [100, 0, 0], () => 5, 48, 3);
     expect(a[1][1]).toBeLessThan(5 + 3);
+  });
+});
+
+describe('fadeAlphas', () => {
+  it('is all 1 without a fade', () => {
+    expect(fadeAlphas(5, 0)).toEqual([1, 1, 1, 1, 1]);
+  });
+  it('holds 1 until 1 - fadeEnd, then ramps linearly to 0 at the last point', () => {
+    const a = fadeAlphas(11, 0.3);
+    expect(a[0]).toBe(1);
+    expect(a[7]).toBe(1);
+    expect(a[8]).toBeCloseTo(2 / 3, 9);
+    expect(a[9]).toBeCloseTo(1 / 3, 9);
+    expect(a[10]).toBe(0);
+  });
+  it('fades the whole line at fadeEnd 1', () => {
+    expect(fadeAlphas(3, 1)).toEqual([1, 0.5, 0]);
   });
 });
