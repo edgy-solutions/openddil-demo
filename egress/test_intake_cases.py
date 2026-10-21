@@ -9,6 +9,7 @@ mode. The artifact is an ActionRecord in the week-1 contract shape.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -110,8 +111,10 @@ class _CaseStore(_FakeStore):
 @pytest.fixture(autouse=True)
 def _fresh_case_cursors():
     intake._CASE_CURSORS.clear()
+    intake._CASE_FORBIDDEN.clear()
     yield
     intake._CASE_CURSORS.clear()
+    intake._CASE_FORBIDDEN.clear()
 
 
 def ledger_row(n: int, age_s: float = 60.0):
@@ -261,6 +264,77 @@ def test_other_statuses_and_network_errors_warn_once_per_tick(caplog):
     assert counters["case_no_action"] == 1
     assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
     assert store.upserts == []
+
+
+def _forbidden_fetch(url, token=None):
+    if url in (url_for(1), url_for(2)):
+        return 403, None
+    return 404, None
+
+
+def _poll_logs(caplog):
+    warns = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    infos = [r.getMessage() for r in caplog.records
+             if r.levelname == "INFO" and r.getMessage().startswith("intake case poll")]
+    return warns, infos
+
+
+def test_403_is_final_counted_and_logged_once_with_case_ids(caplog):
+    entry = make_entry()
+    store = _CaseStore([ledger_row(1), ledger_row(2), ledger_row(3)])
+    counters: dict[str, int] = {}
+    with caplog.at_level("INFO"):
+        run(entry, store, _forbidden_fetch, answered_for(), counters)
+    assert counters["case_forbidden"] == 2
+    assert counters["case_no_action"] == 1
+    assert "case_fetch_failed" not in counters
+    warns, infos = _poll_logs(caplog)
+    assert len(warns) == 1
+    assert "case-1" in warns[0] and "case-2" in warns[0] and "case-3" not in warns[0]
+    assert infos[-1].endswith("forbidden=2") and "failed=0" in infos[-1]
+
+
+def test_forbidden_case_is_not_fetched_again_and_not_warned_again(caplog):
+    entry = make_entry()
+    store = _CaseStore([ledger_row(1), ledger_row(2), ledger_row(3)])
+    run(entry, store, _forbidden_fetch, answered_for(), {})
+    fetch = _Fetch({url_for(1): [(403, None)], url_for(2): [(403, None)]})
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        run(entry, store, fetch, answered_for(), {})
+    assert fetch.urls == [url_for(3)]
+    warns, infos = _poll_logs(caplog)
+    assert warns == []
+    assert "open=1" in infos[-1] and infos[-1].endswith("forbidden=2")
+
+
+def test_403_and_503_in_one_tick_give_two_warnings(caplog):
+    entry = make_entry()
+    store = _CaseStore([ledger_row(1), ledger_row(2)])
+    fetch = _Fetch({url_for(1): [(403, None)], url_for(2): [(503, None)]})
+    counters: dict[str, int] = {}
+    with caplog.at_level("WARNING"):
+        run(entry, store, fetch, answered_for(), counters)
+    warns, _ = _poll_logs(caplog)
+    assert len(warns) == 2
+    forb = [w for w in warns if "HTTP 403, final" in w]
+    fail = [w for w in warns if "case fetches failed" in w]
+    assert len(forb) == 1 and "case-1" in forb[0] and "case-2" not in forb[0]
+    assert len(fail) == 1 and "1 of 2" in fail[0]
+    assert counters["case_forbidden"] == 1 and counters["case_fetch_failed"] == 1
+
+
+def test_forbidden_set_is_per_entry():
+    entry_a = make_entry()
+    entry_b = dataclasses.replace(make_entry(), name="actions-b")
+    store = _CaseStore([ledger_row(1)])
+    run(entry_a, store, _Fetch({url_for(1): [(403, None)]}), answered_for(), {})
+    fetch = _Fetch({url_for(1): [(404, None)]})
+    run(entry_b, store, fetch, answered_for(), {})
+    assert fetch.urls == [url_for(1)]
+    fetch_a = _Fetch({})
+    run(entry_a, store, fetch_a, answered_for(), {})
+    assert fetch_a.urls == []
 
 
 def test_case_id_is_url_encoded():

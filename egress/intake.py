@@ -855,6 +855,9 @@ def _case_is_final(decisions: Any) -> bool:
 # Per-entry position in the oldest-first open-case list, so successive ticks
 # walk the whole list when it is longer than `max_cases_per_tick`.
 _CASE_CURSORS: dict[str, int] = {}
+# Per-entry case ids that answered HTTP 403, final for this process (not
+# persisted: after a restart a forbidden case is fetched and logged once more).
+_CASE_FORBIDDEN: dict[str, set[str]] = {}
 
 
 async def _run_case_poll(
@@ -879,7 +882,10 @@ async def _run_case_poll(
     this entry's kind answering it. At most `max_cases_per_tick`, taken
     round-robin from the oldest-first list (oldest first on the first tick);
     the rest are counted in `cases_deferred`. A 404 means no action
-    yet (`case_no_action`, quiet); a 200 body is one artifact, decided and
+    yet (`case_no_action`, quiet); a 403 is final for this process: the case
+    id is remembered per entry, counted in `case_forbidden`, never fetched
+    again, and named once in a single WARNING for the tick (it is not a
+    `case_fetch_failed`); a 200 body is one artifact, decided and
     stored by `_process_artifact`; any other status or a network error is
     `case_fetch_failed`, with one WARNING for the whole tick."""
     fetch_case = fetch_case or http_fetch_status
@@ -903,7 +909,9 @@ async def _run_case_poll(
         log.warning("intake case read failed entry=%s: %s", entry.name, exc)
         return
 
-    open_cases = [c for c in cases if not _case_is_final(c.decisions)]
+    forbidden = _CASE_FORBIDDEN.setdefault(entry.name, set())
+    open_cases = [c for c in cases
+                  if not _case_is_final(c.decisions) and c.case_id not in forbidden]
     open_cases.sort(key=lambda c: c.first_recorded_at)
     # Round-robin over the open set: a cap that always took the oldest would
     # starve every newer case while more than the cap stayed open.
@@ -917,6 +925,7 @@ async def _run_case_poll(
 
     no_action = 0
     failures: list[str] = []
+    newly_forbidden: list[str] = []
     for case in chosen:
         url = template.replace(CASE_ID_PLACEHOLDER, urllib.parse.quote(case.case_id, safe=""))
         try:
@@ -928,6 +937,11 @@ async def _run_case_poll(
         if status == 404:
             counters["case_no_action"] = counters.get("case_no_action", 0) + 1
             no_action += 1
+            continue
+        if status == 403:
+            forbidden.add(case.case_id)
+            newly_forbidden.append(case.case_id)
+            counters["case_forbidden"] = counters.get("case_forbidden", 0) + 1
             continue
         if status != 200:
             counters["case_fetch_failed"] = counters.get("case_fetch_failed", 0) + 1
@@ -943,13 +957,18 @@ async def _run_case_poll(
             gate_for=gate_for, produce=produce, counters=counters, now=now,
             startup_versions=startup_versions)
 
+    if newly_forbidden:
+        log.warning(
+            "intake case poll entry=%s: %d case(s) answered HTTP 403, final, not polled again: %s",
+            entry.name, len(newly_forbidden), ", ".join(newly_forbidden))
     if failures:
         log.warning(
             "intake case poll entry=%s: %d of %d case fetches failed (first: %s)",
             entry.name, len(failures), len(chosen), failures[0])
     log.info(
-        "intake case poll entry=%s open=%d fetched=%d no_action=%d failed=%d deferred=%d",
-        entry.name, len(open_cases), len(chosen), no_action, len(failures), deferred)
+        "intake case poll entry=%s open=%d fetched=%d no_action=%d failed=%d deferred=%d forbidden=%d",
+        entry.name, len(open_cases), len(chosen), no_action, len(failures), deferred,
+        len(forbidden))
 
 
 def log_counters(name: str, counters: Mapping[str, int]) -> None:
