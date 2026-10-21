@@ -98,6 +98,28 @@ describe('ScopeControl markup', () => {
   });
 });
 
+describe('ScopeControl labelOf', () => {
+  const labelOf = (id: string) => `FOB ALPHA · ${id}`;
+  it('label mode shows the mapped text', () => {
+    const html = renderToStaticMarkup(
+      <ScopeControl variant="header" label="EDGE" available={['edge-01']} selected={null}
+        onSelect={() => {}} emptyText="none" labelOf={labelOf} />,
+    );
+    expect(html).toContain('>FOB ALPHA · edge-01<');
+  });
+  it('options show mapped text, values and onSelect stay ids', () => {
+    const onSelect = vi.fn();
+    const props = { variant: 'header' as const, label: 'EDGE', available: ['edge-01', 'edge-02'],
+      selected: null, onSelect, emptyText: 'none', labelOf };
+    const html = renderToStaticMarkup(<ScopeControl {...props} />);
+    expect(html).toContain('value="edge-01"');
+    expect(html).toContain('>FOB ALPHA · edge-01</option>');
+    expect(html).toContain('>FOB ALPHA · edge-02</option>');
+    findByType(ScopeControl(props), 'select').props.onChange({ target: { value: 'edge-02' } });
+    expect(onSelect).toHaveBeenCalledWith('edge-02');
+  });
+});
+
 // --- onSelect wiring, no DOM needed ------------------------------------------
 
 describe('ScopeControl onSelect wiring', () => {

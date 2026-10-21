@@ -34,7 +34,10 @@
 //     broken here."
 //   - Cold start (no edges observed yet): ScopeControl's emptyText label.
 import { ChevronRight } from 'lucide-react';
+import { useMemo } from 'react';
 import ScopeControl from './ScopeControl';
+import { deployment } from '../deployment';
+import { edgeLabel } from '../lib/edgeLabel';
 
 interface EdgePulldownProps {
   available: string[];
@@ -43,6 +46,8 @@ interface EdgePulldownProps {
 }
 
 export default function EdgePulldown({ available, selected, onSelect }: EdgePulldownProps) {
+  const fobs = deployment().fobs;
+  const labelOf = useMemo(() => (id: string) => edgeLabel(id, fobs), [fobs]);
   return (
     <div className="flex flex-col pr-4 border-r border-slate-700">
       <div className="flex items-center gap-2">
@@ -52,6 +57,7 @@ export default function EdgePulldown({ available, selected, onSelect }: EdgePull
           available={available}
           selected={selected}
           onSelect={onSelect}
+          labelOf={labelOf}
           emptyText="no edges observed yet"
         />
         {/* Chevron separator into the asset picker — sets up the two-
