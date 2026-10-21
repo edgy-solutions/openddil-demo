@@ -2,37 +2,71 @@
 // The result is held with the edge it was fetched for, so after an edge
 // change the previous edge's rows read as "not loaded" until the new edge
 // answers: a stale edge never shows, and no state is reset inside the effect.
-import { useCallback, useEffect, useState } from 'react';
+// A failed poll keeps serving the last ok result for the same edge (so the
+// badge and tab do not vanish) and reports the failure as lastError; the next
+// poll after a failure comes sooner (RETRY_MS).
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadArrivals, type LoadArrivalsResult } from '../lib/arrivals';
 
-const POLL_MS = 10_000;
+export const POLL_MS = 10_000;
+export const RETRY_MS = 3_000;
+
+interface Held {
+  edgeId: string;
+  /** What is served: the last ok result when the latest answer was an error. */
+  shown: LoadArrivalsResult;
+  lastError: string | null;
+}
 
 export function useArrivals(edgeId: string | null): {
   state: LoadArrivalsResult | undefined;
+  lastError: string | null;
   refetch: () => Promise<void>;
 } {
-  const [held, setHeld] = useState<{ edgeId: string; result: LoadArrivalsResult } | null>(null);
+  const [held, setHeld] = useState<Held | null>(null);
+  // True while the latest answers are failures: warn once per run of failures.
+  const failing = useRef(false);
+
+  const apply = useCallback((id: string, result: LoadArrivalsResult) => {
+    if (result.kind === 'error') {
+      if (!failing.current) {
+        failing.current = true;
+        console.warn(`arrivals poll failed for ${id}: ${result.message}`);
+      }
+      setHeld((prev) => {
+        const keep = prev && prev.edgeId === id && prev.shown.kind === 'ok' ? prev.shown : result;
+        return { edgeId: id, shown: keep, lastError: result.message };
+      });
+    } else {
+      failing.current = false;
+      setHeld({ edgeId: id, shown: result, lastError: null });
+    }
+  }, []);
 
   const refetch = useCallback(async () => {
     if (!edgeId) return;
-    const result = await loadArrivals(edgeId);
-    setHeld({ edgeId, result });
-  }, [edgeId]);
+    apply(edgeId, await loadArrivals(edgeId));
+  }, [edgeId, apply]);
 
   useEffect(() => {
     if (!edgeId) return;
     let cancelled = false;
-    const tick = () =>
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    failing.current = false;
+    const tick = () => {
       loadArrivals(edgeId).then((result) => {
-        if (!cancelled) setHeld({ edgeId, result });
+        if (cancelled) return;
+        apply(edgeId, result);
+        timer = setTimeout(tick, result.kind === 'error' ? RETRY_MS : POLL_MS);
       });
+    };
     tick();
-    const timer = setInterval(tick, POLL_MS);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (timer !== undefined) clearTimeout(timer);
     };
-  }, [edgeId]);
+  }, [edgeId, apply]);
 
-  return { state: held && held.edgeId === edgeId ? held.result : undefined, refetch };
+  const mine = held && held.edgeId === edgeId ? held : null;
+  return { state: mine?.shown, lastError: mine?.lastError ?? null, refetch };
 }

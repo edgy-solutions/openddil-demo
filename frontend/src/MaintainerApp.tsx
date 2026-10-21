@@ -600,7 +600,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               setSelectedAsset={setSelectedAssetId}
               arrivals={{
                 counts: arrivalsCounts(arrivals.state),
-                unavailable: arrivals.state?.kind === 'error',
+                stale: arrivals.lastError,
                 view: (
                   <ArrivalsView
                     key={selectedEdge ?? ''}

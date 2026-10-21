@@ -22,7 +22,8 @@ interface AssetSwitcherProps {
   /** Arrivals at the selected edge (things that are not assets yet): a count badge on the switch button and a tab. */
   arrivals?: {
     counts: { undeclared: number; expected: number; overdue: number } | null;
-    unavailable: boolean;
+    /** Message of the latest failed poll while a last-known result is still shown. */
+    stale?: string | null;
     view: ReactNode;
   };
 }
@@ -196,7 +197,7 @@ export default function AssetSwitcher({
               data-testid="arrivals-badge"
               data-attention={attention}
               aria-label={`Arrivals: ${badgeText}`}
-              title={`Arrivals: ${badgeText}`}
+              title={`Arrivals: ${badgeText}${arrivals.stale ? ` (not refreshed: ${arrivals.stale})` : ''}`}
               onClick={() => { setTab('arrivals'); setOpen(true); }}
               className={`absolute bottom-full left-1/2 mb-0.5 flex -translate-x-1/2 h-4 min-w-4 items-center gap-0.5 rounded-full px-1 text-[9px] font-bold leading-none tabular-nums shadow ${
                 attention
@@ -207,14 +208,6 @@ export default function AssetSwitcher({
               {attention && <AlertTriangle aria-hidden className="h-2.5 w-2.5" strokeWidth={2.75} />}
               {arrivalsTotal}
             </button>
-          )}
-          {arrivals?.unavailable && !showArrivals && (
-            <span
-              title="arrivals unavailable"
-              className="absolute -right-1 -top-1 h-2 w-2 rounded-full border border-slate-500 bg-slate-800"
-            >
-              <span data-testid="arrivals-unavailable" className="sr-only">arrivals unavailable</span>
-            </span>
           )}
         </div>
       </div>
