@@ -1405,3 +1405,88 @@ def test_upsert_never_overwrites_a_stored_stamp_with_null():
     [(sql2, args2)] = conn2.calls
     assert 'COALESCE($6, "asset_id")' in sql2
     assert args2[-4:] == (None, "asset-a", None, None)
+
+
+# --- declarations_kind ------------------------------------------------------
+
+_STAMP_REC = {"event_id": "ev-1", "episode_id": "ep-1", "subject": "asset-a",
+              "what": {"part": "comp-1", "code": "F-1"}}
+_STAMP_COLS = ("episode_id", "asset_id", "component", "fault_code")
+
+
+def test_declarations_kind_stamps_a_route_whose_wire_kind_differs():
+    route = _route(kind="wire-kind", declarations_kind="KindA", dedupe_field="event_id")
+    store = _FakeStore()
+    counts = _deliver_one(route, _STAMP_REC, {"KindA": _STAMP_DECL}, store)
+    assert counts.get("delivered") == 1
+    row = store._rows[("to-a", "ev-1")]
+    assert tuple(row[c] for c in _STAMP_COLS) == ("ep-1", "asset-a", "comp-1", "F-1")
+
+
+def test_without_declarations_kind_a_differing_wire_kind_stamps_nulls_and_delivers():
+    route = _route(kind="wire-kind", dedupe_field="event_id")
+    store = _FakeStore()
+    counts = _deliver_one(route, _STAMP_REC, {"KindA": _STAMP_DECL}, store)
+    assert counts.get("delivered") == 1
+    row = store._rows[("to-a", "ev-1")]
+    assert row["outcome"] == "delivered"
+    assert tuple(row[c] for c in _STAMP_COLS) == (None,) * 4
+
+
+@pytest.mark.parametrize("bad", ["", 5])
+def test_config_refuses_a_bad_declarations_kind(tmp_path, bad):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest",
+         "kind": "wire-kind", "declarations_kind": bad},
+    ])
+    with pytest.raises(ForwardConfigError) as exc:
+        load_forward_config(path)
+    assert "f1" in str(exc.value) and "declarations_kind" in str(exc.value)
+
+
+def test_config_declarations_kind_absent_is_none_and_present_is_read(tmp_path):
+    base = {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest", "kind": "wire-kind"}
+    [route] = load_forward_config(_write_config(tmp_path, [base]))
+    assert route.declarations_kind is None
+    [route] = load_forward_config(_write_config(tmp_path, [dict(base, declarations_kind="KindA")]))
+    assert route.declarations_kind == "KindA"
+
+
+def test_warn_unstamped_routes():
+    import logging  # noqa: PLC0415
+
+    class _Capture(logging.Handler):
+        def __init__(self):
+            super().__init__()
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    def run(routes, decls):
+        cap = _Capture()
+        lg = logging.getLogger("test.warn_unstamped")
+        lg.handlers = [cap]
+        lg.propagate = False
+        forwarder_mod.warn_unstamped_routes(routes, decls, lg)
+        return cap.records
+
+    missing = _route(name="r-missing", kind="wire-kind", dedupe_field="event_id")
+    [rec] = run([missing], {"KindA": _STAMP_DECL})
+    assert rec.levelno == logging.WARNING
+    assert "r-missing" in rec.getMessage() and "'wire-kind'" in rec.getMessage()
+    assert run([missing], None) and len(run([missing], {})) == 1
+
+    present = _route(name="r-ok", kind="wire-kind", declarations_kind="KindA", dedupe_field="event_id")
+    assert run([present], {"KindA": _STAMP_DECL}) == []
+    assert run([_route(name="r-nodedupe", kind="wire-kind")], {}) == []
+
+
+def test_resend_stamps_through_declarations_kind():
+    seen = {}
+    rig = _ResendRig()
+    rig.store.record_resend = lambda route, event_id, http_status, case_id, stamps=None: seen.update(stamps or {})
+    route = _route(kind="wire-kind", declarations_kind="KindA", dedupe_field="event_id")
+    code = rig.run({"to-a": route}, record=_STAMP_REC, declarations={"KindA": _STAMP_DECL})
+    assert code == 0
+    assert tuple(seen[c] for c in _STAMP_COLS) == ("ep-1", "asset-a", "comp-1", "F-1")

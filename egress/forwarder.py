@@ -159,7 +159,10 @@ class ForwardRoute:
     `case_field`: the top-level key of the decoded record carrying the id
     the destination should return as its case id (one case per episode,
     shared by every event of it). When unset the expected case id is the
-    record's event id (`dedupe_field`)."""
+    record's event id (`dedupe_field`).
+
+    `declarations_kind`: the kind-schema name whose `x-openddil`
+    declarations stamp this route's ledger rows; unset means `kind`."""
 
     name: str
     sink_topic: str
@@ -171,6 +174,21 @@ class ForwardRoute:
     held: bool = False
     dedupe_field: str | None = None
     case_field: str | None = None
+    declarations_kind: str | None = None
+
+
+def declarations_name(route: ForwardRoute) -> str:
+    """The schema name this route's declarations are filed under."""
+    return route.declarations_kind or route.kind
+
+
+def warn_unstamped_routes(routes, declarations, logger) -> None:
+    """One WARNING per dedupe route whose declarations name is absent."""
+    for route in routes:
+        name = declarations_name(route)
+        if route.dedupe_field is not None and name not in (declarations or {}):
+            logger.warning("route %s: no kind declarations for %r; episode stamps will be NULL",
+                           route.name, name)
 
 
 def _entry_label(entry: object, index: int) -> str:
@@ -182,13 +200,15 @@ def _entry_label(entry: object, index: int) -> str:
 def load_forward_config(path: str | os.PathLike) -> list[ForwardRoute]:
     """Load `OPENDDIL_FORWARD_CONFIG`: a JSON list of `{name, sink_topic,
     url, kind, envelope? (kind_field?, id_field?, body_field?, static?),
-    token_file?, held?, dedupe_field?}` entries. Names must be unique and
+    token_file?, held?, dedupe_field?, case_field?, declarations_kind?}`
+    entries. Names must be unique and
     non-empty. `envelope.static` is a JSON object of extra fixed fields
     written on every record this route forwards; its keys must be
     non-empty strings that don't collide with kind_field/id_field/
     body_field, and its values must be JSON scalars (string/number/
     boolean), never nested objects. `held` must be a boolean; `dedupe_field`
-    must be a non-empty string. A bad file raises `ForwardConfigError`
+    must be a non-empty string, as must `case_field` and
+    `declarations_kind`. A bad file raises `ForwardConfigError`
     naming the entry."""
     raw = json.loads(Path(path).read_text())
     if not isinstance(raw, list):
@@ -263,10 +283,16 @@ def load_forward_config(path: str | os.PathLike) -> list[ForwardRoute]:
         if case_field is not None and (not isinstance(case_field, str) or not case_field):
             raise ForwardConfigError(f"{label}: 'case_field' must be a non-empty string")
 
+        declarations_kind = entry.get("declarations_kind")
+        if declarations_kind is not None and (
+                not isinstance(declarations_kind, str) or not declarations_kind):
+            raise ForwardConfigError(f"{label}: 'declarations_kind' must be a non-empty string")
+
         routes.append(ForwardRoute(
             name=name, sink_topic=entry["sink_topic"], url=entry["url"],
             kind=entry["kind"], envelope=envelope, token_file=token_file, auth=auth,
             held=held, dedupe_field=dedupe_field, case_field=case_field,
+            declarations_kind=declarations_kind,
         ))
     return routes
 
@@ -681,7 +707,7 @@ def _deliver(
                   " (the destination had already accepted it)" if exc.after_delivery else "")
         log_outcome(route.name, key, route.kind, None, "exhausted")
         if route.dedupe_field is not None and not exc.after_delivery:
-            stamps = episode_stamps((declarations or {}).get(route.kind), record)
+            stamps = episode_stamps((declarations or {}).get(declarations_name(route)), record)
             try:
                 store.upsert_held(route=route.name, event_id=event_id, topic=topic, partition=partition,
                                   offset=offset, stamps=stamps)
@@ -731,7 +757,7 @@ def _deliver_inner(
     `partition`/`offset` are the sink message's own position, carried
     through only so a dedupe route's stored row can record them.
     """
-    stamps = episode_stamps((declarations or {}).get(route.kind), record)
+    stamps = episode_stamps((declarations or {}).get(declarations_name(route)), record)
     event_id: str | None = None
     if route.dedupe_field is not None:
         raw_event_id = record.get(route.dedupe_field)
@@ -1085,7 +1111,7 @@ def resend_once(
         extra["case_id_mismatch"] = True
     try:
         store.record_resend(route.name, event_id, status, case_id,
-                           stamps=episode_stamps((declarations or {}).get(route.kind), record))
+                           stamps=episode_stamps((declarations or {}).get(declarations_name(route)), record))
     except Exception:  # noqa: BLE001 — the destination HAS it; say so
         return finish(3, line("operator_resend_unrecorded", status, **extra))
     return finish(0, line("operator_resend", status, **extra))
@@ -1136,11 +1162,13 @@ def resend_main(argv: list[str]) -> int:
     except (OSError, ValueError):
         record = _BAD_RECORD
 
+    declarations = _load_declarations()
+    warn_unstamped_routes(routes.values(), declarations, log)
     return resend_once(
         routes, route_name=args.route, event_id=args.event_id, reason=args.reason, key=args.key,
         record=record, post=_default_post, store=DeliveredStore(store_dsn_from_env()),
         read_token=_default_read_token, audit=_default_audit,
-        declarations=_load_declarations(),
+        declarations=declarations,
     )
 
 
@@ -1179,6 +1207,7 @@ def main() -> int:
             asyncio.run(require_tables(store_dsn_from_env(), ["egress_delivered_events"]))
 
     declarations = _load_declarations()
+    warn_unstamped_routes(routes, declarations, log)
     store = DeliveredStore(store_dsn_from_env()) if any(route.dedupe_field is not None for route in routes) else None
 
     signal.signal(signal.SIGTERM, _stop)
