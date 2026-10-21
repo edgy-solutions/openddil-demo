@@ -18,6 +18,8 @@ interface ScopeControlProps {
   onSelect: (id: string) => void;
   emptyText: string;
   variant: 'header' | 'compact';
+  /** Display text for a scope id (value/onSelect stay ids). Default identity. */
+  labelOf?: (id: string) => string;
 }
 
 export type ScopeMode = 'selector' | 'label' | 'empty';
@@ -31,18 +33,18 @@ export function scopeMode(available: string[]): ScopeMode {
 }
 
 export default function ScopeControl({
-  label, available, selected, onSelect, emptyText, variant,
+  label, available, selected, onSelect, emptyText, variant, labelOf = (id) => id,
 }: ScopeControlProps) {
   const mode = scopeMode(available);
 
   if (mode !== 'selector') {
-    const text = mode === 'label' ? available[0] : emptyText;
+    const text = mode === 'label' ? labelOf(available[0]) : emptyText;
     return variant === 'header' ? (
       <div className="flex flex-col">
         <label className="text-[10px] text-slate-400 tracking-wider mb-1">
           {label}
         </label>
-        <span data-testid="scope-label" className="text-sm text-slate-200 py-1.5">
+        <span data-testid="scope-label" title={text} className="text-sm text-slate-200 py-1.5">
           {text}
         </span>
       </div>
@@ -70,10 +72,10 @@ export default function ScopeControl({
           <select
             value={value}
             onChange={(e) => onSelect(e.target.value)}
-            className="appearance-none w-44 bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 cursor-pointer"
+            className="appearance-none w-auto min-w-44 max-w-[20rem] truncate bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded pl-3 pr-8 py-1.5 focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 cursor-pointer"
           >
             {available.map((e) => (
-              <option key={e} value={e}>{e}</option>
+              <option key={e} value={e}>{labelOf(e)}</option>
             ))}
           </select>
           <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
@@ -97,7 +99,7 @@ export default function ScopeControl({
         className="bg-slate-800 border border-slate-700 text-slate-200 text-[11px] rounded px-2 py-1"
       >
         {available.map((r) => (
-          <option key={r} value={r}>{r}</option>
+          <option key={r} value={r}>{labelOf(r)}</option>
         ))}
       </select>
     </div>

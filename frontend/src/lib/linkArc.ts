@@ -25,3 +25,17 @@ export function linkArc(start: Vec3, end: Vec3, groundY: (x: number, z: number) 
   }
   return out;
 }
+
+/**
+ * Per-point alpha for a line that fades out at its far end: 1 up to `1 - fadeEnd` of the point list
+ * (by index), then linear down to 0 at the last point. `fadeEnd` is clamped to 0..1.
+ */
+export function fadeAlphas(n: number, fadeEnd: number): number[] {
+  const f = Math.min(1, Math.max(0, fadeEnd));
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = n > 1 ? i / (n - 1) : 0;
+    out.push(f > 0 && t > 1 - f ? Math.max(0, (1 - t) / f) : 1);
+  }
+  return out;
+}

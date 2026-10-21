@@ -2,7 +2,7 @@ import { useRef, useMemo } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
-import { linkArc } from '../lib/linkArc';
+import { fadeAlphas, linkArc } from '../lib/linkArc';
 import type { DdilLinkStatus } from '../lib/linkStatus';
 
 // NOMINAL up, IDLE up with no traffic (amber, solid), SEVERED down, UNKNOWN not
@@ -22,9 +22,11 @@ interface DdilNetworkLinkProps {
   dim?: boolean;
   /** Height the arc keeps above the ground away from its ends (default 3, the HQ map's scale). */
   clearance?: number;
+  /** Fade the last fraction (0..1) of the line out to nothing; the SEVERED ring at `end` is then not drawn. */
+  fadeEnd?: number;
 }
 
-export default function DdilNetworkLink({ start, end, status, via, groundY, dim, clearance }: DdilNetworkLinkProps) {
+export default function DdilNetworkLink({ start, end, status, via, groundY, dim, clearance, fadeEnd }: DdilNetworkLinkProps) {
   const bufferRingRef = useRef<THREE.Mesh>(null);
   
   const points = useMemo(
@@ -39,6 +41,12 @@ export default function DdilNetworkLink({ start, end, status, via, groundY, dim,
   );
   
   const color = LINK_COLOR[status];
+  // RGBA per point: the status colour with the alpha ramp. The material colour stays white so it does not tint them.
+  const vertexColors = useMemo(() => {
+    if (fadeEnd === undefined) return undefined;
+    const c = new THREE.Color(color);
+    return fadeAlphas(points.length, fadeEnd).map((a) => [c.r, c.g, c.b, a] as [number, number, number, number]);
+  }, [fadeEnd, points, color]);
   const dashed = status === 'SEVERED' || status === 'UNKNOWN' || status === 'UNREACHABLE';
   
   useFrame((state) => {
@@ -55,7 +63,8 @@ export default function DdilNetworkLink({ start, end, status, via, groundY, dim,
     <group>
       <Line
         points={points}
-        color={color}
+        color={vertexColors ? 'white' : color}
+        vertexColors={vertexColors}
         lineWidth={status === 'SEVERED' ? 3 : 1.5}
         dashed={dashed}
         dashSize={5}
@@ -72,7 +81,7 @@ export default function DdilNetworkLink({ start, end, status, via, groundY, dim,
         </Html>
       )}
 
-      {status === 'SEVERED' && (
+      {status === 'SEVERED' && fadeEnd === undefined && (
         <mesh ref={bufferRingRef} position={end} rotation={[-Math.PI/2, 0, 0]}>
           <ringGeometry args={[2, 3, 32]} />
           <meshBasicMaterial color="#f43f5e" transparent opacity={0.8} side={THREE.DoubleSide} />
