@@ -1585,7 +1585,7 @@ export default function RegionalSustainmentPosture({
             </>
           )}
           {terrain && prefs.style === 'holo' && (
-            <HoloTerrain data={terrain} exag={exag} opts={prefs.holo} center={sweepCenter} edge={edge} />
+            <HoloTerrain data={terrain} exag={exag} opts={prefs.holo} center={sweepCenter} edge={edge} surround={surround ?? undefined} />
           )}
 
           {/* Everything standing on the ground remounts when the terrain
