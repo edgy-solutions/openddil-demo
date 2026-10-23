@@ -1359,3 +1359,496 @@ def test_reset_invalid_body_is_400_no_pause_no_job(papp, raw):
     assert code == 400
     assert kube["posts"] == [] and state["adapter_calls"] == []
     assert app_state.get_last_command() is None
+
+
+# =============================================================================
+# exercise loop -- the step list, end detection, halt rule, record
+# =============================================================================
+
+import logging
+
+
+class FakeClock:
+    """Injected clock + sleep: sleeping advances time and runs a script hook, so
+    a loop runs to completion in microseconds and signals change on a schedule."""
+
+    def __init__(self):
+        self.t = 0.0
+        self.hook = lambda t: None
+
+    def now(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+        self.hook(self.t)
+
+
+class ListRecorder:
+    """Stands in for LoopRecorder; stops the loop after `stop_after` records."""
+
+    def __init__(self, runner_ref, stop_after=1):
+        self.records = []
+        self.runner_ref = runner_ref
+        self.stop_after = stop_after
+
+    def append(self, rec):
+        self.records.append(rec)
+        if len(self.records) >= self.stop_after:
+            self.runner_ref[0].stop()
+
+    def load(self):
+        return []
+
+
+def _loop_cfg(steps, quiet=5.0, fallback=20.0, record_max=50):
+    return {"steps": steps, "quiet_s": quiet, "fallback_s": fallback, "record_max": record_max}
+
+
+@pytest.fixture
+def lapp(tmp_path):
+    """An app with a fake adapter, a fake kube API and a scripted loop clock."""
+    kube.update(jobs=[], posts=[], gets=[], list_status=200, post_status=201, post_delay=0.0)
+    state.update(adapter_calls=[], adapter_status=200, status_by_path={}, adapter_delay=0.0)
+    kube_srv = _serve(FakeKube)
+    sa = tmp_path / "sa"
+    sa.mkdir()
+    (sa / "token").write_text("tok-1\n")
+    (sa / "namespace").write_text("ns1\n")
+    tpl = dict(TEMPLATE)
+    tpl["spec"] = {**TEMPLATE["spec"], "activeDeadlineSeconds": 10}
+    tplf = tmp_path / "job.json"
+    tplf.write_text(json.dumps(tpl))
+    launcher = control.ResetJobLauncher(tplf, sa_dir=sa,
+                                        base_url=f"http://127.0.0.1:{kube_srv.server_port}")
+    adapter_srv = _serve(FakeAdapter)
+    ops = {n: {"method": "POST", "path": "/" + n, "body": {}} for n in ("pause", "stop", "run")}
+    cfg = {"name": "stand-in", "endpoint": f"http://127.0.0.1:{adapter_srv.server_port}",
+           "operations": ops}
+    adapter = control.load_adapter_config(_write(tmp_path, cfg))
+    store = control.RateStore(sources=[], window=30.0, min_rate=0.1)
+    app_state = control.AppState(adapter=adapter, store=store, reset_record_file=None,
+                                 reset_launcher=launcher)
+    clock = FakeClock()
+    sig = {"fires": {"f1": 0.0}, "inflight": {"i1": 0.0}}
+
+    def make(steps, recorder=None, **kw):
+        runner_ref = [None]
+        rec = recorder or ListRecorder(runner_ref)
+        runner = control.LoopRunner(app_state, _loop_cfg(steps, **kw),
+                                    sampler=lambda: {"fires": dict(sig["fires"]),
+                                                     "inflight": dict(sig["inflight"])},
+                                    recorder=rec, scrape_interval=1.0, clock=clock.now,
+                                    sleep=clock.sleep, reset_poll_s=1.0)
+        runner_ref[0] = runner
+        app_state.loop = runner
+        return runner, rec
+
+    handler_srv = _serve(control.make_handler(app_state))
+    yield {"url": f"http://127.0.0.1:{handler_srv.server_port}", "app": app_state,
+           "clock": clock, "sig": sig, "make": make}
+    for s in (kube_srv, adapter_srv, handler_srv):
+        s.shutdown()
+
+
+AWAIT = [{"await": "scenarioEnd"}]
+
+
+def _run_sync(runner, subject="sup@x"):
+    code, body = runner.start(subject, background=False)
+    assert code == 202, body
+    return runner.status()
+
+
+def test_parse_labeled_total_filters_on_label_and_sums():
+    text = ('dis_effector_pdus_decoded_total{pdu_type="2",site="1"} 3\n'
+            'dis_effector_pdus_decoded_total{site="2",pdu_type="2"} 4\n'
+            'dis_effector_pdus_decoded_total{pdu_type="1"} 99\n'
+            'dis_pdus_received_total{pdu_type="2"} 7\n')
+    assert control.parse_labeled_total(text, "dis_effector_pdus_decoded_total", "pdu_type", "2") == 7.0
+    assert control.parse_labeled_total(text, "dis_ingress_kind_tracked", "kind", "2") is None
+    # the existing rate parse is untouched
+    assert control.parse_pdu_total(text) is None
+
+
+def test_loop_a_quiet_end_after_fire_with_nothing_in_flight(lapp):
+    sig, clock = lapp["sig"], lapp["clock"]
+
+    def script(t):
+        if t >= 3:
+            sig["fires"]["f1"] = 5.0  # one burst at t=3, then flat
+    clock.hook = script
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=60.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert (r["end_reason"], r["armed"], r["fires"]) == ("quiet", True, 5)
+    assert 8 <= r["steps"][0]["s"] <= 10  # armed at 3 + quiet 5
+
+
+def test_loop_b_inflight_holds_the_end(lapp):
+    sig, clock = lapp["sig"], lapp["clock"]
+
+    def script(t):
+        if t >= 2:
+            sig["fires"]["f1"] = 1.0
+        sig["inflight"]["i1"] = 2.0 if 3 <= t < 12 else 0.0
+    clock.hook = script
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=60.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert r["end_reason"] == "quiet"
+    assert r["steps"][0]["s"] >= 16  # in flight until 12, then 5 s quiet
+
+
+def test_loop_c_unknown_tick_restarts_quiet(lapp):
+    sig, clock = lapp["sig"], lapp["clock"]
+
+    def script(t):
+        if t >= 2:
+            sig["fires"]["f1"] = 1.0
+        sig["inflight"]["i1"] = None if t == 6 else 0.0  # one failed scrape
+    clock.hook = script
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=60.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert r["end_reason"] == "quiet"
+    assert r["steps"][0]["s"] >= 11  # without the unknown tick it would end at 7
+
+
+def test_loop_d_fallback_while_armed_and_while_never_armed(lapp):
+    sig, clock = lapp["sig"], lapp["clock"]
+
+    def busy(t):
+        sig["fires"]["f1"] = t  # a fire on every tick, forever
+    clock.hook = busy
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=20.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert (r["end_reason"], r["armed"]) == ("fallback", True)
+    assert 20 <= r["steps"][0]["s"] <= 21
+
+    clock.hook = lambda t: None
+    clock.t = 0.0
+    sig["fires"]["f1"] = 0.0
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=20.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert (r["end_reason"], r["armed"], r["fires"]) == ("fallback", False, 0)
+
+
+def test_loop_e_counter_decrease_rebaselines_without_a_fire(lapp):
+    sig, clock = lapp["sig"], lapp["clock"]
+    sig["fires"]["f1"] = 100.0
+
+    def script(t):
+        if t >= 2:
+            sig["fires"]["f1"] = 5.0  # the source restarted
+    clock.hook = script
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=20.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert (r["end_reason"], r["armed"], r["fires"]) == ("fallback", False, 0)
+
+    # the new baseline is live: a rise after the decrease does count
+    clock.t = 0.0
+    sig["fires"]["f1"] = 100.0
+
+    def script2(t):
+        sig["fires"]["f1"] = 5.0 if t < 6 else 9.0
+    clock.hook = script2
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=40.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert (r["end_reason"], r["armed"], r["fires"]) == ("quiet", True, 4)
+
+
+def test_loop_f_reset_pause_failure_halts_naming_cycle_and_step(lapp):
+    state["status_by_path"]["/pause"] = 503
+    runner, rec = lapp["make"]([{"op": "stop"}, {"reset": "quick"}, {"op": "run"}])
+    st = _run_sync(runner)["loop"]
+    assert st["state"] == "halted"
+    assert st["halt"] == {"cycle": 1, "step_index": 1, "step": "reset:quick",
+                          "detail": "pause failed"}
+    assert kube["posts"] == []  # no Job created
+    assert "/run" not in [c["path"] for c in state["adapter_calls"]]  # later steps never run
+    assert rec.records[0]["outcome"] == "halted"
+
+
+def test_loop_g_failed_reset_job_halts_and_names_the_job(lapp):
+    clock = lapp["clock"]
+
+    def script(t):
+        if kube["jobs"] and t >= 3:
+            kube["jobs"][-1]["status"]["conditions"] = [{"type": "Failed", "status": "True"}]
+    clock.hook = script
+    runner, rec = lapp["make"]([{"reset": "quick"}, {"op": "run"}])
+    st = _run_sync(runner)["loop"]
+    assert st["state"] == "halted"
+    assert st["halt"]["detail"] == "reset job failed"
+    assert rec.records[0]["reset_job"] == "rel-exercise-reset-1"
+    assert "/run" not in [c["path"] for c in state["adapter_calls"]]
+
+
+def test_loop_g_reset_job_that_never_finishes_times_out(lapp):
+    runner, rec = lapp["make"]([{"reset": "quick"}])
+    st = _run_sync(runner)["loop"]  # job stays active; deadline 10 s + 120 s
+    assert st["state"] == "halted"
+    assert st["halt"]["detail"] == "reset job timeout"
+    assert 130 <= lapp["clock"].t <= 140
+
+
+def test_loop_h_stop_during_await_ends_at_once(lapp):
+    clock = lapp["clock"]
+    runner, rec = lapp["make"](AWAIT + [{"op": "stop"}], quiet=5.0, fallback=600.0)
+    clock.hook = lambda t: runner.stop() if t >= 3 else None
+    st = _run_sync(runner)["loop"]
+    assert st["state"] == "stopped"
+    assert clock.t < 5
+    assert rec.records[0]["outcome"] == "stopped"
+    assert state["adapter_calls"] == []
+
+
+def test_loop_h_stop_during_reset_waits_for_the_job_and_cancels_nothing(lapp):
+    clock = lapp["clock"]
+    seen = {}
+
+    def script(t):
+        if t == 2:
+            lapp["app"].loop.stop()
+            seen["state"] = lapp["app"].loop.status()["loop"]["state"]
+        if t >= 5 and kube["jobs"]:
+            kube["jobs"][-1]["status"]["conditions"] = [{"type": "Complete", "status": "True"}]
+    clock.hook = script
+    runner, rec = lapp["make"]([{"reset": "quick"}, {"op": "run"}])
+    st = _run_sync(runner)["loop"]
+    assert seen["state"] == "stopping"
+    assert st["state"] == "stopped"
+    assert clock.t >= 5  # it waited for the Job
+    assert len(kube["posts"]) == 1
+    assert "/run" not in [c["path"] for c in state["adapter_calls"]]  # ends after the step
+    assert rec.records[0]["outcome"] == "stopped"
+
+
+def test_loop_i_other_work_is_refused_while_running_and_loop_while_other_work(lapp):
+    url, app_state = lapp["url"], lapp["app"]
+    runner = control.LoopRunner(app_state, _loop_cfg(AWAIT, quiet=5.0, fallback=600.0),
+                                sampler=lambda: {"fires": {}, "inflight": {}},
+                                recorder=ListRecorder([None], stop_after=10 ** 9),
+                                scrape_interval=0.05)
+    app_state.loop = runner
+    app_state.sequences = {"cut": {"label": "c", "steps": [{"wait_s": 1}]}}
+    # loop refused while a reset is running
+    kube["jobs"] = [_job("rel-exercise-reset-0", "2026-01-01T00:00:00Z", active=1)]
+    code, body = _post(url + "/exercise/op/loop", subject="sup@x")
+    assert code == 409
+    kube["jobs"] = []
+    # ... and while a sequence is running
+    app_state.sequence_run = {"op": "cut", "state": "running"}
+    code, body = _post(url + "/exercise/op/loop", subject="sup@x")
+    assert code == 409
+    app_state.sequence_run = None
+
+    code, body = _post(url + "/exercise/op/loop", subject="sup@x")
+    assert (code, body) == (202, {"loop": "started", "cycle": 1})
+    try:
+        for op in ("pause", "reset", "cut"):
+            code, body = _post(url + "/exercise/op/" + op, subject="sup@x")
+            assert (code, body) == (409, {"refused": "loop running", "cycle": 1}), op
+        code, body = _post(url + "/exercise/op/loop", subject="sup@x")
+        assert code == 409
+        assert state["adapter_calls"] == [] and kube["posts"] == []
+        code, body = _post(url + "/exercise/op/loopstop", subject="sup@x")
+        assert (code, body) == (202, {"loop": "stopping"})
+    finally:
+        runner.stop()
+    deadline = time.time() + 2
+    while runner.status()["loop"]["state"] != "stopped" and time.time() < deadline:
+        time.sleep(0.02)
+    assert runner.status()["loop"]["state"] == "stopped"
+    code, body = _post(url + "/exercise/op/loopstop", subject="sup@x")
+    assert code == 409  # nothing running now
+
+
+def test_loop_i_start_when_not_configured_is_409(app):
+    url, _app_state, _store = app
+    code, body = _post(url + "/exercise/op/loop", subject="sup@x")
+    assert code == 409
+    assert body["error"] == "loop not configured"
+    code, body = _post(url + "/exercise/op/loopstop", subject="sup@x")
+    assert code == 409
+
+
+def _loop_file(tmp_path, steps, **extra):
+    p = tmp_path / "loop.json"
+    p.write_text(json.dumps({"steps": steps, **extra}))
+    return p
+
+
+def _plain_adapter(tmp_path, ops=("pause", "stop", "run")):
+    cfg = {"name": "x", "endpoint": "http://127.0.0.1:1",
+           "operations": {n: {"method": "POST", "path": "/" + n, "body": {}} for n in ops}}
+    return control.load_adapter_config(_write(tmp_path, cfg))
+
+
+def test_loop_j_reserved_names_and_bad_steps_are_refused_at_startup(tmp_path):
+    adapter = _plain_adapter(tmp_path)
+    good = [{"await": "scenarioEnd"}, {"op": "stop"}, {"reset": "quick"}, {"op": "run"}]
+    cfg = control.load_loop_config(_loop_file(tmp_path, good), adapter, {}, has_reset=True)
+    assert cfg["steps"] == good
+    assert (cfg["quiet_s"], cfg["fallback_s"], cfg["record_max"]) == (120.0, 720.0, 50)
+
+    seq = {"label": "l", "steps": [{"wait_s": 1}]}
+    for name in ("loop", "loopstop"):
+        with pytest.raises(control.AdapterConfigError):
+            control.load_loop_config(_loop_file(tmp_path, good), adapter, {name: seq}, True)
+        bad_adapter = dict(adapter, operations={**adapter["operations"], name: []})
+        with pytest.raises(control.AdapterConfigError):
+            control.load_loop_config(_loop_file(tmp_path, good), bad_adapter, {}, True)
+
+    for steps in ([{"sleep": 3}], [{"op": "nope"}], [{"reset": "slow"}], [{"await": "x"}],
+                  [{"op": "stop", "wait_s": 1}], [], [{"op": "restart"}]):
+        with pytest.raises(control.AdapterConfigError):
+            control.load_loop_config(_loop_file(tmp_path, steps), adapter, {}, True)
+    with pytest.raises(control.AdapterConfigError):  # reset step with no reset Job configured
+        control.load_loop_config(_loop_file(tmp_path, good), adapter, {}, has_reset=False)
+    # absent file: not configured, not an error
+    assert control.load_loop_config(None, adapter, {}, True) is None
+    assert control.load_loop_config("", adapter, {}, True) is None
+
+
+def test_loop_k_status_shape(lapp):
+    url = lapp["url"]
+    code, body = _get(url + "/exercise/status")
+    lp = body["loop"]
+    assert lp["configured"] is False and lp["state"] == "idle" and lp["await"] is None
+    assert lp["last_cycle"] is None and lp["halt"] is None
+
+    steps = [{"await": "scenarioEnd"}, {"op": "stop"}]
+    runner, rec = lapp["make"](steps, quiet=5.0, fallback=20.0)
+    seen = {}
+
+    def script(t):
+        if t == 4:
+            seen["loop"] = _get(url + "/exercise/status")[1]["loop"]
+            runner.stop()
+    lapp["clock"].hook = script
+    _run_sync(runner)
+    lp = seen["loop"]
+    assert set(lp) >= {"configured", "state", "cycle", "step_index", "step", "steps", "started_at",
+                       "step_started_at", "started_by", "await", "last_cycle", "halt",
+                       "record_error", "quiet_s", "fallback_s"}
+    assert (lp["quiet_s"], lp["fallback_s"]) == (5.0, 20.0)
+    assert (lp["configured"], lp["cycle"], lp["step_index"], lp["step"]) == \
+        (True, 1, 0, "await:scenarioEnd")
+    assert lp["state"] in ("running", "stopping")
+    assert lp["steps"] == steps and lp["started_by"] == "sup@x"
+    aw = lp["await"]
+    assert set(aw) == {"armed", "fires_this_await", "inflight", "quiet_s", "quiet_needed_s",
+                       "fallback_s", "fallback_remaining_s", "unknown_sources"}
+    assert aw["quiet_needed_s"] == 5 and aw["fallback_s"] == 20
+    assert 15 <= aw["fallback_remaining_s"] <= 17 and aw["armed"] is False
+    assert runner.status()["loop"]["last_cycle"]["outcome"] == "stopped"
+
+
+def test_loop_k_status_names_failing_source(lapp):
+    lapp["sig"]["fires"]["f1"] = None
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=20.0)
+    seen = {}
+
+    def script(t):
+        if t == 3:
+            seen["aw"] = runner.status()["loop"]["await"]
+            runner.stop()
+    lapp["clock"].hook = script
+    _run_sync(runner)
+    assert seen["aw"]["unknown_sources"] == ["f1"]
+
+
+class KubeCM(BaseHTTPRequestHandler):
+    """A fake ConfigMap endpoint: GET returns the stored object, PATCH merges data."""
+
+    def log_message(self, *a):
+        pass
+
+    def _reply(self, code, obj):
+        out = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+    def do_GET(self):
+        self._reply(200, {"metadata": {"name": "rel-exercise-loop-record"},
+                          "data": dict(cm["data"])})
+
+    def do_PATCH(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = json.loads(self.rfile.read(length))
+        cm["patches"].append({"path": self.path, "ctype": self.headers.get("Content-Type"),
+                              "body": body})
+        if cm["fail"]:
+            self._reply(500, {"message": "boom"})
+            return
+        cm["data"].update(body["data"])
+        self._reply(200, {})
+
+
+cm = {"data": {}, "patches": [], "fail": False}
+
+
+@pytest.fixture
+def cmkube(tmp_path):
+    cm.update(data={}, patches=[], fail=False)
+    srv = _serve(KubeCM)
+    sa = tmp_path / "sa2"
+    sa.mkdir()
+    (sa / "token").write_text("tok\n")
+    (sa / "namespace").write_text("ns1\n")
+    yield lambda: control.KubeApi(sa_dir=sa, base_url=f"http://127.0.0.1:{srv.server_port}")
+    srv.shutdown()
+
+
+def _stop_after_recorder(kubeapi, record_max, runner_ref, stop_after):
+    class StopAfterRecorder(control.LoopRecorder):
+        n = 0
+
+        def append(self, rec):
+            try:
+                super().append(rec)
+            finally:
+                self.n += 1
+                if self.n >= stop_after:
+                    runner_ref[0].stop()
+    return StopAfterRecorder(kubeapi, "rel-exercise-loop-record", record_max)
+
+
+def test_loop_l_one_log_line_and_one_patch_per_cycle_bounded(lapp, cmkube, caplog):
+    ref = [None]
+    recorder = _stop_after_recorder(cmkube(), 2, ref, 3)
+    runner, _ = lapp["make"]([{"wait_s": 1}], recorder=recorder)
+    ref[0] = runner
+    with caplog.at_level(logging.INFO, logger="exercise.control"):
+        _run_sync(runner)
+    lines = [json.loads(r.getMessage()) for r in caplog.records
+             if '"exercise_loop_cycle"' in r.getMessage()]
+    assert [l["cycle"] for l in lines] == [1, 2, 3]
+    assert set(lines[0]) >= {"event", "cycle", "started_at", "ended_at", "end_reason", "armed",
+                             "fires", "outcome", "steps", "reset_job", "started_by"}
+    assert set(lines[0]["steps"][0]) == {"step", "ok", "started_at", "s", "detail"}
+    assert len(cm["patches"]) == 3
+    assert cm["patches"][0]["path"] == "/api/v1/namespaces/ns1/configmaps/rel-exercise-loop-record"
+    assert cm["patches"][0]["ctype"] == "application/merge-patch+json"
+    stored = json.loads(cm["data"]["cycles.json"])
+    assert [c["cycle"] for c in stored] == [2, 3]  # bounded to recordMax, newest last
+
+
+def test_loop_l_patch_failure_does_not_halt_the_loop(lapp, cmkube):
+    cm["fail"] = True
+    ref = [None]
+    recorder = _stop_after_recorder(cmkube(), 5, ref, 2)
+    runner, _ = lapp["make"]([{"wait_s": 1}], recorder=recorder)
+    ref[0] = runner
+    st = _run_sync(runner)["loop"]
+    assert st["state"] == "stopped" and st["halt"] is None
+    assert st["last_cycle"]["cycle"] == 2
+    assert "kube api" in st["record_error"]

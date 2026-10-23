@@ -503,25 +503,21 @@ def _job_summary(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class ResetJobLauncher:
-    """Creates the reset Job and reports the newest one. Talks to the API with
-    the pod's service account; TLS always verifies against the SA's ca.crt.
-    `base_url` is a test-only injection (a loopback fake API over plain HTTP);
-    production leaves it None and gets https://KUBERNETES_SERVICE_HOST:PORT."""
+class KubeApi:
+    """The in-cluster API as the pod's service account. TLS always verifies
+    against the SA's ca.crt. `base_url` is a test-only injection (a loopback
+    fake API over plain HTTP); production leaves it None and gets
+    https://KUBERNETES_SERVICE_HOST:PORT."""
 
-    def __init__(self, template_file: str | os.PathLike, sa_dir: str | os.PathLike | None = None,
-                 base_url: str | None = None):
-        self.template = load_reset_job_template(template_file)
-        self.release = self.template["metadata"]["labels"][RESET_INSTANCE_LABEL]
+    def __init__(self, sa_dir: str | os.PathLike | None = None, base_url: str | None = None):
         self.sa_dir = Path(sa_dir or os.getenv("EXERCISE_SA_DIR") or DEFAULT_SA_DIR)
         self.base_url = base_url
-        # Serialises latest-check + create, so two clicks cannot both create.
-        self._launch_lock = threading.Lock()
 
     def _namespace(self) -> str:
         return (self.sa_dir / "namespace").read_text(encoding="utf-8").strip()
 
-    def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request(self, method: str, path: str, body: dict[str, Any] | None = None,
+                 content_type: str = "application/json") -> dict[str, Any]:
         try:
             token = (self.sa_dir / "token").read_text(encoding="utf-8").strip()  # rotates
             if self.base_url:
@@ -537,7 +533,7 @@ class ResetJobLauncher:
             data = None
             if body is not None:
                 data = json.dumps(body).encode("utf-8")
-                headers["Content-Type"] = "application/json"
+                headers["Content-Type"] = content_type
             req = urllib.request.Request(base + path, data=data, method=method, headers=headers)
             with urllib.request.urlopen(req, timeout=KUBE_API_TIMEOUT_S, context=ctx) as resp:
                 raw = resp.read()
@@ -554,6 +550,18 @@ class ResetJobLauncher:
             return json.loads(raw)
         except ValueError as exc:
             raise KubeApiError("kube api answered non-JSON", status) from exc
+
+
+class ResetJobLauncher(KubeApi):
+    """Creates the reset Job and reports the newest one."""
+
+    def __init__(self, template_file: str | os.PathLike, sa_dir: str | os.PathLike | None = None,
+                 base_url: str | None = None):
+        super().__init__(sa_dir, base_url)
+        self.template = load_reset_job_template(template_file)
+        self.release = self.template["metadata"]["labels"][RESET_INSTANCE_LABEL]
+        # Serialises latest-check + create, so two clicks cannot both create.
+        self._launch_lock = threading.Lock()
 
     def _jobs_path(self) -> str:
         return f"/apis/batch/v1/namespaces/{self._namespace()}/jobs"
@@ -724,6 +732,8 @@ class AppState:
         # create one Job.
         self.reset_lock = threading.Lock()
         self.last_command: dict[str, Any] | None = None
+        # Replaced by main() (or a test) once the loop is configured.
+        self.loop = LoopRunner(self, None)
 
     def set_last_command(self, record: dict[str, Any]) -> None:
         with self._lock:
@@ -826,6 +836,63 @@ class AppState:
             if status is None or not 200 <= status < 300:
                 break
         return status, error, steps
+
+    # --- reset ------------------------------------------------------------
+    def run_reset(self, subject: str, confirm: dict[str, Any] | None = None
+                  ) -> tuple[int, dict[str, Any]]:
+        """The reset press, without HTTP: (status, body) exactly as the route
+        answers. The simulator is quieted through the adapter (pause) before the
+        reset Job is created; a failed pause refuses the reset rather than
+        resetting under a running simulator. No adapter call is made for a
+        refused press (reset already running). 202 means the Job was created;
+        the loop then follows it to its end."""
+        with self.reset_lock:
+            try:
+                current = self.reset_launcher.latest()
+            except KubeApiError as exc:
+                log.warning(json.dumps({"exercise_reset_job": "not_created",
+                                         "status": exc.status, "subject": subject}))
+                return 502, {"error": "reset job not created", "status": exc.status}
+            if current is not None and current["state"] == "running":
+                return self._reset_running(subject, current["name"])
+            pause: dict[str, Any] | None = None
+            if "pause" in self.adapter["operations"]:
+                status, error, steps = self.call_adapter("pause")
+                pause = {"status": status, "error": error, "steps": steps}
+                self.set_last_command({"op": "pause", "at": _now_iso(), "status": status,
+                                       "error": error, "subject": subject, "steps": steps,
+                                       "via": "reset"})
+                log.info(json.dumps({"exercise_op": "pause", "status": status,
+                                      "error": error, "subject": subject, "via": "reset"}))
+                if status is None or not 200 <= status < 300:
+                    log.info(json.dumps({"exercise_op_refused": "reset",
+                                          "reason": "pause_failed", "subject": subject}))
+                    return 502, {"error": "reset refused: the simulator pause failed",
+                                 "reason": "pause_failed", "pause": pause}
+            try:
+                confirmed = (confirm["seen_open"]
+                             if confirm is not None and confirm["confirm_cancel_open"] else None)
+                outcome, job = self.reset_launcher.launch(subject, confirmed)
+            except InvalidSubject:
+                return 400, {"error": "invalid subject"}
+            except KubeApiError as exc:
+                log.warning(json.dumps({"exercise_reset_job": "not_created",
+                                         "status": exc.status, "subject": subject}))
+                return 502, {"error": "reset job not created", "status": exc.status,
+                             "simulator_paused": pause is not None}
+            if outcome == "running":
+                return self._reset_running(subject, job)
+            at = _now_iso()
+            self.set_last_command({"op": "reset", "at": at, "status": 201, "error": None,
+                                   "subject": subject, "job": job, "pause": pause})
+            log.info(json.dumps({"exercise_reset_job": job, "subject": subject}))
+            return 202, {"op": "reset", "at": at, "job": job, "subject": subject, "pause": pause}
+
+    @staticmethod
+    def _reset_running(subject: str, job: str | None) -> tuple[int, dict[str, Any]]:
+        log.info(json.dumps({"exercise_op_refused": "reset", "reason": "reset_running",
+                              "job": job, "subject": subject}))
+        return 409, {"error": "reset already running", "reason": "reset_running", "job": job}
 
     # --- named sequences --------------------------------------------------
     def get_sequence_run(self) -> dict[str, Any] | None:
@@ -942,6 +1009,427 @@ class AppState:
                               "subject": subject}))
 
 
+# --- the exercise loop ---------------------------------------------------------
+#
+# A supervisor starts the loop (POST /exercise/op/loop); it repeats a configured
+# step list until stopped (loopstop) or a step fails. Nothing is retried: a
+# failed step halts the loop. State lives in memory only, so a pod restart means
+# no loop (status reports idle); the per-cycle record in the ConfigMap is what
+# survives. "Scenario end" is read from counters (fires and in-flight), never
+# from anything the adapter says.
+
+LOOP_RESERVED = ("loop", "loopstop")
+LOOP_DEFAULT_QUIET_S = 120.0
+LOOP_DEFAULT_FALLBACK_S = 720.0
+LOOP_DEFAULT_RECORD_MAX = 50
+LOOP_STEP_KINDS = ("op", "reset", "wait_s", "await")
+LOOP_WAIT_SLICE_S = 0.25
+RESET_JOB_GRACE_S = 120.0
+RESET_JOB_DEFAULT_DEADLINE_S = 1800.0
+LOOP_RECORD_KEY = "cycles.json"
+FIRES_METRIC, FIRES_LABEL = "dis_effector_pdus_decoded_total", ("pdu_type", "2")
+INFLIGHT_METRIC, INFLIGHT_LABEL = "dis_ingress_kind_tracked", ("kind", "2")
+
+
+def parse_labeled_total(text: str, metric: str, label: str, value: str) -> float | None:
+    """Sum the samples of `metric` whose labels carry `label="value"`, over any
+    other labels. None when no such sample appears at all."""
+    line_re = re.compile(r'^' + re.escape(metric) + r'(\{(?P<labels>[^}]*)\})?\s+(?P<value>[-+0-9.eE]+)')
+    label_re = re.compile(r'(^|[,{])\s*' + re.escape(label) + r'\s*=\s*"' + re.escape(value)
+                          + r'"\s*([,}]|$)')
+    total = 0.0
+    found = False
+    for line in text.splitlines():
+        m = line_re.match(line.strip())
+        if not m or not label_re.search(m.group("labels") or ""):
+            continue
+        try:
+            total += float(m.group("value"))
+        except ValueError:
+            continue
+        found = True
+    return total if found else None
+
+
+def _step_label(step: dict[str, Any]) -> str:
+    kind = next(iter(step))
+    return f"{kind}:{step[kind]}"
+
+
+def load_loop_config(path: str | os.PathLike | None, adapter: dict[str, Any],
+                     sequences: dict[str, Any], has_reset: bool) -> dict[str, Any] | None:
+    """None when no file is configured (the loop is simply not configured);
+    AdapterConfigError for anything wrong in one, so startup can refuse the loop
+    rather than fail at run time."""
+    if not path:
+        return None
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise AdapterConfigError(f"loop file {path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise AdapterConfigError(f"loop file {path}: must be a JSON object")
+    ops = adapter["operations"]
+    for name in LOOP_RESERVED:
+        if name in ops or name in sequences:
+            raise AdapterConfigError(f"loop file {path}: {name!r} is reserved for the loop but "
+                                     "is also an adapter op or sequence name")
+    steps = raw.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise AdapterConfigError(f"loop file {path}: steps must be a non-empty list")
+    for i, st in enumerate(steps):
+        where = f"loop file {path}: step {i}"
+        if not isinstance(st, dict) or len(st) != 1 or next(iter(st)) not in LOOP_STEP_KINDS:
+            raise AdapterConfigError(f"{where}: must be an object with exactly one of "
+                                     f"{', '.join(LOOP_STEP_KINDS)}")
+        kind, arg = next(iter(st.items()))
+        if kind == "op":
+            if arg not in ops:
+                raise AdapterConfigError(f"{where}: op {arg!r} is not an adapter op")
+            if arg == "restart":
+                # restart goes through the measured-zero gate on the HTTP path
+                raise AdapterConfigError(f"{where}: restart is gated and cannot be a loop step")
+        elif kind == "reset":
+            if arg != "quick":
+                raise AdapterConfigError(f"{where}: reset must be \"quick\"")
+            if not has_reset:
+                raise AdapterConfigError(f"{where}: reset step but no reset Job is configured")
+        elif kind == "wait_s":
+            if isinstance(arg, bool) or not isinstance(arg, (int, float)) or not arg >= 0:
+                raise AdapterConfigError(f"{where}: wait_s must be a number >= 0")
+        elif arg != "scenarioEnd":
+            raise AdapterConfigError(f"{where}: await must be \"scenarioEnd\"")
+    out: dict[str, Any] = {"steps": steps}
+    for key, field, default in (("quietSeconds", "quiet_s", LOOP_DEFAULT_QUIET_S),
+                                ("fallbackSeconds", "fallback_s", LOOP_DEFAULT_FALLBACK_S),
+                                ("recordMax", "record_max", LOOP_DEFAULT_RECORD_MAX)):
+        val = raw.get(key, default)
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or not val > 0:
+            raise AdapterConfigError(f"loop file {path}: {key} must be a number > 0")
+        out[field] = int(val) if field == "record_max" else float(val)
+    return out
+
+
+class LoopSampler:
+    """One scrape of every source. A failed fetch is None for that source (never
+    zero): the loop treats the tick as unknown. A reachable source without the
+    metric series has nothing to report and reads 0."""
+
+    def __init__(self, fire_sources: list[str], inflight_sources: list[str], timeout: float = 5.0):
+        self.fire_sources = fire_sources
+        self.inflight_sources = inflight_sources
+        self.timeout = timeout
+
+    def _fetch(self, url: str, metric: str, label: tuple[str, str]) -> float | None:
+        try:
+            with urllib.request.urlopen(url, timeout=self.timeout) as resp:
+                text = resp.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 -- any failure here is "unknown"
+            return None
+        return parse_labeled_total(text, metric, *label) or 0.0
+
+    def __call__(self) -> dict[str, dict[str, float | None]]:
+        return {"fires": {u: self._fetch(u, FIRES_METRIC, FIRES_LABEL) for u in self.fire_sources},
+                "inflight": {u: self._fetch(u, INFLIGHT_METRIC, INFLIGHT_LABEL)
+                             for u in self.inflight_sources}}
+
+
+class LoopRecorder:
+    """Keeps the last `record_max` cycle records and patches them into a
+    ConfigMap (merge-patch of one data key). Seeds from the stored list on first
+    use so a pod restart does not drop earlier records."""
+
+    def __init__(self, kube: KubeApi, name: str, record_max: int):
+        self.kube = kube
+        self.name = name
+        self.record_max = record_max
+        self.records: list[dict[str, Any]] | None = None
+
+    def _path(self) -> str:
+        return f"/api/v1/namespaces/{self.kube._namespace()}/configmaps/{self.name}"
+
+    def load(self) -> list[dict[str, Any]]:
+        if self.records is None:
+            try:
+                stored = (self.kube._request("GET", self._path()).get("data") or {}).get(LOOP_RECORD_KEY)
+                loaded = json.loads(stored) if stored else []
+                self.records = [r for r in loaded if isinstance(r, dict)] if isinstance(loaded, list) else []
+            except (KubeApiError, ValueError, OSError) as exc:
+                log.warning("loop record not loaded: %s", exc)
+                self.records = []
+        return list(self.records)
+
+    def append(self, rec: dict[str, Any]) -> None:
+        self.load()
+        self.records = (self.records + [rec])[-self.record_max:]
+        self.kube._request("PATCH", self._path(),
+                           {"data": {LOOP_RECORD_KEY: json.dumps(self.records)}},
+                           content_type="application/merge-patch+json")
+
+
+class LoopRunner:
+    """The loop's state and its worker thread. `clock`/`sleep`/`sampler` are
+    injectable so tests run it on a fake clock; production leaves the defaults."""
+
+    def __init__(self, app: "AppState", config: dict[str, Any] | None,
+                 sampler: Any = None, recorder: Any = None, scrape_interval: float = 5.0,
+                 clock: Any = time.monotonic, sleep: Any = time.sleep, reset_poll_s: float = 5.0):
+        self.app = app
+        self.config = config
+        self.sampler = sampler
+        self.recorder = recorder
+        self.scrape_interval = scrape_interval
+        self.clock = clock
+        self.sleep = sleep
+        self.reset_poll_s = reset_poll_s
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._s: dict[str, Any] = {"state": "idle", "cycle": 0, "step_index": None, "step": None,
+                                   "started_at": None, "step_started_at": None, "started_by": None,
+                                   "halt": None, "last_cycle": None, "record_error": None}
+        self._await: dict[str, Any] | None = None
+        if recorder is not None and config is not None:
+            records = recorder.load()
+            self._s["last_cycle"] = records[-1] if records else None
+
+    @property
+    def configured(self) -> bool:
+        return self.config is not None
+
+    def active_cycle(self) -> int | None:
+        """The cycle number while the loop is running or stopping, else None."""
+        with self._lock:
+            return self._s["cycle"] if self._s["state"] in ("running", "stopping") else None
+
+    # --- control -------------------------------------------------------
+    def start(self, subject: str, background: bool = True) -> tuple[int, dict[str, Any]]:
+        if self.config is None:
+            return 409, {"error": "loop not configured"}
+        with self._lock:
+            if self._s["state"] in ("running", "stopping"):
+                return 409, {"error": "loop already running", "cycle": self._s["cycle"]}
+            self._stop.clear()
+            self._await = None
+            self._s.update(state="running", cycle=1, step_index=0,
+                           step=_step_label(self.config["steps"][0]), started_at=_now_iso(),
+                           step_started_at=None, started_by=subject, halt=None, record_error=None)
+        log.info(json.dumps({"exercise_loop": "start", "subject": subject}))
+        if background:
+            threading.Thread(target=self._run, args=(subject,), daemon=True).start()
+        else:
+            self._run(subject)
+        return 202, {"loop": "started", "cycle": 1}
+
+    def stop(self) -> tuple[int, dict[str, Any]]:
+        with self._lock:
+            if self._s["state"] not in ("running", "stopping"):
+                return 409, {"error": "no loop running"}
+            self._s["state"] = "stopping"
+            self._stop.set()
+        log.info(json.dumps({"exercise_loop": "stop_requested"}))
+        return 202, {"loop": "stopping"}
+
+    def _wait(self, seconds: float) -> bool:
+        """Sleep up to `seconds`, ending early on stop. True when stopped."""
+        end = self.clock() + seconds
+        while not self._stop.is_set():
+            left = end - self.clock()
+            if left <= 0:
+                return False
+            self.sleep(min(LOOP_WAIT_SLICE_S, left))
+        return True
+
+    # --- status --------------------------------------------------------
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            s = dict(self._s)
+            aw = dict(self._await) if self._await else None
+        out: dict[str, Any] = {"configured": self.configured, **s,
+                               "steps": self.config["steps"] if self.config else [], "await": None,
+                               "quiet_s": self.config["quiet_s"] if self.config else None,
+                               "fallback_s": self.config["fallback_s"] if self.config else None}
+        if aw is not None:
+            now = self.clock()
+            out["await"] = {
+                "armed": aw["armed"], "fires_this_await": aw["fires"], "inflight": aw["inflight"],
+                "quiet_s": round(now - aw["quiet_since"], 1) if aw["armed"] else 0,
+                "quiet_needed_s": self.config["quiet_s"], "fallback_s": self.config["fallback_s"],
+                "fallback_remaining_s": max(0.0, round(aw["started"] + self.config["fallback_s"] - now, 1)),
+                "unknown_sources": aw["unknown"]}
+        return {"loop": out}
+
+    # --- worker --------------------------------------------------------
+    def _set(self, **kw: Any) -> None:
+        with self._lock:
+            self._s.update(kw)
+
+    def _run(self, subject: str) -> None:
+        cycle = 1
+        try:
+            while True:
+                outcome = self._run_cycle(cycle, subject)
+                if outcome != "ok" or self._stop.is_set():
+                    break
+                cycle += 1
+                self._set(cycle=cycle)
+        except Exception as exc:  # noqa: BLE001 -- a loop bug must end it visibly, not hang it
+            log.exception("exercise loop crashed")
+            self._set(state="halted", halt={"cycle": cycle, "step_index": self._s["step_index"],
+                                            "step": self._s["step"], "detail": f"internal error: {exc}"})
+        finally:
+            with self._lock:
+                self._await = None
+                if self._s["state"] != "halted":
+                    self._s["state"] = "stopped"
+            log.info(json.dumps({"exercise_loop": self._s["state"], "cycle": cycle}))
+
+    def _run_cycle(self, cycle: int, subject: str) -> str:
+        steps = self.config["steps"]
+        cyc: dict[str, Any] = {"fires": 0, "end_reason": None, "armed": None, "reset_job": None}
+        started_at = _now_iso()
+        steps_rec: list[dict[str, Any]] = []
+        outcome = "ok"
+        for i, st in enumerate(steps):
+            if self._stop.is_set():
+                outcome = "stopped"
+                break
+            label = _step_label(st)
+            t0 = self.clock()
+            step_at = _now_iso()
+            self._set(step_index=i, step=label, step_started_at=step_at)
+            ok, detail = self._exec(st, subject, cyc)
+            steps_rec.append({"step": label, "ok": ok, "started_at": step_at,
+                              "s": round(self.clock() - t0, 1), "detail": detail})
+            if not ok:
+                outcome = "halted"
+                self._set(state="halted", halt={"cycle": cycle, "step_index": i, "step": label,
+                                                "detail": detail})
+                break
+            if self._stop.is_set() and (i < len(steps) - 1 or detail == "stopped"):
+                outcome = "stopped"
+                break
+        rec = {"event": "exercise_loop_cycle", "cycle": cycle, "started_at": started_at,
+               "ended_at": _now_iso(), "end_reason": cyc["end_reason"], "armed": cyc["armed"],
+               "fires": cyc["fires"], "outcome": outcome, "steps": steps_rec,
+               "reset_job": cyc["reset_job"], "started_by": self._s["started_by"]}
+        self._emit(rec)
+        return outcome
+
+    def _emit(self, rec: dict[str, Any]) -> None:
+        log.info(json.dumps(rec))
+        error = None
+        if self.recorder is not None:
+            try:
+                self.recorder.append(rec)
+            except Exception as exc:  # noqa: BLE001 -- a failed record never halts the loop
+                error = str(exc)
+                log.warning("loop record not saved: %s", exc)
+        with self._lock:
+            self._s["last_cycle"] = rec
+            if error is not None:
+                self._s["record_error"] = error
+
+    def _exec(self, st: dict[str, Any], subject: str, cyc: dict[str, Any]) -> tuple[bool, str | None]:
+        kind, arg = next(iter(st.items()))
+        if kind == "wait_s":
+            return True, "stopped" if self._wait(float(arg)) else None
+        if kind == "await":
+            return True, self._await_end(cyc)
+        if kind == "op":
+            status, error, steps = self.app.call_adapter(arg)
+            self.app.set_last_command({"op": arg, "at": _now_iso(), "status": status, "error": error,
+                                       "subject": subject, "steps": steps, "via": "loop"})
+            log.info(json.dumps({"exercise_op": arg, "status": status, "error": error,
+                                  "subject": subject, "via": "loop"}))
+            if status is None or not 200 <= status < 300:
+                return False, error or f"adapter answered {status}"
+            return True, None
+        return self._reset(subject, cyc)
+
+    def _reset(self, subject: str, cyc: dict[str, Any]) -> tuple[bool, str | None]:
+        code, body = self.app.run_reset(subject, None)
+        if code != 202:
+            reason = body.get("reason")
+            return False, str(reason).replace("_", " ") if reason else str(body.get("error"))
+        job = body.get("job")
+        cyc["reset_job"] = job
+        launcher = self.app.reset_launcher
+        deadline_s = (launcher.template.get("spec") or {}).get("activeDeadlineSeconds",
+                                                               RESET_JOB_DEFAULT_DEADLINE_S)
+        deadline = self.clock() + float(deadline_s) + RESET_JOB_GRACE_S
+        # Never cancelled and never interrupted by a stop: only the Job's own
+        # end (or the deadline) finishes this step.
+        while True:
+            try:
+                cur = launcher.latest()
+            except KubeApiError as exc:
+                log.warning("loop reset poll: %s", exc)
+                cur = None
+            if cur is not None and (job is None or cur["name"] == job):
+                if cur["state"] == "succeeded":
+                    return True, None
+                if cur["state"] == "failed":
+                    return False, "reset job failed"
+            if self.clock() >= deadline:
+                return False, "reset job timeout"
+            self.sleep(self.reset_poll_s)
+
+    def _await_end(self, cyc: dict[str, Any]) -> str | None:
+        """Block until the scenario has ended (quiet or fallback) or a stop.
+        The first sample only sets the baselines, so fires from before the await
+        began are never counted."""
+        cfg = self.config
+        started = self.clock()
+        aw = {"armed": False, "fires": 0, "inflight": None, "unknown": [], "started": started,
+              "quiet_since": started}
+        with self._lock:
+            self._await = aw
+        prev: dict[str, float] = {}
+        reason: str | None = None
+        stopped = False
+        while True:
+            sample = self.sampler() if self.sampler else {"fires": {}, "inflight": {}}
+            now = self.clock()
+            delta = 0.0
+            unknown: list[str] = []
+            for url, v in sample["fires"].items():
+                if v is None:
+                    unknown.append(url)
+                    continue
+                p = prev.get(url)
+                if p is not None and v > p:
+                    delta += v - p
+                prev[url] = v  # a decrease re-baselines: not a fire
+            inflight: float | None = 0.0 if sample["inflight"] else None
+            for url, v in sample["inflight"].items():
+                if v is None:
+                    unknown.append(url)
+                    inflight = None
+                elif inflight is not None:
+                    inflight += v
+            busy = delta > 0 or bool(inflight) or bool(unknown)
+            with self._lock:
+                aw["unknown"], aw["inflight"] = unknown, inflight
+                if delta > 0:
+                    aw["fires"] += int(delta)
+                    aw["armed"] = True
+                if aw["armed"] and busy:
+                    aw["quiet_since"] = now
+                if aw["armed"] and not busy and now - aw["quiet_since"] >= cfg["quiet_s"]:
+                    reason = "quiet"
+                elif now - started >= cfg["fallback_s"]:
+                    reason = "fallback"
+            if reason is not None:
+                break
+            if self._wait(self.scrape_interval):
+                stopped = True
+                break
+        cyc["fires"] += aw["fires"]
+        cyc["armed"] = aw["armed"]
+        cyc["end_reason"] = None if stopped else reason
+        return "stopped" if stopped else reason
+
+
 # --- HTTP ----------------------------------------------------------------------
 
 SUBJECT_HEADER = "X-OpenDDIL-Subject"
@@ -1003,6 +1491,7 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                     "reset_job": reset_job,
                     "sequences": app.sequence_summaries(),
                     "sequence": app.get_sequence_run(),
+                    **app.loop.status(),
                 })
                 return
             if self.path == "/exercise/reset/preflight" and app.reset_launcher is not None:
@@ -1016,6 +1505,24 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                 self._send_json(404, {"error": "not found"})
                 return
             op = self.path[len("/exercise/op/"):]
+            # The loop's own ops come first: neither is an adapter op or a
+            # sequence (startup refuses both names), and while a loop runs
+            # nothing else may act on the exercise.
+            if op == "loop":
+                self._drain()
+                self._handle_loop_start()
+                return
+            if op == "loopstop":
+                self._drain()
+                code, body = app.loop.stop()
+                self._send_json(code, body)
+                return
+            cycle = app.loop.active_cycle()
+            if cycle is not None:
+                self._drain()
+                log.info(json.dumps({"exercise_op_refused": op, "reason": "loop_running"}))
+                self._send_json(409, {"refused": "loop running", "cycle": cycle})
+                return
             if op == "reset" and app.reset_launcher is not None:
                 try:
                     length = int(self.headers.get("Content-Length", 0) or 0)
@@ -1079,6 +1586,37 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
                                   "subject": subject}))
             self._send_json(200, record)
 
+        def _handle_loop_start(self) -> None:
+            subject = self.headers.get(SUBJECT_HEADER, "").strip()
+            if not subject:
+                self._send_json(400, {"error": "missing subject header"})
+                return
+            if not SUBJECT_RE.fullmatch(subject):
+                self._send_json(400, {"error": "invalid subject"})
+                return
+            if not app.loop.configured:
+                self._send_json(409, {"error": "loop not configured"})
+                return
+            with app.sequence_lock:
+                if app.running_sequence() is not None:
+                    self._send_json(409, {"error": "sequence already running",
+                                          "reason": "sequence_running"})
+                    return
+                if app.reset_launcher is not None:
+                    try:
+                        current = app.reset_launcher.latest()
+                    except KubeApiError as exc:
+                        self._send_json(502, {"error": "reset job state unavailable",
+                                              "status": exc.status})
+                        return
+                    if app.reset_lock.locked() or (current is not None
+                                                    and current["state"] == "running"):
+                        self._send_json(409, {"error": "reset already running",
+                                              "reason": "reset_running"})
+                        return
+                code, body = app.loop.start(subject)
+            self._send_json(code, body)
+
         def _handle_sequence(self, name: str) -> None:
             subject = self.headers.get(SUBJECT_HEADER, "").strip()
             if not subject:
@@ -1125,61 +1663,8 @@ def make_handler(app: AppState) -> type[BaseHTTPRequestHandler]:
             if not SUBJECT_RE.fullmatch(subject):
                 self._send_json(400, {"error": "invalid subject"})
                 return
-            with app.reset_lock:
-                try:
-                    current = app.reset_launcher.latest()
-                except KubeApiError as exc:
-                    log.warning(json.dumps({"exercise_reset_job": "not_created",
-                                             "status": exc.status, "subject": subject}))
-                    self._send_json(502, {"error": "reset job not created", "status": exc.status})
-                    return
-                if current is not None and current["state"] == "running":
-                    self._reset_running(subject, current["name"])
-                    return
-                pause: dict[str, Any] | None = None
-                if "pause" in app.adapter["operations"]:
-                    status, error, steps = app.call_adapter("pause")
-                    pause = {"status": status, "error": error, "steps": steps}
-                    app.set_last_command({"op": "pause", "at": _now_iso(), "status": status,
-                                          "error": error, "subject": subject, "steps": steps,
-                                          "via": "reset"})
-                    log.info(json.dumps({"exercise_op": "pause", "status": status,
-                                          "error": error, "subject": subject, "via": "reset"}))
-                    if status is None or not 200 <= status < 300:
-                        log.info(json.dumps({"exercise_op_refused": "reset",
-                                              "reason": "pause_failed", "subject": subject}))
-                        self._send_json(502, {
-                            "error": "reset refused: the simulator pause failed",
-                            "reason": "pause_failed", "pause": pause})
-                        return
-                try:
-                    confirmed = (confirm["seen_open"]
-                                 if confirm is not None and confirm["confirm_cancel_open"] else None)
-                    outcome, job = app.reset_launcher.launch(subject, confirmed)
-                except InvalidSubject:
-                    self._send_json(400, {"error": "invalid subject"})
-                    return
-                except KubeApiError as exc:
-                    log.warning(json.dumps({"exercise_reset_job": "not_created",
-                                             "status": exc.status, "subject": subject}))
-                    self._send_json(502, {"error": "reset job not created", "status": exc.status,
-                                          "simulator_paused": pause is not None})
-                    return
-                if outcome == "running":
-                    self._reset_running(subject, job)
-                    return
-                at = _now_iso()
-                app.set_last_command({"op": "reset", "at": at, "status": 201, "error": None,
-                                      "subject": subject, "job": job, "pause": pause})
-                log.info(json.dumps({"exercise_reset_job": job, "subject": subject}))
-                self._send_json(202, {"op": "reset", "at": at, "job": job, "subject": subject,
-                                      "pause": pause})
-
-        def _reset_running(self, subject: str, job: str | None) -> None:
-            log.info(json.dumps({"exercise_op_refused": "reset", "reason": "reset_running",
-                                  "job": job, "subject": subject}))
-            self._send_json(409, {"error": "reset already running",
-                                  "reason": "reset_running", "job": job})
+            code, body = app.run_reset(subject, confirm)
+            self._send_json(code, body)
 
     return Handler
 
@@ -1241,11 +1726,28 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
+    loop_config = None
+    try:
+        loop_config = load_loop_config(os.getenv("EXERCISE_LOOP_FILE", "").strip(), adapter,
+                                       sequences, has_reset=reset_launcher is not None)
+    except AdapterConfigError as exc:
+        # The loop is a convenience on top of the controls: refuse it, keep serving.
+        log.error("loop unavailable: %s", exc)
+
     store = RateStore(sources=sources, window=window, min_rate=min_rate)
     app = AppState(adapter=adapter, store=store, reset_record_file=reset_record_file,
                    restart_max_zero_age_s=max_zero_age,
                    reset_launcher=reset_launcher, sequences=sequences,
                    restate_admin=restate_admin, reset_max_open=reset_max_open)
+
+    if loop_config is not None:
+        inflight = [s.strip() for s in os.getenv("EXERCISE_INFLIGHT_SOURCES", "").split(",")
+                    if s.strip()]
+        record_cm = os.getenv("EXERCISE_LOOP_RECORD_CM", "").strip()
+        recorder = (LoopRecorder(reset_launcher or KubeApi(), record_cm, loop_config["record_max"])
+                    if record_cm else None)
+        app.loop = LoopRunner(app, loop_config, sampler=LoopSampler(sources, inflight),
+                              recorder=recorder, scrape_interval=scrape_interval)
 
     stop_event = threading.Event()
     scraper = threading.Thread(target=scrape_loop, args=(store, scrape_interval, stop_event),
