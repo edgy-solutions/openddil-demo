@@ -152,6 +152,68 @@ export interface ExerciseResetJob {
   mode?: 'quick' | 'full';
 }
 
+/** One configured loop step; exactly one key is set. */
+export interface ExerciseLoopStepConfig {
+  op?: string;
+  reset?: string;
+  wait_s?: number;
+  await?: string;
+}
+
+export interface ExerciseLoopAwait {
+  armed: boolean;
+  fires_this_await: number;
+  inflight: number | null;
+  quiet_s: number;
+  quiet_needed_s: number;
+  fallback_s: number;
+  fallback_remaining_s: number;
+  unknown_sources: string[];
+}
+
+/** One finished (or halted/stopped) cycle, as the server logs it. */
+export interface ExerciseLoopCycle {
+  event: string;
+  cycle: number;
+  started_at: string | null;
+  ended_at: string | null;
+  end_reason: 'quiet' | 'fallback' | null;
+  armed: boolean;
+  fires: number;
+  outcome: 'ok' | 'halted' | 'stopped';
+  steps: { step: string; ok: boolean; started_at: string | null; s: number | null; detail: string | null }[];
+  reset_job: string | null;
+  started_by: string | null;
+}
+
+export interface ExerciseLoopHalt {
+  cycle: number;
+  step_index: number;
+  step: string;
+  detail: string;
+}
+
+/** The exercise loop's state, as GET /exercise/status serves it. */
+export interface ExerciseLoop {
+  configured: boolean;
+  state: 'idle' | 'running' | 'stopping' | 'halted' | 'stopped';
+  cycle: number;
+  step_index: number | null;
+  /** "<kind:arg>", e.g. "await:scenarioEnd" or "reset:quick". */
+  step: string | null;
+  steps: ExerciseLoopStepConfig[];
+  started_at: string | null;
+  step_started_at: string | null;
+  started_by: string | null;
+  await: ExerciseLoopAwait | null;
+  last_cycle: ExerciseLoopCycle | null;
+  halt: ExerciseLoopHalt | null;
+  record_error: string | null;
+  /** The configured end-detection values; null when not configured. */
+  quiet_s: number | null;
+  fallback_s: number | null;
+}
+
 export interface ExerciseStatusBody {
   adapter: ExerciseAdapter;
   last_command: ExerciseLastCommand | null;
@@ -163,6 +225,8 @@ export interface ExerciseStatusBody {
   sequences?: ExerciseSequence[];
   /** The latest sequence run, running or finished; null when none yet. */
   sequence?: ExerciseSequenceRun | null;
+  /** Absent from servers that predate the exercise loop. */
+  loop?: ExerciseLoop;
 }
 
 export interface ExerciseControlState {
@@ -257,7 +321,7 @@ export function createExerciseControlController(
           : {}),
       });
       const isSequence = (state.status?.sequences ?? []).some((q) => q.name === op);
-      if ((op === 'reset' || isSequence) && res.status === 403) {
+      if ((op === 'reset' || op === 'loop' || op === 'loopstop' || isSequence) && res.status === 403) {
         // A refused reset or sequence is a refusal, not a loss of exercise-control access.
         const refused = (await res.json()) as { reason?: string; error?: string };
         setState({ ...state, refusal: refused.reason ?? refused.error ?? 'refused (403)' });
@@ -273,8 +337,10 @@ export function createExerciseControlController(
       }
       if (res.status === 409 || res.status === 502) {
         // Refused or not created: nothing was sent, so last_command stays.
-        const refused = (await res.json()) as { reason?: string; error?: string };
-        setState({ ...state, refusal: refused.reason ?? refused.error ?? `refused (${res.status})` });
+        const refused = (await res.json()) as { reason?: string; error?: string; refused?: string };
+        setState({
+          ...state, refusal: refused.reason ?? refused.error ?? refused.refused ?? `refused (${res.status})`,
+        });
         return;
       }
       if (res.status === 202 && isSequence) {
@@ -289,6 +355,11 @@ export function createExerciseControlController(
             kind: 'ok', status: { ...state.status, sequence: run, last_command: sent }, stale: state.stale,
           });
         }
+        return;
+      }
+      if (res.status === 202 && (op === 'loop' || op === 'loopstop')) {
+        // The loop's own state arrives through polling; nothing was sent to
+        // the adapter, so last_command stays.
         return;
       }
       if (res.status === 202) {

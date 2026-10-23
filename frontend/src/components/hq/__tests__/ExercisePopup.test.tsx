@@ -13,7 +13,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ExercisePopupView, pillState, type ExercisePopupViewProps } from '../ExercisePopup';
 import type {
-  ExerciseActivity, ExerciseLastCommand, ExerciseResetJob, ExerciseSequence, ExerciseSequenceRun,
+  ExerciseActivity, ExerciseLastCommand, ExerciseLoop, ExerciseResetJob, ExerciseSequence, ExerciseSequenceRun,
 } from '../../../lib/exerciseControl';
 import type { ResetPreflight, ResetPreflightView } from '../../../lib/exerciseControl';
 
@@ -495,5 +495,99 @@ describe('ExercisePopupView reset confirm: open Restate work', () => {
     );
     expect(html).toContain('Confirm stop?');
     expect(html).not.toContain('Restate');
+  });
+});
+
+
+describe('ExercisePopupView loop', () => {
+  const LOOP: ExerciseLoop = {
+    configured: true, state: 'idle', cycle: 0, step_index: null, step: null,
+    steps: [{ await: 'scenarioEnd' }, { op: 'stop' }, { reset: 'quick' }, { op: 'run' }],
+    started_at: null, step_started_at: null, started_by: null, await: null,
+    last_cycle: null, halt: null, record_error: null, quiet_s: 120, fallback_s: 720,
+  };
+  const AWAITING: ExerciseLoop = {
+    ...LOOP, state: 'running', cycle: 3, step_index: 0, step: 'await:scenarioEnd', started_by: 'supervisor.1',
+    await: {
+      armed: true, fires_this_await: 12, inflight: 0, quiet_s: 45, quiet_needed_s: 120,
+      fallback_s: 720, fallback_remaining_s: 492, unknown_sources: [],
+    },
+  };
+  const render = (loop: ExerciseLoop | null, extra: Partial<ExercisePopupViewProps> = {}) =>
+    renderToStaticMarkup(<ExercisePopupView {...BASE} open={true} loop={loop} {...extra} />);
+  const tag = (html: string, testid: string) =>
+    (html.match(new RegExp(`<button[^>]*data-testid="${testid}"[^>]*>`)) ?? [''])[0];
+  const line = (html: string) =>
+    (html.match(/data-testid="exercise-loop-line"[^>]*>([^<]*)</) ?? [])[1];
+
+  it('no loop section when the status has none or it is not configured', () => {
+    expect(render(null)).not.toContain('exercise-loop');
+    expect(render({ ...LOOP, configured: false })).not.toContain('exercise-loop');
+  });
+
+  it('idle: Start enabled, Stop disabled', () => {
+    const html = render(LOOP);
+    expect(tag(html, 'exercise-loop-start')).not.toContain('disabled=""');
+    expect(tag(html, 'exercise-loop-stop')).toContain('disabled=""');
+    expect(line(html)).toBe('Loop idle');
+  });
+
+  it('Start is gated like the Reset button: may_press false disables it', () => {
+    const job = { available: true, latest: null, error: null, may_press: false } as ExerciseResetJob;
+    expect(tag(render(LOOP, { resetJob: job }), 'exercise-loop-start')).toContain('disabled=""');
+  });
+
+  it('awaiting scenario end: the exact line, plus the always-stated fallback', () => {
+    const html = render(AWAITING);
+    expect(line(html)).toBe('Cycle 3 · running · awaiting scenario end — quiet 45/120 s · fallback in 8:12');
+    expect(html).toContain('ends after 2 min quiet, or at the 12-min fallback');
+  });
+
+  it('awaiting and not yet armed says so, and still states the fallback', () => {
+    const html = render({ ...AWAITING, await: { ...AWAITING.await!, armed: false, quiet_s: 0, fallback_remaining_s: 700 } });
+    expect(line(html)).toBe('Cycle 3 · running · awaiting scenario end — no fire seen yet · fallback in 11:40');
+    expect(html).toContain('ends after 2 min quiet, or at the 12-min fallback');
+  });
+
+  it('stopping inside a reset names the reset', () => {
+    const html = render({ ...LOOP, state: 'stopping', cycle: 3, step: 'reset:quick' });
+    expect(line(html)).toBe('Cycle 3 · stopping (reset in progress)');
+  });
+
+  it('halted names the cycle, step kind and detail', () => {
+    const html = render({
+      ...LOOP, state: 'halted', cycle: 2,
+      halt: { cycle: 2, step_index: 2, step: 'reset:quick', detail: 'pause failed' },
+    });
+    expect(line(html)).toBe('Halted at cycle 2, step reset: pause failed');
+  });
+
+  it('a cycle that ended by the fallback is worded as such, minutes from fallback_s', () => {
+    const last = {
+      event: 'exercise_loop_cycle', cycle: 3, started_at: 'a', ended_at: 'b', end_reason: 'fallback' as const,
+      armed: false, fires: 0, outcome: 'ok' as const, steps: [], reset_job: null, started_by: 'supervisor.1',
+    };
+    const html = render({ ...LOOP, state: 'running', cycle: 4, step: 'op:stop', last_cycle: last });
+    expect(html).toContain('Cycle 3 ended by the 12-minute fallback (no quiet seen)');
+    const quiet = render({ ...LOOP, last_cycle: { ...last, end_reason: 'quiet' } });
+    expect(quiet).not.toContain('fallback (no quiet seen)');
+  });
+
+  it('while running: ops, sequences and reset are disabled "loop running"; Stop is live', () => {
+    const job = { available: true, latest: null, error: null } as ExerciseResetJob;
+    const seqs: ExerciseSequence[] = [{ name: 'warm_up', label: 'Warm up', steps: 1, total_wait_s: 0 }];
+    const html = render(AWAITING, { resetJob: job, sequences: seqs });
+    // 5 ops + reset + 1 sequence
+    expect((html.match(/title="loop running"/g) ?? []).length).toBe(7);
+    expect(tag(html, 'exercise-sequence-button')).toContain('disabled=""');
+    expect(tag(html, 'exercise-loop-stop')).not.toContain('disabled=""');
+    expect(tag(html, 'exercise-loop-start')).toContain('disabled=""');
+    // idle: none of that
+    expect(render(LOOP, { resetJob: job, sequences: seqs })).not.toContain('title="loop running"');
+  });
+
+  it('the confirm step carries the loop text', () => {
+    const html = render(LOOP, { pendingConfirmOp: 'loop' });
+    expect(html).toContain('Start the exercise loop? It repeats the configured steps, including resets, until stopped.');
   });
 });

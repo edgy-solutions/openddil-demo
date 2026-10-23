@@ -23,7 +23,7 @@ import {
 import { useExerciseControl } from '../../hooks/useExerciseControl';
 import { resetConfirmBody, type ResetPreflightView } from '../../lib/exerciseControl';
 import type {
-  ExerciseActivity, ExerciseLastCommand, ExerciseReset, ExerciseResetJob, ExerciseSequence,
+  ExerciseActivity, ExerciseLastCommand, ExerciseLoop, ExerciseReset, ExerciseResetJob, ExerciseSequence,
   ExerciseSequenceRun, ExerciseSequenceStep,
 } from '../../lib/exerciseControl';
 import type { Tone } from '../network/tone';
@@ -37,7 +37,7 @@ const DOT: Record<Tone, string> = {
 
 // Ops whose effect is disruptive enough to ask once before sending --
 // starting or losing the running simulator, not merely pausing/resuming it.
-const CONFIRM_OPS = new Set(['stop', 'restart', 'reset']);
+const CONFIRM_OPS = new Set(['stop', 'restart', 'reset', 'loop']);
 
 const OP_BUTTON =
   'inline-flex items-center gap-1 rounded-full border border-slate-700 px-2.5 py-1 text-[10px] tracking-wider text-slate-200 hover:border-cyan-700 hover:bg-cyan-950/30';
@@ -84,6 +84,7 @@ export interface ExercisePopupViewProps {
   resetJob?: ExerciseResetJob | null;
   sequences?: ExerciseSequence[] | null;
   sequence?: ExerciseSequenceRun | null;
+  loop?: ExerciseLoop | null;
   refusal?: string | null;
   stale?: boolean;
   open: boolean;
@@ -111,6 +112,37 @@ function lastCommandText(cmd: ExerciseLastCommand | null): string {
   if (cmd.sequence) return `${cmd.op} started by ${cmd.subject} at ${cmd.at} (sequence)`;
   const outcome = cmd.error ? cmd.error : String(cmd.status ?? 'no response');
   return `Last command sent: ${cmd.op} at ${cmd.at} -> ${outcome} by ${cmd.subject}`;
+}
+
+function clock(totalS: number): string {
+  const s = Math.max(0, Math.round(totalS));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function minutes(s: number): number {
+  return Math.round(s / 60);
+}
+
+/** One line of loop state, built only from the served `loop` object. */
+function loopLineText(loop: ExerciseLoop): string {
+  if (loop.state === 'halted' && loop.halt) {
+    const kind = loop.halt.step.split(':')[0];
+    return `Halted at cycle ${loop.halt.cycle}, step ${kind}: ${loop.halt.detail}`;
+  }
+  if (loop.state === 'stopping') {
+    const inReset = loop.step?.startsWith('reset') ? ' (reset in progress)' : '';
+    return `Cycle ${loop.cycle} · stopping${inReset}`;
+  }
+  if (loop.state === 'running') {
+    const aw = loop.await;
+    if (aw) {
+      const quiet = aw.armed ? `quiet ${aw.quiet_s}/${aw.quiet_needed_s} s` : 'no fire seen yet';
+      return `Cycle ${loop.cycle} · running · awaiting scenario end — ${quiet} · fallback in ${clock(aw.fallback_remaining_s)}`;
+    }
+    return `Cycle ${loop.cycle} · running · ${loop.step ?? 'starting'}`;
+  }
+  if (loop.state === 'stopped') return `Loop stopped at cycle ${loop.cycle}`;
+  return 'Loop idle';
 }
 
 function resetText(reset: ExerciseReset | null): string {
@@ -209,7 +241,7 @@ function ResetPreflightNote({ view }: { view: ResetPreflightView | null }) {
 }
 
 export function ExercisePopupView({
-  kind, ops, activity, lastCommand, reset, resetJob, sequences, sequence, refusal, stale, open, onToggleOpen,
+  kind, ops, activity, lastCommand, reset, resetJob, sequences, sequence, loop, refusal, stale, open, onToggleOpen,
   onClose, rootRef, pillRef, pendingConfirmOp, resetPreflight, onOpClick, onConfirm, onCancelConfirm,
 }: ExercisePopupViewProps) {
   const popId = useId();
@@ -221,6 +253,10 @@ export function ExercisePopupView({
   const resetBlocked = resetJob?.may_press === false;
   const quickReset = resetJob?.mode === 'quick';
   const resetLabel = quickReset ? 'Quick reset' : 'Restart exercise';
+  const loopShown = loop?.configured === true;
+  const loopBusy = loopShown && (loop.state === 'running' || loop.state === 'stopping');
+  const loopStartBlocked = resetBlocked || loopBusy || sequence?.state === 'running';
+  const busyTitle = loopBusy ? 'loop running' : undefined;
   const sequenceList = sequences ?? [];
   const sequenceRunning = sequence?.state === 'running';
   const pendingSequence = sequenceList.find((q) => q.name === pendingConfirmOp);
@@ -309,7 +345,14 @@ export function ExercisePopupView({
                 const v = OP_VIEW[op];
                 const OpIcon = v?.icon;
                 return (
-                  <button key={op} type="button" onClick={() => onOpClick(op)} className={OP_BUTTON}>
+                  <button
+                    key={op}
+                    type="button"
+                    disabled={loopBusy}
+                    title={busyTitle}
+                    onClick={loopBusy ? undefined : () => onOpClick(op)}
+                    className={`${OP_BUTTON} disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
                     {OpIcon && <OpIcon className="h-3 w-3" aria-hidden="true" />}
                     {v?.label ?? op}
                   </button>
@@ -321,15 +364,17 @@ export function ExercisePopupView({
               <div className="mt-2">
                 <button
                   type="button"
-                  disabled={resetBlocked}
+                  disabled={resetBlocked || loopBusy}
                   title={
-                    quickReset
+                    loopBusy
+                      ? 'loop running'
+                      : quickReset
                       ? 'Clears exercise data in about a minute. Not measured; the exercise stays paused afterwards.'
                       : resetBlocked
                         ? 'The reset destroys exercise state and takes about 13 minutes.'
                         : undefined
                   }
-                  onClick={resetBlocked ? undefined : () => onOpClick('reset')}
+                  onClick={resetBlocked || loopBusy ? undefined : () => onOpClick('reset')}
                   className={`${OP_BUTTON} disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   <Rewind className="h-3 w-3" aria-hidden="true" />
@@ -347,7 +392,7 @@ export function ExercisePopupView({
               <div className="mt-2">
                 <div className="flex flex-wrap gap-1">
                   {sequenceList.map((q) => {
-                    const disabled = q.may_press === false || sequenceRunning;
+                    const disabled = q.may_press === false || sequenceRunning || loopBusy;
                     const desc = q.description ? `${q.description} ` : '';
                     return (
                       <button
@@ -356,7 +401,7 @@ export function ExercisePopupView({
                         data-testid="exercise-sequence-button"
                         data-op={q.name}
                         disabled={disabled}
-                        title={`${desc}(${q.steps} steps, about ${q.total_wait_s} s)`}
+                        title={loopBusy ? 'loop running' : `${desc}(${q.steps} steps, about ${q.total_wait_s} s)`}
                         onClick={disabled ? undefined : () => onOpClick(q.name)}
                         className={`${OP_BUTTON} disabled:cursor-not-allowed disabled:opacity-50`}
                       >
@@ -378,12 +423,57 @@ export function ExercisePopupView({
 
             {sequence && <SequenceRunPanel run={sequence} />}
 
+            {loop && loopShown && (
+              <div className="mt-2 text-[10px] text-slate-300" data-testid="exercise-loop" data-state={loop.state}>
+                <div className="text-[9px] tracking-[0.16em] text-slate-500">LOOP</div>
+                <div data-testid="exercise-loop-line">{loopLineText(loop)}</div>
+                {loop.state === 'running' && loop.await && (
+                  <div className="text-slate-500">
+                    {`ends after ${minutes(loop.await.quiet_needed_s)} min quiet, or at the ${minutes(loop.await.fallback_s)}-min fallback`}
+                  </div>
+                )}
+                {loop.last_cycle?.end_reason === 'fallback' && (
+                  <div className="text-amber-400">
+                    {`Cycle ${loop.last_cycle.cycle} ended by the ${minutes(loop.fallback_s ?? loop.await?.fallback_s ?? 0)}-minute fallback (no quiet seen)`}
+                  </div>
+                )}
+                {loop.record_error && (
+                  <div className="text-amber-400">{`Cycle record not saved: ${loop.record_error}`}</div>
+                )}
+                <div className="mt-1 flex gap-1">
+                  <button
+                    type="button"
+                    data-testid="exercise-loop-start"
+                    disabled={loopStartBlocked}
+                    onClick={loopStartBlocked ? undefined : () => onOpClick('loop')}
+                    className={`${OP_BUTTON} disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    Start loop
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="exercise-loop-stop"
+                    disabled={loop.state !== 'running'}
+                    onClick={loop.state === 'running' ? () => onOpClick('loopstop') : undefined}
+                    className={`${OP_BUTTON} disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    Stop loop
+                  </button>
+                </div>
+                {resetBlocked && (
+                  <div className="mt-0.5 text-slate-500">Loop: supervisor login only</div>
+                )}
+              </div>
+            )}
+
             {pendingConfirmOp && (
               <div className="mt-2 text-[10px] text-amber-400">
                 {pendingConfirmOp === 'reset'
                   ? quickReset
                     ? 'Quick reset: pause the exercise and clear its data (not measured)? It stays paused; press Resume or Restart when ready.'
                     : 'Restart exercise: reset (deletes scenario state), then restart?'
+                  : pendingConfirmOp === 'loop'
+                    ? 'Start the exercise loop? It repeats the configured steps, including resets, until stopped.'
                   : pendingSequence
                     ? `${pendingSequence.label}: run the sequence? It changes the exercise for every viewer.`
                     : `Confirm ${pendingConfirmOp}?`}
@@ -495,6 +585,7 @@ export default function ExercisePopup() {
       resetJob={status?.reset_job ?? null}
       sequences={status?.sequences ?? null}
       sequence={status?.sequence ?? null}
+      loop={status?.loop ?? null}
       refusal={refusal}
       stale={stale}
       open={open}

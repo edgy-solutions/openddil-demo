@@ -313,3 +313,33 @@ describe('reset pre-flight and the confirmation body', () => {
     expect(calls[1][0]).toBe('/exercise/op/reset');
   });
 });
+
+describe('loop ops', () => {
+  const ctl = (res: Response) =>
+    createExerciseControlController((async () => res) as unknown as typeof fetch);
+
+  it('a 409 loop-running refusal is shown as a refusal', async () => {
+    const c = ctl(new Response(JSON.stringify({ refused: 'loop running', cycle: 2 }), { status: 409 }));
+    await c.runOp('pause');
+    expect(c.getState().refusal).toBe('loop running');
+  });
+
+  it('a 403 on loop is a refusal, not a loss of access', async () => {
+    const c = ctl(new Response(JSON.stringify({ error: 'forbidden', reason: 'supervisor only' }), { status: 403 }));
+    await c.runOp('loop');
+    expect(c.getState().kind).not.toBe('forbidden');
+    expect(c.getState().refusal).toBe('supervisor only');
+  });
+
+  it('a 202 loop start does not rewrite last_command', async () => {
+    const status = new Response(JSON.stringify({
+      adapter: { name: 'a', ops: [] }, last_command: null, reset: { measured_zero_at: null, verdict: null },
+      activity: { state: 'unknown', label: 'x', window_s: 30, min_rate: 0.1, sources: [] },
+    }), { status: 200 });
+    const responses = [status, new Response(JSON.stringify({ loop: 'started', cycle: 1 }), { status: 202 })];
+    const c = createExerciseControlController((async () => responses.shift()!) as unknown as typeof fetch);
+    await c.poll();
+    await c.runOp('loop');
+    expect(c.getState().status?.last_command).toBeNull();
+  });
+});
