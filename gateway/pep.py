@@ -193,6 +193,7 @@ def _manual_qa_token() -> str | None:
 # multiplier. Both, or neither is a bound.
 MAX_INFLIGHT_SHAPES = int(os.getenv("OPENDDIL_MAX_INFLIGHT_SHAPES", "8"))
 STREAM_CHUNK = int(os.getenv("OPENDDIL_STREAM_CHUNK", "65536"))
+MAX_REFETCH_BODY = 64 * 1024  # a 409 must-refetch body is small; cap the read
 
 # A live=true request does not hold a body -- it holds at most one
 # STREAM_CHUNK, the same as any other delta -- it holds a THREAD, idle,
@@ -3400,17 +3401,50 @@ class Pep(BaseHTTPRequestHandler):
         slot = _shape_slot(params)
         try:
             slot.acquire()
+            refetch = None
             try:
                 resp = urllib.request.urlopen(url, timeout=30)
+            except urllib.error.HTTPError as herr:
+                # A 409 is Electric's PROTOCOL answer, not a failure: the
+                # reset restarted Electric, the handle the page holds is
+                # dead, and the client recovers only if it SEES the 409 and
+                # the new handle. A 502 here makes it retry the dead handle
+                # forever (reload is the only cure). The body is small;
+                # read it under the slot, and release the slot exactly
+                # once in the finally -- the generic path below releases
+                # in its own except, so the two never overlap.
+                if herr.code != 409:
+                    slot.release()
+                    raise
+                try:
+                    refetch_body = herr.read(MAX_REFETCH_BODY + 1)
+                    if len(refetch_body) > MAX_REFETCH_BODY:
+                        refetch_body = refetch_body[:MAX_REFETCH_BODY]
+                        log.warning("electric must-refetch body over %d bytes "
+                                    "resource=%s; sending what was read",
+                                    MAX_REFETCH_BODY, table)
+                    refetch = herr
+                finally:
+                    herr.close()
+                    slot.release()
             except Exception:
                 slot.release()
                 raise
-            new_handle = resp.headers.get("electric-handle") or \
-                resp.headers.get("electric-shape-id") or ""
-            headers = [(k, v) for k, v in resp.headers.items()
-                       if k.lower().startswith("electric-")]
-            upstream_len = resp.headers.get("Content-Length")
-            status = resp.status
+            if refetch is not None:
+                resp = None
+                new_handle = refetch.headers.get("electric-handle") or \
+                    refetch.headers.get("electric-shape-id") or ""
+                headers = [(k, v) for k, v in refetch.headers.items()
+                           if k.lower().startswith("electric-")]
+                upstream_len = None
+                status = 409
+            else:
+                new_handle = resp.headers.get("electric-handle") or \
+                    resp.headers.get("electric-shape-id") or ""
+                headers = [(k, v) for k, v in resp.headers.items()
+                           if k.lower().startswith("electric-")]
+                upstream_len = resp.headers.get("Content-Length")
+                status = resp.status
         except Exception as exc:  # noqa: BLE001
             # An upstream failure is NOT an authorization failure and must not
             # be recorded as a deny — that would poison the audit trail with
@@ -3428,7 +3462,8 @@ class Pep(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        bind_handle(principal, view, new_handle)
+        if refetch is None or new_handle:
+            bind_handle(principal, view, new_handle)
         record_decision(decision_id=new_decision_id(), outcome="allow",
                         subject=subject, resource=table,
                         policy_version=decision["policy_version"],
@@ -3436,6 +3471,18 @@ class Pep(BaseHTTPRequestHandler):
                         role=decision["role"],
                         allowed_nations=decision["allowed_nations"],
                         predicate=where, shape_handle=new_handle or None)
+
+        if refetch is not None:
+            log.info("electric must-refetch resource=%s new_handle=%s",
+                     table, new_handle or "-")
+            self.send_response(409)
+            for k, v in headers:
+                self.send_header(k, v)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(refetch_body)))
+            self.end_headers()
+            self.wfile.write(refetch_body)
+            return
 
         self.send_response(status)
         for k, v in headers:
