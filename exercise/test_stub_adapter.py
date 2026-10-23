@@ -146,3 +146,55 @@ def test_pause_without_a_running_child_is_a_no_op_not_an_error(adapter):
     status, body = _post(port, "/pause")
     assert status == 200
     assert mod.SIM.actual_state() == "stopped"
+
+
+# =============================================================================
+# STUB_SIM_ARGS_CYCLE -- the k-th child start takes element (k-1) % len
+# =============================================================================
+
+def _capture_argv(mod, monkeypatch):
+    argvs = []
+    real = mod.subprocess.Popen
+
+    def spy(argv, *a, **kw):
+        argvs.append(list(argv))
+        return real(argv, *a, **kw)
+
+    monkeypatch.setattr(mod.subprocess, "Popen", spy)
+    return argvs
+
+
+def test_args_cycle_selects_element_per_run_and_wraps(adapter, monkeypatch):
+    mod, port = adapter
+    monkeypatch.setattr(mod, "STUB_SIM_ARGS_CYCLE", ["--a 1", "--b 2"])
+    argvs = _capture_argv(mod, monkeypatch)
+    seen = []
+    for _ in range(3):
+        _post(port, "/run")
+        _post(port, "/stop")
+    _, reqs = _get(port, "/requests")
+    seen = [r["args_index"] for r in reqs["requests"] if r["op"] == "run"]
+    assert seen == [0, 1, 0]
+    assert [a[2:] for a in argvs] == [["--a", "1"], ["--b", "2"], ["--a", "1"]]
+
+
+def test_args_cycle_unset_uses_sim_args_and_index_is_null(adapter, monkeypatch):
+    mod, port = adapter
+    monkeypatch.setattr(mod, "STUB_SIM_ARGS", ["--only", "x"])
+    argvs = _capture_argv(mod, monkeypatch)
+    _post(port, "/run")
+    _post(port, "/stop")
+    _post(port, "/run")
+    _, reqs = _get(port, "/requests")
+    assert all(r["args_index"] is None for r in reqs["requests"] if r["op"] == "run")
+    assert [a[2:] for a in argvs] == [["--only", "x"], ["--only", "x"]]
+
+
+def test_args_cycle_is_parsed_from_env_json(monkeypatch):
+    monkeypatch.setenv("STUB_SIM_PATH", str(FAKE_SIM))
+    monkeypatch.setenv("STUB_SIM_ARGS_CYCLE", '["--a 1", "--b 2"]')
+    sys.path.insert(0, str(HERE))
+    sys.modules.pop("stub_adapter", None)
+    mod = importlib.import_module("stub_adapter")
+    assert mod.STUB_SIM_ARGS_CYCLE == ["--a 1", "--b 2"]
+    sys.modules.pop("stub_adapter", None)

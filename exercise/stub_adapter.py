@@ -34,6 +34,11 @@ Env:
                         --host/--port are left to the simulator's own
                         DIS_TARGET_HOST/DIS_TARGET_PORT env defaults,
                         inherited from this process's environment.
+  STUB_SIM_ARGS_CYCLE   JSON list of argument strings (each shell-split). When
+                        set, the k-th child start (1-based, counted across
+                        this process's life) uses element (k-1) % len in
+                        place of STUB_SIM_ARGS, so successive runs can differ.
+                        GET /requests reports the chosen `args_index`.
   STUB_LIE_STATE        "running" -> every response body's "state" field
                         is always "running" regardless of the child's
                         actual state (see the module docstring).
@@ -57,6 +62,7 @@ log = logging.getLogger("stub_adapter")
 STUB_PORT = int(os.getenv("STUB_PORT", "8096"))
 STUB_SIM_PATH = os.getenv("STUB_SIM_PATH", "/dis-sim/dis_sim.py")
 STUB_SIM_ARGS = shlex.split(os.getenv("STUB_SIM_ARGS", ""))
+STUB_SIM_ARGS_CYCLE = json.loads(os.getenv("STUB_SIM_ARGS_CYCLE", "") or "null")
 STUB_LIE_STATE = os.getenv("STUB_LIE_STATE", "").strip().lower()
 
 _OPS = ("pause", "resume", "stop", "run", "restart")
@@ -79,6 +85,8 @@ class Sim:
         self.lock = threading.Lock()
         self.proc: subprocess.Popen | None = None
         self.paused = False
+        self.starts = 0  # child starts so far; picks the STUB_SIM_ARGS_CYCLE element
+        self.args_index: int | None = None  # the cycle element the current/last child took
 
     def _alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -92,7 +100,13 @@ class Sim:
         with self.lock:
             if self._alive():
                 return  # already running (or paused) -- not an error
-            argv = [sys.executable, STUB_SIM_PATH, *STUB_SIM_ARGS]
+            args = STUB_SIM_ARGS
+            self.args_index = None
+            if STUB_SIM_ARGS_CYCLE:
+                self.args_index = self.starts % len(STUB_SIM_ARGS_CYCLE)
+                args = shlex.split(STUB_SIM_ARGS_CYCLE[self.args_index])
+            self.starts += 1
+            argv = [sys.executable, STUB_SIM_PATH, *args]
             self.proc = subprocess.Popen(argv)
             self.paused = False
 
@@ -138,6 +152,8 @@ _REQUESTS_LOCK = threading.Lock()
 
 def _record(op: str) -> dict:
     entry = {"ts": time.time(), "op": op, "pid": SIM.proc.pid if SIM.proc else None}
+    if op == "run":
+        entry["args_index"] = SIM.args_index
     with _REQUESTS_LOCK:
         REQUESTS.append(entry)
     log.info(json.dumps({"stub_adapter_op": op, "pid": entry["pid"]}))
