@@ -1491,13 +1491,68 @@ def test_loop_b_inflight_holds_the_end(lapp):
     def script(t):
         if t >= 2:
             sig["fires"]["f1"] = 1.0
-        sig["inflight"]["i1"] = 2.0 if 3 <= t < 12 else 0.0
+        if 3 <= t < 12:
+            sig["inflight"]["i1"] += 1.0  # a counter: rises by one each tick, flat otherwise
     clock.hook = script
     runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=60.0)
     _run_sync(runner)
     r = rec.records[0]
     assert r["end_reason"] == "quiet"
-    assert r["steps"][0]["s"] >= 16  # in flight until 12, then 5 s quiet
+    assert 16 <= r["steps"][0]["s"] <= 18  # rising until 11, then 5 s quiet
+
+
+def test_loop_b2_flat_nonzero_inflight_counter_does_not_hold_the_end(lapp):
+    sig, clock = lapp["sig"], lapp["clock"]
+    sig["inflight"]["i1"] = 500.0  # counter already large from the first tick, never rises
+
+    def script(t):
+        if t >= 1:
+            sig["fires"]["f1"] = 1.0
+    clock.hook = script
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=60.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert r["end_reason"] == "quiet"
+    assert r["steps"][0]["s"] < 20
+
+
+def test_loop_b3_inflight_counter_decrease_rebaselines(lapp):
+    sig, clock = lapp["sig"], lapp["clock"]
+    sig["inflight"]["i1"] = 500.0
+
+    def script(t):
+        if t >= 1:
+            sig["fires"]["f1"] = 1.0
+        if t >= 3:
+            sig["inflight"]["i1"] = 3.0  # counter reset (pod restart): not a rise
+    clock.hook = script
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=60.0)
+    _run_sync(runner)
+    r = rec.records[0]
+    assert r["end_reason"] == "quiet"
+    assert r["steps"][0]["s"] < 20
+
+
+def test_loop_b4_status_inflight_is_the_per_tick_rise(lapp):
+    sig, clock = lapp["sig"], lapp["clock"]
+    sig["inflight"]["i1"] = 10.0
+    runner, rec = lapp["make"](AWAIT, quiet=5.0, fallback=60.0)
+    seen = {}
+
+    def script(t):
+        if t == 5:
+            sig["inflight"]["i1"] = 12.0
+        if t == 7:
+            sig["inflight"]["i1"] = None
+        if t in (4, 6, 8):
+            seen[t] = runner.status()["loop"]["await"]["inflight"]
+        if t == 9:
+            runner.stop()
+    clock.hook = script
+    _run_sync(runner)
+    assert seen[4] == 0.0
+    assert seen[6] == 2.0
+    assert seen[8] is None
 
 
 def test_loop_c_unknown_tick_restarts_quiet(lapp):

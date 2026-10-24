@@ -1016,7 +1016,8 @@ class AppState:
 # failed step halts the loop. State lives in memory only, so a pod restart means
 # no loop (status reports idle); the per-cycle record in the ConfigMap is what
 # survives. "Scenario end" is read from counters (fires and in-flight), never
-# from anything the adapter says.
+# from anything the adapter says. Both are cumulative counters: the loop reads
+# their rise between scrapes, never their level.
 
 LOOP_RESERVED = ("loop", "loopstop")
 LOOP_DEFAULT_QUIET_S = 120.0
@@ -1111,7 +1112,8 @@ def load_loop_config(path: str | os.PathLike | None, adapter: dict[str, Any],
 
 
 class LoopSampler:
-    """One scrape of every source. A failed fetch is None for that source (never
+    """One scrape of every source; both metrics are cumulative counters, so the
+    runner works from their rise between scrapes, not their level. A failed fetch is None for that source (never
     zero): the loop treats the tick as unknown. A reachable source without the
     metric series has nothing to report and reads 0."""
 
@@ -1385,6 +1387,7 @@ class LoopRunner:
         with self._lock:
             self._await = aw
         prev: dict[str, float] = {}
+        prev_inflight: dict[str, float] = {}  # separate baselines: a fire URL may equal an in-flight URL
         reason: str | None = None
         stopped = False
         while True:
@@ -1400,13 +1403,20 @@ class LoopRunner:
                 if p is not None and v > p:
                     delta += v - p
                 prev[url] = v  # a decrease re-baselines: not a fire
+            # In flight this tick = munition track records seen since the previous
+            # scrape (a munition in flight emits them at its track rate). The source
+            # metric is a counter, so only its rise counts; the first sample
+            # baselines, a decrease re-baselines, None is unknown and moves nothing.
             inflight: float | None = 0.0 if sample["inflight"] else None
             for url, v in sample["inflight"].items():
                 if v is None:
                     unknown.append(url)
                     inflight = None
-                elif inflight is not None:
-                    inflight += v
+                    continue
+                p = prev_inflight.get(url)
+                if p is not None and v > p and inflight is not None:
+                    inflight += v - p
+                prev_inflight[url] = v
             busy = delta > 0 or bool(inflight) or bool(unknown)
             with self._lock:
                 aw["unknown"], aw["inflight"] = unknown, inflight
