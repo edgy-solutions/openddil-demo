@@ -1028,7 +1028,7 @@ LOOP_WAIT_SLICE_S = 0.25
 RESET_JOB_GRACE_S = 120.0
 RESET_JOB_DEFAULT_DEADLINE_S = 1800.0
 LOOP_RECORD_KEY = "cycles.json"
-FIRES_METRIC, FIRES_LABEL = "dis_effector_pdus_decoded_total", ("pdu_type", "2")
+FIRES_METRIC, FIRES_LABEL = "dis_effector_pdus_decoded_total", ("pdu_type", "fire")  # sensor-ingest labels by PDU name
 INFLIGHT_METRIC, INFLIGHT_LABEL = "dis_ingress_kind_tracked", ("kind", "2")
 
 

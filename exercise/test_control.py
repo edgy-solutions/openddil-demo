@@ -1461,14 +1461,32 @@ def _run_sync(runner, subject="sup@x"):
 
 
 def test_parse_labeled_total_filters_on_label_and_sums():
-    text = ('dis_effector_pdus_decoded_total{pdu_type="2",site="1"} 3\n'
-            'dis_effector_pdus_decoded_total{site="2",pdu_type="2"} 4\n'
-            'dis_effector_pdus_decoded_total{pdu_type="1"} 99\n'
+    text = ('dis_effector_pdus_decoded_total{pdu_type="fire",site="1"} 3\n'
+            'dis_effector_pdus_decoded_total{site="2",pdu_type="fire"} 4\n'
+            'dis_effector_pdus_decoded_total{pdu_type="detonation"} 99\n'
             'dis_pdus_received_total{pdu_type="2"} 7\n')
-    assert control.parse_labeled_total(text, "dis_effector_pdus_decoded_total", "pdu_type", "2") == 7.0
+    assert control.parse_labeled_total(text, "dis_effector_pdus_decoded_total", "pdu_type", "fire") == 7.0
     assert control.parse_labeled_total(text, "dis_ingress_kind_tracked", "kind", "2") is None
     # the existing rate parse is untouched
     assert control.parse_pdu_total(text) is None
+
+
+def test_loop_sampler_counts_fires_in_the_sidecar_label_vocabulary():
+    # sensor-ingest labels this counter by PDU name (dis_ingestor.py
+    # DIS_EFFECTOR_PDUS_DECODED: "fire", "detonation", "resupply_received"),
+    # never by the DIS type number; only fires count.
+    srv = _serve(FakeMetrics)
+    state["metrics_text"] = (
+        '# TYPE dis_effector_pdus_decoded_total counter\n'
+        'dis_effector_pdus_decoded_total{pdu_type="fire"} 3.0\n'
+        'dis_effector_pdus_decoded_created{pdu_type="fire"} 1.7e+09\n'
+        'dis_effector_pdus_decoded_total{pdu_type="detonation"} 2.0\n'
+        'dis_effector_pdus_decoded_total{pdu_type="resupply_received"} 5.0\n')
+    try:
+        url = f"http://127.0.0.1:{srv.server_port}/metrics"
+        assert control.LoopSampler([url], [])()["fires"] == {url: 3.0}
+    finally:
+        srv.shutdown()
 
 
 def test_loop_a_quiet_end_after_fire_with_nothing_in_flight(lapp):
