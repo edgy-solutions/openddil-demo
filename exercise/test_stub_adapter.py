@@ -198,3 +198,63 @@ def test_args_cycle_is_parsed_from_env_json(monkeypatch):
     mod = importlib.import_module("stub_adapter")
     assert mod.STUB_SIM_ARGS_CYCLE == ["--a 1", "--b 2"]
     sys.modules.pop("stub_adapter", None)
+
+
+# =============================================================================
+# run reports a dead start: missing script / child exits inside the settle
+# =============================================================================
+
+def _exit_script(tmp_path, code=3):
+    p = tmp_path / "exits.py"
+    p.write_text(f"import sys\nsys.exit({code})\n")
+    return p
+
+
+def test_run_missing_script_is_502_and_starts_nothing(adapter, monkeypatch, tmp_path):
+    mod, port = adapter
+    missing = tmp_path / "nope.py"
+    monkeypatch.setattr(mod, "STUB_SIM_PATH", str(missing))
+    status, body = _post(port, "/run")
+    assert status == 502
+    assert body["op"] == "run" and body["error"] == "sim script not found"
+    assert body["path"] == str(missing)
+    assert mod.SIM.proc is None
+    _, reqs = _get(port, "/requests")
+    assert reqs["requests"][-1]["ok"] is False
+    assert reqs["requests"][-1]["error"] == "sim script not found"
+
+
+def test_run_child_exiting_at_once_is_502_with_rc(adapter, monkeypatch, tmp_path):
+    mod, port = adapter
+    monkeypatch.setattr(mod, "STUB_SIM_PATH", str(_exit_script(tmp_path, 3)))
+    monkeypatch.setattr(mod, "STUB_RUN_SETTLE_S", 1.5)
+    status, body = _post(port, "/run")
+    assert status == 502
+    assert body == {"op": "run", "error": "sim exited at start", "rc": 3}
+    _, reqs = _get(port, "/requests")
+    last = reqs["requests"][-1]
+    assert last["ok"] is False and last["rc"] == 3
+
+
+def test_run_live_child_is_200_ok_true_and_rerun_is_200(adapter, monkeypatch):
+    mod, port = adapter
+    monkeypatch.setattr(mod, "STUB_RUN_SETTLE_S", 0.3)
+    status, body = _post(port, "/run")
+    assert status == 200 and body["state"] == "running"
+    t0 = time.time()
+    status2, _ = _post(port, "/run")  # already alive: no settle wait
+    assert status2 == 200 and time.time() - t0 < 0.25
+    _, reqs = _get(port, "/requests")
+    assert [r["ok"] for r in reqs["requests"]] == [True, True]
+
+
+def test_failed_start_still_advances_args_cycle(adapter, monkeypatch, tmp_path):
+    mod, port = adapter
+    monkeypatch.setattr(mod, "STUB_RUN_SETTLE_S", 1.5)
+    monkeypatch.setattr(mod, "STUB_SIM_ARGS_CYCLE", ["--a", "--b"])
+    monkeypatch.setattr(mod, "STUB_SIM_PATH", str(_exit_script(tmp_path, 1)))
+    _post(port, "/run")
+    monkeypatch.setattr(mod, "STUB_SIM_PATH", str(FAKE_SIM))
+    _post(port, "/run")
+    _, reqs = _get(port, "/requests")
+    assert [r["args_index"] for r in reqs["requests"]] == [0, 1]

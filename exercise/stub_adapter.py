@@ -18,7 +18,8 @@ Control model:
   - stop:    SIGTERM the child and wait for it to exit.
   - run:     start a new child if none is alive; a no-op if one already is
              (paused counts as alive -- pause/resume toggle sending, not
-             existence).
+             existence). Answers 502 if the script is missing or the child
+             has exited within STUB_RUN_SETTLE_S of starting.
   - restart: stop then run.
 
 Each request is logged as one JSON line and appended to an in-memory list
@@ -28,7 +29,9 @@ scraping logs.
 Env:
   STUB_PORT            (8096)
   STUB_SIM_PATH        (/dis-sim/dis_sim.py) -- where the simulator script
-                        is mounted.
+                        is mounted (the chart sets /src/dis_sim.py).
+  STUB_RUN_SETTLE_S    (1.0) seconds `run` waits for a fresh child; one that
+                        has exited by then makes `run` answer 502.
   STUB_SIM_ARGS         extra args appended to the simulator's own argv,
                         shell-split (e.g. "--entities 4 --interval 2").
                         --host/--port are left to the simulator's own
@@ -61,6 +64,7 @@ log = logging.getLogger("stub_adapter")
 
 STUB_PORT = int(os.getenv("STUB_PORT", "8096"))
 STUB_SIM_PATH = os.getenv("STUB_SIM_PATH", "/dis-sim/dis_sim.py")
+STUB_RUN_SETTLE_S = float(os.getenv("STUB_RUN_SETTLE_S", "1.0"))
 STUB_SIM_ARGS = shlex.split(os.getenv("STUB_SIM_ARGS", ""))
 STUB_SIM_ARGS_CYCLE = json.loads(os.getenv("STUB_SIM_ARGS_CYCLE", "") or "null")
 STUB_LIE_STATE = os.getenv("STUB_LIE_STATE", "").strip().lower()
@@ -96,19 +100,29 @@ class Sim:
             return "stopped"
         return "paused" if self.paused else "running"
 
-    def run(self) -> None:
+    def run(self) -> dict:
+        """Returns {"ok": True} or {"ok": False, "error": ..., ...}."""
         with self.lock:
             if self._alive():
-                return  # already running (or paused) -- not an error
+                return {"ok": True}  # already running (or paused) -- not an error
+            if not os.path.exists(STUB_SIM_PATH):
+                return {"ok": False, "error": "sim script not found", "path": STUB_SIM_PATH}
             args = STUB_SIM_ARGS
             self.args_index = None
             if STUB_SIM_ARGS_CYCLE:
                 self.args_index = self.starts % len(STUB_SIM_ARGS_CYCLE)
                 args = shlex.split(STUB_SIM_ARGS_CYCLE[self.args_index])
+            # A failed start below still counts: it was a start attempt, so
+            # the next run takes the next STUB_SIM_ARGS_CYCLE element.
             self.starts += 1
             argv = [sys.executable, STUB_SIM_PATH, *args]
             self.proc = subprocess.Popen(argv)
             self.paused = False
+            try:
+                rc = self.proc.wait(timeout=STUB_RUN_SETTLE_S)
+            except subprocess.TimeoutExpired:
+                return {"ok": True}
+            return {"ok": False, "error": "sim exited at start", "rc": rc}
 
     def pause(self) -> None:
         with self.lock:
@@ -140,9 +154,9 @@ class Sim:
                     self.proc.wait(timeout=10)
             self.paused = False
 
-    def restart(self) -> None:
+    def restart(self) -> dict:
         self.stop()
-        self.run()
+        return self.run()
 
 
 SIM = Sim()
@@ -150,8 +164,10 @@ REQUESTS: list[dict] = []
 _REQUESTS_LOCK = threading.Lock()
 
 
-def _record(op: str) -> dict:
+def _record(op: str, result: dict | None = None) -> dict:
     entry = {"ts": time.time(), "op": op, "pid": SIM.proc.pid if SIM.proc else None}
+    if op in ("run", "restart") and result is not None:
+        entry.update({k: v for k, v in result.items() if k != "path"})
     if op == "run":
         entry["args_index"] = SIM.args_index
     with _REQUESTS_LOCK:
@@ -198,8 +214,11 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(404, {"error": "unknown op"})
             return
 
-        getattr(SIM, op)()
-        entry = _record(op)
+        result = getattr(SIM, op)()
+        entry = _record(op, result)
+        if result is not None and not result["ok"]:
+            self._reply(502, {"op": op, **{k: v for k, v in result.items() if k != "ok"}})
+            return
         self._reply(200, {"op": op, "pid": entry["pid"], "state": self._state_field()})
 
 
