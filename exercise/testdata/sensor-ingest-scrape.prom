@@ -1,0 +1,15 @@
+# live scrape, lab edge-01, 2026-10-24; filtered to the families exercise control reads
+# HELP dis_pdus_received_total Total DIS PDUs received on the UDP socket
+# TYPE dis_pdus_received_total counter
+dis_pdus_received_total{pdu_type="1"} 929.0
+dis_pdus_received_total{pdu_type="2"} 1.0
+# HELP dis_pdus_received_created Total DIS PDUs received on the UDP socket
+# TYPE dis_pdus_received_created gauge
+dis_pdus_received_created{pdu_type="1"} 1.79285459306833e+09
+dis_pdus_received_created{pdu_type="2"} 1.792854626955775e+09
+# HELP dis_effector_pdus_decoded_total Total Fire/Detonation PDUs (types 2/3) successfully decoded and published
+# TYPE dis_effector_pdus_decoded_total counter
+dis_effector_pdus_decoded_total{pdu_type="fire"} 1.0
+# HELP dis_effector_pdus_decoded_created Total Fire/Detonation PDUs (types 2/3) successfully decoded and published
+# TYPE dis_effector_pdus_decoded_created gauge
+dis_effector_pdus_decoded_created{pdu_type="fire"} 1.7928546269558282e+09

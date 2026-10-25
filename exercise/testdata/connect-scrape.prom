@@ -1,0 +1,4 @@
+# live scrape, lab edge-01, 2026-10-24; filtered to the families exercise control reads
+# HELP dis_ingress_kind_tracked Benthos Counter metric
+# TYPE dis_ingress_kind_tracked counter
+dis_ingress_kind_tracked{kind="2",label="",path="root.processor_resources.processors.0"} 40

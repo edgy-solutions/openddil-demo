@@ -12,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -113,12 +114,19 @@ def test_counter_reset_treated_as_restart_rate_from_new_value_only():
 # parse_pdu_total
 # =============================================================================
 
-def test_parses_total_summed_over_other_labels():
+def test_parse_pdu_total_reads_the_sidecar_scrape():
+    # shape: dis_ingestor.py:363 dis_pdus_received_total, labels ["pdu_type"]; fixture is a
+    # live scrape. pdu_type="1" only; "2" and the _created lines must not count.
+    assert control.parse_pdu_total(_scrape("sensor-ingest-scrape.prom")) == 929.0
+
+
+def test_parse_pdu_total_sums_over_extra_labels_synthetic():
+    # synthetic: not an exporter shape; parser robustness only
     text = (
         '# HELP dis_pdus_received_total x\n'
         '# TYPE dis_pdus_received_total counter\n'
-        'dis_pdus_received_total{pdu_type="1",source="a"} 12\n'
-        'dis_pdus_received_total{pdu_type="1",source="b"} 8\n'
+        'dis_pdus_received_total{pdu_type="1",x_extra="a"} 12\n'
+        'dis_pdus_received_total{pdu_type="1",x_extra="b"} 8\n'
         'dis_pdus_received_total{pdu_type="7"} 500\n'
     )
     assert control.parse_pdu_total(text) == 20.0
@@ -129,6 +137,7 @@ def test_metric_absent_returns_none():
 
 
 def test_metric_present_with_zero_value_is_zero_not_none():
+    # shape: dis_ingestor.py:363 (labels ["pdu_type"])
     text = 'dis_pdus_received_total{pdu_type="1"} 0\n'
     assert control.parse_pdu_total(text) == 0.0
 
@@ -215,11 +224,16 @@ class FakeMetrics(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        out = state["metrics_text"].encode()
+        out = getattr(self.server, "text", state["metrics_text"]).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
         self.wfile.write(out)
+
+
+def _scrape(name):
+    """Read a live-scrape fixture from exercise/testdata/ (path relative to this file)."""
+    return (Path(__file__).parent / "testdata" / name).read_text(encoding="utf-8")
 
 
 def _serve(handler):
@@ -233,6 +247,7 @@ def app(tmp_path):
     adapter_srv = _serve(FakeAdapter)
     metrics_srv = _serve(FakeMetrics)
     state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0, status_by_path={},
+                 # shape: dis_ingestor.py:363 (labels ["pdu_type"])
                  metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
 
     cfg = {
@@ -334,6 +349,7 @@ def gate(tmp_path):
     adapter_srv = _serve(FakeAdapter)
     metrics_srv = _serve(FakeMetrics)
     state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0, status_by_path={},
+                 # shape: dis_ingestor.py:363 (labels ["pdu_type"])
                  metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
     ops = {op: {"method": "POST", "path": "/" + op, "body": {}}
            for op in ("pause", "resume", "stop", "restart", "run")}
@@ -798,6 +814,7 @@ def _list_app(tmp_path, ops):
     adapter_srv = _serve(FakeAdapter)
     metrics_srv = _serve(FakeMetrics)
     state.update(adapter_calls=[], adapter_status=200, adapter_delay=0.0, status_by_path={},
+                 # shape: dis_ingestor.py:363 (labels ["pdu_type"])
                  metrics_text='dis_pdus_received_total{pdu_type="1"} 1\n')
     cfg = {"name": "stand-in", "endpoint": f"http://127.0.0.1:{adapter_srv.server_port}",
            "operations": ops}
@@ -1461,20 +1478,44 @@ def _run_sync(runner, subject="sup@x"):
 
 
 def test_parse_labeled_total_filters_on_label_and_sums():
-    text = ('dis_effector_pdus_decoded_total{pdu_type="fire",site="1"} 3\n'
-            'dis_effector_pdus_decoded_total{site="2",pdu_type="fire"} 4\n'
-            'dis_effector_pdus_decoded_total{pdu_type="detonation"} 99\n'
-            'dis_pdus_received_total{pdu_type="2"} 7\n')
+    # live scrapes: dis_ingestor.py:363/:391 (labels ["pdu_type"]) and the Connect metric
+    # processor dis-munition-track.yaml:30 (kind; Connect adds label and path).
+    text = _scrape("sensor-ingest-scrape.prom") + _scrape("connect-scrape.prom")
+    assert control.parse_labeled_total(text, "dis_effector_pdus_decoded_total", "pdu_type", "fire") == 1.0
+    assert control.parse_labeled_total(text, "dis_ingress_kind_tracked", "kind", "2") == 40.0
+    assert control.parse_labeled_total(text, "dis_ingress_kind_tracked", "kind", "9") is None
+    assert control.parse_pdu_total(text) == 929.0
+
+
+def test_parse_labeled_total_sums_over_extra_labels_synthetic():
+    # synthetic: not an exporter shape; parser robustness only
+    text = ('dis_effector_pdus_decoded_total{pdu_type="fire",x_extra="1"} 3\n'
+            'dis_effector_pdus_decoded_total{x_extra="2",pdu_type="fire"} 4\n'
+            'dis_effector_pdus_decoded_total{pdu_type="detonation"} 99\n')
     assert control.parse_labeled_total(text, "dis_effector_pdus_decoded_total", "pdu_type", "fire") == 7.0
-    assert control.parse_labeled_total(text, "dis_ingress_kind_tracked", "kind", "2") is None
-    # the existing rate parse is untouched
-    assert control.parse_pdu_total(text) is None
+
+
+def test_loop_sampler_reads_both_real_scrapes():
+    # per-server text via srv.text; fixtures are live scrapes (see _scrape)
+    si, cn = _serve(FakeMetrics), _serve(FakeMetrics)
+    si.text = _scrape("sensor-ingest-scrape.prom")
+    cn.text = _scrape("connect-scrape.prom")
+    try:
+        si_url = f"http://127.0.0.1:{si.server_port}/metrics"
+        cn_url = f"http://127.0.0.1:{cn.server_port}/metrics"
+        out = control.LoopSampler([si_url], [cn_url])()
+        assert out["fires"] == {si_url: 1.0}
+        assert out["inflight"] == {cn_url: 40.0}
+    finally:
+        si.shutdown()
+        cn.shutdown()
 
 
 def test_loop_sampler_counts_fires_in_the_sidecar_label_vocabulary():
     # sensor-ingest labels this counter by PDU name (dis_ingestor.py
     # DIS_EFFECTOR_PDUS_DECODED: "fire", "detonation", "resupply_received"),
     # never by the DIS type number; only fires count.
+    # shape: dis_ingestor.py:391 (labels ["pdu_type"]), call sites :1722 / :1876
     srv = _serve(FakeMetrics)
     state["metrics_text"] = (
         '# TYPE dis_effector_pdus_decoded_total counter\n'
