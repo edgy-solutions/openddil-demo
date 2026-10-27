@@ -695,6 +695,10 @@ def _parse_roles_csv(raw: str) -> frozenset:
 EXERCISE_OPEN_OPS = frozenset({"pause", "resume", "stop", "restart", "run"})
 # Roles that may press a gated exercise action (name kept for the env var).
 EXERCISE_RESET_ROLES = _parse_roles_csv(os.getenv("OPENDDIL_EXERCISE_RESET_ROLES", "supervisor"))
+# Roles that may close an open manual-discrepancy episode (POST
+# /cm/discrepancy/resolve). Same shape as the reset gate above.
+CM_RESOLVE_ROLES = _parse_roles_csv(os.getenv(
+    "OPENDDIL_CM_RESOLVE_ROLES", "edge-operator,regional-operator,supervisor"))
 # The reset's optional JSON body (the operator's confirmation to cancel open
 # Restate work). Same rules as exercise/control.py, which validates again.
 EXERCISE_RESET_BODY_MAX = 1024
@@ -1256,6 +1260,29 @@ def _parse_discrepancy_body(payload) -> dict:
         raise ValueError("invalid description")
     return {"asset_id": asset_id, "component": component,
             "fault_code": fault_code, "description": description}
+
+
+def _parse_resolve_body(payload) -> dict:
+    """asset_id, component, fault_code, resolution -- all required -- or raise
+    ValueError(reason). The identifier fields use the raise route's patterns;
+    resolution is free text under the same length rule as description.
+    reported_by / recorded_by are never read."""
+    if not isinstance(payload, dict):
+        raise ValueError("body must be a JSON object")
+    asset_id = payload.get("asset_id")
+    component = payload.get("component")
+    fault_code = payload.get("fault_code")
+    resolution = payload.get("resolution")
+    if not isinstance(asset_id, str) or not _ASSET_ID_RE.match(asset_id):
+        raise ValueError("invalid asset_id")
+    if not isinstance(component, str) or not _COMPONENT_RE.match(component):
+        raise ValueError("invalid component")
+    if not isinstance(fault_code, str) or not _COMPONENT_RE.match(fault_code):
+        raise ValueError("invalid fault_code")
+    if not isinstance(resolution, str) or not (1 <= len(resolution) <= 500):
+        raise ValueError("invalid resolution")
+    return {"asset_id": asset_id, "component": component,
+            "fault_code": fault_code, "resolution": resolution}
 
 
 def _parse_manual_ask_body(payload) -> dict:
@@ -1888,6 +1915,156 @@ class Pep(BaseHTTPRequestHandler):
             return
 
         # Step 9: recorded.
+        self._cm_allow(subject=subject, asset_id=asset_id, fault_code=fault_code,
+                       event_id=event_id)
+
+    def _handle_cm_discrepancy_resolve(self, parsed) -> None:
+        """Close the open keyed episode on (asset, component, fault_code).
+        Same gates as the raise route plus a role gate; the event it posts is
+        a CmEvent whose recordedBy is the authenticated subject."""
+        path = parsed.path
+        if FAULT_CATALOG is None or not CM_INTAKE_URL:
+            self._drain_body()
+            self._deny("cm write route not configured at this tier", subject="",
+                       resource=path, status=404, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        if not self._content_type_is_json():
+            self._drain_body()
+            self._deny("Content-Type must be application/json", subject="",
+                       resource=path, status=415, marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        if self._origin_is_cross_site():
+            self._drain_body()
+            self._deny("cross-site origin", subject="", resource=path, status=403,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        length = self._content_length()
+        if length > MAX_CM_BODY_BYTES:
+            self._deny("body too large", subject="", resource=path, status=413,
+                       headers=[("Connection", "close")],
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        raw = self.rfile.read(length) if length else b""
+        try:
+            payload = json.loads(raw or b"{}")
+        except ValueError:
+            self._send(400, json.dumps({"error": "malformed JSON body"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        asset_id_hint = payload.get("asset_id") if isinstance(payload, dict) else None
+        fault_code_hint = payload.get("fault_code") if isinstance(payload, dict) else None
+
+        # 1. subject known, Topaz allow with a nation entitlement.
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._cm_deny(503, f"PDP unavailable: {exc}", subject=subject,
+                          asset_id=asset_id_hint, fault_code=fault_code_hint)
+            return
+        if not decision["allow"]:
+            cause = ("subject not in the entitlements corpus"
+                     if not decision["subject_known"]
+                     else "subject holds no nation entitlements")
+            self._cm_deny(403, cause, subject=subject, asset_id=asset_id_hint,
+                          fault_code=fault_code_hint)
+            return
+
+        # 2. role gate, fail closed.
+        role = decision.get("role")
+        if role not in CM_RESOLVE_ROLES:
+            self._cm_deny(403, f"role {role} may not resolve a discrepancy",
+                          subject=subject, asset_id=asset_id_hint,
+                          fault_code=fault_code_hint)
+            return
+
+        try:
+            fields = _parse_resolve_body(payload)
+        except ValueError as exc:
+            self._cm_deny(400, str(exc), subject=subject, asset_id=asset_id_hint,
+                          fault_code=fault_code_hint)
+            return
+        asset_id = fields["asset_id"]
+        component = fields["component"]
+        fault_code = fields["fault_code"]
+        resolution = fields["resolution"]
+
+        # 3. visibility row and installed slot.
+        try:
+            row = read_cm_visibility_row(asset_id, decision["allowed_nations"])
+        except ElectricUnavailable as exc:
+            self._cm_deny(502, f"electric unavailable: {exc}", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code)
+            return
+        if row is None:
+            self._cm_deny(404, "asset not visible at this tier", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code)
+            return
+        if not _component_installed(row, component):
+            self._cm_deny(400, "component is not an installed slot on this asset",
+                          subject=subject, asset_id=asset_id, fault_code=fault_code)
+            return
+
+        # 4. fault code in the variant's catalog and bound to the component.
+        try:
+            variant_row = read_visible_row("telemetry_latest_state", asset_id,
+                                           decision["allowed_nations"])
+        except ElectricUnavailable as exc:
+            self._cm_deny(502, f"electric unavailable: {exc}", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code)
+            return
+        platform_variant = variant_row.get("platform_variant") if variant_row else None
+        variant_entry = (FAULT_CATALOG.get("variants", {}).get(platform_variant)
+                         if platform_variant else None)
+        codes = variant_entry.get("codes", []) if variant_entry else []
+        entry = next((c for c in codes if c.get("code") == fault_code), None)
+        if entry is None:
+            self._cm_deny(
+                400,
+                f"fault code not in the fault-isolation manual for variant {platform_variant}",
+                subject=subject, asset_id=asset_id, fault_code=fault_code,
+            )
+            return
+        if entry.get("component") != component:
+            self._cm_deny(
+                400, f"fault code belongs to component {entry.get('component')}",
+                subject=subject, asset_id=asset_id, fault_code=fault_code,
+            )
+            return
+
+        event_id = str(uuid.uuid4())
+        event = {
+            "eventId": event_id,
+            "assetId": asset_id,
+            "recordedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "recordedBy": subject,
+            "manualDiscrepancyResolved": {
+                "component": component,
+                "faultCode": fault_code,
+                "resolution": resolution,
+            },
+        }
+        req = urllib.request.Request(
+            CM_INTAKE_URL, data=json.dumps(event).encode(),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15):
+                pass
+        except urllib.error.HTTPError as exc:
+            self._cm_deny(502, f"cm-intake returned HTTP {exc.code}", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code, event_id=event_id)
+            return
+        except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
+            self._cm_deny(502, f"cm-intake unreachable: {exc}", subject=subject,
+                          asset_id=asset_id, fault_code=fault_code, event_id=event_id)
+            return
         self._cm_allow(subject=subject, asset_id=asset_id, fault_code=fault_code,
                        event_id=event_id)
 
@@ -2764,6 +2941,9 @@ class Pep(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/cm/discrepancy":
             self._handle_cm_discrepancy(parsed)
+            return
+        if parsed.path == "/cm/discrepancy/resolve":
+            self._handle_cm_discrepancy_resolve(parsed)
             return
         if parsed.path == "/manual/ask":
             self._handle_manual_ask(parsed)

@@ -59,7 +59,9 @@ FAULT_CATALOG = {
 }
 
 # Who the fake PDP knows. "pdp-down" makes Topaz answer 500.
-ENTITLEMENTS = {"op.atl": ["ATL"], "stranger": []}
+ENTITLEMENTS = {"op.atl": ["ATL"], "obs.atl": ["ATL"], "op.fra": ["FRA"],
+                "stranger": []}
+ROLES = {"obs.atl": "observer"}
 
 state = {
     "visibility_rows": [
@@ -85,7 +87,7 @@ class FakeTopaz(BaseHTTPRequestHandler):
         nations = ENTITLEMENTS.get(subject, [])
         x = {"allow": bool(nations), "allowed_nations": nations,
              "subject_known": subject in ENTITLEMENTS,
-             "policy_version": "p1", "corpus_version": "c1", "role": "edge-operator"}
+             "policy_version": "p1", "corpus_version": "c1", "role": ROLES.get(subject, "edge-operator")}
         out = json.dumps({"response": {"result": [{"bindings": {"x": x}}]}}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(out)))
@@ -122,7 +124,9 @@ class FakeElectric(BaseHTTPRequestHandler):
         match = _ASSET_ID_IN_WHERE.search(where)
         asset_id = match.group(1) if match else None
         rows = [row for row in state["visibility_rows"]
-                if asset_id is None or row.get("asset_id") == asset_id]
+                if (asset_id is None or row.get("asset_id") == asset_id)
+                and (not row.get("originator_nation")
+                     or f"IN ('{row['originator_nation']}'" in where)]
         messages = [{"key": row.get("asset_id", "row"), "value": row,
                      "headers": {"operation": "insert"}} for row in rows]
         messages.append({"headers": {"control": "up-to-date"}})
@@ -483,3 +487,94 @@ def test_old_fault_codes_env_set_is_not_loaded(pep_factory, tmp_path, monkeypatc
         assert len(matching) == 1
     finally:
         sys.modules["pep"] = original_pep
+
+
+# --- POST /cm/discrepancy/resolve ---------------------------------------------
+
+RESOLVE_URL = "/cm/discrepancy/resolve"
+RESOLVE_BODY = {"asset_id": "atl-1", "component": "ENG-1", "fault_code": "FC-100",
+                "resolution": "replaced the seal"}
+
+
+def test_resolve_202_builds_expected_cm_event(pep_url):
+    body = dict(RESOLVE_BODY, recorded_by="someone-else", reported_by="someone-else")
+    code, resp = _post(pep_url + RESOLVE_URL, "op.atl", body)
+    assert code == 202
+    assert len(state["intake_calls"]) == 1
+    raw = state["intake_calls"][0]
+    sent = json.loads(raw)
+    assert sent["eventId"] == resp["event_id"]
+    assert sent["assetId"] == "atl-1"
+    assert sent["recordedBy"] == "op.atl"  # body recorded_by is ignored
+    assert "recordedAt" in sent
+    assert "manualDiscrepancy" not in sent
+    assert sent["manualDiscrepancyResolved"] == {
+        "component": "ENG-1", "faultCode": "FC-100", "resolution": "replaced the seal"}
+    if GENCODE_AVAILABLE:
+        event = cm_events_pb2.CmEvent()
+        json_format.Parse(raw, event)
+        assert event.manual_discrepancy_resolved.fault_code == "FC-100"
+        assert event.recorded_by == "op.atl"
+
+
+def test_resolve_observer_is_403(pep_url):
+    code, _ = _post(pep_url + RESOLVE_URL, "obs.atl", RESOLVE_BODY)
+    assert code == 403
+    assert state["intake_calls"] == []
+
+
+def test_resolve_wrong_nation_is_404_and_intake_not_called(pep_url):
+    # The asset is labelled ATL; op.fra holds FRA only, so the composed
+    # predicate does not admit the row and the visibility read comes back empty.
+    state["visibility_rows"][0]["originator_nation"] = "ATL"
+    code, _ = _post(pep_url + RESOLVE_URL, "op.fra", RESOLVE_BODY)
+    assert code == 404
+    assert state["intake_calls"] == []
+    code, _ = _post(pep_url + RESOLVE_URL, "op.atl", RESOLVE_BODY)
+    assert code == 202
+
+
+def test_resolve_unentitled_subject_is_403(pep_url):
+    code, _ = _post(pep_url + RESOLVE_URL, "stranger", RESOLVE_BODY)
+    assert code == 403
+    assert state["intake_calls"] == []
+
+
+def test_resolve_component_not_installed_is_400(pep_url):
+    code, _ = _post(pep_url + RESOLVE_URL, "op.atl", dict(RESOLVE_BODY, component="NOPE"))
+    assert code == 400
+    assert state["intake_calls"] == []
+
+
+def test_resolve_code_bound_to_other_component_is_400(pep_url):
+    code, _ = _post(pep_url + RESOLVE_URL, "op.atl",
+                    dict(RESOLVE_BODY, component="cooling_fan"))
+    assert code == 400
+    assert state["intake_calls"] == []
+
+
+@pytest.mark.parametrize("bad", ["", None, "x" * 501])
+def test_resolve_bad_resolution_is_400(pep_url, bad):
+    code, _ = _post(pep_url + RESOLVE_URL, "op.atl", dict(RESOLVE_BODY, resolution=bad))
+    assert code == 400
+    body = dict(RESOLVE_BODY)
+    body.pop("resolution")
+    code, _ = _post(pep_url + RESOLVE_URL, "op.atl", body)
+    assert code == 400
+    assert state["intake_calls"] == []
+
+
+def test_resolve_missing_fault_code_is_400(pep_url):
+    body = dict(RESOLVE_BODY)
+    body.pop("fault_code")
+    code, _ = _post(pep_url + RESOLVE_URL, "op.atl", body)
+    assert code == 400
+    assert state["intake_calls"] == []
+
+
+def test_resolve_roles_override_refuses_edge_operator(pep_url, monkeypatch):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "CM_RESOLVE_ROLES", pep._parse_roles_csv("supervisor"))
+    code, _ = _post(pep_url + RESOLVE_URL, "op.atl", RESOLVE_BODY)
+    assert code == 403
+    assert state["intake_calls"] == []
