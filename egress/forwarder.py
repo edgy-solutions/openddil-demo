@@ -131,12 +131,19 @@ class Envelope:
     tag). The default reproduces `{"kind": <kind>, "id": <kafka key>,
     "payload": <the record JSON, parsed>}` — a destination with its own
     field names configures them here instead of this module growing a
-    second envelope shape."""
+    second envelope shape.
+
+    `from_record` maps an envelope field name to an RFC 6901 JSON pointer
+    into the parsed record (`envelope.from_record` in config — e.g. the
+    filer's identity). A non-empty string at the pointer is written at that
+    field; otherwise the `static` value of the same name is the fallback,
+    else `""`."""
 
     kind_field: str = "kind"
     id_field: str = "id"
     body_field: str = "payload"
     static: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    from_record: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
 
 
 @dataclass(frozen=True)
@@ -199,14 +206,17 @@ def _entry_label(entry: object, index: int) -> str:
 
 def load_forward_config(path: str | os.PathLike) -> list[ForwardRoute]:
     """Load `OPENDDIL_FORWARD_CONFIG`: a JSON list of `{name, sink_topic,
-    url, kind, envelope? (kind_field?, id_field?, body_field?, static?),
+    url, kind, envelope? (kind_field?, id_field?, body_field?, static?, from_record?),
     token_file?, held?, dedupe_field?, case_field?, declarations_kind?}`
     entries. Names must be unique and
     non-empty. `envelope.static` is a JSON object of extra fixed fields
     written on every record this route forwards; its keys must be
     non-empty strings that don't collide with kind_field/id_field/
     body_field, and its values must be JSON scalars (string/number/
-    boolean), never nested objects. `held` must be a boolean; `dedupe_field`
+    boolean), never nested objects. `envelope.from_record` is a JSON object
+    of envelope field name -> RFC 6901 pointer string into the record; keys
+    follow the same rules as static's (and may also appear in static, which
+    is then the fallback). `held` must be a boolean; `dedupe_field`
     must be a non-empty string, as must `case_field` and
     `declarations_kind`. A bad file raises `ForwardConfigError`
     naming the entry."""
@@ -256,11 +266,35 @@ def load_forward_config(path: str | os.PathLike) -> list[ForwardRoute]:
                 )
             static[static_key] = static_value
 
+        from_record_raw = envelope_raw.get("from_record") or {}
+        if not isinstance(from_record_raw, Mapping):
+            raise ForwardConfigError(f"{label}: 'envelope.from_record' must be a JSON object")
+        from_record: dict[str, str] = {}
+        for fr_key, fr_ptr in from_record_raw.items():
+            if not isinstance(fr_key, str) or not fr_key:
+                raise ForwardConfigError(f"{label}: 'envelope.from_record' keys must be non-empty strings")
+            if fr_key in (kind_field, id_field, body_field):
+                raise ForwardConfigError(
+                    f"{label}: 'envelope.from_record' key {fr_key!r} collides with a named envelope field"
+                )
+            if not isinstance(fr_ptr, str):
+                raise ForwardConfigError(
+                    f"{label}: 'envelope.from_record' value for {fr_key!r} must be a JSON pointer string"
+                )
+            try:
+                pointer.tokens(fr_ptr)
+            except pointer.PointerError as exc:
+                raise ForwardConfigError(
+                    f"{label}: 'envelope.from_record' value for {fr_key!r}: {exc}"
+                ) from exc
+            from_record[fr_key] = fr_ptr
+
         envelope = Envelope(
             kind_field=kind_field,
             id_field=id_field,
             body_field=body_field,
             static=MappingProxyType(static),
+            from_record=MappingProxyType(from_record),
         )
 
         token_file = entry.get("token_file")
@@ -299,13 +333,23 @@ def load_forward_config(path: str | os.PathLike) -> list[ForwardRoute]:
 
 def build_envelope(route: ForwardRoute, key: str | None, record: Mapping[str, Any]) -> dict[str, Any]:
     """The wire envelope for one record: `route.envelope.static`'s fixed
-    fields written first, then `route`'s declared kind, the Kafka key, and
+    fields written first, then any `from_record` fields (the record's value
+    when a non-empty string, else the static fallback, else `""`), then `route`'s declared kind, the Kafka key, and
     the parsed record, written last at the field names `route.envelope`
     names — the default envelope when none were configured. The order
     keeps the three named fields from ever being shadowed by a static one,
     though `load_forward_config`'s collision check already makes that
     impossible by construction."""
     envelope: dict[str, Any] = dict(route.envelope.static)
+    for fr_field, fr_ptr in route.envelope.from_record.items():
+        try:
+            value = pointer.get(record, fr_ptr, default=None)
+        except pointer.PointerError:
+            value = None
+        if isinstance(value, str) and value:
+            envelope[fr_field] = value
+        else:
+            envelope.setdefault(fr_field, "")
     envelope[route.envelope.kind_field] = route.kind
     envelope[route.envelope.id_field] = key
     envelope[route.envelope.body_field] = record

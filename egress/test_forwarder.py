@@ -1490,3 +1490,79 @@ def test_resend_stamps_through_declarations_kind():
     code = rig.run({"to-a": route}, record=_STAMP_REC, declarations={"KindA": _STAMP_DECL})
     assert code == 0
     assert tuple(seen[c] for c in _STAMP_COLS) == ("ep-1", "asset-a", "comp-1", "F-1")
+
+
+# --- envelope.from_record ----------------------------------------------------
+
+_FILER = "/sources/0/reported_by"
+
+
+def _from_record_route(tmp_path, envelope):
+    path = _write_config(tmp_path, [
+        {"name": "f1", "sink_topic": "sink-a", "url": "http://sink.invalid/ingest", "kind": "KindA",
+         "envelope": envelope},
+    ])
+    [route] = load_forward_config(path)
+    return route
+
+
+def test_from_record_value_overrides_static_fallback(tmp_path):
+    route = _from_record_route(tmp_path, {
+        "static": {"on_behalf_of": "svc:fallback"}, "from_record": {"on_behalf_of": _FILER}})
+    env = build_envelope(route, "k1", {"sources": [{"reported_by": "sub-123"}]})
+    assert env == {"on_behalf_of": "sub-123", "kind": "KindA", "id": "k1",
+                   "payload": {"sources": [{"reported_by": "sub-123"}]}}
+
+
+@pytest.mark.parametrize("record", [
+    {},
+    {"sources": []},
+    {"sources": [{"reported_by": ""}]},
+    {"sources": [{"reported_by": 7}]},
+    {"sources": [{"reported_by": {"x": 1}}]},
+    {"sources": "not-a-list"},
+    {"sources": [None]},
+])
+def test_from_record_missing_or_non_string_uses_static_fallback(tmp_path, record):
+    route = _from_record_route(tmp_path, {
+        "static": {"on_behalf_of": "svc:fallback"}, "from_record": {"on_behalf_of": _FILER}})
+    assert build_envelope(route, "k1", record)["on_behalf_of"] == "svc:fallback"
+
+
+@pytest.mark.parametrize("record", [{}, {"sources": []}, {"sources": [{"reported_by": ""}]},
+                                    {"sources": [{"reported_by": 7}]}])
+def test_from_record_missing_without_static_writes_empty_string(tmp_path, record):
+    route = _from_record_route(tmp_path, {"from_record": {"on_behalf_of": _FILER}})
+    assert build_envelope(route, "k1", record)["on_behalf_of"] == ""
+
+
+@pytest.mark.parametrize("bad, fragment", [
+    (["not", "an", "object"], "must be a JSON object"),
+    ({"": _FILER}, "non-empty strings"),
+    ({"on_behalf_of": 5}, "pointer string"),
+    ({"on_behalf_of": "no-slash"}, "on_behalf_of"),
+    ({"payload": _FILER}, "collides"),
+])
+def test_from_record_config_errors(tmp_path, bad, fragment):
+    with pytest.raises(ForwardConfigError, match=fragment):
+        _from_record_route(tmp_path, {"from_record": bad})
+
+
+@pytest.mark.parametrize("env", [
+    {"kind_field": "type", "from_record": {"type": _FILER}},
+    {"id_field": "ident", "from_record": {"ident": _FILER}},
+])
+def test_from_record_cannot_shadow_named_fields(tmp_path, env):
+    with pytest.raises(ForwardConfigError, match="collides"):
+        _from_record_route(tmp_path, env)
+
+
+def test_resend_builds_the_from_record_envelope():
+    rig = _ResendRig()
+    route = _route(dedupe_field="event_id", token_file="/tok",
+                   envelope=Envelope(from_record={"on_behalf_of": _FILER}))
+    assert rig.run({"to-a": route}) == 0
+    _url, data, _headers = rig.posts[0]
+    body = json.loads(data)
+    assert body == build_envelope(route, "k1", {"event_id": "ev-1", "a": 1})
+    assert body["on_behalf_of"] == ""
