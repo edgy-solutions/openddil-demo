@@ -347,15 +347,22 @@ def verify_id_token(token: str, *, nonce: str | None = None) -> dict:
     if header.get("alg") != "RS256":
         raise AuthError(f"unexpected token algorithm {header.get('alg')!r}; "
                         "only RS256 is accepted")
+    # Issuer BEFORE the key lookup. A token from a foreign issuer must be
+    # refused for what it is, and must not cost a JWKS refresh:
+    # `_signing_key` refreshes on an unknown kid, so a stream of
+    # foreign-issuer tokens would otherwise hammer the IdP (and, at a
+    # severed tier, an unreachable one), and the refusal would read
+    # "unknown key id" when the real fault is the issuer. This reads an
+    # unverified claim only to REFUSE; nothing is accepted until the
+    # signature below verifies.
+    if claims.get("iss") != ISSUER:
+        raise AuthError(f"issuer mismatch: token says {claims.get('iss')!r}")
     key = _signing_key(header.get("kid", ""))
     if key.get("kty") != "RSA":
         raise AuthError(f"unsupported key type {key.get('kty')!r}")
     if not _rsa_verify(f"{h_b64}.{p_b64}".encode(), signature,
                        key["n"], key["e"]):
         raise AuthError("token signature does not verify")
-
-    if claims.get("iss") != ISSUER:
-        raise AuthError(f"issuer mismatch: token says {claims.get('iss')!r}")
 
     aud = claims.get("aud")
     aud = [aud] if isinstance(aud, str) else list(aud or [])
@@ -394,15 +401,22 @@ def verify_service_token(token: str, *, audience: str) -> dict:
     if header.get("alg") != "RS256":
         raise AuthError(f"unexpected token algorithm {header.get('alg')!r}; "
                         "only RS256 is accepted")
+    # Issuer BEFORE the key lookup. A token from a foreign issuer must be
+    # refused for what it is, and must not cost a JWKS refresh:
+    # `_signing_key` refreshes on an unknown kid, so a stream of
+    # foreign-issuer tokens would otherwise hammer the IdP (and, at a
+    # severed tier, an unreachable one), and the refusal would read
+    # "unknown key id" when the real fault is the issuer. This reads an
+    # unverified claim only to REFUSE; nothing is accepted until the
+    # signature below verifies.
+    if claims.get("iss") != ISSUER:
+        raise AuthError(f"issuer mismatch: token says {claims.get('iss')!r}")
     key = _signing_key(header.get("kid", ""))
     if key.get("kty") != "RSA":
         raise AuthError(f"unsupported key type {key.get('kty')!r}")
     if not _rsa_verify(f"{h_b64}.{p_b64}".encode(), signature,
                        key["n"], key["e"]):
         raise AuthError("token signature does not verify")
-
-    if claims.get("iss") != ISSUER:
-        raise AuthError(f"issuer mismatch: token says {claims.get('iss')!r}")
 
     aud = claims.get("aud")
     aud = [aud] if isinstance(aud, str) else list(aud or [])
@@ -773,6 +787,9 @@ def create_session(claims: dict, id_token: str = "", refresh_token: str = "",
         "username": claims.get("preferred_username") or "",
         "email": claims.get("email") or "",
         "name": claims.get("name") or "",
+        # The realm that authenticated this session; the verifiers have
+        # already refused any other, so this is the configured issuer.
+        "issuer": claims.get("iss", ""),
         # Kept for sign-out's `id_token_hint` and nothing else. Never sent to
         # the browser: /auth/me builds its body field by field.
         "id_token": id_token,

@@ -362,12 +362,23 @@ def new_decision_id() -> str:
     return secrets.token_hex(4).upper()
 
 
+# Set by the chart (openddil-helm `openddil.realmVersion`) to a digest of the
+# realm's inputs whenever per-tier identity replicas exist; it lets an
+# accreditor ask which realm a decision's subject was authenticated against.
+REALM_VERSION = os.getenv("OPENDDIL_REALM_VERSION", "unversioned")
+
+
 def record_decision(**fields) -> None:
     """One JSON line per decision: user, attributes, policy version, outcome,
     timestamp. Structured because the demo reads it back and an operator
     greps it, and those want the same record rather than two."""
     fields.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     fields.setdefault("auth_mode", AUTH_MODE)
+    # The verifiers refuse any token whose iss is not ISSUER, so for an
+    # authenticated decision the configured issuer IS the token's issuer;
+    # stamping it in one place covers every decision path.
+    fields.setdefault("issuer", oidc.ISSUER if oidc.enabled() else "")
+    fields.setdefault("realm_version", REALM_VERSION)
     decisions.info("DECISION %s", json.dumps(fields, sort_keys=True))
 
 
@@ -3152,6 +3163,9 @@ class Pep(BaseHTTPRequestHandler):
                 "subject": subject,
                 "username": (session or {}).get("username", ""),
                 "name": (session or {}).get("name", ""),
+                "issuer": ((session or {}).get("issuer")
+                           or (oidc.ISSUER if oidc.enabled() else "")),
+                "realm_version": REALM_VERSION,
                 # WHEN THIS SESSION ENDS, as a pair the browser diffs rather
                 # than a bare deadline it would otherwise compare against
                 # its own clock. A phone five minutes fast must not see its
