@@ -50,6 +50,9 @@
       "firstName": "Ada",
       "lastName": "Orsini",
       "email": "operator.atlantia@example.invalid",
+      "attributes": {
+        "home_tiers": ["edge-01"]
+      },
       "credentials": [
         {
           "type": "password",
@@ -66,6 +69,9 @@
       "firstName": "Bram",
       "lastName": "Delacroix",
       "email": "operator.borduria@example.invalid",
+      "attributes": {
+        "home_tiers": ["edge-01"]
+      },
       "credentials": [
         {
           "type": "password",
@@ -114,6 +120,9 @@
       "firstName": "Noor",
       "lastName": "Vantassel",
       "email": "observer.unlisted@example.invalid",
+      "attributes": {
+        "home_tiers": ["edge-01"]
+      },
       "credentials": [
         {
           "type": "password",

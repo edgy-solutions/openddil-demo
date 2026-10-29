@@ -53,6 +53,13 @@ by anchoring on what followed, and matched neither.
 | `liaison.coalition` | `3333...3333` | yes — ATL + BDR |
 | `observer.unlisted` | `4444...4444` | **no, deliberately** |
 
+Three accounts carry `attributes.home_tiers` (`["edge-01"]`), which
+says at which tier the user's credential is held (ADR-0045 in
+openddil-contracts). A tier replica imports the credential only for
+users homed at that tier; a user without it (`operator.regioneast`,
+`liaison.coalition`) is root-only and signs in at a tier only through
+the root, once federation exists.
+
 ### `observer.unlisted`
 
 THE DEFAULT-DENY SUBJECT. This account authenticates successfully and
