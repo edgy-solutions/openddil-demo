@@ -29,6 +29,7 @@ import { useArrivals } from './hooks/useArrivals';
 import { useArrivalsSummary } from './hooks/useArrivalsSummary';
 import { arrivalsCounts } from './lib/arrivals';
 import CmStateCard from './components/CmStateCard';
+import SourcesPane from './components/SourcesPane';
 import { WeaponsCapabilityCard } from './components/WeaponsCapabilityCard';
 import MunitionsLoadoutCard from './components/MunitionsLoadoutCard';
 import GroundDiagnosticsCard from './components/GroundDiagnosticsCard';
@@ -634,6 +635,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             opState={tel?.operational_state ?? null}
             isLoading={logistics.isLoading}
           />
+          <SourcesPane assetId={selectedAssetId} />
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
           {/* Phase 5: ADR-0026 operational_state surfaced per-asset.
               Sits after CmStateCard (config-management compliance) and
