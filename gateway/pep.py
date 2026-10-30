@@ -56,6 +56,7 @@ subject, never a client-supplied one.
 """
 from __future__ import annotations
 
+import datetime
 import html
 import json
 import logging
@@ -335,6 +336,36 @@ if _legacy_fault_codes_path:
 # test_pep_cm_write.py) rather than by re-importing, because this module's
 # fakes are started once per test module.
 FAULT_CATALOG = _load_fault_catalog(os.getenv("OPENDDIL_FAULT_CATALOG_PATH", ""))
+
+def _load_source_bands(path: str) -> dict | None:
+    """The per-variant band file (ADR-0053): for each platform variant, and
+    for each of the three sources, a field name mapped to {value: band}.
+    None when the path is unset, the file is missing, or it does not parse
+    (logged, never a crash): /cm/sources then serves with every band null.
+    A band is a per-source fact; nothing here combines two sources."""
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            bands = json.load(f)
+    except FileNotFoundError:
+        log.warning("OPENDDIL_SOURCE_BANDS_PATH=%s not found; bands will be null", path)
+        return None
+    except Exception as exc:  # noqa: BLE001 -- a config read, not a request
+        log.error("could not read OPENDDIL_SOURCE_BANDS_PATH=%s: %s", path, exc)
+        return None
+    if not isinstance(bands, dict) or not isinstance(bands.get("variants"), dict):
+        log.error("OPENDDIL_SOURCE_BANDS_PATH=%s is not a source-bands object", path)
+        return None
+    return bands
+
+
+SOURCE_BANDS = _load_source_bands(os.getenv("OPENDDIL_SOURCE_BANDS_PATH", ""))
+
+# The one field each source's band is read from.
+_BAND_FIELD = {"observed": "operational_status", "declared": "overall_status",
+               "derived": "overall_severity"}
+_BANDS = ("ready", "limited", "not-ready")
 
 # The decision log — ADR-0029 Phase 5's mechanism.
 #
@@ -991,6 +1022,50 @@ def _position(kinematics) -> dict | None:
         return None
     pos = kinematics.get("position")
     return pos if isinstance(pos, dict) else None
+
+
+def _json_field(value, want):
+    """A jsonb column may arrive as a JSON string; parse it like _position."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, want) else None
+
+
+def _source_band(source: str, variant, record: dict | None) -> str | None:
+    """The band of ONE source's record, from the band file, by the row's
+    platform variant. Takes one source only, by design: there is no
+    function in this file that takes two bands."""
+    if record is None or SOURCE_BANDS is None or not variant:
+        return None
+    entry = SOURCE_BANDS.get("variants", {}).get(variant)
+    fields = entry.get(source) if isinstance(entry, dict) else None
+    mapping = fields.get(_BAND_FIELD[source]) if isinstance(fields, dict) else None
+    if not isinstance(mapping, dict):
+        return None
+    value = record.get(_BAND_FIELD[source])
+    band = mapping.get(value) if isinstance(value, str) else None
+    return band if band in _BANDS else None
+
+
+def _source_silent(telemetry: dict) -> bool:
+    """A fact about the observed cell; it never changes the band."""
+    if telemetry.get("reporting_status") != "reporting":
+        return True
+    last = telemetry.get("last_sample_at")
+    if not last:
+        return True
+    try:
+        window = float((SOURCE_BANDS or {}).get("window_seconds", 300))
+    except (TypeError, ValueError):
+        window = 300.0
+    ts = _parse_ts(last)
+    if ts is None:
+        return True
+    age = time.time() - ts
+    return age > window
 
 
 def table_class(table: str) -> str:
@@ -1747,6 +1822,124 @@ class Pep(BaseHTTPRequestHandler):
             "platform_variant": platform_variant,
             "manual": manual,
             "codes": codes,
+        }
+        self._send(200, json.dumps(body).encode(),
+                   [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
+
+    def _handle_cm_sources(self, parsed) -> None:
+        # ADR-0053 first slice: the three sources for one asset, side by
+        # side. Same PDP, same labels, same read_visible_row as every other
+        # read here. No field combines the sources.
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError:
+            self._send(401, json.dumps({"error": "no authenticated subject"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        asset_id = (params.get("asset_id") or [""])[0]
+        if not asset_id:
+            self._send(400, json.dumps({"error": "asset_id is required"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject,
+                       resource=parsed.path, status=503)
+            return
+        if not decision["allow"]:
+            cause = ("subject not in the entitlements corpus"
+                     if not decision["subject_known"]
+                     else "subject holds no nation entitlements")
+            self._deny(cause, subject=subject, resource=parsed.path, status=403)
+            return
+
+        nations = decision["allowed_nations"]
+        try:
+            tel = read_visible_row("telemetry_latest_state", asset_id, nations)
+            if tel is None:
+                self._deny("asset not visible at this tier", subject=subject,
+                           resource=parsed.path, status=404,
+                           marker="GATEWAY REFUSED (PRE-PDP)")
+                return
+            cm = read_visible_row("asset_cm_state", asset_id, nations)
+            logi = read_visible_row("asset_logistics_status", asset_id, nations)
+            decl = read_visible_row("asset_declaration", asset_id, nations)
+        except ElectricUnavailable as exc:
+            self._deny(f"electric unavailable: {exc}", subject=subject,
+                       resource=parsed.path, status=502)
+            return
+
+        variant = tel.get("platform_variant")
+
+        prov = _json_field(tel.get("provenance"), dict) or {}
+        obs_record = {
+            "operational_status": tel.get("operational_status"),
+            "health_state": tel.get("health_state"),
+            "reporting_status": tel.get("reporting_status"),
+            "last_sample_at": tel.get("last_sample_at"),
+        }
+        observed = {
+            "record": obs_record,
+            "band": _source_band("observed", variant, obs_record),
+            "tier": prov.get("edge_id") or tel.get("edge_id"),
+            "source": prov.get("producer_id"),
+            "time": tel.get("last_sample_at"),
+            "silent": _source_silent(tel),
+        }
+
+        declared = {"record": None, "band": None, "tier": None,
+                    "source": "cm-service", "time": None}
+        if cm is not None:
+            raw = _json_field(cm.get("manual_discrepancies"), list) or []
+            discrepancies = [
+                {"fault_code": d.get("fault_code"), "component": d.get("component"),
+                 "description": d.get("description"), "severity": d.get("severity")}
+                for d in raw if isinstance(d, dict)
+            ]
+            declaration = ({"declared_by": decl.get("declared_by"),
+                            "declared_at": decl.get("declared_at")}
+                           if decl is not None else None)
+            record = {
+                "overall_status": cm.get("overall_status"),
+                "lifecycle": cm.get("lifecycle"),
+                "baseline_id": cm.get("baseline_id"),
+                "as_of": cm.get("as_of"),
+                "manual_discrepancies": discrepancies,
+                "declaration": declaration,
+            }
+            declared = {
+                "record": record,
+                "band": _source_band("declared", variant, record),
+                "tier": cm.get("edge_id"),
+                "source": ("cm-service; declared by %s" % decl.get("declared_by")
+                           if decl is not None else "cm-service"),
+                "time": cm.get("as_of"),
+            }
+
+        derived = {"record": None, "band": None, "tier": None,
+                   "source": "fusion", "time": None}
+        if logi is not None:
+            record = {
+                "overall_severity": logi.get("overall_severity"),
+                "constraining_factors": _json_field(logi.get("constraining_factors"), list) or [],
+            }
+            derived = {
+                "record": record,
+                "band": _source_band("derived", variant, record),
+                "tier": logi.get("edge_id"),
+                "source": "fusion",
+                "time": logi.get("computed_at"),
+            }
+
+        body = {
+            "asset_id": asset_id,
+            "platform_variant": variant,
+            "served_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "sources": {"observed": observed, "declared": declared, "derived": derived},
         }
         self._send(200, json.dumps(body).encode(),
                    [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
@@ -3461,6 +3654,9 @@ class Pep(BaseHTTPRequestHandler):
             return
         if parsed.path == "/cm/fault-codes":
             self._handle_cm_fault_codes(parsed)
+            return
+        if parsed.path == "/cm/sources":
+            self._handle_cm_sources(parsed)
             return
         if parsed.path == "/arrivals":
             self._handle_arrivals_get(parsed)
