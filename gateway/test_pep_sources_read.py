@@ -255,6 +255,31 @@ def test_postgres_text_sample_time_is_served_as_iso(rig):
     assert obs["silent"] is True
 
 
+PG_TEXT, ISO = "2026-10-26 04:34:15.187917+00", "2026-10-26T04:34:15.187917+00:00"
+
+
+def test_postgres_text_cm_as_of_is_served_as_iso(rig):
+    rig["rows"] = {"telemetry_latest_state": _tel(), "asset_cm_state": _cm(as_of=PG_TEXT)}
+    _, body = _get(rig)
+    declared = body["sources"]["declared"]
+    assert declared["record"]["as_of"] == ISO
+    assert declared["time"] == ISO
+
+
+def test_postgres_text_declared_at_is_served_as_iso(rig):
+    rig["rows"] = {"telemetry_latest_state": _tel(), "asset_cm_state": _cm(),
+                   "asset_declaration": _decl(declared_at=PG_TEXT)}
+    _, body = _get(rig)
+    assert body["sources"]["declared"]["record"]["declaration"]["declared_at"] == ISO
+
+
+def test_postgres_text_computed_at_is_served_as_iso(rig):
+    rig["rows"] = {"telemetry_latest_state": _tel(),
+                   "asset_logistics_status": _logi(computed_at=PG_TEXT)}
+    _, body = _get(rig)
+    assert body["sources"]["derived"]["time"] == ISO
+
+
 def test_unparseable_sample_time_passes_through_and_is_silent(rig):
     rig["rows"] = {"telemetry_latest_state": _tel(last_sample_at="not a time")}
     _, body = _get(rig)

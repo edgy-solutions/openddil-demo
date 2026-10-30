@@ -1913,13 +1913,13 @@ class Pep(BaseHTTPRequestHandler):
                 for d in raw if isinstance(d, dict)
             ]
             declaration = ({"declared_by": decl.get("declared_by"),
-                            "declared_at": decl.get("declared_at")}
+                            "declared_at": _iso_ts(decl.get("declared_at"))}
                            if decl is not None else None)
             record = {
                 "overall_status": cm.get("overall_status"),
                 "lifecycle": cm.get("lifecycle"),
                 "baseline_id": cm.get("baseline_id"),
-                "as_of": cm.get("as_of"),
+                "as_of": _iso_ts(cm.get("as_of")),
                 "manual_discrepancies": discrepancies,
                 "declaration": declaration,
             }
@@ -1929,7 +1929,7 @@ class Pep(BaseHTTPRequestHandler):
                 "tier": cm.get("edge_id"),
                 "source": ("cm-service; declared by %s" % decl.get("declared_by")
                            if decl is not None else "cm-service"),
-                "time": cm.get("as_of"),
+                "time": record["as_of"],
             }
 
         derived = {"record": None, "band": None, "tier": None,
@@ -1944,7 +1944,7 @@ class Pep(BaseHTTPRequestHandler):
                 "band": _source_band("derived", variant, record),
                 "tier": logi.get("edge_id"),
                 "source": "fusion",
-                "time": logi.get("computed_at"),
+                "time": _iso_ts(logi.get("computed_at")),
             }
 
         body = {
