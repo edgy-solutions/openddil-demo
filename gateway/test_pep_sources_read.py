@@ -244,6 +244,25 @@ def test_stale_sample_alone_is_silent_but_band_unchanged(rig):
 
 # 5. missing rows -----------------------------------------------------------
 
+def test_postgres_text_sample_time_is_served_as_iso(rig):
+    # Electric serves timestamptz as postgres text; the pane prints what it is given.
+    rig["rows"] = {"telemetry_latest_state": _tel(reporting_status="not_reporting",
+                                                 last_sample_at="2026-10-26 04:34:15.187917+00")}
+    _, body = _get(rig)
+    obs = body["sources"]["observed"]
+    assert obs["record"]["last_sample_at"] == "2026-10-26T04:34:15.187917+00:00"
+    assert obs["time"] == "2026-10-26T04:34:15.187917+00:00"
+    assert obs["silent"] is True
+
+
+def test_unparseable_sample_time_passes_through_and_is_silent(rig):
+    rig["rows"] = {"telemetry_latest_state": _tel(last_sample_at="not a time")}
+    _, body = _get(rig)
+    obs = body["sources"]["observed"]
+    assert obs["time"] == "not a time"
+    assert obs["silent"] is True
+
+
 def test_missing_rows_are_null_records_and_null_bands(rig):
     rig["rows"] = {"telemetry_latest_state": _tel()}
     code, body = _get(rig)

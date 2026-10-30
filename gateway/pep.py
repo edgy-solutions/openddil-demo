@@ -993,11 +993,10 @@ def _pg_array(value) -> list[str]:
     return []
 
 
-def _parse_ts(value) -> float | None:
-    """Epoch seconds from an ISO-ish timestamp, or None."""
+def _parse_dt(value) -> datetime.datetime | None:
+    """An aware datetime from an ISO-ish timestamp (postgres text included), or None."""
     if not isinstance(value, str):
         return None
-    import datetime  # noqa: PLC0415
     text = value.strip().replace(" ", "T", 1)
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
@@ -1009,7 +1008,20 @@ def _parse_ts(value) -> float | None:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
-    return dt.timestamp()
+    return dt
+
+
+def _parse_ts(value) -> float | None:
+    """Epoch seconds from an ISO-ish timestamp, or None."""
+    dt = _parse_dt(value)
+    return dt.timestamp() if dt is not None else None
+
+
+def _iso_ts(value):
+    """ISO 8601 for a timestamp Electric serves as postgres text
+    ("2026-10-26 04:34:15.187917+00"); anything unparseable passes through."""
+    dt = _parse_dt(value)
+    return dt.isoformat() if dt is not None else value
 
 
 def _position(kinematics) -> dict | None:
@@ -1880,14 +1892,14 @@ class Pep(BaseHTTPRequestHandler):
             "operational_status": tel.get("operational_status"),
             "health_state": tel.get("health_state"),
             "reporting_status": tel.get("reporting_status"),
-            "last_sample_at": tel.get("last_sample_at"),
+            "last_sample_at": _iso_ts(tel.get("last_sample_at")),
         }
         observed = {
             "record": obs_record,
             "band": _source_band("observed", variant, obs_record),
             "tier": prov.get("edge_id") or tel.get("edge_id"),
             "source": prov.get("producer_id"),
-            "time": tel.get("last_sample_at"),
+            "time": obs_record["last_sample_at"],
             "silent": _source_silent(tel),
         }
 
