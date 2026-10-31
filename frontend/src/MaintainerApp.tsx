@@ -258,12 +258,10 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
     () => inFlightTracks.data.filter((t) => !selectedEdge || !t.edgeId || t.edgeId === selectedEdge),
     [inFlightTracks.data, selectedEdge],
   );
-  // Per-element tree + asset rollups (core_temp_c, uptime_hours) from
-  // openddil-logistics-sim. Lifted to MaintainerApp from DiagnosticCanvas
-  // so the asset rollups can flow into header readouts alongside the
-  // 3D drill-down. liveTelemetry is threaded down to DiagnosticCanvas.
+  // Asset rollups (core_temp_c, uptime_hours) and the condition from the
+  // per-asset row. Element rows are not read here: the 3D drill-down
+  // subscribes to them per open node.
   const assetElementTelemetry = useAssetElementTelemetry(selectedAssetId);
-  const mradLive = assetElementTelemetry.liveTelemetry;
   const mradOperational = assetElementTelemetry.operational;
 
   // Derive isPoweredOff — the asset-level signal that renders the whole
@@ -580,7 +578,6 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               degraded={false}
               coreTemp={coreTemp}
               uptimeHours={uptimeHours}
-              liveTelemetry={mradLive}
               transitTriggerKey={selectedEdge}
               operationalState={tel?.operational_state ?? null}
               isPoweredOff={isPoweredOff}
@@ -684,7 +681,6 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
             // selected asset).
             degraded={false}
             isLoading={telemetry.isLoading}
-            liveTelemetry={mradLive}
             assetId={selectedAssetId}
             isPoweredOff={isPoweredOff}
             elementRollup={telemetryWindows.data[0]?.element_rollup ?? null}

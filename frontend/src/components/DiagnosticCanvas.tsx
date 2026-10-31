@@ -32,7 +32,7 @@
 import { useEffect, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
-import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG, type LiveElementTelemetry } from './SensorArrayView';
+import SensorArrayView, { LTAMDS_CONFIG, MRAD_CONFIG } from './SensorArrayView';
 import HudFrame from './HudFrame';
 import { RenderModeScene } from '../render/RenderModeScene';
 import { RenderModeMenu } from '../render/RenderModeMenu';
@@ -132,11 +132,6 @@ interface DiagnosticCanvasProps {
      *  (operational.uptime_hours) > null. SensorArrayView falls back
      *  to a hardcoded literal when null. */
     uptimeHours?: number | null;
-    /** Per-asset element telemetry from openddil-logistics-sim, lifted
-     *  to MaintainerApp so the asset rollups (core_temp_c, uptime_hours
-     *  in operational) flow to header readouts without a second hook
-     *  subscription. Same shape useAssetElementTelemetry returns. */
-    liveTelemetry?: LiveElementTelemetry;
     /** Phase 6c.3 — when this key changes (the selectedEdge from
      *  MaintainerApp), the schematic Canvas runs a transit animation.
      *  First-mount and same-key re-renders do NOT trigger. */
@@ -167,7 +162,6 @@ export default function DiagnosticCanvas({
     degraded,
     coreTemp,
     uptimeHours,
-    liveTelemetry,
     transitTriggerKey,
     operationalState,
     isPoweredOff = false,
@@ -177,8 +171,8 @@ export default function DiagnosticCanvas({
     // The MRAD telemetry hook USED to live here but was lifted to
     // MaintainerApp so the asset-level rollups (core_temp_c,
     // uptime_hours from the operational JSONB) can flow to header
-    // readouts without a duplicate hook subscription. liveTelemetry
-    // and uptimeHours are now props.
+    // readouts without a duplicate hook subscription. uptimeHours
+    // is now a prop; SensorArrayView subscribes to its own element rows.
     const transitPhase = useTransitPhase(transitTriggerKey ?? null);
 
     // "Report a fault" button + BIT-discrepancy card, overlaid on this view
@@ -275,7 +269,7 @@ export default function DiagnosticCanvas({
     if (platformVariant && MRAD_VARIANTS.has(platformVariant) && isDeclaredSensor(subsystem)) {
         return (
             <>
-                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId ?? platformVariant} liveTelemetry={liveTelemetry} isPoweredOff={isPoweredOff} renderMode={renderMode} />
+                <SensorArrayView degraded={degraded} coreTemp={coreTemp} uptimeHours={uptimeHours ?? null} config={MRAD_CONFIG} assetId={assetId} subscribeElements isPoweredOff={isPoweredOff} renderMode={renderMode} />
                 {renderModeMenu}
                 {faultReportOverlay}
                 {manualQuestionOverlay}

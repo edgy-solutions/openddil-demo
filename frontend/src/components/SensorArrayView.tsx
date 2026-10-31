@@ -11,16 +11,11 @@
 //   * Per-layer naming (breadcrumb label, element id prefix)
 //   * Per-layer element sizing + spacing
 //
-// Health values are seeded per (assetId, depth, element_index) so each
-// discovered asset gets its OWN consistent set of telemetry values across
-// re-renders — no flicker between every frame, and each asset looks
-// independent (matches the "independent telemetry values for each asset
-// discovered" requirement for the MRAD sim). Pass `liveTelemetry` to
-// override the seeded values with real per-element data from the sim
-// service once that path is wired (see openddil-mrad-sim).
+// Element values come from the tier's per-element rows, one shape per open drill level
+// (see ElementLevelSubscription); an element with no row renders as NO DATA.
 //
 // ADR-0017: DEMO_MOCK marker carried on each config's bannerNote.
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -30,6 +25,8 @@ import { SchematicMaterial } from '../render/SchematicMaterial';
 import { RenderModeScene } from '../render/RenderModeScene';
 import { useRenderMode, type RenderMode } from '../render/renderMode';
 import { sourceWords } from '../lib/condition';
+import ElementLevelSubscription from './ElementLevelSubscription';
+import { levelsAfterDrill, mergeLevelRows, type ElementRow } from '../hooks/useElementLevel';
 
 const COLORS = { nominal: 0x22d3ee, warning: 0xfacc15, critical: 0xef4444, bg: 0x020617, housing: 0x0f172a, card: 0x1e293b };
 
@@ -185,6 +182,8 @@ export interface LiveElementTelemetry {
         rxActive?: boolean;
         /** Short code(s), "+"-joined, of what moved this element. */
         movedBy?: string;
+        /** Changes beneath this node in the tier's window; set on parents only. */
+        subtreeChanges?: number;
     };
 }
 
@@ -788,10 +787,12 @@ interface SensorArrayViewProps {
     config?: SensorArrayConfig;
     /** Asset id used as the seed for per-element synthesis. Different
      *  assets get different (consistent) telemetry sets. Default 'unknown'. */
-    assetId?: string;
+    assetId?: string | null;
     /** Live per-element telemetry from openddil-mrad-sim. Optional — when
      *  absent, the view falls back to seeded-RNG synthesis. */
-    liveTelemetry?: LiveElementTelemetry;
+    /** Subscribe to the asset's element rows, one shape per open drill level. Off by
+     *  default: only configs whose element ids the tier publishes use it. */
+    subscribeElements?: boolean;
     /** True when the asset's power_state is OFF or SHUTTING_DOWN. Forces
      *  every element to render as OFF_STATUS regardless of its
      *  synthesized health value. See the OFF_STATUS declaration above
@@ -802,7 +803,7 @@ interface SensorArrayViewProps {
     renderMode?: RenderMode;
 }
 
-export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS_CONFIG, liveTelemetry, isPoweredOff = false, renderMode = 'matte' }: SensorArrayViewProps) {
+export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS_CONFIG, assetId, subscribeElements = false, isPoweredOff = false, renderMode = 'matte' }: SensorArrayViewProps) {
     const [currentDepth, setCurrentDepth] = useState(0);
     const [selectedElement, setSelectedElement] = useState<ElementData | null>(null);
     const [isTransitioning, setIsTransitioning] = useState(false);
@@ -814,8 +815,38 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
 
     const maxDepth = config.layers.length;
 
+    // Open levels beyond the root: one per node on the drill path. Each level's shape stays
+    // open while the user goes back up, and is released when the path diverges or the asset
+    // changes.
+    const [levels, setLevels] = useState<string[]>([]);
+    const [rowsByKey, setRowsByKey] = useState<Record<string, ElementRow[]>>({});
+    const [levelAsset, setLevelAsset] = useState(assetId);
+    if (levelAsset !== assetId) {
+        setLevelAsset(assetId);
+        setLevels([]);
+        setRowsByKey({});
+        setCurrentDepth(0);
+        setParentId(null);
+        setSelectedElement(null);
+    }
+    const leafDepth = maxDepth - 1;
+    const onLevelRows = useCallback((key: string, rows: ElementRow[]) => {
+        setRowsByKey((prev) => (prev[key] === rows ? prev : { ...prev, [key]: rows }));
+    }, []);
+    const openKeys = useMemo(
+        () => (subscribeElements && assetId
+            ? [null, ...levels].map((p) => `${assetId}|${p ?? ''}`)
+            : []),
+        [subscribeElements, assetId, levels],
+    );
+    const liveTelemetry = useMemo<LiveElementTelemetry>(
+        () => mergeLevelRows(rowsByKey, openKeys),
+        [rowsByKey, openKeys],
+    );
+
     const handleDrillDown = (parentData: ElementData) => {
         const next = (currentDepth + 1) % maxDepth;
+        if (next !== 0) setLevels((prev) => levelsAfterDrill(prev, parentData.id));
         setCurrentDepth(next);
         // The clicked element's id IS the new parent path. Its id is
         // already fully path-encoded (e.g. "TR-X-Y/BOARD-0-1") so the
@@ -898,6 +929,10 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
     );
 
     return (
+        <>
+        {subscribeElements && assetId && [null, ...levels].map((p) => (
+            <ElementLevelSubscription key={`${assetId}|${p ?? ''}`} assetId={assetId} prefix={p} leafDepth={leafDepth} onRows={onLevelRows} />
+        ))}
         <HudFrame
             title={config.title}
             subtitle={config.subtitle}
@@ -1019,6 +1054,14 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                                 {selectedElement?.status.label || 'NOMINAL'}
                             </span>
                         </div>
+                        {(liveTelemetry[selectedElement?.id ?? '']?.subtreeChanges ?? 0) > 0 && (
+                            <div data-testid="element-subtree-changes" className="flex justify-between items-center mt-2">
+                                <span className="text-xs">ACTIVITY</span>
+                                <span className="text-[0.7rem] font-bold text-cyan-300">
+                                    {liveTelemetry[selectedElement!.id].subtreeChanges} changes beneath
+                                </span>
+                            </div>
+                        )}
                         {selectedElement?.movedBy && (
                             <div data-testid="element-moved-by" className="flex justify-between items-center mt-2">
                                 <span className="text-xs">MOVED BY</span>
@@ -1031,5 +1074,6 @@ export default function SensorArrayView({ coreTemp, uptimeHours, config = LTAMDS
                 </div>
             </div>
         </HudFrame>
+        </>
     );
 }
