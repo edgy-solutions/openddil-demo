@@ -480,6 +480,203 @@ def handle_belongs_to(principal: str, view: tuple[str, str, str], handle: str) -
     return handle in handles
 
 
+# --- element-state shapes: grammar, holders, grace, metrics -------------------
+# `asset_element_state` holds one row per node of a sample tree, so an
+# unbounded shape on it is the whole tree. The client may therefore only ask
+# for a bounded slice: one asset, optionally under one prefix, to a depth no
+# more than two below the prefix. Anything else is refused, never rewritten.
+ELEMENT_TABLE = "asset_element_state"
+ELEMENT_DELETE_UPSTREAM = os.getenv(
+    "OPENDDIL_PEP_ELEMENT_DELETE_UPSTREAM", "false").strip().lower() == "true"
+VIEWER_SHAPE_MAX = int(os.getenv("OPENDDIL_PEP_VIEWER_SHAPE_MAX", "8"))
+GRACE_S = float(os.getenv("OPENDDIL_PEP_ELEMENT_GRACE_S", "30"))
+HOLDER_IDLE_S = float(os.getenv("OPENDDIL_PEP_HOLDER_IDLE_S", "120"))
+PEP_TIER = os.getenv("OPENDDIL_PEP_TIER", "unknown").strip() or "unknown"
+METRICS_PORT = int(os.getenv("OPENDDIL_PEP_METRICS_PORT", "9464"))
+
+_EL_ASSET = r"[A-Za-z0-9:._-]+"
+_EL_PREFIX = r"[A-Za-z0-9-]+(?:/[A-Za-z0-9-]+)*"
+_EL_PLAIN = re.compile(
+    r"\s*asset_id\s*=\s*'(" + _EL_ASSET + r")'\s+AND\s+depth\s*<=\s*([0-9]+)\s*",
+    re.IGNORECASE)
+_EL_UNDER = re.compile(
+    r"\s*asset_id\s*=\s*'(" + _EL_ASSET + r")'\s+AND\s+element_path\s+LIKE\s+'("
+    + _EL_PREFIX + r")/%'\s+AND\s+depth\s*<=\s*([0-9]+)\s*", re.IGNORECASE)
+
+
+def element_where_refusal(params: dict[str, list[str]]) -> str | None:
+    """None when the element-state request is inside the grammar, else the
+    cause to refuse with. Strict on purpose: it matches whole strings."""
+    cause = "element shape: where outside the prefix-and-depth grammar"
+    for name in params:
+        if name == "log" or name.startswith(("subset__", "params")):
+            return "element shape: narrowing parameters are not accepted on this table"
+    if not (params.get("columns") or [""])[0].strip():
+        return "element shape: columns are required"
+    wheres = params.get("where") or []
+    if len(wheres) != 1:
+        return cause
+    m = _EL_PLAIN.fullmatch(wheres[0])
+    if m:
+        return None if int(m.group(2)) <= 1 else "element shape: depth over the bound"
+    m = _EL_UNDER.fullmatch(wheres[0])
+    if m:
+        bound = m.group(2).count("/") + 2
+        return None if int(m.group(3)) <= bound else "element shape: depth over the bound"
+    return cause
+
+
+# One lock for all of it. ONE PEP REPLICA IS ASSUMED: these counts live in
+# process memory, so scaling the PEP out needs a shared store first.
+_el_lock = threading.Lock()
+_el_views: dict[tuple, dict] = {}   # view -> {holders, grace, handle}
+_el_counts = {"refusals": 0, "deleted": 0, "upstream_error": 0,
+              "skipped_flag_off": 0, "reacquired": 0}
+
+
+def _el_sweep_locked(now: float) -> None:
+    for view, st in list(_el_views.items()):
+        for who, seen in list(st["holders"].items()):
+            if now - seen >= HOLDER_IDLE_S:
+                del st["holders"][who]
+        if not st["holders"] and st["grace"] is None:
+            _el_start_grace_locked(view, st)
+
+
+def _el_start_grace_locked(view: tuple, st: dict) -> None:
+    timer = threading.Timer(GRACE_S, _el_grace_expired, args=(view, ))
+    timer.daemon = True
+    st["grace"] = timer
+    timer.start()
+
+
+def _el_held_by(principal: str) -> int:
+    return sum(1 for st in _el_views.values() if principal in st["holders"])
+
+
+def element_acquire(principal: str, view: tuple) -> str:
+    """'refused' past the per-viewer bound, else 'new' or 'held' (whether this
+    principal already held the view). Check and add are one step under the
+    lock, so concurrent reads cannot both slip past the bound."""
+    now = time.monotonic()
+    with _el_lock:
+        _el_sweep_locked(now)
+        st = _el_views.get(view)
+        held = st is not None and principal in st["holders"]
+        if not held and _el_held_by(principal) >= VIEWER_SHAPE_MAX:
+            _el_counts["refusals"] += 1
+            return "refused"
+        if st is None:
+            st = _el_views[view] = {"holders": {}, "grace": None, "handle": ""}
+        if st["grace"] is not None:
+            st["grace"].cancel()
+            st["grace"] = None
+            _el_counts["reacquired"] += 1
+        st["holders"][principal] = now
+        return "held" if held else "new"
+
+
+def element_release(principal: str, view: tuple) -> None:
+    with _el_lock:
+        _el_sweep_locked(time.monotonic())
+        st = _el_views.get(view)
+        if st is None or principal not in st["holders"]:
+            return
+        del st["holders"][principal]
+        if not st["holders"] and st["grace"] is None:
+            _el_start_grace_locked(view, st)
+
+
+def element_note_handle(view: tuple, handle: str) -> None:
+    if not handle:
+        return
+    with _el_lock:
+        st = _el_views.get(view)
+        if st is not None:
+            st["handle"] = handle
+
+
+def _el_grace_expired(view: tuple) -> None:
+    with _el_lock:
+        st = _el_views.get(view)
+        if st is None or st["holders"] or st["grace"] is None:
+            return
+        del _el_views[view]
+        handle = st["handle"]
+    if not ELEMENT_DELETE_UPSTREAM:
+        outcome = "skipped_flag_off"
+    else:
+        outcome = "upstream_error"
+        if handle:
+            qs = urllib.parse.urlencode([("table", view[0]), ("handle", handle)])
+            req = urllib.request.Request(f"{ELECTRIC}/v1/shape?{qs}", method="DELETE")
+            try:
+                with urllib.request.urlopen(req, timeout=10):
+                    outcome = "deleted"
+            except Exception as exc:  # noqa: BLE001
+                log.error("element view delete failed: %s", exc)
+    with _el_lock:
+        _el_counts[outcome] += 1
+    log.info("element view released outcome=%s", outcome)
+
+
+def element_metrics_text() -> str:
+    with _el_lock:
+        _el_sweep_locked(time.monotonic())
+        counts = dict(_el_counts)
+        views = len(_el_views)
+        per: dict[str, int] = {}
+        for st in _el_views.values():
+            for who in st["holders"]:
+                per[who] = per.get(who, 0) + 1
+    t = f'tier="{PEP_TIER}"'
+    out = [
+        "# TYPE openddil_pep_viewer_shape_refusals_total counter",
+        f"openddil_pep_viewer_shape_refusals_total{{{t}}} {counts['refusals']}",
+        "# TYPE openddil_pep_element_view_deletes_total counter",
+    ]
+    for o in ("deleted", "upstream_error", "skipped_flag_off", "reacquired"):
+        out.append(f'openddil_pep_element_view_deletes_total{{{t},outcome="{o}"}} {counts[o]}')
+    out += [
+        "# TYPE openddil_pep_element_views gauge",
+        f"openddil_pep_element_views{{{t}}} {views}",
+        "# TYPE openddil_pep_viewer_shapes_max gauge",
+        f"openddil_pep_viewer_shapes_max{{{t}}} {max(per.values(), default=0)}",
+    ]
+    return "\n".join(out) + "\n"
+
+
+class MetricsHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path.split("?", 1)[0] != "/metrics":
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = element_metrics_text().encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def _el_sweeper() -> None:
+    while True:
+        time.sleep(max(0.5, min(HOLDER_IDLE_S / 2, 10.0)))
+        with _el_lock:
+            _el_sweep_locked(time.monotonic())
+
+
+def start_metrics_server(port: int = METRICS_PORT) -> ThreadingHTTPServer:
+    srv = ThreadingHTTPServer(("0.0.0.0", port), MetricsHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 # --- the PDP call -----------------------------------------------------------
 class AuthzUnavailable(Exception):
     """Topaz could not be reached or did not answer usably.
@@ -3153,6 +3350,53 @@ class Pep(BaseHTTPRequestHandler):
                     upstream_body = json.dumps(doc).encode()
         self._send(upstream_status, upstream_body, [("Content-Type", "application/json")])
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        """Drop the caller's hold on one element-state view. Same session and
+        policy composition as the GET, so it names the same view. Idempotent."""
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/v1/shape":
+            self._deny("unknown path", subject="", resource=parsed.path, status=404)
+            return
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        table = (params.get("table") or [""])[0]
+        if table != ELEMENT_TABLE:
+            self._deny("shape delete is only served for element state", subject="",
+                       resource=table, status=405)
+            return
+        if table_class(table) != "nation":
+            self._deny("unlabelable: table carries no releasability labels",
+                       subject="", resource=table, status=403,
+                       marker="GATEWAY REFUSED (PRE-PDP)")
+            return
+        try:
+            subject, principal, _session = self._resolve_principal()
+        except oidc.AuthError as exc:
+            self._deny(str(exc), subject="", resource=table, status=401)
+            return
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject, resource=table,
+                       status=503)
+            return
+        if not decision["allow"]:
+            self._deny("subject not in the entitlements corpus"
+                       if not decision["subject_known"]
+                       else "subject holds no nation entitlements",
+                       subject=subject, resource=table)
+            return
+        refusal = element_where_refusal(params)
+        if refusal:
+            self._deny(refusal, subject=subject, resource=table, status=400,
+                       marker="GATEWAY REFUSED (MALFORMED PARAMETER)")
+            return
+        where = compose((params.get("where") or [None])[0],
+                        policy_predicate(decision["allowed_nations"]))
+        element_release(principal, (table, where or "", (params.get("columns") or [""])[0]))
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/cm/discrepancy":
@@ -3727,6 +3971,13 @@ class Pep(BaseHTTPRequestHandler):
             self._deny(cause, subject=subject, resource=table)
             return
 
+        if table == ELEMENT_TABLE:
+            refusal = element_where_refusal(params)
+            if refusal:
+                self._deny(refusal, subject=subject, resource=table, status=400,
+                           marker="GATEWAY REFUSED (MALFORMED PARAMETER)")
+                return
+
         # THE FILTER THIS TABLE'S CLASS CALLS FOR. One place, so a class
         # cannot acquire a second meaning somewhere else in the handler.
         cls = table_class(table)
@@ -3800,6 +4051,13 @@ class Pep(BaseHTTPRequestHandler):
         # WHICH semaphore depends on `live` -- bound once, to a local, so the
         # acquire and every release below (there is more than one) agree on
         # the same object for this request. See MAX_INFLIGHT_LIVE.
+        acquired = None
+        if table == ELEMENT_TABLE:
+            acquired = element_acquire(principal, view)
+            if acquired == "refused":
+                self._deny(f"element shape: per-viewer bound {VIEWER_SHAPE_MAX} reached",
+                           subject=subject, resource=table)
+                return
         slot = _shape_slot(params)
         try:
             slot.acquire()
@@ -3853,6 +4111,8 @@ class Pep(BaseHTTPRequestHandler):
             # events authorization never caused.
             log.error("electric upstream error user=%s resource=%s: %s",
                       subject, table, exc)
+            if acquired == "new":
+                element_release(principal, view)
             record_decision(decision_id=new_decision_id(), outcome="allow",
                             subject=subject, resource=table,
                             policy_version=decision["policy_version"],
@@ -3866,6 +4126,8 @@ class Pep(BaseHTTPRequestHandler):
 
         if refetch is None or new_handle:
             bind_handle(principal, view, new_handle)
+        if acquired is not None:
+            element_note_handle(view, new_handle)
         record_decision(decision_id=new_decision_id(), outcome="allow",
                         subject=subject, resource=table,
                         policy_version=decision["policy_version"],
@@ -3988,6 +4250,9 @@ def main() -> None:
                     "NOT authenticated. This is correct only where the PEP "
                     "is unreachable except from inside the cluster.",
                     SUBJECT_HEADER)
+    threading.Thread(target=_el_sweeper, daemon=True).start()
+    start_metrics_server()
+    log.info("  metrics:   :%s/metrics (tier %s)", METRICS_PORT, PEP_TIER)
     ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Pep).serve_forever()
 
 
