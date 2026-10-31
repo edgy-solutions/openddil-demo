@@ -225,6 +225,33 @@ def test_value_then_transition_on_other_keys_keeps_order(pep_module):
     assert [m["key"] for m in msgs_of(body)] == ["e1", "e2"]
 
 
+def test_delete_flushes_at_once_on_its_operation(pep_module):
+    _pep, base, _m = pep_module
+    # replica=default: a delete carries only the primary key, so only its
+    # operation makes it a transition
+    script([(0.0, upd("e1", temp=1)),
+            (0.05, {"key": "e2", "value": {"asset_id": "a1", "element_path": "e2"},
+                    "headers": {"operation": "delete"}})])
+    _s, _h, body, took = get(base)
+    assert took < 0.2, took
+    ms = msgs_of(body)
+    assert [m["key"] for m in ms] == ["e1", "e2"]
+    assert ms[1]["headers"]["operation"] == "delete"
+
+
+def test_insert_without_transition_columns_flushes_at_once(pep_module):
+    _pep, base, _m = pep_module
+    script([(0.0, upd("e1", temp=1)),
+            (0.05, {"key": "e2",
+                    "value": {"asset_id": "a1", "element_path": "e2", "temp_c": 3},
+                    "headers": {"operation": "insert"}})])
+    _s, _h, body, took = get(base)
+    assert took < 0.2, took
+    ms = msgs_of(body)
+    assert [m["key"] for m in ms] == ["e1", "e2"]
+    assert ms[1]["headers"]["operation"] == "insert"
+
+
 # --- merge -------------------------------------------------------------------
 def test_value_updates_fold_to_one_message(pep_module):
     _pep, base, murl = pep_module
