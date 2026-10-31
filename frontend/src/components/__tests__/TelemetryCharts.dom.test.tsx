@@ -57,7 +57,8 @@ describe('TelemetryCharts empty state', () => {
 describe('TelemetryCharts condition line', () => {
   afterEach(cleanup);
 
-  const live = { 'E-1': { health: 0.1, temp: 40, load: 50 } };
+  // The card holds no element shape; the charts come from the tier's rollup.
+  const rollup = { element_count: 8, critical_count: 1, degraded_count: 2, avg_temp_c: 40, avg_load_pct: 50, observed_at: '2026-01-01T10:20:30Z' };
 
   it('states the condition and keeps the charts for SENSOR_FAILED', () => {
     render(
@@ -65,7 +66,7 @@ describe('TelemetryCharts condition line', () => {
         telemetry={null}
         platformVariant={null}
         degraded={false}
-        liveTelemetry={live}
+        elementRollup={rollup}
         condition={{
           level: 'CONDITION_LEVEL_SENSOR_FAILED',
           moved_by: ['CONDITION_SOURCE_EMISSION'],
@@ -104,7 +105,7 @@ describe('TelemetryCharts condition line', () => {
         telemetry={null}
         platformVariant={null}
         degraded={false}
-        liveTelemetry={live}
+        elementRollup={rollup}
         isPoweredOff={false}
         condition={{
           level: 'CONDITION_LEVEL_DESTROYED',
@@ -124,7 +125,7 @@ describe('TelemetryCharts condition line', () => {
         telemetry={null}
         platformVariant={null}
         degraded={false}
-        liveTelemetry={live}
+        elementRollup={rollup}
         isPoweredOff
       />,
     );
@@ -133,7 +134,7 @@ describe('TelemetryCharts condition line', () => {
   });
 
   it('renders no condition line without a condition', () => {
-    render(<TelemetryCharts telemetry={null} platformVariant={null} degraded={false} liveTelemetry={live} />);
+    render(<TelemetryCharts telemetry={null} platformVariant={null} degraded={false} elementRollup={rollup} />);
     expect(screen.queryByTestId('telemetry-condition')).toBeNull();
   });
 });

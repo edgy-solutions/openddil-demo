@@ -9,25 +9,18 @@
 //      Charts read engineered fields per platformChartConfig (engine
 //      thermal, gearbox vibration, array thermal matrix, etc.).
 //
-//   2. SIM-DERIVED AGGREGATES: when sustainment is absent but the
-//      logistics-sim is emitting per-element snapshots for this asset,
-//      we aggregate those into a 4-stat sim-derived panel
-//      (CRITICAL ELEMENTS / DEGRADED ELEMENTS / AVG ELEMENT TEMP /
-//      AVG ELEMENT LOAD). Clearly badged as SYNTHESIZED so an operator
-//      doesn't confuse it with the real-sustainment path.
-//
-//   3. EDGE ROLLUP: per-element snapshots stay at the owning edge; the
+//   2. EDGE ROLLUP: per-element snapshots stay at the owning edge; the
 //      edge derives the same four aggregates and the region receives them
 //      as asset_telemetry_windows.element_rollup. Used only where the
 //      per-element data is not present locally. Also badged SYNTHESIZED,
 //      with a note naming the edge the rollup came from.
 //
-//   4. EMPTY STATE: no sustainment, no sim element data, no rollup →
+//   3. EMPTY STATE: no sustainment, no rollup →
 //      existing "telemetry not yet wired" copy.
 //
 // The instant the customer/DIS feed starts emitting `sustainment.*`,
 // the card switches back to the real-sustainment path automatically —
-// the sim-derived panel is fallback only.
+// the rollup panel is fallback only. This card holds no element shape.
 //
 // Schema-drift reality: the OSS DIS feed carries kinematics only — no
 // sustainment. The customer-overlay proprietary feed for MRAD assets
@@ -39,7 +32,6 @@ import { Chart, registerables } from 'chart.js';
 import type { TelemetryLatest, Quantity } from '../hooks';
 import { platformChartConfig, type ChartField } from '../config/platformChartConfig';
 import { SyncingNotice } from './SyncingNotice';
-import type { LiveElementTelemetry } from './SensorArrayView';
 import type { ElementRollup } from '../hooks/useTelemetryWindows';
 import {
   OFF_LEVELS,
@@ -67,11 +59,6 @@ const commonOptions = {
 };
 
 const HISTORY = 30;
-
-// Severity thresholds — match SensorArrayView's getStatusFromHealth +
-// the sim's element_gen.py. CRITICAL > 0.97, DEGRADED > 0.90 ≤ 0.97.
-const HEALTH_CRITICAL = 0.97;
-const HEALTH_DEGRADED = 0.90;
 
 /** Navigate a dot-path into a nested object; undefined if any hop is missing. */
 function getByPath(obj: any, path: string): any {
@@ -106,7 +93,7 @@ interface ResolvedField {
   hasValue: boolean;
 }
 
-type FieldSource = 'sustainment' | 'sim' | 'rollup' | 'empty' | 'off';
+type FieldSource = 'sustainment' | 'rollup' | 'empty' | 'off';
 
 // ---------------------------------------------------------------------------
 // Sim-derived aggregation -- collapses per-element telemetry into 4
@@ -129,7 +116,6 @@ interface SimDerivedField {
   label: string;
   unit: string;
   anomalyThreshold?: number;
-  readValue: (live: LiveElementTelemetry) => number;
   /** Same stat read from the edge's element rollup (missing key = 0). */
   readRollup: (rollup: ElementRollup) => number;
 }
@@ -140,13 +126,6 @@ const SIM_DERIVED_FIELDS: SimDerivedField[] = [
     label: 'CRITICAL ELEMENTS',
     unit: '',
     anomalyThreshold: 1, // any red element fires anomaly
-    readValue: (live) => {
-      let n = 0;
-      for (const e of Object.values(live)) {
-        if (e.health > HEALTH_CRITICAL) n++;
-      }
-      return n;
-    },
     readRollup: (r) => r.critical_count ?? 0,
   },
   {
@@ -154,55 +133,21 @@ const SIM_DERIVED_FIELDS: SimDerivedField[] = [
     label: 'DEGRADED ELEMENTS',
     unit: '',
     anomalyThreshold: 50,
-    readValue: (live) => {
-      let n = 0;
-      for (const e of Object.values(live)) {
-        if (e.health > HEALTH_DEGRADED && e.health <= HEALTH_CRITICAL) n++;
-      }
-      return n;
-    },
     readRollup: (r) => r.degraded_count ?? 0,
   },
   {
     id: 'sim.avg_element_temp',
     label: 'AVG ELEMENT TEMP',
     unit: '°C',
-    readValue: (live) => {
-      let sum = 0;
-      let count = 0;
-      for (const e of Object.values(live)) {
-        if (typeof e.temp === 'number') {
-          sum += e.temp;
-          count++;
-        }
-      }
-      return count > 0 ? sum / count : 0;
-    },
     readRollup: (r) => r.avg_temp_c ?? 0,
   },
   {
     id: 'sim.avg_element_load',
     label: 'AVG ELEMENT LOAD',
     unit: '%',
-    readValue: (live) => {
-      let sum = 0;
-      let count = 0;
-      for (const e of Object.values(live)) {
-        if (typeof e.load === 'number') {
-          sum += e.load;
-          count++;
-        }
-      }
-      return count > 0 ? sum / count : 0;
-    },
     readRollup: (r) => r.avg_load_pct ?? 0,
   },
 ];
-
-/** Has the sim hook delivered any per-element data for this asset yet? */
-function hasSimElements(live: LiveElementTelemetry | undefined): boolean {
-  return !!live && Object.keys(live).length > 0;
-}
 
 /** Does the edge rollup describe at least one element? A missing or
  *  zero element_count means the edge had nothing to roll up. */
@@ -211,13 +156,11 @@ function hasRollup(rollup: ElementRollup | null | undefined): rollup is ElementR
 }
 
 /** Resolve the active field list + source for a given (sustainment,
- *  liveTelemetry, elementRollup) triple. Priority: sustainment > sim >
- *  rollup > empty. Exported for unit tests only. */
+ *  elementRollup) pair. Priority: sustainment > rollup > empty. Exported for unit tests only. */
 // eslint-disable-next-line react-refresh/only-export-components -- pure helper exported for tests; costs only HMR granularity
 export function resolveFields(
   config: ReturnType<typeof platformChartConfig>,
   sustainment: any,
-  liveTelemetry: LiveElementTelemetry | undefined,
   elementRollup?: ElementRollup | null,
 ): { fields: ResolvedField[]; source: FieldSource } {
   // Sustainment counts only when a configured field resolves to a
@@ -241,20 +184,6 @@ export function resolveFields(
         };
       }),
       source: 'sustainment',
-    };
-  }
-
-  if (hasSimElements(liveTelemetry)) {
-    return {
-      fields: SIM_DERIVED_FIELDS.map((f) => ({
-        id: f.id,
-        label: f.label,
-        unit: f.unit,
-        anomalyThreshold: f.anomalyThreshold,
-        value: f.readValue(liveTelemetry!),
-        hasValue: true,
-      })),
-      source: 'sim',
     };
   }
 
@@ -288,11 +217,6 @@ interface TelemetryChartsProps {
   degraded: boolean;
   /** Telemetry shape's first sync not yet complete (cold-start). */
   isLoading?: boolean;
-  /** Per-element snapshot from useAssetElementTelemetry. When present
-   *  AND sustainment is absent, the card switches into sim-derived
-   *  mode (4-stat aggregate panel + SYNTHESIZED badge). Falls back
-   *  to empty state when both are missing. */
-  liveTelemetry?: LiveElementTelemetry;
   /** Selected asset_id. Threaded purely so the rolling chart history
    *  resets on asset change -- without this, switching from a per-site
    *  sensor to its chassis (or to a different asset class entirely)
@@ -330,7 +254,6 @@ export default function TelemetryCharts({
   platformVariant,
   degraded,
   isLoading = false,
-  liveTelemetry,
   assetId,
   isPoweredOff = false,
   elementRollup,
@@ -339,7 +262,7 @@ export default function TelemetryCharts({
 }: TelemetryChartsProps) {
   const config = platformChartConfig(platformVariant);
   const sustainment = telemetry?.sustainment ?? null;
-  const resolved = resolveFields(config, sustainment, liveTelemetry, elementRollup);
+  const resolved = resolveFields(config, sustainment, elementRollup);
   // Power-off short-circuit: don't render synthesized charts when the
   // asset is off. The sim already zeroes elements + tx/rx, but the
   // aggregated stats still trend visibly (from prior history) which
@@ -438,7 +361,7 @@ export default function TelemetryCharts({
         <span className="flex items-center">
           <Activity className="w-4 h-4 mr-2" /> Prognostics &amp; Telemetry
         </span>
-        {(source === 'sim' || source === 'rollup') && (
+        {source === 'rollup' && (
           // SYNTHESIZED badge -- distinguishes sim-derived aggregates
           // from real sustainment. Same color family as the existing
           // DEMO MOCK marker so the operator recognizes the provenance

@@ -38,6 +38,8 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
   const tel = telemetry.data[0] ?? null;
   const variant = tel?.platform_variant ?? null;
   const rollupRow = telemetryWindows.data[0] ?? null;
+  // Element detail is not synced above the owning edge: show the rollup with its age.
+  const rollupObservedAt = rollupRow?.element_rollup?.observed_at ?? elementTelemetry.observedAt;
   // Same wire power signal the edge asset view uses: a powered-off asset
   // must not stream its last rollup as if live.
   const wirePower = tel?.operational_state?.power_state;
@@ -71,12 +73,14 @@ export default function AssetDeepDive({ assetId, onClose }: AssetDeepDiveProps) 
         launches={effectorLaunches.data}
         inFlightCount={inFlightTracks.data.filter((t) => t.launcherAssetId === assetId).length}
       />
+      <p data-testid="element-detail-note" className="text-slate-500 text-xs font-mono shrink-0">
+        {rollupObservedAt ? `Rollup as of ${rollupObservedAt}. ` : ''}Element detail is held at the owning edge.
+      </p>
       <TelemetryCharts
         telemetry={tel}
         platformVariant={variant}
         degraded={false}
         isLoading={telemetry.isLoading}
-        liveTelemetry={elementTelemetry.liveTelemetry}
         assetId={assetId}
         isPoweredOff={isPoweredOff}
         elementRollup={rollupRow?.element_rollup ?? null}
