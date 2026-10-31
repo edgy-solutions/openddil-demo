@@ -285,6 +285,19 @@ expected_empty:
     declared_by: cnogradi
     declared_on: 2026-09-05
 
+  asset_element_state:
+    stores: [root, intermediate]
+    reason: >-
+      Element rows never cross above the owning (leaf) tier. Transitions
+      leave as events and values as rollups, so the rows themselves have no
+      path upward. The root's and the regions' copies of the table exist only
+      because there is one schema for every tier, and must stay empty; this
+      entry is scoped to those stores so the leaf tiers, which do write it,
+      keep being checked.
+    producer: openddil-projector
+    declared_by: cnogradi
+    declared_on: 2026-10-31
+
   asset_declaration:
     reason: >-
       A row exists only once a person has declared an observed entity, or
