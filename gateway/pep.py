@@ -603,6 +603,8 @@ def _el_grace_expired(view: tuple) -> None:
             return
         del _el_views[view]
         handle = st["handle"]
+        for k in [k for k in _screen_last if k[1] == view]:
+            del _screen_last[k]
     if not ELEMENT_DELETE_UPSTREAM:
         outcome = "skipped_flag_off"
     else:
@@ -624,6 +626,7 @@ def element_metrics_text() -> str:
     with _el_lock:
         _el_sweep_locked(time.monotonic())
         counts = dict(_el_counts)
+        screen = dict(_screen_counts)
         views = len(_el_views)
         per: dict[str, int] = {}
         for st in _el_views.values():
@@ -642,6 +645,14 @@ def element_metrics_text() -> str:
         f"openddil_pep_element_views{{{t}}} {views}",
         "# TYPE openddil_pep_viewer_shapes_max gauge",
         f"openddil_pep_viewer_shapes_max{{{t}}} {max(per.values(), default=0)}",
+        "# TYPE openddil_delivery_messages_total counter",
+    ]
+    for c in ("transition", "value"):
+        out.append('openddil_delivery_messages_total{%s,destination_kind="screen",'
+                   'destination="pep",class="%s"} %d' % (t, c, screen[c]))
+    out += [
+        "# TYPE openddil_delivery_merged_total counter",
+        f"openddil_delivery_merged_total{{{t}}} {screen['merged']}",
     ]
     return "\n".join(out) + "\n"
 
@@ -675,6 +686,143 @@ def start_metrics_server(port: int = METRICS_PORT) -> ThreadingHTTPServer:
     srv = ThreadingHTTPServer(("0.0.0.0", port), MetricsHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
+
+
+# --- the screen window on live element reads -----------------------------------
+# A live read on an element view is held here and answered once: value updates
+# for one element are folded into one message and released when the window has
+# run, but a state transition (an insert, a delete, or an update touching one
+# of the transition columns) and any control other than up-to-date release the
+# held messages at once. No window delays, merges or drops a transition.
+# Upstream is always asked for replica=default, so an update carries only the
+# changed columns plus the key, and a transition shows in the keys of its value.
+SCREEN_WINDOW_S = float(os.getenv("OPENDDIL_PEP_SCREEN_WINDOW_S", "1.0"))
+SCREEN_POLL_TIMEOUT_S = 30.0
+SCREEN_MIN_POLL_S = 0.05
+TRANSITION_COLUMNS = frozenset(("tx_active", "rx_active", "moved_by", "health_band"))
+_screen_counts = {"transition": 0, "value": 0, "merged": 0}
+_screen_last: dict[tuple, float] = {}   # (principal, view) -> last delivery, monotonic
+
+
+def _screen_control(msg) -> str | None:
+    hdr = msg.get("headers") if isinstance(msg, dict) else None
+    ctl = hdr.get("control") if isinstance(hdr, dict) else None
+    return ctl if isinstance(ctl, str) else None
+
+
+def _screen_is_transition(msg: dict) -> bool:
+    hdr = msg.get("headers") if isinstance(msg.get("headers"), dict) else {}
+    op = hdr.get("operation")
+    if op != "update":
+        return True   # insert, delete, and anything unrecognised: never held
+    value = msg.get("value")
+    return not isinstance(value, dict) or any(c in value for c in TRANSITION_COLUMNS)
+
+
+def _screen_fold(held: list, latest: dict, msg: dict) -> bool:
+    """Append `msg` to `held`, or fold a value update into the latest earlier
+    message for its key. True when it was folded."""
+    key = msg.get("key")
+    prior = latest.get(key)
+    if prior is not None and not _screen_is_transition(msg):
+        prior["value"].update(msg["value"])
+        return True
+    held.append(msg)
+    op = (msg.get("headers") or {}).get("operation")
+    if op not in ("insert", "update") or not isinstance(msg.get("value"), dict):
+        latest.pop(key, None)
+    else:
+        latest[key] = msg
+    return False
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    return isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError)
+
+
+def _screen_collect(path: str, base_params: list, principal: str, view: tuple):
+    """Poll upstream from the client's offset and gather one answer.
+
+    Returns ("flush", electric_headers, body, handle) or ("refetch", herr, body).
+    Any other upstream failure is raised, and held data is dropped with it: the
+    client re-reads from its own offset, so nothing is lost."""
+    with _el_lock:
+        last = _screen_last.get((principal, view))
+    now = time.monotonic()
+    deadline = (last if last is not None else now) + SCREEN_WINDOW_S
+    fixed = [(k, v) for k, v in base_params if k not in ("offset", "cursor", "handle")]
+    cur = {k: v for k, v in base_params if k in ("offset", "cursor", "handle")}
+    held: list = []
+    latest: dict = {}
+    merged = 0
+    hdrs: list = []
+    up_to_date = False
+    while True:
+        timeout = (SCREEN_POLL_TIMEOUT_S if not held
+                   else max(SCREEN_MIN_POLL_S, deadline - time.monotonic()))
+        url = f"{ELECTRIC}{path}?" + urllib.parse.urlencode(fixed + list(cur.items()))
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                raw = resp.read()
+                got = [(k, v) for k, v in resp.headers.items()
+                       if k.lower().startswith("electric-")]
+                handle = (resp.headers.get("electric-handle")
+                          or resp.headers.get("electric-shape-id") or "")
+        except urllib.error.HTTPError as herr:
+            if herr.code != 409:
+                raise
+            try:
+                body = herr.read(MAX_REFETCH_BODY + 1)[:MAX_REFETCH_BODY]
+            finally:
+                herr.close()
+            return ("refetch", herr, body)
+        except Exception as exc:  # noqa: BLE001
+            if held and _is_timeout(exc):
+                break
+            raise
+        batch = json.loads(raw)
+        if not isinstance(batch, list):
+            raise ValueError("electric answered a shape read with a non-array body")
+        hdrs = got
+        if handle:
+            cur["handle"] = handle
+        for name in ("offset", "cursor"):
+            v = resp.headers.get(f"electric-{name}")
+            if v:
+                cur[name] = v
+        up_to_date = False
+        flush_now = False
+        for msg in batch:
+            ctl = _screen_control(msg)
+            if ctl == "up-to-date":
+                up_to_date = True
+            elif ctl is not None or not isinstance(msg, dict):
+                held.append(msg)
+                flush_now = True
+            else:
+                if _screen_is_transition(msg):
+                    flush_now = True
+                if _screen_fold(held, latest, msg):
+                    merged += 1
+        if flush_now or not held or time.monotonic() >= deadline:
+            break
+    body_msgs = list(held)
+    if up_to_date:
+        body_msgs.append({"headers": {"control": "up-to-date"}})
+    counts = {"transition": 0, "value": 0}
+    for msg in held:
+        if isinstance(msg, dict) and _screen_control(msg) is None:
+            counts["transition" if _screen_is_transition(msg) else "value"] += 1
+    with _el_lock:
+        for c, n in counts.items():
+            _screen_counts[c] += n
+        _screen_counts["merged"] += merged
+        if held:
+            _screen_last[(principal, view)] = time.monotonic()
+    body = json.dumps(body_msgs, separators=(",", ":")).encode()
+    return ("flush", hdrs, body, cur.get("handle", ""))
 
 
 # --- the PDP call -----------------------------------------------------------
@@ -4041,6 +4189,11 @@ class Pep(BaseHTTPRequestHandler):
             upstream_params.append(("subset__where", policy_clause))
         if ELECTRIC_COMPACTION:
             upstream_params.append(("experimental_compaction", "true"))
+        screen = False
+        if table == ELEMENT_TABLE:
+            upstream_params = [(k, v) for k, v in upstream_params if k != "replica"]
+            upstream_params.append(("replica", "default"))
+            screen = (params.get("live") or [""])[0].strip().lower() == "true"
         url = f"{ELECTRIC}{parsed.path}?" + urllib.parse.urlencode(upstream_params)
 
         # The body is STREAMED, not buffered: `resp` stays open across the
@@ -4062,34 +4215,45 @@ class Pep(BaseHTTPRequestHandler):
         try:
             slot.acquire()
             refetch = None
-            try:
-                resp = urllib.request.urlopen(url, timeout=30)
-            except urllib.error.HTTPError as herr:
-                # A 409 is Electric's PROTOCOL answer, not a failure: the
-                # reset restarted Electric, the handle the page holds is
-                # dead, and the client recovers only if it SEES the 409 and
-                # the new handle. A 502 here makes it retry the dead handle
-                # forever (reload is the only cure). The body is small;
-                # read it under the slot, and release the slot exactly
-                # once in the finally -- the generic path below releases
-                # in its own except, so the two never overlap.
-                if herr.code != 409:
+            screen_out = None
+            if screen:
+                try:
+                    got = _screen_collect(parsed.path, upstream_params, principal, view)
+                finally:
+                    slot.release()
+                if got[0] == "refetch":
+                    refetch, refetch_body = got[1], got[2]
+                else:
+                    screen_out = got
+            if not screen:
+                try:
+                    resp = urllib.request.urlopen(url, timeout=30)
+                except urllib.error.HTTPError as herr:
+                    # A 409 is Electric's PROTOCOL answer, not a failure: the
+                    # reset restarted Electric, the handle the page holds is
+                    # dead, and the client recovers only if it SEES the 409 and
+                    # the new handle. A 502 here makes it retry the dead handle
+                    # forever (reload is the only cure). The body is small;
+                    # read it under the slot, and release the slot exactly
+                    # once in the finally -- the generic path below releases
+                    # in its own except, so the two never overlap.
+                    if herr.code != 409:
+                        slot.release()
+                        raise
+                    try:
+                        refetch_body = herr.read(MAX_REFETCH_BODY + 1)
+                        if len(refetch_body) > MAX_REFETCH_BODY:
+                            refetch_body = refetch_body[:MAX_REFETCH_BODY]
+                            log.warning("electric must-refetch body over %d bytes "
+                                        "resource=%s; sending what was read",
+                                        MAX_REFETCH_BODY, table)
+                        refetch = herr
+                    finally:
+                        herr.close()
+                        slot.release()
+                except Exception:
                     slot.release()
                     raise
-                try:
-                    refetch_body = herr.read(MAX_REFETCH_BODY + 1)
-                    if len(refetch_body) > MAX_REFETCH_BODY:
-                        refetch_body = refetch_body[:MAX_REFETCH_BODY]
-                        log.warning("electric must-refetch body over %d bytes "
-                                    "resource=%s; sending what was read",
-                                    MAX_REFETCH_BODY, table)
-                    refetch = herr
-                finally:
-                    herr.close()
-                    slot.release()
-            except Exception:
-                slot.release()
-                raise
             if refetch is not None:
                 resp = None
                 new_handle = refetch.headers.get("electric-handle") or \
@@ -4098,6 +4262,10 @@ class Pep(BaseHTTPRequestHandler):
                            if k.lower().startswith("electric-")]
                 upstream_len = None
                 status = 409
+            elif screen_out is not None:
+                new_handle = screen_out[3]
+                headers = screen_out[1]
+                status = 200
             else:
                 new_handle = resp.headers.get("electric-handle") or \
                     resp.headers.get("electric-shape-id") or ""
@@ -4146,6 +4314,19 @@ class Pep(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(refetch_body)))
             self.end_headers()
             self.wfile.write(refetch_body)
+            return
+
+        if screen_out is not None:
+            self.send_response(200)
+            for k, v in headers:
+                self.send_header(k, v)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(screen_out[2])))
+            self.end_headers()
+            try:
+                self.wfile.write(screen_out[2])
+            except (BrokenPipeError, ConnectionResetError):
+                log.info("client disconnected mid-shape resource=%s", table)
             return
 
         self.send_response(status)
