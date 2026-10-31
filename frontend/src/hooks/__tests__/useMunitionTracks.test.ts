@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // mapMunitionTrack -- numbers, nulls and the unlabelled case.
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mapMunitionTrack, parseTrailEcef } from '../useMunitionTracks';
 
 const FULL = {
@@ -92,62 +92,76 @@ describe('parseTrailEcef', () => {
   });
 });
 
-describe('useMunitionTrackFeed hold', () => {
-  it('holds previous rows while a new shape loads, then returns empty once synced', async () => {
-    const row = mapMunitionTrack({ ...FULL, munition_asset_id: 'dis:9:9:1' });
-    let next: { data: unknown[]; isLoading: boolean; isError: boolean } = { data: [row], isLoading: false, isError: false };
-    vi.resetModules();
-    vi.doMock('../electric', () => ({
-      num: (v: unknown, f = 0) => (Number.isFinite(Number(v)) ? Number(v) : f),
-      parseTextArray: () => null,
-      sqlLiteral: (v: string) => "'" + v + "'",
-      useTableShape: () => next,
-    }));
-    const { renderHook } = await import('@testing-library/react');
-    const { useMunitionTrackFeed } = await import('../useMunitionTracks');
-    const h = renderHook(() => useMunitionTrackFeed());
-    expect(h.result.current.data).toHaveLength(1);
-    next = { data: [], isLoading: true, isError: false };
-    h.rerender();
-    expect(h.result.current.data).toHaveLength(1);
-    next = { data: [], isLoading: false, isError: false };
-    h.rerender();
-    expect(h.result.current.data).toHaveLength(0);
-    vi.doUnmock('../electric');
-  }, 30000);
-  it('returns empty on an initial load with no previous rows', async () => {
-    vi.resetModules();
-    vi.doMock('../electric', () => ({
-      num: (v: unknown, f = 0) => (Number.isFinite(Number(v)) ? Number(v) : f),
-      parseTextArray: () => null,
-      sqlLiteral: (v: string) => "'" + v + "'",
-      useTableShape: () => ({ data: [], isLoading: true, isError: false }),
-    }));
-    const { renderHook } = await import('@testing-library/react');
-    const { useMunitionTrackFeed } = await import('../useMunitionTracks');
-    expect(renderHook(() => useMunitionTrackFeed()).result.current.data).toEqual([]);
-    vi.doUnmock('../electric');
-  }, 30000);
-});
-
 describe('useMunitionTrackFeed', () => {
-  it('asks for in-flight rows plus those ended since a fixed timestamptz literal', async () => {
-    const calls: Array<{ where?: string }> = [];
+  const T0 = Date.parse('2026-10-31T13:45:00.000Z');
+  type Res = { data: unknown[]; isLoading: boolean; isError: boolean };
+  let wheres: string[];
+  let rows: Res;
+  async function load() {
     vi.resetModules();
     vi.doMock('../electric', () => ({
       num: (v: unknown, f = 0) => (Number.isFinite(Number(v)) ? Number(v) : f),
       parseTextArray: () => null,
       sqlLiteral: (v: string) => "'" + v.replace(/'/g, "''") + "'",
       useTableShape: (_t: string, _m: unknown, opts: { where?: string }) => {
-        calls.push(opts);
-        return { data: [], isLoading: false, isError: false };
+        wheres.push(opts.where ?? '');
+        return rows;
       },
     }));
     const { renderHook } = await import('@testing-library/react');
-    const { useMunitionTrackFeed } = await import('../useMunitionTracks');
-    renderHook(() => useMunitionTrackFeed());
-    expect(calls[0].where).toContain('terminal_state IS NULL OR terminated_at >');
-    expect(calls[0].where).toMatch(/'\d{4}-\d{2}-\d{2}T[\d:.]+Z'::timestamptz$/);
+    const mod = await import('../useMunitionTracks');
+    return { renderHook, ...mod };
+  }
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    wheres = [];
+    rows = { data: [], isLoading: false, isError: false };
+  });
+  afterEach(() => {
+    vi.useRealTimers();
     vi.doUnmock('../electric');
+  });
+
+  it('does not move: same where after 2 h and on a second mount', async () => {
+    const { renderHook, useMunitionTrackFeed } = await load();
+    const h = renderHook(() => useMunitionTrackFeed());
+    const first = wheres[0];
+    expect(first).toMatch(/^terminal_state IS NULL OR terminated_at > '2026-10-31T00:00:00\.000Z'::timestamptz$/);
+    vi.advanceTimersByTime(2 * 3600_000);
+    h.rerender();
+    expect(wheres[wheres.length - 1]).toBe(first);
+    h.unmount();
+    renderHook(() => useMunitionTrackFeed());
+    expect(wheres[wheres.length - 1]).toBe(first);
+    expect(new Set(wheres).size).toBe(1);
+  });
+
+  it('floors the cut-off to the UTC day of now minus the lead', async () => {
+    const { feedCutoffIso } = await load();
+    expect(feedCutoffIso(Date.parse('2026-10-31T00:00:05.000Z'))).toBe('2026-10-30T00:00:00.000Z');
+    expect(feedCutoffIso(Date.parse('2026-10-31T13:45:00.000Z'))).toBe('2026-10-31T00:00:00.000Z');
+  });
+
+  it('applies the display window on the client, per mount', async () => {
+    const mk = (id: string, ended: number | null) =>
+      mapMunitionTrack({
+        ...FULL,
+        munition_asset_id: id,
+        terminal_state: ended === null ? null : 'DETONATED',
+        terminated_at: ended === null ? null : new Date(T0 + ended).toISOString(),
+      });
+    rows = {
+      data: [mk('flying', null), mk('old', -20_000), mk('recent', -5_000), mk('future', 60_000)],
+      isLoading: false,
+      isError: false,
+    };
+    const { renderHook, useMunitionTrackFeed } = await load();
+    const h = renderHook(() => useMunitionTrackFeed());
+    const ids = h.result.current.data.map((t) => t.munitionAssetId).sort();
+    expect(ids).toEqual(['flying', 'future', 'recent']);
+    const before = h.result.current.data;
+    h.rerender();
+    expect(h.result.current.data).toBe(before);
   });
 });

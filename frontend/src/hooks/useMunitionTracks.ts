@@ -2,7 +2,7 @@
 // Source: munition_track, filtered to terminal_state IS NULL (ADR-0049). The
 // map dot and the in-flight number read these same rows. A track is not an
 // asset: it has no fleet row, no detail view and no callout.
-import { useEffect, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { num, parseTextArray, sqlLiteral, useTableShape, type ShapeResult } from './electric';
 
 export interface MunitionTrack {
@@ -103,28 +103,42 @@ export function useInFlightMunitionTracks(): ShapeResult<MunitionTrack> {
 }
 
 const FEED_LEAD_MS = 10_000;
-const FEED_ADVANCE_MS = 15 * 60_000;
+
+/** The UTC midnight at or before `nowMs - FEED_LEAD_MS`, as an ISO string. */
+export function feedCutoffIso(nowMs: number): string {
+  const d = new Date(nowMs - FEED_LEAD_MS);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString();
+}
+
+let pageCutoffIso: string | null = null;
+function pageCutoff(): string {
+  if (pageCutoffIso === null) pageCutoffIso = feedCutoffIso(Date.now());
+  return pageCutoffIso;
+}
+/** Test-only: forget the page cut-off. */
+export function resetPageCutoffForTests(): void {
+  pageCutoffIso = null;
+}
 
 /**
  * In flight plus anything that ended since mount (minus 10 s), for the trail
- * endings only. Counts and lists stay on useInFlightMunitionTracks. The cut-off
- * is a fixed literal (Electric where clauses cannot call now()); it moves
- * forward every 15 min so the shape stays bounded over a long session.
+ * endings only. Counts and lists stay on useInFlightMunitionTracks. The where
+ * is fixed for the page's life: each distinct where is a shape Electric keeps
+ * and writes to. Its cut-off is the UTC day, so screens share one shape and at
+ * most one new definition per UTC day is made per tier. The window is applied
+ * on the client.
  */
 export function useMunitionTrackFeed(): ShapeResult<MunitionTrack> {
-  const [sinceMs, setSinceMs] = useState(() => Date.now() - FEED_LEAD_MS);
-  useEffect(() => {
-    const id = setInterval(() => setSinceMs(Date.now() - FEED_LEAD_MS), FEED_ADVANCE_MS);
-    return () => clearInterval(id);
-  }, []);
-  const sinceIso = new Date(sinceMs).toISOString();
+  const [sinceMs] = useState(() => Date.now() - FEED_LEAD_MS);
   const result = useTableShape('munition_track', mapMunitionTrack, {
-    where: `terminal_state IS NULL OR terminated_at > ${sqlLiteral(sinceIso)}::timestamptz`,
+    where: `terminal_state IS NULL OR terminated_at > ${sqlLiteral(pageCutoff())}::timestamptz`,
   });
-  // A moved cut-off starts a new shape whose data is empty until it syncs.
-  // Hold the previous rows meanwhile so no in-flight track reads as vanished.
-  const [held, setHeld] = useState<MunitionTrack[]>([]);
-  const hold = result.isLoading && result.data.length === 0 && held.length > 0;
-  if (!hold && held !== result.data && (held.length > 0 || result.data.length > 0)) setHeld(result.data);
-  return hold ? { ...result, data: held } : result;
+  const data = useMemo(
+    () =>
+      result.data.filter(
+        (t) => t.terminalState === null || Date.parse(t.terminatedAt ?? '') > sinceMs,
+      ),
+    [result.data, sinceMs],
+  );
+  return useMemo(() => ({ ...result, data }), [result, data]);
 }
