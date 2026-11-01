@@ -271,15 +271,18 @@ def _provenance_entries(
 ) -> list[dict[str, Any]]:
     """`{row_key, observed_at?}` for every source `picture` was actually
     read from, in the fixed order the rule specifies. `observed_at` is
-    always that source's OWN timestamp, read off `cm_state`/`picture`,
+    always that source's OWN timestamp, read off `cm_state`/`picture`
+    (for the CM row: `as_of_ns`, falling back to `last_observed_at_ns`),
     never `now()` — this function takes no clock at all. A source this
     process did not read (no postgres row, no spare resolved) contributes
     no entry; a source it did read but that carries no timestamp column
     (or a NULL one) contributes an entry with no `observed_at`."""
     entries: list[dict[str, Any]] = [{"row_key": f"asset_cm_state:{episode.asset}"}]
-    last_observed_ns = cm_state.get("last_observed_at_ns")
-    if last_observed_ns:
-        entries[0]["observed_at"] = _rfc3339(last_observed_ns)
+    # The CM row's own timestamp: `as_of_ns`, which is its last-change time.
+    # Older records on the compacted topic carry only `last_observed_at_ns`.
+    cm_observed_ns = cm_state.get("as_of_ns") or cm_state.get("last_observed_at_ns")
+    if cm_observed_ns:
+        entries[0]["observed_at"] = _rfc3339(cm_observed_ns)
 
     if picture.get("readiness") is not None:
         entry: dict[str, Any] = {"row_key": f"telemetry_latest_state:{episode.asset}"}

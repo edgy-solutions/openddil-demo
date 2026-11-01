@@ -1090,6 +1090,21 @@ def test_assemble_provenance_omits_cm_state_observed_at_when_missing():
     assert record["prov"] == [{"row_key": "asset_cm_state:dis:1:1:1000"}]
 
 
+def test_assemble_provenance_cm_observed_at_prefers_as_of_ns_and_falls_back():
+    state = cm_state(discrepancies=[discrepancy()])
+    state["as_of_ns"] = 1_700_000_000_000_000_000
+    state["last_observed_at_ns"] = 1_600_000_000_000_000_000
+    episode = episodes(state)[0]
+    record = assemble("KindA", PROVENANCE_DECL, {}, state, episode, picture={}, now=NOW)
+    assert record["prov"] == [
+        {"row_key": "asset_cm_state:dis:1:1:1000", "observed_at": "2023-11-14T22:13:20Z"}]
+
+    del state["as_of_ns"]
+    record = assemble("KindA", PROVENANCE_DECL, {}, state, episode, picture={}, now=NOW)
+    assert record["prov"] == [
+        {"row_key": "asset_cm_state:dis:1:1:1000", "observed_at": "2020-09-13T12:26:40Z"}]
+
+
 def test_assemble_provenance_lists_sources_in_order_with_their_own_timestamps():
     """Every observed_at below is a value injected into the fixture, never
     `NOW` — proving the assembler's own clock is never consulted."""
