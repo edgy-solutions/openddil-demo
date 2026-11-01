@@ -135,3 +135,33 @@ def test_session_and_auth_me_carry_issuer_and_realm_version(
     assert captured["body"]["issuer"] == ISSUER
     assert captured["body"]["realm_version"] == pep.REALM_VERSION
     assert captured["body"]["subject"] == "user-sub-123"  # existing keys kept
+
+
+def test_auth_me_does_not_touch_and_expires_at_follows_session(
+        oidc, key, monkeypatch):
+    import pep
+    monkeypatch.setattr(pep, "AUTH_MODE", "oidc")
+    monkeypatch.setattr(oidc, "SESSION_MODE", "sliding")
+    monkeypatch.setattr(oidc, "SESSION_IDLE", 600)
+    monkeypatch.setattr(oidc, "SESSION_MAX", 3000)
+    monkeypatch.setattr(oidc, "SESSION_CEILING", 3000)
+    monkeypatch.setattr(pep, "ask_topaz", lambda subject: {
+        "allowed_nations": ["ATL"], "policy_version": "v1",
+        "corpus_version": "v1", "role": "operator"})
+    token = mint(key)
+    sid, session = oidc.create_session(oidc.verify_id_token(token), token)
+    session["last_active"] -= 100  # activity a little in the past
+    before = session["last_active"]
+    handler = object.__new__(pep.Pep)
+    handler.headers = {"Cookie": f"{oidc.COOKIE_NAME}={sid}"}
+    captured = {}
+    handler._send = lambda status, body, headers=None: captured.update(
+        status=status, body=json.loads(body))
+    handler._handle_auth(urllib.parse.urlparse("/auth/me"))
+    assert captured["status"] == 200
+    assert oidc._sessions[sid]["last_active"] == before  # /auth/me: no touch
+    assert captured["body"]["session_mode"] == "sliding"
+    assert captured["body"]["expires_at"] == before + 600
+    # Any other lookup does count.
+    oidc.get_session(sid)
+    assert oidc._sessions[sid]["last_active"] > before

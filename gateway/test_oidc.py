@@ -23,6 +23,8 @@ from __future__ import annotations
 import base64
 import importlib
 import json
+import logging
+import os
 import time
 
 import pytest
@@ -891,3 +893,155 @@ def test_login_route_forwards_force_login_only_for_exact_prompt_login(
     handler._send = lambda *a, **k: None
     handler._handle_auth(urllib.parse.urlparse("/auth/login?" + query))
     assert captured["force_login"] is want
+
+
+# --- session lifetime modes -------------------------------------------------
+
+class _Clock:
+    """Stand-in for oidc's `time` module with a clock the test moves."""
+    def __init__(self):
+        self.now = time.time()
+
+    def time(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(oidc, monkeypatch):
+    c = _Clock()
+    monkeypatch.setattr(oidc, "time", c)
+    return c
+
+
+@pytest.fixture
+def sliding(oidc, monkeypatch):
+    """Sliding mode: idle 600 s, ceiling 3000 s, against a TTL of 900 s."""
+    monkeypatch.setattr(oidc, "SESSION_MODE", "sliding")
+    monkeypatch.setattr(oidc, "SESSION_IDLE", 600)
+    monkeypatch.setattr(oidc, "SESSION_MAX", 3000)
+    monkeypatch.setattr(oidc, "SESSION_CEILING", 3000)
+    return oidc
+
+
+def _fresh_session(oidc, key, clock):
+    # An ID token exp far enough out that only the session bounds apply.
+    claims = oidc.verify_id_token(mint(key, exp=int(clock.now) + 100_000))
+    sid, session = oidc.create_session(claims)
+    # No refresh token: the renewal path must not be what keeps it alive.
+    session["expires"] = clock.now + 100_000
+    return sid, session
+
+
+def test_fixed_mode_defaults_and_ignores_touch(oidc, key, clock):
+    assert oidc.SESSION_MODE == "fixed"
+    assert oidc.SESSION_CEILING == oidc.SESSION_TTL
+    assert f"Max-Age={oidc.SESSION_TTL}" in oidc.cookie_header("abc")
+    sid, session = _fresh_session(oidc, key, clock)
+    assert oidc.session_expires_at(session) == session["hard_expires"]
+    clock.now += 100
+    snap = oidc.get_session(sid, touch=True)
+    assert snap["last_active"] == session["last_active"]  # untouched
+    assert oidc._sessions[sid]["last_active"] == session["last_active"]
+
+
+def test_fixed_mode_never_ends_for_idleness(oidc, key, clock):
+    sid, _ = _fresh_session(oidc, key, clock)
+    clock.now += oidc.SESSION_TTL - 1
+    assert oidc.get_session(sid) is not None
+
+
+def test_sliding_alive_beyond_ttl_then_idle_ends_it(sliding, key, clock, caplog):
+    oidc = sliding
+    sid, _ = _fresh_session(oidc, key, clock)
+    for _ in range(4):  # 4 x 500 s = 2000 s, well past the 900 s TTL
+        clock.now += 500
+        assert oidc.get_session(sid) is not None
+    clock.now += 601  # idle beyond SESSION_IDLE
+    with caplog.at_level(logging.INFO, logger=oidc.log.name):
+        assert oidc.get_session(sid) is None
+    assert "SESSION_ENDED reason=idle mode=sliding" in caplog.text
+    assert sid not in oidc._sessions
+    assert sid not in caplog.text
+
+
+def test_sliding_untouched_lookups_do_not_extend(sliding, key, clock):
+    oidc = sliding
+    sid, _ = _fresh_session(oidc, key, clock)
+    for _ in range(3):
+        clock.now += 190
+        assert oidc.get_session(sid, touch=False) is not None
+    clock.now += 100  # 670 s since the only real activity (creation)
+    assert oidc.get_session(sid, touch=False) is None
+
+
+def test_sliding_ceiling_ends_it_despite_activity(sliding, key, clock, caplog):
+    oidc = sliding
+    sid, _ = _fresh_session(oidc, key, clock)
+    # Renewal-due time at the ceiling, no refresh token: the ceiling is the
+    # only thing left to end it, and continuous activity must not move it.
+    oidc._sessions[sid]["expires"] = oidc._sessions[sid]["hard_expires"]
+    got = True
+    with caplog.at_level(logging.INFO, logger=oidc.log.name):
+        for _ in range(8):  # 8 x 400 s = 3200 s, activity every step
+            clock.now += 400
+            got = oidc.get_session(sid)
+            if got is None:
+                break
+    assert got is None
+    assert "SESSION_ENDED reason=ceiling mode=sliding" in caplog.text
+
+
+def test_sliding_cookie_and_expires_at(sliding, key, clock):
+    oidc = sliding
+    assert "Max-Age=3000" in oidc.cookie_header("abc")
+    sid, session = _fresh_session(oidc, key, clock)
+    assert session["hard_expires"] == clock.now + 3000
+    assert oidc.session_expires_at(session) == clock.now + 600
+    clock.now += 2700
+    session["last_active"] = clock.now
+    assert oidc.session_expires_at(session) == session["hard_expires"]
+
+
+def _reload_with(oidc, monkeypatch, **env):
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    return importlib.reload(oidc)
+
+
+@pytest.fixture
+def reload_back(oidc, key):
+    """Reload with the default env afterwards so later tests see fixed mode."""
+    yield
+    for k in ("OPENDDIL_SESSION_MODE", "OPENDDIL_SESSION_IDLE_SECONDS",
+              "OPENDDIL_SESSION_MAX_SECONDS"):
+        os.environ.pop(k, None)
+    importlib.reload(oidc)
+    pub = key.public_key().public_numbers()
+    oidc._jwks[KID] = {
+        "kty": "RSA", "kid": KID,
+        "n": b64u(pub.n.to_bytes((pub.n.bit_length() + 7) // 8, "big")),
+        "e": b64u(pub.e.to_bytes((pub.e.bit_length() + 7) // 8, "big")),
+    }
+    oidc._jwks_fetched_at = time.time() + 10_000
+
+
+@pytest.mark.parametrize("env", [
+    {"OPENDDIL_SESSION_MODE": "slidng"},
+    {"OPENDDIL_SESSION_MODE": "sliding",
+     "OPENDDIL_SESSION_IDLE_SECONDS": "1800",
+     "OPENDDIL_SESSION_MAX_SECONDS": "600"},
+    {"OPENDDIL_SESSION_MODE": "sliding",
+     "OPENDDIL_SESSION_IDLE_SECONDS": "30",
+     "OPENDDIL_SESSION_MAX_SECONDS": "600"},
+])
+def test_bad_session_config_raises_at_import(oidc, monkeypatch, reload_back, env):
+    with pytest.raises(ValueError, match="OPENDDIL_SESSION_"):
+        _reload_with(oidc, monkeypatch, **env)
+
+
+def test_sliding_max_zero_falls_back_to_ttl(oidc, monkeypatch, reload_back):
+    mod = _reload_with(oidc, monkeypatch, OPENDDIL_SESSION_MODE="sliding",
+                       OPENDDIL_SESSION_TTL_SECONDS="1200",
+                       OPENDDIL_SESSION_IDLE_SECONDS="600")
+    assert mod.SESSION_MAX == 1200
+    assert mod.SESSION_CEILING == 1200

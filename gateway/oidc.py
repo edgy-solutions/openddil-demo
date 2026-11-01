@@ -140,6 +140,26 @@ POST_LOGIN_PATH = os.getenv("OPENDDIL_OIDC_POST_LOGIN_PATH", "/")
 POST_LOGOUT_REDIRECT_URI = os.getenv("OPENDDIL_OIDC_POST_LOGOUT_REDIRECT_URI",
                                      "") or REDIRECT_URI
 SESSION_TTL = int(os.getenv("OPENDDIL_SESSION_TTL_SECONDS", "900"))  # 15min
+# SESSION LIFETIME MODE, declared and never inferred. `fixed` (the default)
+# ends a session at sign-in + SESSION_TTL whatever the viewer does. `sliding`
+# ends it at whichever comes first: SESSION_IDLE seconds with no activity, or
+# SESSION_MAX seconds after sign-in (activity never extends that ceiling).
+# An unknown value or an inconsistent pair raises here, so the PEP fails at
+# start rather than running in a mode nobody declared.
+SESSION_MODE = os.getenv("OPENDDIL_SESSION_MODE", "fixed")
+if SESSION_MODE not in ("fixed", "sliding"):
+    raise ValueError(
+        f"OPENDDIL_SESSION_MODE={SESSION_MODE!r}: expected 'fixed' or 'sliding'")
+SESSION_IDLE = int(os.getenv("OPENDDIL_SESSION_IDLE_SECONDS", "900"))
+SESSION_MAX = (int(os.getenv("OPENDDIL_SESSION_MAX_SECONDS", "0"))
+               or SESSION_TTL)  # 0 = use SESSION_TTL
+if SESSION_MODE == "sliding" and not 60 <= SESSION_IDLE <= SESSION_MAX:
+    raise ValueError(
+        f"OPENDDIL_SESSION_IDLE_SECONDS={SESSION_IDLE} must be between 60 and "
+        f"the session maximum ({SESSION_MAX}) in sliding mode")
+# The one absolute bound on a session: wherever SESSION_TTL used to bound it,
+# this does. Equal to SESSION_TTL in fixed mode.
+SESSION_CEILING = SESSION_MAX if SESSION_MODE == "sliding" else SESSION_TTL
 # How long before `expires` renewal is attempted — see get_session. Renewing
 # early, rather than exactly at expiry, is what lets a session survive on a
 # tab that is making requests right up to the deadline: a renewal due only
@@ -776,7 +796,7 @@ def create_session(claims: dict, id_token: str = "", refresh_token: str = "",
     exp)) — reaching it makes get_session try to extend the session rather
     than ending it. `hard_expires` is the absolute ceiling, set once here
     and never pushed forward by a renewal: however often the session
-    renews, it still ends at created + SESSION_TTL, which is what bounds a
+    renews, it still ends at created + SESSION_CEILING, which is what bounds a
     stolen refresh token's useful life."""
     _sweep(_sessions, _sessions_lock)
     sid = secrets.token_urlsafe(32)
@@ -802,9 +822,11 @@ def create_session(claims: dict, id_token: str = "", refresh_token: str = "",
         # renew", not "never expires".
         "refresh_expires": (now + refresh_expires_in) if refresh_expires_in
                            else 0,
-        "expires": min(now + SESSION_TTL, float(claims.get("exp", 0))
-                       or now + SESSION_TTL),
-        "hard_expires": now + SESSION_TTL,
+        "expires": min(now + SESSION_CEILING, float(claims.get("exp", 0))
+                       or now + SESSION_CEILING),
+        "hard_expires": now + SESSION_CEILING,
+        # Sliding mode only: the last request that counted as activity.
+        "last_active": now,
     }
     with _sessions_lock:
         _sessions[sid] = session
@@ -843,7 +865,23 @@ def _refresh_tokens(refresh_token: str) -> dict:
         raise
 
 
-def get_session(sid: str | None) -> dict | None:
+def _end_session(sid: str, reason: str) -> None:
+    """Drop a session and say why. The reason is a fixed word; never the
+    sid, a token or a claim."""
+    with _sessions_lock:
+        _sessions.pop(sid, None)
+    log.info("SESSION_ENDED reason=%s mode=%s", reason, SESSION_MODE)
+
+
+def session_expires_at(session: dict) -> float:
+    """When this session will end if the viewer does nothing more."""
+    if SESSION_MODE == "sliding":
+        return min(session.get("last_active", 0) + SESSION_IDLE,
+                   session["hard_expires"])
+    return session["hard_expires"]
+
+
+def get_session(sid: str | None, touch: bool = True) -> dict | None:
     """Look up a session, renewing it against the provider when `expires`
     is within REFRESH_LEAD_S (or already past it) but the session has not
     reached `hard_expires` — see create_session for what each bound means.
@@ -866,7 +904,12 @@ def get_session(sid: str | None) -> dict | None:
     non-rejection HTTP error), the session is kept until `refresh_expires`
     — the lifetime it already granted — and `expires` is pushed forward by
     RENEW_RETRY_S so this is not retried on every single request while the
-    provider is down."""
+    provider is down.
+
+    SLIDING MODE adds an idle bound: a session whose last activity is older
+    than SESSION_IDLE is dropped before any renewal is considered. `touch`
+    says whether this lookup counts as activity (the session check and the
+    login/logout lookups pass False). Fixed mode ignores both."""
     if not sid:
         return None
     with _sessions_lock:
@@ -876,6 +919,16 @@ def get_session(sid: str | None) -> dict | None:
         snapshot = dict(s)
 
     now = time.time()
+    if SESSION_MODE == "sliding":
+        if now - snapshot.get("last_active", 0) > SESSION_IDLE:
+            _end_session(sid, "idle")
+            return None
+        if touch:
+            with _sessions_lock:
+                cur = _sessions.get(sid)
+                if cur is not None:
+                    cur["last_active"] = now
+            snapshot["last_active"] = now
     actually_expired = snapshot["expires"] < now
     renewal_due = now >= snapshot["expires"] - REFRESH_LEAD_S
     if not renewal_due:
@@ -890,8 +943,8 @@ def get_session(sid: str | None) -> dict | None:
             # See the docstring: due-for-renewal is not the same claim as
             # expired, and must not be dropped early.
             return snapshot
-        with _sessions_lock:
-            _sessions.pop(sid, None)
+        _end_session(sid, "ceiling" if snapshot.get("hard_expires", 0) < now
+                     else "no_refresh")
         return None
 
     # RENEWAL. RACE NOTE: the HTTP call below runs with _sessions_lock
@@ -904,8 +957,7 @@ def get_session(sid: str | None) -> dict | None:
     try:
         tokens = _refresh_tokens(snapshot["refresh_token"])
     except _RefreshRejected:
-        with _sessions_lock:
-            _sessions.pop(sid, None)
+        _end_session(sid, "refresh_rejected")
         return None
     except AuthError as exc:
         with _sessions_lock:
@@ -926,8 +978,7 @@ def get_session(sid: str | None) -> dict | None:
             raise AuthError("refreshed token's subject differs from the "
                             "session's")
     except AuthError:
-        with _sessions_lock:
-            _sessions.pop(sid, None)
+        _end_session(sid, "subject_mismatch")
         return None
 
     new_refresh_token = tokens.get("refresh_token") or snapshot["refresh_token"]
@@ -944,8 +995,8 @@ def get_session(sid: str | None) -> dict | None:
         cur["refresh_expires"] = new_refresh_expires
         # Never past hard_expires — that bound is never extended, including
         # here.
-        cur["expires"] = min(now + SESSION_TTL,
-                             float(claims.get("exp", 0)) or now + SESSION_TTL,
+        cur["expires"] = min(now + SESSION_CEILING,
+                             float(claims.get("exp", 0)) or now + SESSION_CEILING,
                              cur["hard_expires"])
         result = dict(cur)
     log.info("SESSION_RENEWED")
@@ -960,7 +1011,7 @@ def destroy_session(sid: str | None) -> None:
 
 def cookie_header(sid: str) -> str:
     parts = [f"{COOKIE_NAME}={sid}", "Path=/", "HttpOnly",
-             f"SameSite={COOKIE_SAMESITE}", f"Max-Age={SESSION_TTL}"]
+             f"SameSite={COOKIE_SAMESITE}", f"Max-Age={SESSION_CEILING}"]
     if COOKIE_SECURE:
         parts.append("Secure")
     return "; ".join(parts)

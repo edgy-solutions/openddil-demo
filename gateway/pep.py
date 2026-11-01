@@ -3580,7 +3580,7 @@ class Pep(BaseHTTPRequestHandler):
     def _sid(self):
         return oidc.session_id_from_cookies(self.headers.get("Cookie"))
 
-    def _resolve_principal(self):
+    def _resolve_principal(self, touch=True):
         """(subject, principal_key, session) or raise.
 
         NEVER returns a partially-authenticated caller: either a subject is
@@ -3588,7 +3588,7 @@ class Pep(BaseHTTPRequestHandler):
         outcome, because a third outcome is where a fail-open lives."""
         if AUTH_MODE == "oidc":
             sid = self._sid()
-            session = oidc.get_session(sid)
+            session = oidc.get_session(sid, touch=touch)
             if session is None:
                 raise oidc.AuthError("no valid session")
             return session["subject"], sid or "", session
@@ -3667,7 +3667,7 @@ class Pep(BaseHTTPRequestHandler):
                 # The sign-in could not be continued (cookie missing, aged
                 # out, altered or already used). Nothing was refused, so this
                 # is a sign-in-again page, not the authorization refusal.
-                if oidc.get_session(self._sid()) is not None:
+                if oidc.get_session(self._sid(), touch=False) is not None:
                     # Back or reload onto a used callback while the browser
                     # already holds a good session: there is nothing to
                     # redo. Go where the sign-in was going; no new session.
@@ -3721,7 +3721,7 @@ class Pep(BaseHTTPRequestHandler):
 
         if path == "/auth/logout":
             sid = self._sid()
-            session = oidc.get_session(sid)
+            session = oidc.get_session(sid, touch=False)
             oidc.destroy_session(sid)
             if session:
                 record_decision(decision_id=new_decision_id(),
@@ -3743,7 +3743,9 @@ class Pep(BaseHTTPRequestHandler):
             # disagree with the data on screen, and the screen would be the
             # one telling the truth.
             try:
-                subject, _, session = self._resolve_principal()
+                # The frontend's 60 s session check must not count as
+                # activity, or an open tab could never go idle.
+                subject, _, session = self._resolve_principal(touch=False)
             except oidc.AuthError:
                 self._send(401, json.dumps({"authenticated": False}).encode(),
                            [("Content-Type", "application/json"),
@@ -3770,7 +3772,9 @@ class Pep(BaseHTTPRequestHandler):
                 # must not grant five extra minutes to everyone else's —
                 # sending both lets the client measure the gap instead of
                 # trusting either clock alone.
-                "expires_at": (session or {}).get("hard_expires"),
+                "expires_at": (oidc.session_expires_at(session)
+                               if session else None),
+                "session_mode": oidc.SESSION_MODE,
                 "server_time": time.time(),
                 "nations": decision["allowed_nations"],
                 # THE NATION PALETTE, in file order, for the UI to colour
@@ -4423,8 +4427,10 @@ def main() -> None:
     if AUTH_MODE == "oidc":
         log.info("  issuer:    %s", oidc.ISSUER)
         log.info("  client:    %s", oidc.CLIENT_ID)
-        log.info("  session:   %ss, cookie=%s SameSite=%s Secure=%s",
-                 oidc.SESSION_TTL, oidc.COOKIE_NAME, oidc.COOKIE_SAMESITE,
+        log.info("  session:   %ss, mode=%s idle=%ss max=%ss, cookie=%s "
+                 "SameSite=%s Secure=%s",
+                 oidc.SESSION_TTL, oidc.SESSION_MODE, oidc.SESSION_IDLE,
+                 oidc.SESSION_MAX, oidc.COOKIE_NAME, oidc.COOKIE_SAMESITE,
                  oidc.COOKIE_SECURE)
     else:
         log.warning("  header mode: the subject is taken from %r and is "
