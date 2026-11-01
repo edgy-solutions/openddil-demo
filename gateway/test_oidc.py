@@ -1045,3 +1045,95 @@ def test_sliding_max_zero_falls_back_to_ttl(oidc, monkeypatch, reload_back):
                        OPENDDIL_SESSION_IDLE_SECONDS="600")
     assert mod.SESSION_MAX == 1200
     assert mod.SESSION_CEILING == 1200
+
+
+# --- the session sweep ------------------------------------------------------
+
+def _swept_pair(oidc, key, clock, caplog, *, refresh=True, edit=None,
+                advance=0):
+    """Create session A (optionally with a usable refresh token), edit its
+    stored fields, move the clock, then sign in a second subject. Returns
+    (sid_a, sid_b); the log is captured from the second sign-in only."""
+    oidc._sessions.clear()
+    claims = oidc.verify_id_token(mint(key, exp=int(clock.now) + 100_000))
+    sid_a, _ = oidc.create_session(
+        claims, refresh_token="rt-a" if refresh else "",
+        refresh_expires_in=3600 if refresh else 0)
+    if edit:
+        edit(oidc._sessions[sid_a])
+    clock.now += advance
+    claims_b = oidc.verify_id_token(
+        mint(key, sub="user-b", exp=int(clock.now) + 100_000))
+    with caplog.at_level(logging.INFO, logger=oidc.log.name):
+        sid_b, _ = oidc.create_session(claims_b)
+    return sid_a, sid_b
+
+
+def test_sweep_keeps_renewable_session_past_expires_fixed(oidc, key, clock,
+                                                          caplog):
+    # REGRESSION: `expires` is the renewal-due time, not an ending.
+    sid_a, sid_b = _swept_pair(
+        oidc, key, clock, caplog,
+        edit=lambda s: s.update(expires=clock.now - 1))
+    assert sid_a in oidc._sessions
+    assert sid_b in oidc._sessions
+    assert "SESSION_ENDED" not in caplog.text
+
+
+def test_sweep_keeps_renewable_session_inside_idle_sliding(sliding, key,
+                                                           clock, caplog):
+    oidc = sliding
+    sid_a, sid_b = _swept_pair(
+        oidc, key, clock, caplog, advance=600 - 1,
+        edit=lambda s: s.update(expires=clock.now + 100))
+    assert sid_a in oidc._sessions
+    assert "SESSION_ENDED" not in caplog.text
+
+
+def test_sweep_drops_idle_session_sliding(sliding, key, clock, caplog):
+    oidc = sliding
+    sid_a, sid_b = _swept_pair(oidc, key, clock, caplog,
+                               advance=oidc.SESSION_IDLE + 1)
+    assert sid_a not in oidc._sessions
+    assert sid_b in oidc._sessions
+    assert "SESSION_ENDED reason=idle mode=sliding swept=true" in caplog.text
+    assert sid_a not in caplog.text
+
+
+def test_sweep_drops_session_past_the_ceiling(oidc, key, clock, caplog):
+    sid_a, sid_b = _swept_pair(
+        oidc, key, clock, caplog,
+        edit=lambda s: s.update(hard_expires=clock.now - 1))
+    assert sid_a not in oidc._sessions
+    assert sid_b in oidc._sessions
+    assert "SESSION_ENDED reason=ceiling mode=fixed swept=true" in caplog.text
+
+
+def test_sweep_drops_expired_session_with_no_refresh_token(oidc, key, clock,
+                                                           caplog):
+    sid_a, sid_b = _swept_pair(
+        oidc, key, clock, caplog, refresh=False,
+        edit=lambda s: s.update(expires=clock.now - 1))
+    assert sid_a not in oidc._sessions
+    assert sid_b in oidc._sessions
+    assert ("SESSION_ENDED reason=no_refresh mode=fixed swept=true"
+            in caplog.text)
+
+
+def test_sweep_drops_expired_session_with_lapsed_refresh_token(oidc, key,
+                                                               clock, caplog):
+    sid_a, sid_b = _swept_pair(
+        oidc, key, clock, caplog,
+        edit=lambda s: s.update(expires=clock.now - 1,
+                                refresh_expires=clock.now - 1))
+    assert sid_a not in oidc._sessions
+    assert ("SESSION_ENDED reason=no_refresh mode=fixed swept=true"
+            in caplog.text)
+
+
+def test_sweep_never_drops_the_new_session(oidc, key, clock, caplog):
+    sid_a, sid_b = _swept_pair(
+        oidc, key, clock, caplog,
+        edit=lambda s: s.update(hard_expires=clock.now - 1))
+    assert sid_b in oidc._sessions
+    assert caplog.text.count("SESSION_ENDED") == 1

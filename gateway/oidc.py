@@ -533,13 +533,6 @@ def _read_cookie(cookie_header_value: str | None, name: str) -> str | None:
     return None
 
 
-def _sweep(store: dict, lock: threading.Lock, key: str = "expires") -> None:
-    now = time.time()
-    with lock:
-        for k in [k for k, v in store.items() if v.get(key, 0) < now]:
-            store.pop(k, None)
-
-
 def _sweep_consumed() -> None:
     now = _clock()
     with _consumed_lock:
@@ -798,7 +791,7 @@ def create_session(claims: dict, id_token: str = "", refresh_token: str = "",
     and never pushed forward by a renewal: however often the session
     renews, it still ends at created + SESSION_CEILING, which is what bounds a
     stolen refresh token's useful life."""
-    _sweep(_sessions, _sessions_lock)
+    _sweep_sessions()
     sid = secrets.token_urlsafe(32)
     now = time.time()
     session = {
@@ -871,6 +864,36 @@ def _end_session(sid: str, reason: str) -> None:
     with _sessions_lock:
         _sessions.pop(sid, None)
     log.info("SESSION_ENDED reason=%s mode=%s", reason, SESSION_MODE)
+
+
+def _sweep_sessions() -> None:
+    """Drop the sessions get_session would drop without calling the provider.
+
+    Mirrors get_session's no-provider endings, in the same order, so a session
+    gets the same reason either way. `expires` alone is NOT an ending: it is
+    the renewal-due time, and a session past it with a usable refresh token
+    renews on its next lookup, so sweeping on it would silently sign out
+    renewable sessions."""
+    now = time.time()
+    ended = []
+    with _sessions_lock:
+        for sid, s in list(_sessions.items()):
+            if (SESSION_MODE == "sliding"
+                    and now - s.get("last_active", 0) > SESSION_IDLE):
+                reason = "idle"
+            elif s.get("hard_expires", 0) < now:
+                reason = "ceiling"
+            elif s["expires"] < now and (
+                    not s.get("refresh_token")
+                    or s.get("refresh_expires", 0) < now):
+                reason = "no_refresh"
+            else:
+                continue
+            _sessions.pop(sid, None)
+            ended.append(reason)
+    for reason in ended:
+        log.info("SESSION_ENDED reason=%s mode=%s swept=true",
+                 reason, SESSION_MODE)
 
 
 def session_expires_at(session: dict) -> float:
