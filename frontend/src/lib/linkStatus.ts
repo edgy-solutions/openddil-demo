@@ -9,6 +9,7 @@
 // Absence is never "up". A missing row, a row the monitor has stopped
 // refreshing, or a state this code does not recognise all read 'unknown'.
 
+import { linkHeartbeatS } from '../deployment';
 import type { LinkIndicatorKind } from './linkIndicator';
 
 export type LinkState = 'up' | 'idle' | 'down' | 'unknown';
@@ -51,15 +52,20 @@ export interface LinkReading {
   declaredIdle: boolean;
 }
 
-/** A row not refreshed within this window means the monitor is not writing. */
-export const LINK_ROW_STALE_MS = 30_000;
+/** How long a link_status row may go unrefreshed before it reads unknown:
+ *  two declared heartbeats plus 10 s of slack. An unchanged link is written
+ *  every heartbeat, so a row older than this means the monitor is not
+ *  writing. */
+export function linkRowStaleMs(heartbeatS: number = linkHeartbeatS()): number {
+  return (2 * heartbeatS + 10) * 1000;
+}
 
 const KNOWN: ReadonlySet<string> = new Set(['up', 'idle', 'down', 'unknown']);
 
 export function classifyLink(row: LinkStatusRow | undefined, nowMs: number): LinkReading {
   if (!row) return { state: 'unknown', declaredIdle: false };
   const updated = row.updated_at ? Date.parse(row.updated_at) : NaN;
-  if (!Number.isFinite(updated) || nowMs - updated > LINK_ROW_STALE_MS) {
+  if (!Number.isFinite(updated) || nowMs - updated > linkRowStaleMs()) {
     return { state: 'unknown', declaredIdle: false };
   }
   const state = KNOWN.has(row.link_state) ? (row.link_state as LinkState) : 'unknown';

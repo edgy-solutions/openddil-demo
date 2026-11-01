@@ -40,6 +40,7 @@ vi.mock('../../../hooks', () => ({
 vi.mock('../../../deployment', () => ({
   deployment: () => ({ fobs: mockFobs, tiers: mockTiers.length ? mockTiers : undefined, hq: mockHq }),
   edgeAttachment: () => undefined,
+  linkHeartbeatS: () => 30,
 }));
 vi.mock('@react-three/drei', () => ({
   Html: ({ children }: { children?: ReactNode }) => <div>{children}</div>,

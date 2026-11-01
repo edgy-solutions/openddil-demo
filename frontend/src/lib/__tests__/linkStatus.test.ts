@@ -10,8 +10,10 @@ import {
   allLinksDown,
   ddilStatusOfLink,
   ddilStatusOfIndicator,
+  linkRowStaleMs,
   type LinkStatusRow,
 } from '../linkStatus';
+import { __setLinkDeclarationsForTest } from '../../deployment';
 
 const NOW = Date.parse('2026-10-08T12:00:30Z');
 const fresh = '2026-10-08T12:00:28Z';
@@ -39,14 +41,27 @@ describe('classifyLink', () => {
     expect(classifyLink(undefined, NOW)).toEqual({ state: 'unknown', declaredIdle: false });
   });
 
-  it('updated_at older than 30 s is unknown whatever the row says', () => {
-    const stale = '2026-10-08T11:59:59Z'; // 31 s old
+  it('updated_at older than the 70 s default window is unknown whatever the row says', () => {
+    const stale = '2026-10-08T11:59:19Z'; // 71 s old
     expect(classifyLink(row({ link_state: 'up', updated_at: stale }), NOW).state).toBe('unknown');
     expect(classifyLink(row({ link_state: 'down', updated_at: stale }), NOW).state).toBe('unknown');
   });
 
-  it('exactly 30 s old is still trusted', () => {
-    expect(classifyLink(row({ updated_at: '2026-10-08T12:00:00Z' }), NOW).state).toBe('up');
+  it('exactly 70 s old is still trusted at the default window', () => {
+    expect(classifyLink(row({ updated_at: '2026-10-08T11:59:20Z' }), NOW).state).toBe('up');
+  });
+
+  it('the window follows the declared heartbeat: 2 * heartbeat + 10 s', () => {
+    expect(linkRowStaleMs(30)).toBe(70_000);
+    expect(linkRowStaleMs(45)).toBe(100_000);
+    try {
+      __setLinkDeclarationsForTest({ linkHeartbeatS: 45 });
+      expect(classifyLink(row({ updated_at: '2026-10-08T11:58:50Z' }), NOW).state).toBe('up');      // 100 s
+      expect(classifyLink(row({ updated_at: '2026-10-08T11:58:49Z' }), NOW).state).toBe('unknown'); // 101 s
+    } finally {
+      __setLinkDeclarationsForTest({});
+    }
+    expect(classifyLink(row({ updated_at: '2026-10-08T11:58:50Z' }), NOW).state).toBe('unknown');   // default again
   });
 
   it('missing or unparseable updated_at is unknown', () => {

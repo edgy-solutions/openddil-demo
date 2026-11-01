@@ -4,7 +4,8 @@
 // written by the projector's link monitor from heartbeats that travel
 // the same path as the data. Read the rows through classifyLink
 // (lib/linkStatus.ts): a stale or missing row is 'unknown', never 'up'.
-import { num, useTableShape, type ShapeResult } from './electric';
+import { declaredLinkIds } from '../deployment';
+import { num, sqlLiteral, useTableShape, type ShapeResult } from './electric';
 import type { LinkStatusRow } from '../lib/linkStatus';
 
 function nullableNum(v: unknown): number | null {
@@ -32,8 +33,20 @@ export interface LinkStatusResult {
   isError: boolean;
 }
 
+/** The where clause over the links a tier's screens show. One set per tier
+ *  (sorted, deduplicated), so every call site on a screen asks for the SAME
+ *  shape: distinct where clauses on one table would create several shapes,
+ *  each logging the same writes. Undefined for no ids: a deployment that
+ *  declares no links keeps the unfiltered read, because there is nothing to
+ *  filter by and a wrong guess would hide a link. */
+export function linkStatusWhere(ids: readonly string[]): string | undefined {
+  const set = [...new Set(ids)].sort();
+  return set.length ? `id IN (${set.map(sqlLiteral).join(', ')})` : undefined;
+}
+
 export function useLinkStatus(): LinkStatusResult {
-  const result: ShapeResult<LinkStatusRow> = useTableShape('link_status', mapLinkStatus);
+  const where = linkStatusWhere(declaredLinkIds());
+  const result: ShapeResult<LinkStatusRow> = useTableShape('link_status', mapLinkStatus, where ? { where } : {});
   return {
     links: new Map(result.data.map((r) => [r.id, r])),
     isLoading: result.isLoading,

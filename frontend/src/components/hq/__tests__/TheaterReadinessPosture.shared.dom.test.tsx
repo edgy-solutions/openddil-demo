@@ -21,6 +21,7 @@ vi.mock('../../../hooks', () => ({
 vi.mock('../../../deployment', () => ({
   deployment: () => ({ fobs: mockFobs, ...mockDep }),
   edgeAttachment: () => undefined,
+  linkHeartbeatS: () => 30,
 }));
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({ children }: { children?: ReactNode }) => <div>{children}</div>,

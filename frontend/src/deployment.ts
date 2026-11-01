@@ -359,6 +359,10 @@ export interface Deployment {
   /** The chart's tier tree, when rendered. Absent => the HQ theater draws
    *  one link per FOB straight to HQ. */
   tiers?: TierEntry[];
+  /** The heartbeat, in seconds, at which the link monitor rewrites an
+   *  unchanged link_status row. ABSENT means the chart did not declare it;
+   *  readers use DEFAULT_LINK_HEARTBEAT_S. Parsed by `parseLinkHeartbeatS`. */
+  linkHeartbeatS?: number;
   /** Where HQ sits on the HQ theater. Only from the site table's
    *  tier_sites row `hq`; ABSENT means HQ is drawn at the centre of the FOBs. */
   hq?: HqLocation;
@@ -733,6 +737,53 @@ export function parseTiers(raw: unknown): TierEntry[] | undefined {
     out.push({ id: e.id.trim(), parent: typeof e.parent === 'string' ? e.parent.trim() : null, hasChildren: e.hasChildren });
   }
   return out.length ? out : undefined;
+}
+
+/** The projector's default LINK_STATUS_HEARTBEAT_S; used when the deployment
+ *  declares none. */
+export const DEFAULT_LINK_HEARTBEAT_S = 30;
+
+/** Parses `deployment.json`'s `linkStatus` block, defensively: only
+ *  `heartbeat_s` is read, and a non-number or non-positive value is dropped
+ *  with a console.warn (the default then applies). Absent => undefined.
+ *  EXPORTED FOR TESTS. */
+export function parseLinkHeartbeatS(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    console.warn('[deployment] linkStatus dropped: not a mapping');
+    return undefined;
+  }
+  const v = (raw as Record<string, unknown>).heartbeat_s;
+  if (v === undefined) return undefined;
+  if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+    console.warn(`[deployment] linkStatus.heartbeat_s dropped: want a positive number, got ${JSON.stringify(v)}`);
+    return undefined;
+  }
+  return v;
+}
+
+/** The declared link heartbeat in seconds, or the projector default. */
+export function linkHeartbeatS(): number {
+  return active.linkHeartbeatS ?? DEFAULT_LINK_HEARTBEAT_S;
+}
+
+/** Every link id this deployment declares it shows: the HQ uplink tree
+ *  (`tiers`) and the direct children (`childLinks`), sorted and
+ *  deduplicated. Empty when it declares neither. */
+export function declaredLinkIds(): string[] {
+  const ids = new Set<string>();
+  for (const t of active.tiers ?? []) ids.add(t.id);
+  for (const c of active.childLinks ?? []) ids.add(c.id);
+  return [...ids].sort();
+}
+
+/** TEST SEAM. Sets the declared link heartbeat and tree without a fetch. */
+export function __setLinkDeclarationsForTest(d: {
+  linkHeartbeatS?: number;
+  tiers?: TierEntry[];
+  childLinks?: ChildLinkEntry[];
+}): void {
+  active = { ...active, linkHeartbeatS: d.linkHeartbeatS, tiers: d.tiers, childLinks: d.childLinks };
 }
 
 /** A direct child's declared shape: `rollup` (has its own children) or
@@ -1128,6 +1179,7 @@ export async function loadDeployment(): Promise<void> {
         edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
         childLinks: parseChildLinks((j as { childLinks?: unknown }).childLinks),
         tiers: parseTiers((j as { tiers?: unknown }).tiers),
+        linkHeartbeatS: parseLinkHeartbeatS((j as { linkStatus?: unknown }).linkStatus),
         moveInputs: parseMoveInputs(j),
       };
     }
