@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+DECLARED = Path(__file__).resolve().parent.parent / "dynamic-mappings" / "declared-label.yaml"
 MAPPING = Path(__file__).resolve().parent.parent / "dynamic-mappings" / "sim-dis-mapping.yaml"
 EFFECTOR = Path(__file__).resolve().parent.parent / "dynamic-mappings" / "dis-effector.yaml"
 SHAPE = re.compile(
@@ -49,6 +50,7 @@ def _blocks():
                 cur = None
     return [b.replace('meta("declared_originator")', "this.meta.declared_originator")
              .replace('meta("declared_releasable")', "this.meta.declared_releasable")
+             .replace('meta("declared_lookup_failed")', "this.meta.declared_lookup_failed")
             for b in out]
 
 
@@ -183,3 +185,65 @@ def test_effector_arm_takes_the_launchers_stamp(row, stamp, default, expected, t
     mapping = ("let rel_doc = this.rel_doc\n" + _effector_block() +
                "\nroot.originator_nation = $rel.originator_nation.or(deleted())\n")
     assert _run(mapping, inp, tmp_path) == expected
+
+
+FAILED_CASES = [
+    # (row, stamp, default, expected): the lookup failed and nothing is known,
+    # so the stamp and the default are unusable; only the file row labels.
+    (None, "BDR", "ATL", None),
+    ("ATL", "BDR", None, "ATL"),
+    (None, None, None, None),
+]
+
+
+@pytest.mark.skipif(not BLOBL, reason="set OPENDDIL_BLOBL to the redpanda-connect binary to execute the mapping")
+@pytest.mark.parametrize("row,stamp,default,expected", FAILED_CASES)
+def test_failed_lookup_withholds_stamp_and_default(row, stamp, default, expected, tmp_path):
+    blocks = _blocks()
+    assert len(blocks) == 2
+    # a missing key reads the same as a missing meta
+    meta = {"declared_lookup_failed": "true"}
+    for block, home in zip(blocks, ("provenance", "origin_node")):
+        src = {"entity_id_urn": "dis:1:1:7"}
+        if stamp:
+            src[home] = {"stamped_nation": stamp}
+        inp = {"meta": meta, "rel_doc": _rel_doc(row, default), "src": src}
+        mapping = ("let rel_doc = this.rel_doc\nlet src = this.src\n" + block +
+                   "\nroot.originator_nation = $rel.originator_nation.or(deleted())\n")
+        assert _run(mapping, inp, tmp_path) == expected
+
+
+def test_both_sites_check_the_failed_lookup_before_the_stamp():
+    for name, block, _ in _raw_blocks()[:2]:
+        fb = re.search(r"let fallback = [^\n]*", block)
+        assert fb, f"{name}: no let fallback"
+        line = fb.group(0)
+        assert "declared_lookup_failed" in line, f"{name}: {line!r}"
+        assert line.index("declared_lookup_failed") < line.index("$stamped"), name
+
+
+def _declared_text():
+    return DECLARED.read_text(encoding="utf-8")
+
+
+def test_declared_label_remembers_the_last_answer():
+    text = _declared_text()
+    assert re.search(r"- label: declared_labels_known\s+memory:", text)
+    i_try = text.index("- try:")
+    i_cached = text.index("- cached:", i_try)
+    i_set = text.index("operator: set", i_cached)
+    i_catch = text.index("- catch:", i_try)
+    # the set is inside the try, after cached, and before the catch
+    assert i_try < i_cached < i_set < i_catch
+    # `cached` reads a stored failure back with no error flag, so only an array is recorded
+    assert re.search(r'- check: this\.type\(\) == "array"\s+processors:\s+- cache:\s+resource: declared_labels_known\s+operator: set', text)
+    # the first catch writes the marker
+    i_get = text.index("operator: get")
+    assert 'declared_lookup_failed": true' in text[i_catch:i_get]
+    # the get is outside that catch: a switch step of its own, not a child of it
+    sw = text.index("- switch:", i_catch)
+    assert i_catch < sw < i_get
+    assert "operator: get" not in text[i_catch:sw]
+    # result_map deletes the marker when the answer is an array
+    rm = text[text.index("result_map:"):]
+    assert re.search(r'meta declared_lookup_failed = if this\.type\(\) == "object" \{ "true" \} else \{ deleted\(\) \}', rm)

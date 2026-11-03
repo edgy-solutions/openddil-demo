@@ -1,52 +1,98 @@
 # =============================================================================
 # declared_label -- ingress lookup of the operator-declared label (ADR-0050 s2)
 # =============================================================================
-# Reads asset_declaration for the entity and leaves two metadata keys for
-# sim_dis_mapping: declared_originator (string) and declared_releasable (JSON
-# array as a string). No row, or a failed lookup, leaves them unset, so the
-# record goes out unlabelled exactly as it does today.
+# Reads asset_declaration for the entity and leaves up to three metadata keys
+# for sim_dis_mapping: declared_originator (string), declared_releasable (JSON
+# array as a string) and declared_lookup_failed ("true", only on a failure
+# with nothing known). ADR-0050 s2.6: a failed lookup stamps nothing; a store
+# outage withholds and never mislabels.
 #
-# FAILURE PATH. The `catch` sits OUTSIDE `cached`, inside the branch: a lookup
-# error is therefore never stored in the cache (cached stores only successes),
-# the error flag is cleared there so the message never reaches the DLQ catch in
-# the main pipeline, and the branch result is an empty list, which labels
-# nothing. One warn line per error. A missing row IS cached (empty list) for
-# DECLARED_LABEL_TTL.
+# Three cases:
+#   1. The lookup answers. A row sets declared_originator and
+#      declared_releasable; no row sets nothing. The answer, row or no row, is
+#      also kept in declared_labels_known (DECLARED_LABEL_KNOWN_TTL), apart
+#      from the short declared_labels cache, so it outlives the outage.
+#   2. The lookup fails and this process holds an earlier answer for the
+#      asset. That answer is used as if the lookup had returned it. A
+#      declaration cannot change while the store that holds it is down.
+#   3. The lookup fails and this process holds no answer (it restarted during
+#      the outage). declared_lookup_failed is set. sim_dis_mapping then
+#      ignores the stamp and the file default, which a declaration would have
+#      beaten, and keeps only the file's assets[id] row, which the ADR says a
+#      declaration may not contradict. With no row the record goes out with no
+#      label and is withheld.
+#
+# STRUCTURE. An answer is an array, a row or none. `cached` also stores a failed
+# lookup for DECLARED_LABEL_TTL, as the bare request object, and reads it back
+# with no error flag: that bounds lookups against a store that is down, but it
+# means `try` alone cannot tell a failure from an answer. So the `set` into
+# declared_labels_known checks for an array, or the second record of an outage
+# would overwrite the known answer with a non-answer. The `catch` handles only
+# a real failure: it logs one warn line and replaces the result with an object.
+# Both failures then read as an object, and the `get` of the known answer takes
+# them. The `get` sits OUTSIDE that `catch`: a catch's children still see the
+# old error flag, so a nested catch there would always fire and overwrite a
+# good answer. A missing known answer makes the `get` itself fail, and its own
+# catch marks the failure. A record with no known answer can stay withheld for
+# up to DECLARED_LABEL_TTL after the store returns.
 #
 # Connection settings come from the PG* environment, never literals.
-# connect_timeout=2 bounds a hung store: the lookup fails fast and the record
-# goes out unlabelled, instead of stalling every ingress thread.
+# connect_timeout=2 bounds a hung store: the lookup fails fast instead of
+# stalling every ingress thread.
 # =============================================================================
 cache_resources:
   - label: declared_labels
     memory:
       default_ttl: "${DECLARED_LABEL_TTL:10s}"
+  - label: declared_labels_known
+    memory:
+      default_ttl: "${DECLARED_LABEL_KNOWN_TTL:8760h}"
 
 processor_resources:
   - label: declared_label
     branch:
       request_map: |
         root.entity_id_urn = this.entity_id_urn
+        meta declared_label_key = this.entity_id_urn
       processors:
-        - cached:
-            cache: declared_labels
-            key: '${! this.entity_id_urn }'
-            processors:
-              - sql_select:
-                  driver: postgres
-                  dsn: "postgres://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}?sslmode=${PGSSLMODE}&connect_timeout=2"
-                  table: asset_declaration
-                  columns:
-                    - originator_nation
-                    - "array_to_json(releasable_to)::text AS releasable_json"
-                  where: asset_id = $1
-                  args_mapping: 'root = [ this.entity_id_urn ]'
+        - try:
+            - cached:
+                cache: declared_labels
+                key: '${! meta("declared_label_key") }'
+                processors:
+                  - sql_select:
+                      driver: postgres
+                      dsn: "postgres://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}?sslmode=${PGSSLMODE}&connect_timeout=2"
+                      table: asset_declaration
+                      columns:
+                        - originator_nation
+                        - "array_to_json(releasable_to)::text AS releasable_json"
+                      where: asset_id = $1
+                      args_mapping: 'root = [ this.entity_id_urn ]'
+            - switch:
+                - check: this.type() == "array"
+                  processors:
+                    - cache:
+                        resource: declared_labels_known
+                        operator: set
+                        key: '${! meta("declared_label_key") }'
+                        value: '${! content() }'
         - catch:
             - log:
                 level: WARN
-                message: "declared_label lookup failed (record goes out unlabelled): ${! error() }"
-            - mapping: 'root = []'
+                message: "declared_label lookup failed (using the last known answer, or withholding if there is none): ${! error() }"
+            - mapping: 'root = {"declared_lookup_failed": true}'
+        - switch:
+            - check: this.type() == "object"
+              processors:
+                - cache:
+                    resource: declared_labels_known
+                    operator: get
+                    key: '${! meta("declared_label_key") }'
+                - catch:
+                    - mapping: 'root = {"declared_lookup_failed": true}'
       result_map: |
         let row = if this.type() == "array" && this.length() > 0 { this.index(0) } else { null }
         meta declared_originator = if $row != null { $row.originator_nation.string() } else { deleted() }
         meta declared_releasable = if $row != null { $row.releasable_json.string() } else { deleted() }
+        meta declared_lookup_failed = if this.type() == "object" { "true" } else { deleted() }

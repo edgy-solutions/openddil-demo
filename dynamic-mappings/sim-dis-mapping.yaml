@@ -79,12 +79,14 @@ processor_resources:
         let stamped = if $src.provenance.stamped_nation != null {
           {"originator_nation": $src.provenance.stamped_nation, "releasable_to": []}
         } else { {} }
-        let fallback = if $stamped.length() > 0 { $stamped } else { $rel_default }
+        let fallback = if meta("declared_lookup_failed") == "true" { {} } else if $stamped.length() > 0 { $stamped } else { $rel_default }
         # Label order (ADR-0050 s2.6): the declared label the ingress lookup left in
         # metadata, else file assets[id], else the nation the sidecar stamped
         # (`provenance.stamped_nation`), else file default, else unlabelled. A stamp
         # or a default never beats a person's declaration, and a stamp never
         # beats a per-asset row.
+        # When the lookup failed and nothing is known (declared_lookup_failed), neither the
+        # stamp nor the default applies: only the file row can label, else unlabelled.
         let declared = if meta("declared_originator") != null {
           {"originator_nation": meta("declared_originator"),
            "releasable_to": meta("declared_releasable").parse_json()}
@@ -263,12 +265,14 @@ processor_resources:
       let stamped = if $src.origin_node.stamped_nation != null {
         {"originator_nation": $src.origin_node.stamped_nation, "releasable_to": []}
       } else { {} }
-      let fallback = if $stamped.length() > 0 { $stamped } else { $rel_default }
+      let fallback = if meta("declared_lookup_failed") == "true" { {} } else if $stamped.length() > 0 { $stamped } else { $rel_default }
       # Label order (ADR-0050 s2.6): the declared label the ingress lookup left in
       # metadata, else file assets[id], else the nation the sidecar stamped
       # (`origin_node.stamped_nation`), else file default, else unlabelled. A stamp
       # or a default never beats a person's declaration, and a stamp never
       # beats a per-asset row.
+      # When the lookup failed and nothing is known (declared_lookup_failed), neither the
+      # stamp nor the default applies: only the file row can label, else unlabelled.
       let declared = if meta("declared_originator") != null {
         {"originator_nation": meta("declared_originator"),
          "releasable_to": meta("declared_releasable").parse_json()}
