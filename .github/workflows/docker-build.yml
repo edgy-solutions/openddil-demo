@@ -14,8 +14,10 @@ permissions:
   contents: read
   packages: write
 
-# All images publish under ghcr.io/edgy-solutions/openddil/<service>:latest
-# AND additionally under :<tag-name> on a v* tag push.
+# All images publish under ghcr.io/edgy-solutions/openddil/<service>.
+# Every build is tagged :sha-<7>; a PR build adds :pr-<number> and never :latest, and builds without pushing.
+# :latest moves only on a push to master or a v* tag (which also adds :<tag-name>);
+# a dispatch on master moves it too, a dispatch on any other branch is sha only.
 # `${{ github.repository_owner }}` resolves to `edgy-solutions` for this repo.
 # These images are referenced by docker-compose.yml in this same repo.
 
@@ -36,15 +38,19 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Always publish :latest. On a v* tag push, ALSO publish the
-      # tag-versioned image so consumers can pin to a release.
+      # :sha always; :pr-N on pull requests; :latest only from master or a v* tag
+      # (a tag also gets its own :<tag-name>).
       - name: Compute image tags
         id: tags
         run: |
           REG=ghcr.io/${{ github.repository_owner }}/openddil/frontend
-          T="$REG:latest"
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            T="$T,$REG:${{ github.ref_name }}"
+          T="$REG:sha-$(echo "${{ github.sha }}" | cut -c1-7)"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            T="$T,$REG:pr-${{ github.event.pull_request.number }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            T="$T,$REG:${{ github.ref_name }},$REG:latest"
+          elif [ "${{ github.ref }}" = "refs/heads/master" ] && { [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; }; then
+            T="$T,$REG:latest"
           fi
           echo "tags=$T" >> "$GITHUB_OUTPUT"
 
@@ -53,7 +59,7 @@ jobs:
         with:
           context: ./frontend
           file: ./frontend/Dockerfile
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.tags.outputs.tags }}
           target: production
 
@@ -77,9 +83,13 @@ jobs:
         id: tags
         run: |
           REG=ghcr.io/${{ github.repository_owner }}/openddil/simulator
-          T="$REG:latest"
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            T="$T,$REG:${{ github.ref_name }}"
+          T="$REG:sha-$(echo "${{ github.sha }}" | cut -c1-7)"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            T="$T,$REG:pr-${{ github.event.pull_request.number }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            T="$T,$REG:${{ github.ref_name }},$REG:latest"
+          elif [ "${{ github.ref }}" = "refs/heads/master" ] && { [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; }; then
+            T="$T,$REG:latest"
           fi
           echo "tags=$T" >> "$GITHUB_OUTPUT"
 
@@ -88,7 +98,7 @@ jobs:
         with:
           context: ./simulator
           file: ./simulator/Dockerfile
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.tags.outputs.tags }}
           target: production
 
@@ -118,9 +128,13 @@ jobs:
         id: tags
         run: |
           REG=ghcr.io/${{ github.repository_owner }}/openddil/tak-server
-          T="$REG:latest"
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            T="$T,$REG:${{ github.ref_name }}"
+          T="$REG:sha-$(echo "${{ github.sha }}" | cut -c1-7)"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            T="$T,$REG:pr-${{ github.event.pull_request.number }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            T="$T,$REG:${{ github.ref_name }},$REG:latest"
+          elif [ "${{ github.ref }}" = "refs/heads/master" ] && { [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; }; then
+            T="$T,$REG:latest"
           fi
           echo "tags=$T" >> "$GITHUB_OUTPUT"
 
@@ -129,7 +143,7 @@ jobs:
         with:
           context: ./egress/tak
           file: ./egress/tak/Dockerfile
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.tags.outputs.tags }}
 
   # The egress gate and its pane: one image, two commands (see the header of
@@ -198,9 +212,13 @@ jobs:
         id: tags
         run: |
           REG=ghcr.io/${{ github.repository_owner }}/openddil/egress
-          T="$REG:latest"
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            T="$T,$REG:${{ github.ref_name }}"
+          T="$REG:sha-$(echo "${{ github.sha }}" | cut -c1-7)"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            T="$T,$REG:pr-${{ github.event.pull_request.number }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            T="$T,$REG:${{ github.ref_name }},$REG:latest"
+          elif [ "${{ github.ref }}" = "refs/heads/master" ] && { [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; }; then
+            T="$T,$REG:latest"
           fi
           echo "tags=$T" >> "$GITHUB_OUTPUT"
 
@@ -209,6 +227,6 @@ jobs:
         with:
           context: .
           file: openddil-demo/egress/Dockerfile
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.tags.outputs.tags }}
           target: runtime
