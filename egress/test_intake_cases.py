@@ -88,7 +88,7 @@ def action_record(n: int = 1, **over) -> dict:
 class _CaseStore(_FakeStore):
     """The list-mode fake plus `open_cases`, mirroring the real SQL: ledger
     rows inside the window, each with the stored decisions whose
-    `answered_id` is its case_id, episode_id or event_id."""
+    `answered_id` is its case_id or event_id (never episode_id)."""
 
     def __init__(self, ledger):
         super().__init__()
@@ -100,7 +100,7 @@ class _CaseStore(_FakeStore):
         for case_id, episode_id, event_id, first in self.ledger:
             if first < since:
                 continue
-            ids = {case_id, episode_id, event_id}
+            ids = {case_id, event_id}
             decisions = [r.decision for r in self.existing.values()
                          if r.decision.get("answered_id") in ids]
             decisions += [d for d in self.seeded if d.get("answered_id") in ids]
@@ -118,7 +118,7 @@ def _fresh_case_cursors():
 
 
 def ledger_row(n: int, age_s: float = 60.0):
-    return (f"case-{n}", f"ep-{n}", f"ev-{n}", NOW - timedelta(seconds=age_s))
+    return (f"case-{n}", f"epi-{n}", f"ep-{n}", NOW - timedelta(seconds=age_s))
 
 
 def answered_for(*ns: int) -> AnsweredMap:
@@ -246,6 +246,31 @@ def test_case_with_a_final_intake_row_is_not_fetched_again():
     assert fetch.urls == [url_for(2), url_for(3)]
 
 
+def test_a_decision_answering_the_case_id_is_matched():
+    store = _CaseStore([ledger_row(1)])
+    store.seeded.append({"answered_id": "case-1", "allowed": True})
+    rows = asyncio.run(store.open_cases("route", "ActionRecord", since=NOW - timedelta(days=1)))
+    assert [len(r.decisions) for r in rows] == [1]
+
+
+def test_a_decision_answering_only_the_episode_id_is_not_matched():
+    # An episode id spans occurrences, so it must not pull an old case's
+    # decision onto a newer occurrence. The real SQL matches
+    # IN (case_id, event_id); this fake mirrors it.
+    store = _CaseStore([ledger_row(1)])
+    store.seeded.append({"answered_id": "epi-1", "allowed": True})
+    rows = asyncio.run(store.open_cases("route", "ActionRecord", since=NOW - timedelta(days=1)))
+    assert [len(r.decisions) for r in rows] == [0]
+
+
+def test_the_real_open_cases_sql_matches_case_id_and_event_id_only():
+    import inspect
+    from intake import IntakeStore  # noqa: PLC0415
+    sql = inspect.getsource(IntakeStore.open_cases)
+    assert "IN (d.\"case_id\", d.\"event_id\")" in sql
+    assert "d.\"episode_id\"" not in sql
+
+
 def test_other_statuses_and_network_errors_warn_once_per_tick(caplog):
     entry = make_entry()
     store = _CaseStore([ledger_row(1), ledger_row(2), ledger_row(3)])
@@ -339,7 +364,7 @@ def test_forbidden_set_is_per_entry():
 
 def test_case_id_is_url_encoded():
     entry = make_entry()
-    store = _CaseStore([("case/with space", "ep-1", "ev-1", NOW)])
+    store = _CaseStore([("case/with space", "epi-1", "ep-1", NOW)])
     fetch = _Fetch({})
     run(entry, store, fetch, answered_for(), {})
     assert fetch.urls == ["https://gateway.invalid/cases/case%2Fwith%20space/action"]
