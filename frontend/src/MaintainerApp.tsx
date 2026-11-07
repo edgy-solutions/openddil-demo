@@ -581,6 +581,7 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
               transitTriggerKey={selectedEdge}
               operationalState={tel?.operational_state ?? null}
               isPoweredOff={isPoweredOff}
+              mayResolve={session.mayResolveDiscrepancy}
               bottomLeftSlot={
                 <LocalFleetRadar
                   localAssets={radarAssets}

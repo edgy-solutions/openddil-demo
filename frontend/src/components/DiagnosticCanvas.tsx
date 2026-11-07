@@ -152,6 +152,10 @@ interface DiagnosticCanvasProps {
     /** Content stacked under the manual-question panel in the bottom-left
      *  column, so the two never share a slot. */
     bottomLeftSlot?: React.ReactNode;
+    /** The PEP declared this role may resolve a filed fault (session
+     *  affordance, threaded from MaintainerApp -- the edge pane's only
+     *  mount). Omitted or false: no Resolve button. */
+    mayResolve?: boolean;
 }
 
 export default function DiagnosticCanvas({
@@ -166,6 +170,7 @@ export default function DiagnosticCanvas({
     operationalState,
     isPoweredOff = false,
     bottomLeftSlot,
+    mayResolve = false,
 }: DiagnosticCanvasProps) {
     // The transit hook gates internally on first-mount + same-key.
     // The MRAD telemetry hook USED to live here but was lifted to
@@ -241,6 +246,7 @@ export default function DiagnosticCanvas({
         <FaultReportOverlay
             assetId={assetId}
             components={componentOptions(cm.data[0])}
+            mayResolve={mayResolve}
             faults={(cm.data[0]?.manual_discrepancies ?? [])
                 .filter((d) => typeof d?.fault_code === 'string')
                 .map((d) => ({ component: String(d.component ?? ''), faultCode: d.fault_code }))}
