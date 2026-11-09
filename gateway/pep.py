@@ -78,6 +78,35 @@ import oidc
 
 # --- configuration ----------------------------------------------------------
 ELECTRIC = os.environ["OPENDDIL_ELECTRIC_URL"].rstrip("/")
+# Electric's shared secret (secure mode). Unset or empty means Electric is not
+# in secure mode and no secret is sent. Only the PEP holds it: it is appended
+# to upstream /v1/shape requests and never reaches a browser, a log or a body.
+ELECTRIC_SECRET = os.environ.get("OPENDDIL_ELECTRIC_SECRET", "").strip()
+
+
+def _electric_url(path: str, params=()) -> str:
+    """Upstream Electric URL for `path` with `params` (dict or pairs).
+
+    Any client-supplied `secret`/`api_secret` is dropped; the configured
+    secret, when there is one, is appended. The returned string carries the
+    secret: never log it, put it in an exception message or send it onward.
+    Log the path and the table instead.
+    """
+    items = params.items() if hasattr(params, "items") else params
+    pairs = [(k, v) for k, v in items if k not in ("secret", "api_secret")]
+    if ELECTRIC_SECRET:
+        pairs.append(("secret", ELECTRIC_SECRET))
+    return f"{ELECTRIC}{path}?" + urllib.parse.urlencode(pairs)
+
+
+def _scrub(text) -> str:
+    """str(text) with the Electric secret (raw or url-encoded) removed."""
+    out = str(text)
+    if ELECTRIC_SECRET:
+        for v in (ELECTRIC_SECRET, urllib.parse.quote(ELECTRIC_SECRET),
+                  urllib.parse.quote_plus(ELECTRIC_SECRET)):
+            out = out.replace(v, "***")
+    return out
 
 # Every shape the PEP opens upstream is created with compaction. Electric
 # (1.6.2) keeps a shape's change log forever unless the shape was created
@@ -610,13 +639,14 @@ def _el_grace_expired(view: tuple) -> None:
     else:
         outcome = "upstream_error"
         if handle:
-            qs = urllib.parse.urlencode([("table", view[0]), ("handle", handle)])
-            req = urllib.request.Request(f"{ELECTRIC}/v1/shape?{qs}", method="DELETE")
+            req = urllib.request.Request(
+                _electric_url("/v1/shape", [("table", view[0]), ("handle", handle)]),
+                method="DELETE")
             try:
                 with urllib.request.urlopen(req, timeout=10):
                     outcome = "deleted"
             except Exception as exc:  # noqa: BLE001
-                log.error("element view delete failed: %s", exc)
+                log.error("element view delete failed: %s", _scrub(exc))
     with _el_lock:
         _el_counts[outcome] += 1
     log.info("element view released outcome=%s", outcome)
@@ -762,7 +792,7 @@ def _screen_collect(path: str, base_params: list, principal: str, view: tuple):
     while True:
         timeout = (SCREEN_POLL_TIMEOUT_S if not held
                    else max(SCREEN_MIN_POLL_S, deadline - time.monotonic()))
-        url = f"{ELECTRIC}{path}?" + urllib.parse.urlencode(fixed + list(cur.items()))
+        url = _electric_url(path, fixed + list(cur.items()))
         try:
             with urllib.request.urlopen(url, timeout=timeout) as resp:
                 raw = resp.read()
@@ -1563,7 +1593,7 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
         else:
             params["handle"] = handle
             params["offset"] = offset
-        url = f"{ELECTRIC}/v1/shape?" + urllib.parse.urlencode(params)
+        url = _electric_url("/v1/shape", params)
         try:
             with urllib.request.urlopen(url, timeout=min(10, remaining)) as resp:
                 status = resp.status
@@ -1575,7 +1605,7 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
             else:
                 raise ElectricUnavailable(f"electric returned HTTP {exc.code}") from exc
         except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
-            raise ElectricUnavailable(f"electric unreachable: {exc}") from exc
+            raise ElectricUnavailable(f"electric unreachable: {_scrub(exc)}") from None
 
         if status == 409:
             if restarted:
@@ -4042,6 +4072,34 @@ class Pep(BaseHTTPRequestHandler):
         self._send(status, body, [("Content-Type", "application/json"),
                                   ("Cache-Control", "no-store")])
 
+    def _handle_electric_health(self) -> None:
+        """Pass Electric's /v1/health through. No session, no client query and
+        no secret: Electric does not check it there and it carries no data."""
+        try:
+            try:
+                resp = urllib.request.urlopen(ELECTRIC + "/v1/health", timeout=10)
+            except urllib.error.HTTPError as herr:
+                resp = herr
+            with resp:
+                status = resp.status if hasattr(resp, "status") else resp.code
+                body = resp.read(65536)
+                ctype = resp.headers.get("content-type")
+        except Exception:  # noqa: BLE001
+            log.error("electric health upstream error path=/v1/health")
+            body = b"electric unreachable"
+            self.send_response(502)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(status)
+        if ctype:
+            self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/healthz":
@@ -4049,6 +4107,9 @@ class Pep(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"ok")
+            return
+        if parsed.path == "/v1/health":
+            self._handle_electric_health()
             return
         # Machine-to-machine: never consults the session cookie or the
         # header-mode subject, so it is dispatched before either is read.
@@ -4198,7 +4259,7 @@ class Pep(BaseHTTPRequestHandler):
             upstream_params = [(k, v) for k, v in upstream_params if k != "replica"]
             upstream_params.append(("replica", "default"))
             screen = (params.get("live") or [""])[0].strip().lower() == "true"
-        url = f"{ELECTRIC}{parsed.path}?" + urllib.parse.urlencode(upstream_params)
+        url = _electric_url(parsed.path, upstream_params)
 
         # The body is STREAMED, not buffered: `resp` stays open across the
         # write below and bytes leave as they arrive. The semaphore is held
@@ -4282,7 +4343,7 @@ class Pep(BaseHTTPRequestHandler):
             # be recorded as a deny — that would poison the audit trail with
             # events authorization never caused.
             log.error("electric upstream error user=%s resource=%s: %s",
-                      subject, table, exc)
+                      subject, table, _scrub(exc))
             if acquired == "new":
                 element_release(principal, view)
             record_decision(decision_id=new_decision_id(), outcome="allow",
@@ -4290,7 +4351,7 @@ class Pep(BaseHTTPRequestHandler):
                             policy_version=decision["policy_version"],
                             corpus_version=decision["corpus_version"],
                             allowed_nations=decision["allowed_nations"],
-                            upstream_error=str(exc))
+                            upstream_error=_scrub(exc))
             self.send_response(502)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -4401,7 +4462,8 @@ class Pep(BaseHTTPRequestHandler):
 
 def main() -> None:
     log.info("read-path PEP listening on :%s", LISTEN_PORT)
-    log.info("  electric:  %s", ELECTRIC)
+    log.info("  electric:  %s secret=%s", ELECTRIC,
+             "configured" if ELECTRIC_SECRET else "none")
     log.info("  egress pane: %s", EGRESS_PANE or "(none)")
     log.info("  picture: %s (%d mapped clients)", PICTURE_URL or "(none)",
              len(PICTURE_CLIENTS))
