@@ -540,6 +540,26 @@ if SHAPE_ROTATE_S > 0 and SHAPE_CEILING_S == 0:
 if SHAPE_ROTATE_S > 0 and SHAPE_ROTATE_S >= SHAPE_CEILING_S:
     raise ValueError(f"{_ROT_NAMES}: rotate ({SHAPE_ROTATE_S}) must be below the "
                      f"ceiling ({SHAPE_CEILING_S})")
+# Idle sweep: a shape nobody reads any more is never presented, so rotation never
+# touches it and it grows in Electric's store for good. The sweeper deletes
+# upstream any handle this PEP bound that has not been read for longer than this
+# many seconds. 0 is off. Rotation bounds the shapes still in use; the sweeper
+# removes the ones no longer in use.
+# Scope: only handles THIS process has seen. A handle bound by an earlier PEP
+# process and never presented since is not swept, nor is a shape created by any
+# client other than the PEP. The state is per process, so it is correct only
+# because each PEP runs one replica: with two, one would sweep a handle the
+# other is serving.
+# It must exceed the longest session: a handle unread for longer than that can
+# no longer be read by the session that bound it.
+SHAPE_IDLE_S = float(os.getenv("OPENDDIL_PEP_SHAPE_IDLE_S", "0"))
+if SHAPE_IDLE_S < 0:
+    raise ValueError(f"OPENDDIL_PEP_SHAPE_IDLE_S must be >= 0, got {SHAPE_IDLE_S}")
+if SHAPE_IDLE_S > 0 and SHAPE_IDLE_S <= oidc.SESSION_CEILING:
+    raise ValueError(
+        f"OPENDDIL_PEP_SHAPE_IDLE_S ({SHAPE_IDLE_S}) must be above the longest "
+        f"session ({oidc.SESSION_CEILING}s)")
+SHAPE_SWEEP_EVERY_S = 60.0  # how often the sweeper runs
 _now = time.monotonic  # the only clock the handle-age code reads; tests replace it
 _born_lock = threading.Lock()
 _handle_born: dict[str, list] = {}   # handle -> [table, born, last_seen]
@@ -548,6 +568,7 @@ _over_logged: set[str] = set()       # handles already logged once
 _rotated: set[str] = set()           # handles already deleted upstream once
 _ROT_OUTCOMES = ("deleted", "not_found", "refused", "upstream_error")
 _rotations: dict[str, int] = {o: 0 for o in _ROT_OUTCOMES}
+_idle_deletes: dict[str, int] = {o: 0 for o in _ROT_OUTCOMES}
 
 
 def _shape_delete_url(handle: str) -> str:
@@ -601,6 +622,19 @@ def shape_age_check(table: str, handle: str) -> float:
     return age
 
 
+def _delete_handle_upstream(handle: str) -> str:
+    """DELETE the handle upstream; the outcome, one of _ROT_OUTCOMES. Rotation
+    and the idle sweep both use it, so their outcome mapping cannot drift."""
+    req = urllib.request.Request(_shape_delete_url(handle), method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return "deleted"
+    except urllib.error.HTTPError as exc:
+        return {404: "not_found", 405: "refused"}.get(exc.code, "upstream_error")
+    except Exception:  # noqa: BLE001
+        return "upstream_error"
+
+
 def _rotate_handle(table: str, handle: str, age: float) -> None:
     """Delete the handle upstream, once. The request that follows is forwarded
     after this returns; Electric answers it 409 and the 409 path binds the new one.
@@ -608,14 +642,7 @@ def _rotate_handle(table: str, handle: str, age: float) -> None:
     No retry: the handle is already in _rotated. The over-ceiling count is what
     catches a handle that keeps living.
     """
-    req = urllib.request.Request(_shape_delete_url(handle), method="DELETE")
-    try:
-        with urllib.request.urlopen(req, timeout=10):
-            outcome = "deleted"
-    except urllib.error.HTTPError as exc:
-        outcome = {404: "not_found", 405: "refused"}.get(exc.code, "upstream_error")
-    except Exception:  # noqa: BLE001
-        outcome = "upstream_error"
+    outcome = _delete_handle_upstream(handle)
     with _born_lock:
         _rotations[outcome] += 1
     # Never the URL: _shape_delete_url may carry a secret later.
@@ -624,7 +651,77 @@ def _rotate_handle(table: str, handle: str, age: float) -> None:
         table, handle, age, outcome)
 
 
+def _forget_handle_locked(handle: str) -> None:
+    _handle_born.pop(handle, None)
+    _over_logged.discard(handle)
+    _rotated.discard(handle)
+
+
+_idle_warned: set[str] = set()  # handles whose failed idle delete was logged once
+
+
+def shape_idle_sweep() -> int:
+    """Delete upstream every handle unread for longer than SHAPE_IDLE_S.
+
+    Returns the number of DELETEs sent. A handle whose DELETE is refused or
+    fails stays tracked with last_seen unmoved, so the next pass retries it.
+    """
+    if SHAPE_IDLE_S <= 0:
+        return 0
+    now = _now()
+    todo: list[tuple[str, str]] = []
+    with _born_lock:
+        for h, ent in list(_handle_born.items()):
+            if now - ent[2] <= SHAPE_IDLE_S:
+                continue
+            if h in _rotated:
+                _forget_handle_locked(h)  # rotation already deleted it upstream
+                _idle_warned.discard(h)
+            else:
+                todo.append((h, ent[0]))
+    sent = 0
+    for handle, table in todo:
+        with _born_lock:
+            ent = _handle_born.get(handle)
+            if ent is None or handle in _rotated:
+                continue
+            idle = _now() - ent[2]
+            if idle <= SHAPE_IDLE_S:
+                continue  # read meanwhile
+        outcome = _delete_handle_upstream(handle)
+        sent += 1
+        ok = outcome in ("deleted", "not_found")
+        with _born_lock:
+            _idle_deletes[outcome] += 1
+            if ok:
+                _forget_handle_locked(handle)
+                _idle_warned.discard(handle)
+                warn = False
+            else:
+                warn = handle not in _idle_warned
+                _idle_warned.add(handle)
+        # Never the URL: it carries the secret.
+        if ok:
+            log.info("SHAPE IDLE DELETED table=%s handle=%s idle_s=%d outcome=%s",
+                     table, handle, idle, outcome)
+        elif warn:
+            log.warning("SHAPE IDLE DELETED table=%s handle=%s idle_s=%d outcome=%s",
+                        table, handle, idle, outcome)
+    return sent
+
+
+def _shape_sweeper() -> None:
+    while True:
+        time.sleep(SHAPE_SWEEP_EVERY_S)
+        try:
+            shape_idle_sweep()
+        except Exception:  # noqa: BLE001
+            log.exception("shape idle sweep failed")
+
+
 def _born_prune_locked(now: float) -> None:
+    if SHAPE_IDLE_S > 0:
+        return  # the sweeper is then the only thing that removes an entry
     cutoff = max(3600.0, 2 * SHAPE_CEILING_S)
     for h in [h for h, e in _handle_born.items() if now - e[2] > cutoff]:
         del _handle_born[h]
@@ -772,6 +869,12 @@ def element_metrics_text() -> str:
             live[tbl] = live.get(tbl, 0) + 1
         over = dict(_over_ceiling)
         rots = dict(_rotations)
+        idles = dict(_idle_deletes)
+        overdue = 0
+        if SHAPE_IDLE_S > 0:
+            limit = SHAPE_IDLE_S + 2 * SHAPE_SWEEP_EVERY_S
+            overdue = sum(1 for h, e in _handle_born.items()
+                          if h not in _rotated and now - e[2] > limit)
     with _el_lock:
         _el_sweep_locked(time.monotonic())
         counts = dict(_el_counts)
@@ -824,6 +927,18 @@ def element_metrics_text() -> str:
     ]
     for o in _ROT_OUTCOMES:
         out.append(f'openddil_pep_shape_rotations_total{{{t},outcome="{o}"}} {rots[o]}')
+    out += [
+        "# TYPE openddil_pep_shape_idle_seconds gauge",
+        f"openddil_pep_shape_idle_seconds{{{t}}} {int(SHAPE_IDLE_S)}",
+        "# TYPE openddil_pep_shape_idle_deletes_total counter",
+    ]
+    for o in _ROT_OUTCOMES:
+        out.append(
+            f'openddil_pep_shape_idle_deletes_total{{{t},outcome="{o}"}} {idles[o]}')
+    out += [
+        "# TYPE openddil_pep_shape_idle_overdue gauge",
+        f"openddil_pep_shape_idle_overdue{{{t}}} {overdue}",
+    ]
     return "\n".join(out) + "\n"
 
 
@@ -4745,6 +4860,10 @@ def main() -> None:
                     "is unreachable except from inside the cluster.",
                     SUBJECT_HEADER)
     threading.Thread(target=_el_sweeper, daemon=True).start()
+    if SHAPE_IDLE_S > 0:
+        threading.Thread(target=_shape_sweeper, daemon=True).start()
+    log.info("  shape idle sweep: idle %ss, every %ss (0 = off)",
+             SHAPE_IDLE_S, SHAPE_SWEEP_EVERY_S)
     start_metrics_server()
     log.info("  metrics:   :%s/metrics (tier %s)", METRICS_PORT, PEP_TIER)
     ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Pep).serve_forever()
