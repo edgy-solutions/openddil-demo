@@ -350,7 +350,7 @@ def test_p19_delete_after_grace_flag_on_deletes_by_handle(pep_module):
     assert len(ELECTRIC_DELETES) == 1
     d = ELECTRIC_DELETES[0]
     assert d["path"] == "/v1/shape"
-    assert d["params"]["table"] == [TABLE]
+    assert d["params"] == {"handle": [d["params"]["handle"][0]]}
     assert d["params"]["handle"][0].startswith("electric-")
     assert _m(murl, "openddil_pep_element_views") == 0
 

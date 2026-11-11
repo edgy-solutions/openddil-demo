@@ -507,6 +507,11 @@ _over_ceiling: dict[str, int] = {}   # table -> reads on a handle past the ceili
 _over_logged: set[str] = set()       # handles already logged once
 
 
+def _shape_delete_url(handle: str) -> str:
+    # The one place the DELETE URL is built, so a shared secret can be added in one place.
+    return f"{ELECTRIC}/v1/shape?" + urllib.parse.urlencode([("handle", handle)])
+
+
 def note_handle_born(table: str, handle: str) -> None:
     """Record a handle the upstream just answered with. Born never moves."""
     if not handle:
@@ -671,8 +676,8 @@ def _el_grace_expired(view: tuple) -> None:
     else:
         outcome = "upstream_error"
         if handle:
-            qs = urllib.parse.urlencode([("table", view[0]), ("handle", handle)])
-            req = urllib.request.Request(f"{ELECTRIC}/v1/shape?{qs}", method="DELETE")
+            # Handle alone: with a table, Electric matches the whole-table definition, not this view's.
+            req = urllib.request.Request(_shape_delete_url(handle), method="DELETE")
             try:
                 with urllib.request.urlopen(req, timeout=10):
                     outcome = "deleted"
