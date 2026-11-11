@@ -500,11 +500,25 @@ SHAPE_CEILING_S = float(os.getenv("OPENDDIL_PEP_SHAPE_CEILING_S", "0"))
 if SHAPE_CEILING_S < 0:
     raise ValueError("OPENDDIL_PEP_SHAPE_CEILING_S must be >= 0, got "
                      f"{SHAPE_CEILING_S}")
+# Period after which a handle is deleted upstream once; Electric then answers
+# the next read with 409 and a new handle. 0 is off. Needs the ceiling declared.
+SHAPE_ROTATE_S = float(os.getenv("OPENDDIL_PEP_SHAPE_ROTATE_S", "0"))
+_ROT_NAMES = "OPENDDIL_PEP_SHAPE_ROTATE_S / OPENDDIL_PEP_SHAPE_CEILING_S"
+if SHAPE_ROTATE_S < 0:
+    raise ValueError(f"{_ROT_NAMES}: rotate must be >= 0, got {SHAPE_ROTATE_S}")
+if SHAPE_ROTATE_S > 0 and SHAPE_CEILING_S == 0:
+    raise ValueError(f"{_ROT_NAMES}: rotate > 0 needs the ceiling declared (> 0)")
+if SHAPE_ROTATE_S > 0 and SHAPE_ROTATE_S >= SHAPE_CEILING_S:
+    raise ValueError(f"{_ROT_NAMES}: rotate ({SHAPE_ROTATE_S}) must be below the "
+                     f"ceiling ({SHAPE_CEILING_S})")
 _now = time.monotonic  # the only clock the handle-age code reads; tests replace it
 _born_lock = threading.Lock()
 _handle_born: dict[str, list] = {}   # handle -> [table, born, last_seen]
 _over_ceiling: dict[str, int] = {}   # table -> reads on a handle past the ceiling
 _over_logged: set[str] = set()       # handles already logged once
+_rotated: set[str] = set()           # handles already deleted upstream once
+_ROT_OUTCOMES = ("deleted", "not_found", "refused", "upstream_error")
+_rotations: dict[str, int] = {o: 0 for o in _ROT_OUTCOMES}
 
 
 def _shape_delete_url(handle: str) -> str:
@@ -540,6 +554,10 @@ def shape_age_check(table: str, handle: str) -> float:
             return 0.0
         ent[2] = now
         age = now - ent[1]
+        rotate = (SHAPE_ROTATE_S > 0 and age > SHAPE_ROTATE_S
+                  and handle not in _rotated)
+        if rotate:
+            _rotated.add(handle)
         if SHAPE_CEILING_S > 0 and age > SHAPE_CEILING_S:
             _over_ceiling[table] = _over_ceiling.get(table, 0) + 1
             first = handle not in _over_logged
@@ -549,7 +567,32 @@ def shape_age_check(table: str, handle: str) -> float:
     if first:
         log.warning("SHAPE OVER CEILING table=%s age_s=%d ceiling_s=%d handle=%s",
                     table, age, SHAPE_CEILING_S, handle)
+    if rotate:
+        _rotate_handle(table, handle, age)
     return age
+
+
+def _rotate_handle(table: str, handle: str, age: float) -> None:
+    """Delete the handle upstream, once. The request that follows is forwarded
+    after this returns; Electric answers it 409 and the 409 path binds the new one.
+
+    No retry: the handle is already in _rotated. The over-ceiling count is what
+    catches a handle that keeps living.
+    """
+    req = urllib.request.Request(_shape_delete_url(handle), method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            outcome = "deleted"
+    except urllib.error.HTTPError as exc:
+        outcome = {404: "not_found", 405: "refused"}.get(exc.code, "upstream_error")
+    except Exception:  # noqa: BLE001
+        outcome = "upstream_error"
+    with _born_lock:
+        _rotations[outcome] += 1
+    # Never the URL: _shape_delete_url may carry a secret later.
+    (log.info if outcome in ("deleted", "not_found") else log.warning)(
+        "SHAPE ROTATED table=%s handle=%s age_s=%d outcome=%s",
+        table, handle, age, outcome)
 
 
 def _born_prune_locked(now: float) -> None:
@@ -557,6 +600,7 @@ def _born_prune_locked(now: float) -> None:
     for h in [h for h, e in _handle_born.items() if now - e[2] > cutoff]:
         del _handle_born[h]
     _over_logged.intersection_update(_handle_born)
+    _rotated.intersection_update(_handle_born)
 PEP_TIER = os.getenv("OPENDDIL_PEP_TIER", "unknown").strip() or "unknown"
 METRICS_PORT = int(os.getenv("OPENDDIL_PEP_METRICS_PORT", "9464"))
 
@@ -698,6 +742,7 @@ def element_metrics_text() -> str:
             ages[tbl] = max(ages.get(tbl, 0), int(now - born))
             live[tbl] = live.get(tbl, 0) + 1
         over = dict(_over_ceiling)
+        rots = dict(_rotations)
     with _el_lock:
         _el_sweep_locked(time.monotonic())
         counts = dict(_el_counts)
@@ -743,6 +788,13 @@ def element_metrics_text() -> str:
     out.append("# TYPE openddil_pep_shape_over_ceiling_total counter")
     for tbl, v in sorted(over.items()) or [("", 0)]:
         out.append(f'openddil_pep_shape_over_ceiling_total{{{t},table="{tbl}"}} {v}')
+    out += [
+        "# TYPE openddil_pep_shape_rotate_seconds gauge",
+        f"openddil_pep_shape_rotate_seconds{{{t}}} {int(SHAPE_ROTATE_S)}",
+        "# TYPE openddil_pep_shape_rotations_total counter",
+    ]
+    for o in _ROT_OUTCOMES:
+        out.append(f'openddil_pep_shape_rotations_total{{{t},outcome="{o}"}} {rots[o]}')
     return "\n".join(out) + "\n"
 
 
