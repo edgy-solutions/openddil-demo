@@ -179,6 +179,71 @@ export async function submitReport(
   return { ok: false, status: res.status, message };
 }
 
+export interface ResolveInput {
+  assetId: string;
+  component: string;
+  faultCode: string;
+  resolution: string;
+}
+
+const RESOLVE_URL = '/cm/discrepancy/resolve';
+
+/** The exact JSON body POSTed to /cm/discrepancy/resolve: exactly four keys
+ *  (asset_id, component, fault_code, resolution), whatever else the input
+ *  object carries. Throws on an empty/whitespace or over-length resolution
+ *  so a bad request never reaches fetch. */
+export function buildResolveBody(input: ResolveInput): string {
+  const resolution = input.resolution.trim();
+  if (!resolution) {
+    throw new Error('resolution must not be empty');
+  }
+  if (resolution.length > MAX_DESCRIPTION_LENGTH) {
+    throw new Error(`resolution must be ${MAX_DESCRIPTION_LENGTH} characters or fewer`);
+  }
+  return JSON.stringify({
+    asset_id: input.assetId,
+    component: input.component,
+    fault_code: input.faultCode,
+    resolution,
+  });
+}
+
+/** POST /cm/discrepancy/resolve. Same headers and credentials as
+ *  submitReport. Throws (via buildResolveBody) before fetch on bad input. */
+export async function submitResolve(
+  fetchFn: typeof fetch,
+  input: ResolveInput,
+): Promise<SubmitReportResult> {
+  const body = buildResolveBody(input);
+  const res = await fetchFn(RESOLVE_URL, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body,
+  });
+
+  if (res.status === 202) {
+    const json = (await res.json().catch(() => ({}))) as { event_id?: string };
+    return { ok: true, eventId: json.event_id ?? '' };
+  }
+  if (res.status === 403) {
+    return { ok: false, status: 403, message: 'Your role may not resolve a fault at this tier.' };
+  }
+  if (res.status === 404) {
+    return { ok: false, status: 404, message: 'Asset not visible at this tier.' };
+  }
+  let message = res.statusText || `request failed (${res.status})`;
+  try {
+    const b = await res.json();
+    if (b && typeof b === 'object' && typeof (b as Record<string, unknown>).error === 'string') {
+      message = (b as { error: string }).error;
+    }
+  } catch {
+    // no JSON body — keep the status text.
+  }
+  return { ok: false, status: res.status, message };
+}
+
 /** Sorted, de-duplicated slot_ids from an asset's CM `installed` list — the
  *  component choices for the fault-report form. [] when there is no CM
  *  state yet (cold start) or it carries no installed parts. */

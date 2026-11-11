@@ -4059,6 +4059,11 @@ class Pep(BaseHTTPRequestHandler):
                 "labeled_tables": sorted(
                     LABELED_TABLES | ROLE_SERVED_TABLES | set(SUBJECT_SCOPED_TABLES)
                 ),
+                # An affordance only: the browser offers Resolve from this,
+                # and POST /cm/discrepancy/resolve re-checks everything.
+                "may_resolve_discrepancy": bool(
+                    CM_RESOLVE_ROLES and decision["role"] in CM_RESOLVE_ROLES
+                    and FAULT_CATALOG is not None and CM_INTAKE_URL),
             }).encode()
             self._send(200, body, [("Content-Type", "application/json"),
                                    ("Cache-Control", "no-store")])

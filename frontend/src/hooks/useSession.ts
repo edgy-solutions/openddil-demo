@@ -67,6 +67,15 @@ export interface Session {
    *  Defaults to the least-privileged value, so a subject whose corpus row
    *  omits a role gets read-only affordances rather than a blank screen. */
   role: string;
+  /** The PEP says this subject's role may resolve a filed fault at this
+   *  tier (POST /cm/discrepancy/resolve).
+   *
+   *  ⚠ AFFORDANCES, NOT ROWS. Read verbatim from /auth/me, where it is
+   *  declared by the same decision that enforces the POST, so the browser
+   *  never guesses the env-configured role list. It only offers a button;
+   *  the POST re-checks role, nation visibility and the catalog code.
+   *  Defaults to false, and anything but literal `true` reads as false. */
+  mayResolveDiscrepancy: boolean;
   /** The policy version that produced those nations — the same string the
    *  decision log records, so a screenshot and an audit line can be tied
    *  together after the fact. */
@@ -106,6 +115,7 @@ const UNKNOWN: Session = {
   nations: [],
   nationRegistry: [],
   role: 'observer',
+  mayResolveDiscrepancy: false,
   policyVersion: null,
   authDisabled: false,
   expiresAt: null,
@@ -218,6 +228,7 @@ export function useSession(): Session {
             nations: Array.isArray(body.nations) ? body.nations : [],
             nationRegistry: parseNationRegistry(body.nation_registry),
             role: typeof body.role === 'string' && body.role ? body.role : 'observer',
+            mayResolveDiscrepancy: body.may_resolve_discrepancy === true,
             policyVersion: body.policy_version ?? null,
             authDisabled: false,
             expiresAt,
