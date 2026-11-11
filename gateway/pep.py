@@ -550,15 +550,24 @@ if SHAPE_ROTATE_S > 0 and SHAPE_ROTATE_S >= SHAPE_CEILING_S:
 # client other than the PEP. The state is per process, so it is correct only
 # because each PEP runs one replica: with two, one would sweep a handle the
 # other is serving.
-# It must exceed the longest session: a handle unread for longer than that can
-# no longer be read by the session that bound it.
+# It must exceed the time after which a session with no requests has ended (the
+# session TTL in fixed mode, the inactivity period in sliding mode): a handle
+# unread for longer than that can only be presented again by a session that
+# stayed active on other reads, or a new one. Electric answers such a request
+# 409 and the client refetches the shape: a refetch, never lost data.
 SHAPE_IDLE_S = float(os.getenv("OPENDDIL_PEP_SHAPE_IDLE_S", "0"))
 if SHAPE_IDLE_S < 0:
     raise ValueError(f"OPENDDIL_PEP_SHAPE_IDLE_S must be >= 0, got {SHAPE_IDLE_S}")
-if SHAPE_IDLE_S > 0 and SHAPE_IDLE_S <= oidc.SESSION_CEILING:
+if oidc.SESSION_MODE == "sliding":
+    _SESSION_INACTIVE_S, _SESSION_INACTIVE_VAR = (
+        oidc.SESSION_IDLE, "OPENDDIL_SESSION_IDLE_SECONDS")
+else:
+    _SESSION_INACTIVE_S, _SESSION_INACTIVE_VAR = (
+        oidc.SESSION_TTL, "OPENDDIL_SESSION_TTL_SECONDS")
+if SHAPE_IDLE_S > 0 and SHAPE_IDLE_S <= _SESSION_INACTIVE_S:
     raise ValueError(
-        f"OPENDDIL_PEP_SHAPE_IDLE_S ({SHAPE_IDLE_S}) must be above the longest "
-        f"session ({oidc.SESSION_CEILING}s)")
+        f"OPENDDIL_PEP_SHAPE_IDLE_S ({SHAPE_IDLE_S}) must be above the session's "
+        f"inactivity end ({_SESSION_INACTIVE_S}s, from {_SESSION_INACTIVE_VAR})")
 SHAPE_SWEEP_EVERY_S = 60.0  # how often the sweeper runs
 _now = time.monotonic  # the only clock the handle-age code reads; tests replace it
 _born_lock = threading.Lock()

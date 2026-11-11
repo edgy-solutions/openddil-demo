@@ -359,6 +359,19 @@ def test_import_accepts_above_the_session():
     assert r.returncode == 0, r.stderr
 
 
+SLIDING = dict(OPENDDIL_SESSION_MODE="sliding", OPENDDIL_SESSION_IDLE_SECONDS="1800",
+               OPENDDIL_SESSION_MAX_SECONDS="28800")
+
+
+def test_sliding_floor_is_the_inactivity_end():
+    r = _import(OPENDDIL_PEP_SHAPE_IDLE_S="1800", **SLIDING)
+    assert r.returncode != 0
+    assert "OPENDDIL_PEP_SHAPE_IDLE_S" in r.stderr
+    assert "OPENDDIL_SESSION_IDLE_SECONDS" in r.stderr
+    r = _import(OPENDDIL_PEP_SHAPE_IDLE_S="2400", **SLIDING)
+    assert r.returncode == 0, r.stderr
+
+
 def test_series_present_from_start(pep_module, clock):
     _pep, _base, murl = pep_module
     m = _metrics(murl)
