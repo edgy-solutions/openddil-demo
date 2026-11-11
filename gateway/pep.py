@@ -492,6 +492,66 @@ ELEMENT_DELETE_UPSTREAM = os.getenv(
 VIEWER_SHAPE_MAX = int(os.getenv("OPENDDIL_PEP_VIEWER_SHAPE_MAX", "8"))
 GRACE_S = float(os.getenv("OPENDDIL_PEP_ELEMENT_GRACE_S", "30"))
 HOLDER_IDLE_S = float(os.getenv("OPENDDIL_PEP_HOLDER_IDLE_S", "120"))
+
+# --- shape handle age ---
+# Ceiling on how old a served handle may be, in seconds. 0 is off: ages are
+# still measured, nothing is counted as over. A check, not an enforcement.
+SHAPE_CEILING_S = float(os.getenv("OPENDDIL_PEP_SHAPE_CEILING_S", "0"))
+if SHAPE_CEILING_S < 0:
+    raise ValueError("OPENDDIL_PEP_SHAPE_CEILING_S must be >= 0, got "
+                     f"{SHAPE_CEILING_S}")
+_now = time.monotonic  # the only clock the handle-age code reads; tests replace it
+_born_lock = threading.Lock()
+_handle_born: dict[str, list] = {}   # handle -> [table, born, last_seen]
+_over_ceiling: dict[str, int] = {}   # table -> reads on a handle past the ceiling
+_over_logged: set[str] = set()       # handles already logged once
+
+
+def note_handle_born(table: str, handle: str) -> None:
+    """Record a handle the upstream just answered with. Born never moves."""
+    if not handle:
+        return
+    now = _now()
+    with _born_lock:
+        ent = _handle_born.get(handle)
+        if ent is None:
+            _handle_born[handle] = [table, now, now]
+        else:
+            ent[2] = now
+
+
+def shape_age_check(table: str, handle: str) -> float:
+    """Age in seconds of a handle a client presents; counts it if over the ceiling.
+
+    A handle never seen is entered with born = now and reads 0: a PEP restart
+    forgets births, so it ages old handles from the restart. The request is
+    still forwarded either way; the ceiling is a check, not an enforcement.
+    """
+    now = _now()
+    with _born_lock:
+        ent = _handle_born.get(handle)
+        if ent is None:
+            _handle_born[handle] = [table, now, now]
+            return 0.0
+        ent[2] = now
+        age = now - ent[1]
+        if SHAPE_CEILING_S > 0 and age > SHAPE_CEILING_S:
+            _over_ceiling[table] = _over_ceiling.get(table, 0) + 1
+            first = handle not in _over_logged
+            _over_logged.add(handle)
+        else:
+            first = False
+    if first:
+        log.warning("SHAPE OVER CEILING table=%s age_s=%d ceiling_s=%d handle=%s",
+                    table, age, SHAPE_CEILING_S, handle)
+    return age
+
+
+def _born_prune_locked(now: float) -> None:
+    cutoff = max(3600.0, 2 * SHAPE_CEILING_S)
+    for h in [h for h, e in _handle_born.items() if now - e[2] > cutoff]:
+        del _handle_born[h]
+    _over_logged.intersection_update(_handle_born)
 PEP_TIER = os.getenv("OPENDDIL_PEP_TIER", "unknown").strip() or "unknown"
 METRICS_PORT = int(os.getenv("OPENDDIL_PEP_METRICS_PORT", "9464"))
 
@@ -624,6 +684,15 @@ def _el_grace_expired(view: tuple) -> None:
 
 
 def element_metrics_text() -> str:
+    now = _now()
+    with _born_lock:
+        _born_prune_locked(now)
+        ages: dict[str, int] = {}
+        live: dict[str, int] = {}
+        for tbl, born, _seen in _handle_born.values():
+            ages[tbl] = max(ages.get(tbl, 0), int(now - born))
+            live[tbl] = live.get(tbl, 0) + 1
+        over = dict(_over_ceiling)
     with _el_lock:
         _el_sweep_locked(time.monotonic())
         counts = dict(_el_counts)
@@ -655,6 +724,20 @@ def element_metrics_text() -> str:
         "# TYPE openddil_delivery_merged_total counter",
         f"openddil_delivery_merged_total{{{t}}} {screen['merged']}",
     ]
+    # --- shape handle age ---
+    out += [
+        "# TYPE openddil_pep_shape_ceiling_seconds gauge",
+        f"openddil_pep_shape_ceiling_seconds{{{t}}} {int(SHAPE_CEILING_S)}",
+        "# TYPE openddil_pep_shape_handle_age_seconds gauge",
+    ]
+    for tbl, v in sorted(ages.items()):
+        out.append(f'openddil_pep_shape_handle_age_seconds{{{t},table="{tbl}"}} {v}')
+    out.append("# TYPE openddil_pep_shape_handles gauge")
+    for tbl, v in sorted(live.items()):
+        out.append(f'openddil_pep_shape_handles{{{t},table="{tbl}"}} {v}')
+    out.append("# TYPE openddil_pep_shape_over_ceiling_total counter")
+    for tbl, v in sorted(over.items()) or [("", 0)]:
+        out.append(f'openddil_pep_shape_over_ceiling_total{{{t},table="{tbl}"}} {v}')
     return "\n".join(out) + "\n"
 
 
@@ -4260,6 +4343,8 @@ class Pep(BaseHTTPRequestHandler):
             self._deny("shape handle was not minted for this session and view",
                        subject=subject, resource=table)
             return
+        if handle:
+            shape_age_check(table, handle)
 
         # Electric's narrowing parameters, validated by name and type. See
         # narrowing_params. Refused BEFORE anything is forwarded.
@@ -4396,6 +4481,7 @@ class Pep(BaseHTTPRequestHandler):
 
         if refetch is None or new_handle:
             bind_handle(principal, view, new_handle)
+            note_handle_born(table, new_handle)
         if acquired is not None:
             element_note_handle(view, new_handle)
         record_decision(decision_id=new_decision_id(), outcome="allow",
