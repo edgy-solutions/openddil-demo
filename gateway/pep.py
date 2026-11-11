@@ -56,6 +56,7 @@ subject, never a client-supplied one.
 """
 from __future__ import annotations
 
+import codecs
 import datetime
 import html
 import json
@@ -1535,6 +1536,102 @@ def read_visible_row(table: str, asset_id: str, nations: list[str]) -> dict | No
     return rows[0] if rows else None
 
 
+_JSON_WS = " \t\r\n"
+
+
+def _iter_shape_messages(resp):
+    """Yield each top-level element of a shape response's JSON array, parsing
+    as the body arrives. The old read took the whole body, then the whole
+    parsed list, then the result rows, all at once, in a thread of a
+    ThreadingHTTPServer; glibc keeps each thread arena's high-water mark, so
+    one screen load left tens of MiB resident that never came back (see the
+    MAX_INFLIGHT_SHAPES comment, the same fix made earlier on the proxy
+    path). Here a thread peaks at one chunk plus one message plus the rows.
+
+    An element is accepted only once a non-whitespace character follows it or
+    the stream has ended, so `[12` + `3]` is never read as 12. Anything but a
+    well-formed array raises ElectricUnavailable."""
+    bad = ElectricUnavailable("unexpected shape response shape")
+    dec = codecs.getincrementaldecoder("utf-8")()
+    parser = json.JSONDecoder()
+    buf = ""
+    idx = 0
+    ended = False
+    state = "start"   # start -> first (after [) -> sep (after element) -> done
+
+    def fill() -> bool:
+        nonlocal buf, idx, ended
+        chunk = resp.read(STREAM_CHUNK)
+        if chunk:
+            try:
+                text = dec.decode(chunk)
+            except UnicodeDecodeError as exc:
+                raise bad from exc
+        else:
+            try:
+                text = dec.decode(b"", final=True)
+            except UnicodeDecodeError as exc:
+                raise bad from exc
+            ended = True
+        buf = buf[idx:] + text
+        idx = 0
+        return not ended
+
+    def skip_ws() -> bool:
+        """Advance idx past whitespace; True when a character is available."""
+        nonlocal idx
+        while True:
+            while idx < len(buf) and buf[idx] in _JSON_WS:
+                idx += 1
+            if idx < len(buf):
+                return True
+            if ended or not fill():
+                return False
+
+    while True:
+        if not skip_ws():
+            if state == "done":
+                return
+            raise bad
+        ch = buf[idx]
+        if state == "start":
+            if ch != "[":
+                raise bad
+            idx += 1
+            state = "first"
+        elif state == "done":
+            raise bad
+        elif state == "first" and ch == "]":
+            idx += 1
+            state = "done"
+        elif state == "sep":
+            if ch == "]":
+                idx += 1
+                state = "done"
+            elif ch == ",":
+                idx += 1
+                state = "elem"
+            else:
+                raise bad
+        else:   # first or elem: one element
+            while True:
+                try:
+                    value, end = parser.raw_decode(buf, idx)
+                except ValueError as exc:
+                    if ended:
+                        raise bad from exc
+                    fill()
+                    continue
+                # Truncation guard: a number may continue in the next chunk.
+                if end >= len(buf) and not ended:
+                    fill()
+                    continue
+                break
+            idx = end
+            state = "sep"
+            yield value
+
+
 def _follow_shape(table: str, where: str, columns: list[str] | None,
                   default_key: str) -> list[dict]:
     """The shape-following loop described in read_visible_row's docstring,
@@ -1564,14 +1661,50 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
             params["handle"] = handle
             params["offset"] = offset
         url = f"{ELECTRIC}/v1/shape?" + urllib.parse.urlencode(params)
+        up_to_date = False
+        must_refetch = False
+        status = 0
+        resp_headers = None
         try:
             with urllib.request.urlopen(url, timeout=min(10, remaining)) as resp:
                 status = resp.status
                 resp_headers = resp.headers
-                body = resp.read()
+                if status == 200:
+                    # Parsed as it arrives, not held whole: see
+                    # _iter_shape_messages.
+                    for msg in _iter_shape_messages(resp):
+                        if not isinstance(msg, dict):
+                            continue
+                        msg_headers = msg.get("headers")
+                        control = (msg_headers.get("control")
+                                   if isinstance(msg_headers, dict) else None)
+                        if control == "up-to-date":
+                            up_to_date = True
+                            continue
+                        if control == "must-refetch":
+                            must_refetch = True
+                            break
+                        key = msg.get("key") or default_key
+                        operation = (msg_headers.get("operation")
+                                     if isinstance(msg_headers, dict) else None)
+                        # A delete is honoured whether or not it carries a
+                        # value: skipping it would leave a row visible that
+                        # the shape has dropped.
+                        if operation == "delete":
+                            rows.pop(key, None)
+                            continue
+                        value = msg.get("value")
+                        if not isinstance(value, dict):
+                            continue
+                        if operation == "update" and key in rows:
+                            rows[key] = {**rows[key], **value}
+                        else:
+                            rows[key] = dict(value)
+        except ElectricUnavailable:
+            raise
         except urllib.error.HTTPError as exc:
             if exc.code == 409:
-                status, resp_headers, body = 409, exc.headers, b""
+                status, resp_headers = 409, exc.headers
             else:
                 raise ElectricUnavailable(f"electric returned HTTP {exc.code}") from exc
         except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
@@ -1585,41 +1718,6 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
             continue
         if status != 200:
             raise ElectricUnavailable(f"electric returned HTTP {status}")
-
-        try:
-            messages = json.loads(body)
-        except Exception as exc:  # noqa: BLE001
-            raise ElectricUnavailable("unexpected shape response shape") from exc
-        if not isinstance(messages, list):
-            raise ElectricUnavailable("unexpected shape response shape")
-
-        up_to_date = False
-        must_refetch = False
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            msg_headers = msg.get("headers")
-            control = msg_headers.get("control") if isinstance(msg_headers, dict) else None
-            if control == "up-to-date":
-                up_to_date = True
-                continue
-            if control == "must-refetch":
-                must_refetch = True
-                break
-            key = msg.get("key") or default_key
-            operation = msg_headers.get("operation") if isinstance(msg_headers, dict) else None
-            # A delete is honoured whether or not it carries a value: skipping
-            # it would leave a row visible that the shape has dropped.
-            if operation == "delete":
-                rows.pop(key, None)
-                continue
-            value = msg.get("value")
-            if not isinstance(value, dict):
-                continue
-            if operation == "update" and key in rows:
-                rows[key] = {**rows[key], **value}
-            else:
-                rows[key] = dict(value)
 
         if must_refetch:
             if restarted:
