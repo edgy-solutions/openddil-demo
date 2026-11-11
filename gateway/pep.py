@@ -576,6 +576,11 @@ def _shape_delete_url(handle: str) -> str:
     return _electric_url("/v1/shape", [("handle", handle)])
 
 
+def _log_handle_bound(table: str, handle: str) -> None:
+    # Table and handle only: the URL and the where clause carry the secret.
+    log.info("SHAPE HANDLE BOUND table=%s handle=%s", table, handle)
+
+
 def note_handle_born(table: str, handle: str) -> None:
     """Record a handle the upstream just answered with. Born never moves."""
     if not handle:
@@ -583,10 +588,13 @@ def note_handle_born(table: str, handle: str) -> None:
     now = _now()
     with _born_lock:
         ent = _handle_born.get(handle)
-        if ent is None:
+        new = ent is None
+        if new:
             _handle_born[handle] = [table, now, now]
         else:
             ent[2] = now
+    if new:
+        _log_handle_bound(table, handle)
 
 
 def shape_age_check(table: str, handle: str) -> float:
@@ -599,21 +607,27 @@ def shape_age_check(table: str, handle: str) -> float:
     now = _now()
     with _born_lock:
         ent = _handle_born.get(handle)
-        if ent is None:
+        bound = ent is None
+        if bound:
             _handle_born[handle] = [table, now, now]
-            return 0.0
-        ent[2] = now
-        age = now - ent[1]
-        rotate = (SHAPE_ROTATE_S > 0 and age > SHAPE_ROTATE_S
-                  and handle not in _rotated)
-        if rotate:
-            _rotated.add(handle)
-        if SHAPE_CEILING_S > 0 and age > SHAPE_CEILING_S:
-            _over_ceiling[table] = _over_ceiling.get(table, 0) + 1
-            first = handle not in _over_logged
-            _over_logged.add(handle)
+            age = 0.0
+            rotate = first = False
         else:
-            first = False
+            ent[2] = now
+            age = now - ent[1]
+            rotate = (SHAPE_ROTATE_S > 0 and age > SHAPE_ROTATE_S
+                      and handle not in _rotated)
+            if rotate:
+                _rotated.add(handle)
+            if SHAPE_CEILING_S > 0 and age > SHAPE_CEILING_S:
+                _over_ceiling[table] = _over_ceiling.get(table, 0) + 1
+                first = handle not in _over_logged
+                _over_logged.add(handle)
+            else:
+                first = False
+    if bound:
+        _log_handle_bound(table, handle)
+        return 0.0
     if first:
         log.warning("SHAPE OVER CEILING table=%s age_s=%d ceiling_s=%d handle=%s",
                     table, age, SHAPE_CEILING_S, handle)

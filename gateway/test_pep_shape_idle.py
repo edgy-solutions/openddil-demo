@@ -366,3 +366,16 @@ def test_series_present_from_start(pep_module, clock):
     assert m[OVERDUE] == 0
     for o in ("deleted", "not_found", "refused", "upstream_error"):
         assert m[_idle(o)] == 0
+
+
+def test_bound_is_logged_once_per_handle(pep_module, clock, caplog):
+    _pep, base, _m = pep_module
+    caplog.set_level(logging.INFO, logger="pep")
+    _, h = _get(base)
+    assert _get(base, handle=h)[0] == 200
+    assert _get(base, handle=h)[0] == 200
+    hits = [r.getMessage() for r in caplog.records
+            if "SHAPE HANDLE BOUND" in r.getMessage() and f"handle={h}" in r.getMessage()]
+    assert len(hits) == 1
+    assert f"table={TABLE}" in hits[0] and "secret" not in hits[0].lower()
+    _no_url_in_logs(caplog)
