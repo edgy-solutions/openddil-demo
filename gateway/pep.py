@@ -1087,6 +1087,8 @@ def element_metrics_text() -> str:
             # Both sources: an overdue handle is overdue whoever bound it.
             overdue = sum(1 for h, e in _handle_born.items()
                           if h not in _rotated and now - e[2] > limit)
+    with _client_lock:
+        drops = dict(_client_disconnects)
     with _el_lock:
         _el_sweep_locked(time.monotonic())
         counts = dict(_el_counts)
@@ -1164,7 +1166,39 @@ def element_metrics_text() -> str:
     out.append("# TYPE openddil_pep_handle_state_writes_total counter")
     for o in ("ok", "error"):
         out.append(f'openddil_pep_handle_state_writes_total{{{t},outcome="{o}"}} {writes[o]}')
+    out.append("# TYPE openddil_pep_client_disconnects_total counter")
+    for srv in ("pep", "metrics"):
+        out.append(
+            f'openddil_pep_client_disconnects_total{{{t},server="{srv}"}} {drops[srv]}')
     return "\n".join(out) + "\n"
+
+
+_client_lock = threading.Lock()
+_client_disconnects: dict[str, int] = {"pep": 0, "metrics": 0}
+_DROPPED = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)
+
+
+class _PepHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that counts a dropped client instead of printing the
+    socketserver traceback for it. Any other error keeps the full traceback."""
+
+    server_label = "pep"
+
+    def handle_error(self, request, client_address):  # noqa: D401
+        exc = sys.exc_info()[1]
+        if isinstance(exc, _DROPPED):
+            with _client_lock:
+                _client_disconnects[self.server_label] = (
+                    _client_disconnects.get(self.server_label, 0) + 1)
+            # No client address: it identifies a person's machine.
+            log.debug("client disconnected server=%s error=%s",
+                      self.server_label, type(exc).__name__)
+            return
+        super().handle_error(request, client_address)
+
+
+class _MetricsHTTPServer(_PepHTTPServer):
+    server_label = "metrics"
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -1193,7 +1227,7 @@ def _el_sweeper() -> None:
 
 
 def start_metrics_server(port: int = METRICS_PORT) -> ThreadingHTTPServer:
-    srv = ThreadingHTTPServer(("0.0.0.0", port), MetricsHandler)
+    srv = _MetricsHTTPServer(("0.0.0.0", port), MetricsHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
@@ -5118,7 +5152,7 @@ def main() -> None:
         log.info("  handle state: off")
     start_metrics_server()
     log.info("  metrics:   :%s/metrics (tier %s)", METRICS_PORT, PEP_TIER)
-    ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Pep).serve_forever()
+    _PepHTTPServer(("0.0.0.0", LISTEN_PORT), Pep).serve_forever()
 
 
 if __name__ == "__main__":
