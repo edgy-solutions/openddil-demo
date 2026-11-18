@@ -141,9 +141,12 @@ def env(pep_module, tmp_path):
             pep._handle_born.clear()
             pep._over_logged.clear()
             pep._rotated.clear()
+            pep._adopted_pending.clear()
+            pep._adopted_rotating.clear()
             pep._idle_warned.clear()
             for k in pep._rotations:
                 pep._rotations[k] = 0
+                pep._adopted_rotations[k] = 0
                 pep._idle_deletes[k] = 0
             for k in pep._state_writes:
                 pep._state_writes[k] = 0
@@ -312,7 +315,7 @@ def test_adopted_rotated_handle_is_forgotten_without_a_delete(env):
     assert "h-bounded" not in DELETES
 
 
-def test_adopted_handle_presented_again_reports_true_age_and_rotates(env):
+def test_adopted_handle_presented_again_reports_true_age_and_rotates_on_first_read(env):
     pep, _m, mono, wall, _f, wipe = env
     pep.note_handle_born(TABLE, "young")
     pep.note_handle_born(TABLE, "old")
@@ -323,12 +326,12 @@ def test_adopted_handle_presented_again_reports_true_age_and_rotates(env):
     _bounce(pep, mono, wall, wipe, gap=50)
     pep.adopt_handle_state()
     assert abs(pep.shape_age_check(TABLE, "young") - 150) < 1
-    assert DELETES == []
+    assert DELETES == ["young"]                            # rotated on first read
     age = pep.shape_age_check(TABLE, "old")
     assert PERIOD + 500 + 50 - 1 <= age <= PERIOD + 500 + 50 + 1
-    assert DELETES == ["old"]
+    assert DELETES == ["young", "old"]
     assert pep.shape_age_check(TABLE, "old") > PERIOD
-    assert DELETES == ["old"]                              # once
+    assert DELETES == ["young", "old"]                     # once each
 
 
 def test_metrics_over_http(env):
@@ -509,3 +512,71 @@ def test_metrics_export_unchanged(env):
     s = _series(murl)
     assert _g(s, "openddil_pep_handle_state_writes_total", outcome="unchanged") == 2
     assert _g(s, "openddil_pep_handle_state_writes_total", outcome="ok") == 1
+
+
+def _adopt_one(pep, mono, wall, wipe, handle="young", source="proxy", rotated=False):
+    pep.note_handle_born(TABLE, handle, source=source)
+    if rotated:
+        pep._rotated.add(handle)
+    mono.t += 100
+    wall.t += 100
+    _bounce(pep, mono, wall, wipe, gap=50)
+    assert pep.adopt_handle_state() == 1
+
+
+def test_adopted_handle_rotates_once_on_first_read(env, caplog):
+    pep, murl, mono, wall, _f, wipe = env
+    caplog.set_level(logging.INFO, logger="pep")
+    _adopt_one(pep, mono, wall, wipe)
+    assert pep.shape_age_check(TABLE, "young") < PERIOD
+    assert DELETES == ["young"]
+    rot = _msgs(caplog, "SHAPE ROTATED")
+    assert len(rot) == 1 and "reason=adopted" in rot[0]
+    pep.shape_age_check(TABLE, "young")
+    assert DELETES == ["young"]
+    s = _series(murl)
+    assert _g(s, "openddil_pep_shape_adopted_rotations_total", outcome="deleted") == 1
+
+
+def test_adopted_rotated_in_file_is_not_rotated_again(env):
+    pep, _m, mono, wall, _f, wipe = env
+    _adopt_one(pep, mono, wall, wipe, rotated=True)
+    assert "young" not in pep._adopted_pending
+    pep.shape_age_check(TABLE, "young")
+    assert DELETES == []
+
+
+def test_new_handle_after_start_is_not_rotated_on_first_read(env):
+    pep, _m, mono, wall, _f, wipe = env
+    _adopt_one(pep, mono, wall, wipe)
+    pep.note_handle_born(TABLE, "fresh")
+    mono.t += 1
+    pep.shape_age_check(TABLE, "fresh")
+    assert DELETES == []
+    assert "fresh" not in pep._adopted_pending
+
+
+def test_rotation_off_adopted_not_deleted(env):
+    pep, _m, mono, wall, _f, wipe = env
+    _adopt_one(pep, mono, wall, wipe)
+    saved = (pep.SHAPE_ROTATE_S, pep.SHAPE_CEILING_S)
+    pep.SHAPE_ROTATE_S = 0
+    pep.SHAPE_CEILING_S = CEILING
+    try:
+        pep.shape_age_check(TABLE, "young")
+    finally:
+        pep.SHAPE_ROTATE_S, pep.SHAPE_CEILING_S = saved
+    assert DELETES == []
+    assert "young" not in pep._adopted_pending
+
+
+def test_bounded_adopted_handle_rotates_on_first_answer(env):
+    pep, _m, mono, wall, _f, wipe = env
+    _adopt_one(pep, mono, wall, wipe, handle="b1", source="bounded")
+    new, rotate, _age = pep.note_handle_born(TABLE, "b1", source="bounded")
+    assert (new, rotate) == (False, True)
+    assert "b1" in pep._adopted_rotating            # the reason the caller takes
+    new, rotate, _age = pep.note_handle_born(TABLE, "b1", source="bounded")
+    assert rotate is False
+    assert pep._take_adopted_rotating("b1") == "adopted"
+    assert pep._take_adopted_rotating("b1") == ""

@@ -594,6 +594,13 @@ _rotated: set[str] = set()           # handles already deleted upstream once
 _ROT_OUTCOMES = ("deleted", "not_found", "refused", "upstream_error")
 _rotations: dict[str, int] = {o: 0 for o in _ROT_OUTCOMES}
 _idle_deletes: dict[str, int] = {o: 0 for o in _ROT_OUTCOMES}
+_adopted_rotations: dict[str, int] = {o: 0 for o in _ROT_OUTCOMES}
+# Handles adopted from the state file that have not been read since start; the
+# first read rotates them (guarded by _born_lock).
+_adopted_pending: set[str] = set()
+# Bounded handles note_handle_born flagged for an adopted rotation; the bounded
+# caller takes the entry when it deletes, so the log and metric carry the reason.
+_adopted_rotating: set[str] = set()
 
 
 def _shape_delete_url(handle: str) -> str:
@@ -635,10 +642,18 @@ def note_handle_born(table: str, handle: str,
         else:
             ent[2] = now
             age = now - ent[1]
+            adopted = handle in _adopted_pending
+            _adopted_pending.discard(handle)
             if (source == "bounded" and ent[3] == "bounded" and SHAPE_ROTATE_S > 0
-                    and age > SHAPE_ROTATE_S and handle not in _rotated):
+                    and handle not in _rotated
+                    and (age > SHAPE_ROTATE_S or adopted)):
+                # Rotation off (SHAPE_ROTATE_S == 0) deletes nothing, adopted or not.
+                # For the proxy source an adopted handle is only discarded from the
+                # pending set; the next presented read rotates it in shape_age_check.
                 rotate = True
                 _rotated.add(handle)
+                if adopted:
+                    _adopted_rotating.add(handle)
     if new:
         _log_handle_bound(table, handle, source)
     return new, rotate, age
@@ -662,8 +677,13 @@ def shape_age_check(table: str, handle: str) -> float:
         else:
             ent[2] = now
             age = now - ent[1]
-            rotate = (SHAPE_ROTATE_S > 0 and age > SHAPE_ROTATE_S
-                      and handle not in _rotated)
+            adopted = handle in _adopted_pending
+            _adopted_pending.discard(handle)
+            # Rotation off (SHAPE_ROTATE_S == 0): the PEP deletes nothing through
+            # rotation, so an adopted handle is only discarded from the pending set.
+            rotate = (SHAPE_ROTATE_S > 0 and handle not in _rotated
+                      and (age > SHAPE_ROTATE_S or adopted))
+            reason = "adopted" if (rotate and adopted) else ""
             if rotate:
                 _rotated.add(handle)
             if SHAPE_CEILING_S > 0 and age > SHAPE_CEILING_S:
@@ -679,7 +699,7 @@ def shape_age_check(table: str, handle: str) -> float:
         log.warning("SHAPE OVER CEILING table=%s age_s=%d ceiling_s=%d handle=%s",
                     table, age, SHAPE_CEILING_S, handle)
     if rotate:
-        _rotate_handle(table, handle, age)
+        _rotate_handle(table, handle, age, reason=reason)
     return age
 
 
@@ -696,7 +716,17 @@ def _delete_handle_upstream(handle: str) -> str:
         return "upstream_error"
 
 
-def _rotate_handle(table: str, handle: str, age: float, source: str = "proxy") -> None:
+def _take_adopted_rotating(handle: str) -> str:
+    """The rotation reason for a bounded handle: "adopted" once, else ""."""
+    with _born_lock:
+        if handle in _adopted_rotating:
+            _adopted_rotating.discard(handle)
+            return "adopted"
+    return ""
+
+
+def _rotate_handle(table: str, handle: str, age: float, source: str = "proxy",
+                   reason: str = "") -> None:
     """Delete the handle upstream, once. The request that follows is forwarded
     after this returns; Electric answers it 409 and the 409 path binds the new one.
 
@@ -706,13 +736,16 @@ def _rotate_handle(table: str, handle: str, age: float, source: str = "proxy") -
     outcome = _delete_handle_upstream(handle)
     with _born_lock:
         _rotations[outcome] += 1
+        if reason == "adopted":
+            _adopted_rotations[outcome] += 1
         if source == "bounded":
             # A bounded read always starts at offset=-1 and never presents a
             # handle again, so nothing is left to track.
             _forget_handle_locked(handle)
     # Never the URL: _shape_delete_url may carry a secret later.
     (log.info if outcome in ("deleted", "not_found") else log.warning)(
-        "SHAPE ROTATED table=%s handle=%s age_s=%d outcome=%s" + _src_suffix(source),
+        "SHAPE ROTATED table=%s handle=%s age_s=%d outcome=%s" + _src_suffix(source)
+        + (" reason=adopted" if reason == "adopted" else ""),
         table, handle, age, outcome)
 
 
@@ -720,6 +753,8 @@ def _forget_handle_locked(handle: str) -> None:
     _handle_born.pop(handle, None)
     _over_logged.discard(handle)
     _rotated.discard(handle)
+    _adopted_pending.discard(handle)
+    _adopted_rotating.discard(handle)
 
 
 _idle_warned: set[str] = set()  # handles whose failed idle delete was logged once
@@ -906,6 +941,8 @@ def adopt_handle_state() -> int:
             if ent.get("rotated") is True:
                 _rotated.add(h)
                 n_rot += 1
+            else:
+                _adopted_pending.add(h)
             lines.append((tbl, h, src, mono - born, mono - seen))
         _state_adopted.update(counts)
     for tbl, h, src, age, idle in lines:
@@ -938,6 +975,8 @@ def _born_prune_locked(now: float) -> None:
         del _handle_born[h]
     _over_logged.intersection_update(_handle_born)
     _rotated.intersection_update(_handle_born)
+    _adopted_pending.intersection_update(_handle_born)
+    _adopted_rotating.intersection_update(_handle_born)
 PEP_TIER = os.getenv("OPENDDIL_PEP_TIER", "unknown").strip() or "unknown"
 METRICS_PORT = int(os.getenv("OPENDDIL_PEP_METRICS_PORT", "9464"))
 
@@ -1086,6 +1125,7 @@ def element_metrics_text() -> str:
                 live[tbl] = live.get(tbl, 0) + 1
         over = dict(_over_ceiling)
         rots = dict(_rotations)
+        arots = dict(_adopted_rotations)
         idles = dict(_idle_deletes)
         adopted = dict(_state_adopted)
         writes = dict(_state_writes)
@@ -1171,6 +1211,10 @@ def element_metrics_text() -> str:
     ]
     for src in ("proxy", "bounded"):
         out.append(f'openddil_pep_shape_handles_adopted{{{t},source="{src}"}} {adopted[src]}')
+    out.append("# TYPE openddil_pep_shape_adopted_rotations_total counter")
+    for o in _ROT_OUTCOMES:
+        out.append(
+            f'openddil_pep_shape_adopted_rotations_total{{{t},outcome="{o}"}} {arots[o]}')
     out.append("# TYPE openddil_pep_handle_state_writes_total counter")
     for o in ("ok", "unchanged", "error"):
         out.append(f'openddil_pep_handle_state_writes_total{{{t},outcome="{o}"}} {writes[o]}')
@@ -2288,7 +2332,8 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
         if up_to_date:
             if last is not None and last[1]:
                 # The rows are complete; the delete does not touch the read.
-                _rotate_handle(table, last[0], last[2], source="bounded")
+                _rotate_handle(table, last[0], last[2], source="bounded",
+                               reason=_take_adopted_rotating(last[0]))
             return list(rows.values())
 
         new_offset = resp_headers.get("electric-offset")
