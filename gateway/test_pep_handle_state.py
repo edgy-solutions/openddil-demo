@@ -131,7 +131,7 @@ class Clock:
 @pytest.fixture
 def env(pep_module, tmp_path):
     pep, murl = pep_module
-    saved = (pep._now, pep._wall, pep.HANDLE_STATE_FILE, pep._state_last)
+    saved = (pep._now, pep._wall, pep.HANDLE_STATE_FILE, pep._state_last_key)
     mono, wall = Clock(1000.0), Clock(1_800_000_000.0)
     pep._now, pep._wall = mono, wall
     pep.HANDLE_STATE_FILE = str(tmp_path / "handles.json")
@@ -150,13 +150,13 @@ def env(pep_module, tmp_path):
             for k in pep._state_adopted:
                 pep._state_adopted[k] = 0
             pep._state_warned.clear()
-        pep._state_last = None
+        pep._state_last_key = None
         DELETES.clear()
 
     wipe()
     yield pep, murl, mono, wall, tmp_path / "handles.json", wipe
     wipe()
-    pep._now, pep._wall, pep.HANDLE_STATE_FILE, pep._state_last = saved
+    pep._now, pep._wall, pep.HANDLE_STATE_FILE, pep._state_last_key = saved
 
 
 def _series(murl: str) -> dict:
@@ -198,7 +198,7 @@ def _bounce(pep, mono, wall, wipe, gap=100):
     """Save, lose the in-memory state, let the wall clock run, start 'fresh'."""
     assert pep.save_handle_state() == "ok"
     wipe()
-    pep._state_last = None
+    pep._state_last_key = None
     mono.t = 50_000.0      # a new process has a new monotonic origin
     wall.t += gap
 
@@ -336,7 +336,7 @@ def test_metrics_over_http(env):
     s = _series(murl)
     for src in ("proxy", "bounded"):
         assert _g(s, "openddil_pep_shape_handles_adopted", source=src) == 0
-    for o in ("ok", "error"):
+    for o in ("ok", "unchanged", "error"):
         assert _g(s, "openddil_pep_handle_state_writes_total", outcome=o) == 0
     _seed(pep, mono, wall)
     _bounce(pep, mono, wall, wipe)
@@ -453,3 +453,59 @@ def test_one_real_restart(stubs, tmp_path):
         for pr in (first, second):
             if pr is not None:
                 pr.stop()
+
+
+def test_unchanged_when_only_the_clock_moves(env):
+    pep, _m, mono, wall, f, _w = env
+    _seed(pep, mono, wall)
+    assert pep.save_handle_state() == "ok"
+    st, raw = f.stat().st_mtime_ns, f.read_bytes()
+    mono.t += PERIOD
+    wall.t += PERIOD
+    assert pep.save_handle_state() == "unchanged"
+    assert f.stat().st_mtime_ns == st and f.read_bytes() == raw
+    assert pep._state_writes["unchanged"] == 1
+
+
+def test_a_read_is_a_change(env):
+    pep, _m, mono, wall, f, _w = env
+    _seed(pep, mono, wall)
+    assert pep.save_handle_state() == "ok"
+
+    def seen():
+        return {h["handle"]: h["last_seen_wall"]
+                for h in json.loads(f.read_bytes())["handles"]}
+    before = seen()["h-proxy"]
+    mono.t += 5
+    wall.t += 5
+    pep.shape_age_check(TABLE, "h-proxy")
+    assert pep.save_handle_state() == "ok"
+    assert seen()["h-proxy"] > before
+
+
+def test_failed_write_retries(env, tmp_path):
+    pep, _m, mono, wall, f, _w = env
+    _seed(pep, mono, wall)
+    good = pep.HANDLE_STATE_FILE
+    pep.HANDLE_STATE_FILE = str(tmp_path / "nope" / "handles.json")
+    assert pep.save_handle_state() == "error"
+    pep.HANDLE_STATE_FILE = good
+    assert pep.save_handle_state() == "ok"
+    assert f.exists()
+
+
+def test_metrics_export_unchanged(env):
+    pep, murl, mono, wall, _f, _w = env
+    with urllib.request.urlopen(f"{murl}/metrics", timeout=10) as r:
+        text = r.read().decode()
+    lines = [ln for ln in text.splitlines()
+             if ln.startswith("openddil_pep_handle_state_writes_total{")]
+    assert sorted(re.search(r'outcome="(\w+)"', ln).group(1) for ln in lines) == [
+        "error", "ok", "unchanged"]
+    _seed(pep, mono, wall)
+    assert pep.save_handle_state() == "ok"
+    assert pep.save_handle_state() == "unchanged"
+    assert pep.save_handle_state() == "unchanged"
+    s = _series(murl)
+    assert _g(s, "openddil_pep_handle_state_writes_total", outcome="unchanged") == 2
+    assert _g(s, "openddil_pep_handle_state_writes_total", outcome="ok") == 1

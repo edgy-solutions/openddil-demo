@@ -784,9 +784,9 @@ def _shape_sweeper() -> None:
             log.exception("shape idle sweep failed")
 
 
-_state_writes: dict[str, int] = {"ok": 0, "error": 0}
+_state_writes: dict[str, int] = {"ok": 0, "unchanged": 0, "error": 0}
 _state_adopted: dict[str, int] = {"proxy": 0, "bounded": 0}
-_state_last: bytes | None = None    # the bytes last written
+_state_last_key: tuple | None = None    # the change key last written
 _state_warned: set[str] = set()     # error kinds already logged
 
 
@@ -798,17 +798,27 @@ def _electric_id() -> str:
 
 def save_handle_state() -> str:
     """Write the tracked handles to HANDLE_STATE_FILE: "ok", "unchanged" or
-    "error". The file is replaced whole, so a reader sees the old or the new."""
-    global _state_last
+    "error". The file is replaced whole, so a reader sees the old or the new.
+
+    The file is written only when its content changes. The comparison is on a
+    key built from the monotonic snapshot and excludes written_at, so an idle
+    PEP neither rewrites nor fsyncs. A failed write leaves the key as it was,
+    so the next pass retries."""
+    global _state_last_key
     path = HANDLE_STATE_FILE
     if not path:
-        return "unchanged"
+        return "unchanged"      # no file configured: not counted
     mono, wall = _now(), _wall()
     with _born_lock:
         snap = [(h, e[0], e[3], e[1], e[2], h in _rotated)
                 for h, e in _handle_born.items()]
     snap.sort(key=lambda r: r[4], reverse=True)     # most recently seen first
     snap = sorted(snap[:HANDLE_STATE_MAX], key=lambda r: r[0])
+    key = (PEP_TIER, _electric_id(), tuple(snap))
+    if key == _state_last_key:
+        with _born_lock:
+            _state_writes["unchanged"] += 1
+        return "unchanged"
     doc = {
         "version": 1, "tier": PEP_TIER, "electric_id": _electric_id(),
         "written_at": int(wall),
@@ -818,8 +828,6 @@ def save_handle_state() -> str:
                      "rotated": rot} for h, t, src, born, seen, rot in snap],
     }
     data = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    if data == _state_last:
-        return "unchanged"
     tmp = path + ".tmp"
     try:
         with open(tmp, "wb") as fh:
@@ -840,7 +848,7 @@ def save_handle_state() -> str:
         except OSError:
             pass
         return "error"
-    _state_last = data
+    _state_last_key = key
     with _born_lock:
         _state_writes["ok"] += 1
     return "ok"
@@ -1164,7 +1172,7 @@ def element_metrics_text() -> str:
     for src in ("proxy", "bounded"):
         out.append(f'openddil_pep_shape_handles_adopted{{{t},source="{src}"}} {adopted[src]}')
     out.append("# TYPE openddil_pep_handle_state_writes_total counter")
-    for o in ("ok", "error"):
+    for o in ("ok", "unchanged", "error"):
         out.append(f'openddil_pep_handle_state_writes_total{{{t},outcome="{o}"}} {writes[o]}')
     out.append("# TYPE openddil_pep_client_disconnects_total counter")
     for srv in ("pep", "metrics"):
