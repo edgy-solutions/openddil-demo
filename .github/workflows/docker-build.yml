@@ -3,9 +3,8 @@ name: Docker Build and Publish
 on:
   push:
     branches: [ "master" ]
-    # Tag pushes (v1.0.0, ...) publish versioned images
-    # (:v1.0.0) so consumers can pin to a release. A tag does not move :latest.
-    tags: [ "v*" ]
+    # Version tags don't build here. A release adds the version tag to an
+    # image already built (see release.yml) and never moves :latest.
   pull_request:
     branches: [ "master" ]
   workflow_dispatch:
@@ -21,7 +20,7 @@ permissions:
 #             the branch head, not GitHub's merge commit, so the tag names a
 #             commit that exists on the branch.
 #   :pr-<N>   a pull request build.
-#   :<tag>    a v* tag push.
+#   :<tag>    not built here: a release adds it (release.yml).
 #   :latest   a push or a dispatch on master, and nothing else. A branch, a
 #             pull request or a tag never moves it.
 # A pull request from a fork builds but pushes nothing: its token cannot write
@@ -131,7 +130,7 @@ jobs:
   # docker-compose.yml's compose-only tak-server service, baked in instead of
   # `pip install`-ed at container start so a pod needs no PyPI reach at start.
   # No `paths:` filter exists on this workflow (see the `on:` block above —
-  # it triggers on every push/PR to master and every `v*` tag, repo-wide), so
+  # it triggers on every push/PR to master, repo-wide), so
   # `egress/tak/**` already triggers this job; nothing to add there.
   build-tak:
     runs-on: ubuntu-latest
