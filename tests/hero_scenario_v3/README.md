@@ -861,7 +861,7 @@ as follow-up #19),
 or that the coefficient
 values represent real platform life (defaults in `coefficients.py` are
 honest-authored at order-of-magnitude reasonable values; the demo
-overrides via `PROGNOSTICS_*` env vars in
+overrides via `ALGORITHM_PARAMS_JSON` (and `ALGORITHMS_ENABLED` / `ALGORITHMS_DIR`) in
 `docker-compose.override.yml` to compressed values so a few-km /
 few-minute scenario actually crosses thresholds — *the compressed
 values are sized so the demo shows the engine working, not estimates
