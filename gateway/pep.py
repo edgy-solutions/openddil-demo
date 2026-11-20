@@ -56,6 +56,7 @@ subject, never a client-supplied one.
 """
 from __future__ import annotations
 
+import codecs
 import datetime
 import html
 import json
@@ -78,6 +79,35 @@ import oidc
 
 # --- configuration ----------------------------------------------------------
 ELECTRIC = os.environ["OPENDDIL_ELECTRIC_URL"].rstrip("/")
+# Electric's shared secret (secure mode). Unset or empty means Electric is not
+# in secure mode and no secret is sent. Only the PEP holds it: it is appended
+# to upstream /v1/shape requests and never reaches a browser, a log or a body.
+ELECTRIC_SECRET = os.environ.get("OPENDDIL_ELECTRIC_SECRET", "").strip()
+
+
+def _electric_url(path: str, params=()) -> str:
+    """Upstream Electric URL for `path` with `params` (dict or pairs).
+
+    Any client-supplied `secret`/`api_secret` is dropped; the configured
+    secret, when there is one, is appended. The returned string carries the
+    secret: never log it, put it in an exception message or send it onward.
+    Log the path and the table instead.
+    """
+    items = params.items() if hasattr(params, "items") else params
+    pairs = [(k, v) for k, v in items if k not in ("secret", "api_secret")]
+    if ELECTRIC_SECRET:
+        pairs.append(("secret", ELECTRIC_SECRET))
+    return f"{ELECTRIC}{path}?" + urllib.parse.urlencode(pairs)
+
+
+def _scrub(text) -> str:
+    """str(text) with the Electric secret (raw or url-encoded) removed."""
+    out = str(text)
+    if ELECTRIC_SECRET:
+        for v in (ELECTRIC_SECRET, urllib.parse.quote(ELECTRIC_SECRET),
+                  urllib.parse.quote_plus(ELECTRIC_SECRET)):
+            out = out.replace(v, "***")
+    return out
 
 # Every shape the PEP opens upstream is created with compaction. Electric
 # (1.6.2) keeps a shape's change log forever unless the shape was created
@@ -491,6 +521,235 @@ ELEMENT_DELETE_UPSTREAM = os.getenv(
 VIEWER_SHAPE_MAX = int(os.getenv("OPENDDIL_PEP_VIEWER_SHAPE_MAX", "8"))
 GRACE_S = float(os.getenv("OPENDDIL_PEP_ELEMENT_GRACE_S", "30"))
 HOLDER_IDLE_S = float(os.getenv("OPENDDIL_PEP_HOLDER_IDLE_S", "120"))
+
+# --- shape handle age ---
+# Ceiling on how old a served handle may be, in seconds. 0 is off: ages are
+# still measured, nothing is counted as over. A check, not an enforcement.
+SHAPE_CEILING_S = float(os.getenv("OPENDDIL_PEP_SHAPE_CEILING_S", "0"))
+if SHAPE_CEILING_S < 0:
+    raise ValueError("OPENDDIL_PEP_SHAPE_CEILING_S must be >= 0, got "
+                     f"{SHAPE_CEILING_S}")
+# Period after which a handle is deleted upstream once; Electric then answers
+# the next read with 409 and a new handle. 0 is off. Needs the ceiling declared.
+SHAPE_ROTATE_S = float(os.getenv("OPENDDIL_PEP_SHAPE_ROTATE_S", "0"))
+_ROT_NAMES = "OPENDDIL_PEP_SHAPE_ROTATE_S / OPENDDIL_PEP_SHAPE_CEILING_S"
+if SHAPE_ROTATE_S < 0:
+    raise ValueError(f"{_ROT_NAMES}: rotate must be >= 0, got {SHAPE_ROTATE_S}")
+if SHAPE_ROTATE_S > 0 and SHAPE_CEILING_S == 0:
+    raise ValueError(f"{_ROT_NAMES}: rotate > 0 needs the ceiling declared (> 0)")
+if SHAPE_ROTATE_S > 0 and SHAPE_ROTATE_S >= SHAPE_CEILING_S:
+    raise ValueError(f"{_ROT_NAMES}: rotate ({SHAPE_ROTATE_S}) must be below the "
+                     f"ceiling ({SHAPE_CEILING_S})")
+# Idle sweep: a shape nobody reads any more is never presented, so rotation never
+# touches it and it grows in Electric's store for good. The sweeper deletes
+# upstream any handle this PEP bound that has not been read for longer than this
+# many seconds. 0 is off. Rotation bounds the shapes still in use; the sweeper
+# removes the ones no longer in use.
+# Scope: only handles THIS process has seen. A handle bound by an earlier PEP
+# process and never presented since is not swept, nor is a shape created by any
+# client other than the PEP. The state is per process, so it is correct only
+# because each PEP runs one replica: with two, one would sweep a handle the
+# other is serving.
+# It must exceed the time after which a session with no requests has ended (the
+# session TTL in fixed mode, the inactivity period in sliding mode): a handle
+# unread for longer than that can only be presented again by a session that
+# stayed active on other reads, or a new one. Electric answers such a request
+# 409 and the client refetches the shape: a refetch, never lost data.
+SHAPE_IDLE_S = float(os.getenv("OPENDDIL_PEP_SHAPE_IDLE_S", "0"))
+if SHAPE_IDLE_S < 0:
+    raise ValueError(f"OPENDDIL_PEP_SHAPE_IDLE_S must be >= 0, got {SHAPE_IDLE_S}")
+if oidc.SESSION_MODE == "sliding":
+    _SESSION_INACTIVE_S, _SESSION_INACTIVE_VAR = (
+        oidc.SESSION_IDLE, "OPENDDIL_SESSION_IDLE_SECONDS")
+else:
+    _SESSION_INACTIVE_S, _SESSION_INACTIVE_VAR = (
+        oidc.SESSION_TTL, "OPENDDIL_SESSION_TTL_SECONDS")
+if SHAPE_IDLE_S > 0 and SHAPE_IDLE_S <= _SESSION_INACTIVE_S:
+    raise ValueError(
+        f"OPENDDIL_PEP_SHAPE_IDLE_S ({SHAPE_IDLE_S}) must be above the session's "
+        f"inactivity end ({_SESSION_INACTIVE_S}s, from {_SESSION_INACTIVE_VAR})")
+SHAPE_SWEEP_EVERY_S = 60.0  # how often the sweeper runs
+_now = time.monotonic  # the only clock the handle-age code reads; tests replace it
+_born_lock = threading.Lock()
+_handle_born: dict[str, list] = {}   # handle -> [table, born, last_seen]
+_over_ceiling: dict[str, int] = {}   # table -> reads on a handle past the ceiling
+_over_logged: set[str] = set()       # handles already logged once
+_rotated: set[str] = set()           # handles already deleted upstream once
+_ROT_OUTCOMES = ("deleted", "not_found", "refused", "upstream_error")
+_rotations: dict[str, int] = {o: 0 for o in _ROT_OUTCOMES}
+_idle_deletes: dict[str, int] = {o: 0 for o in _ROT_OUTCOMES}
+
+
+def _shape_delete_url(handle: str) -> str:
+    # The one place the DELETE URL is built; it carries the secret, so never log it.
+    return _electric_url("/v1/shape", [("handle", handle)])
+
+
+def _log_handle_bound(table: str, handle: str) -> None:
+    # Table and handle only: the URL and the where clause carry the secret.
+    log.info("SHAPE HANDLE BOUND table=%s handle=%s", table, handle)
+
+
+def note_handle_born(table: str, handle: str) -> None:
+    """Record a handle the upstream just answered with. Born never moves."""
+    if not handle:
+        return
+    now = _now()
+    with _born_lock:
+        ent = _handle_born.get(handle)
+        new = ent is None
+        if new:
+            _handle_born[handle] = [table, now, now]
+        else:
+            ent[2] = now
+    if new:
+        _log_handle_bound(table, handle)
+
+
+def shape_age_check(table: str, handle: str) -> float:
+    """Age in seconds of a handle a client presents; counts it if over the ceiling.
+
+    A handle never seen is entered with born = now and reads 0: a PEP restart
+    forgets births, so it ages old handles from the restart. The request is
+    still forwarded either way; the ceiling is a check, not an enforcement.
+    """
+    now = _now()
+    with _born_lock:
+        ent = _handle_born.get(handle)
+        bound = ent is None
+        if bound:
+            _handle_born[handle] = [table, now, now]
+            age = 0.0
+            rotate = first = False
+        else:
+            ent[2] = now
+            age = now - ent[1]
+            rotate = (SHAPE_ROTATE_S > 0 and age > SHAPE_ROTATE_S
+                      and handle not in _rotated)
+            if rotate:
+                _rotated.add(handle)
+            if SHAPE_CEILING_S > 0 and age > SHAPE_CEILING_S:
+                _over_ceiling[table] = _over_ceiling.get(table, 0) + 1
+                first = handle not in _over_logged
+                _over_logged.add(handle)
+            else:
+                first = False
+    if bound:
+        _log_handle_bound(table, handle)
+        return 0.0
+    if first:
+        log.warning("SHAPE OVER CEILING table=%s age_s=%d ceiling_s=%d handle=%s",
+                    table, age, SHAPE_CEILING_S, handle)
+    if rotate:
+        _rotate_handle(table, handle, age)
+    return age
+
+
+def _delete_handle_upstream(handle: str) -> str:
+    """DELETE the handle upstream; the outcome, one of _ROT_OUTCOMES. Rotation
+    and the idle sweep both use it, so their outcome mapping cannot drift."""
+    req = urllib.request.Request(_shape_delete_url(handle), method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return "deleted"
+    except urllib.error.HTTPError as exc:
+        return {404: "not_found", 405: "refused"}.get(exc.code, "upstream_error")
+    except Exception:  # noqa: BLE001
+        return "upstream_error"
+
+
+def _rotate_handle(table: str, handle: str, age: float) -> None:
+    """Delete the handle upstream, once. The request that follows is forwarded
+    after this returns; Electric answers it 409 and the 409 path binds the new one.
+
+    No retry: the handle is already in _rotated. The over-ceiling count is what
+    catches a handle that keeps living.
+    """
+    outcome = _delete_handle_upstream(handle)
+    with _born_lock:
+        _rotations[outcome] += 1
+    # Never the URL: _shape_delete_url may carry a secret later.
+    (log.info if outcome in ("deleted", "not_found") else log.warning)(
+        "SHAPE ROTATED table=%s handle=%s age_s=%d outcome=%s",
+        table, handle, age, outcome)
+
+
+def _forget_handle_locked(handle: str) -> None:
+    _handle_born.pop(handle, None)
+    _over_logged.discard(handle)
+    _rotated.discard(handle)
+
+
+_idle_warned: set[str] = set()  # handles whose failed idle delete was logged once
+
+
+def shape_idle_sweep() -> int:
+    """Delete upstream every handle unread for longer than SHAPE_IDLE_S.
+
+    Returns the number of DELETEs sent. A handle whose DELETE is refused or
+    fails stays tracked with last_seen unmoved, so the next pass retries it.
+    """
+    if SHAPE_IDLE_S <= 0:
+        return 0
+    now = _now()
+    todo: list[tuple[str, str]] = []
+    with _born_lock:
+        for h, ent in list(_handle_born.items()):
+            if now - ent[2] <= SHAPE_IDLE_S:
+                continue
+            if h in _rotated:
+                _forget_handle_locked(h)  # rotation already deleted it upstream
+                _idle_warned.discard(h)
+            else:
+                todo.append((h, ent[0]))
+    sent = 0
+    for handle, table in todo:
+        with _born_lock:
+            ent = _handle_born.get(handle)
+            if ent is None or handle in _rotated:
+                continue
+            idle = _now() - ent[2]
+            if idle <= SHAPE_IDLE_S:
+                continue  # read meanwhile
+        outcome = _delete_handle_upstream(handle)
+        sent += 1
+        ok = outcome in ("deleted", "not_found")
+        with _born_lock:
+            _idle_deletes[outcome] += 1
+            if ok:
+                _forget_handle_locked(handle)
+                _idle_warned.discard(handle)
+                warn = False
+            else:
+                warn = handle not in _idle_warned
+                _idle_warned.add(handle)
+        # Never the URL: it carries the secret.
+        if ok:
+            log.info("SHAPE IDLE DELETED table=%s handle=%s idle_s=%d outcome=%s",
+                     table, handle, idle, outcome)
+        elif warn:
+            log.warning("SHAPE IDLE DELETED table=%s handle=%s idle_s=%d outcome=%s",
+                        table, handle, idle, outcome)
+    return sent
+
+
+def _shape_sweeper() -> None:
+    while True:
+        time.sleep(SHAPE_SWEEP_EVERY_S)
+        try:
+            shape_idle_sweep()
+        except Exception:  # noqa: BLE001
+            log.exception("shape idle sweep failed")
+
+
+def _born_prune_locked(now: float) -> None:
+    if SHAPE_IDLE_S > 0:
+        return  # the sweeper is then the only thing that removes an entry
+    cutoff = max(3600.0, 2 * SHAPE_CEILING_S)
+    for h in [h for h, e in _handle_born.items() if now - e[2] > cutoff]:
+        del _handle_born[h]
+    _over_logged.intersection_update(_handle_born)
+    _rotated.intersection_update(_handle_born)
 PEP_TIER = os.getenv("OPENDDIL_PEP_TIER", "unknown").strip() or "unknown"
 METRICS_PORT = int(os.getenv("OPENDDIL_PEP_METRICS_PORT", "9464"))
 
@@ -610,19 +869,35 @@ def _el_grace_expired(view: tuple) -> None:
     else:
         outcome = "upstream_error"
         if handle:
-            qs = urllib.parse.urlencode([("table", view[0]), ("handle", handle)])
-            req = urllib.request.Request(f"{ELECTRIC}/v1/shape?{qs}", method="DELETE")
+            # Handle alone: with a table, Electric matches the whole-table definition, not this view's.
+            req = urllib.request.Request(_shape_delete_url(handle), method="DELETE")
             try:
                 with urllib.request.urlopen(req, timeout=10):
                     outcome = "deleted"
             except Exception as exc:  # noqa: BLE001
-                log.error("element view delete failed: %s", exc)
+                log.error("element view delete failed: %s", _scrub(exc))
     with _el_lock:
         _el_counts[outcome] += 1
     log.info("element view released outcome=%s", outcome)
 
 
 def element_metrics_text() -> str:
+    now = _now()
+    with _born_lock:
+        _born_prune_locked(now)
+        ages: dict[str, int] = {}
+        live: dict[str, int] = {}
+        for tbl, born, _seen in _handle_born.values():
+            ages[tbl] = max(ages.get(tbl, 0), int(now - born))
+            live[tbl] = live.get(tbl, 0) + 1
+        over = dict(_over_ceiling)
+        rots = dict(_rotations)
+        idles = dict(_idle_deletes)
+        overdue = 0
+        if SHAPE_IDLE_S > 0:
+            limit = SHAPE_IDLE_S + 2 * SHAPE_SWEEP_EVERY_S
+            overdue = sum(1 for h, e in _handle_born.items()
+                          if h not in _rotated and now - e[2] > limit)
     with _el_lock:
         _el_sweep_locked(time.monotonic())
         counts = dict(_el_counts)
@@ -653,6 +928,39 @@ def element_metrics_text() -> str:
     out += [
         "# TYPE openddil_delivery_merged_total counter",
         f"openddil_delivery_merged_total{{{t}}} {screen['merged']}",
+    ]
+    # --- shape handle age ---
+    out += [
+        "# TYPE openddil_pep_shape_ceiling_seconds gauge",
+        f"openddil_pep_shape_ceiling_seconds{{{t}}} {int(SHAPE_CEILING_S)}",
+        "# TYPE openddil_pep_shape_handle_age_seconds gauge",
+    ]
+    for tbl, v in sorted(ages.items()):
+        out.append(f'openddil_pep_shape_handle_age_seconds{{{t},table="{tbl}"}} {v}')
+    out.append("# TYPE openddil_pep_shape_handles gauge")
+    for tbl, v in sorted(live.items()):
+        out.append(f'openddil_pep_shape_handles{{{t},table="{tbl}"}} {v}')
+    out.append("# TYPE openddil_pep_shape_over_ceiling_total counter")
+    for tbl, v in sorted(over.items()) or [("", 0)]:
+        out.append(f'openddil_pep_shape_over_ceiling_total{{{t},table="{tbl}"}} {v}')
+    out += [
+        "# TYPE openddil_pep_shape_rotate_seconds gauge",
+        f"openddil_pep_shape_rotate_seconds{{{t}}} {int(SHAPE_ROTATE_S)}",
+        "# TYPE openddil_pep_shape_rotations_total counter",
+    ]
+    for o in _ROT_OUTCOMES:
+        out.append(f'openddil_pep_shape_rotations_total{{{t},outcome="{o}"}} {rots[o]}')
+    out += [
+        "# TYPE openddil_pep_shape_idle_seconds gauge",
+        f"openddil_pep_shape_idle_seconds{{{t}}} {int(SHAPE_IDLE_S)}",
+        "# TYPE openddil_pep_shape_idle_deletes_total counter",
+    ]
+    for o in _ROT_OUTCOMES:
+        out.append(
+            f'openddil_pep_shape_idle_deletes_total{{{t},outcome="{o}"}} {idles[o]}')
+    out += [
+        "# TYPE openddil_pep_shape_idle_overdue gauge",
+        f"openddil_pep_shape_idle_overdue{{{t}}} {overdue}",
     ]
     return "\n".join(out) + "\n"
 
@@ -762,7 +1070,7 @@ def _screen_collect(path: str, base_params: list, principal: str, view: tuple):
     while True:
         timeout = (SCREEN_POLL_TIMEOUT_S if not held
                    else max(SCREEN_MIN_POLL_S, deadline - time.monotonic()))
-        url = f"{ELECTRIC}{path}?" + urllib.parse.urlencode(fixed + list(cur.items()))
+        url = _electric_url(path, fixed + list(cur.items()))
         try:
             with urllib.request.urlopen(url, timeout=timeout) as resp:
                 raw = resp.read()
@@ -1535,6 +1843,102 @@ def read_visible_row(table: str, asset_id: str, nations: list[str]) -> dict | No
     return rows[0] if rows else None
 
 
+_JSON_WS = " \t\r\n"
+
+
+def _iter_shape_messages(resp):
+    """Yield each top-level element of a shape response's JSON array, parsing
+    as the body arrives. The old read took the whole body, then the whole
+    parsed list, then the result rows, all at once, in a thread of a
+    ThreadingHTTPServer; glibc keeps each thread arena's high-water mark, so
+    one screen load left tens of MiB resident that never came back (see the
+    MAX_INFLIGHT_SHAPES comment, the same fix made earlier on the proxy
+    path). Here a thread peaks at one chunk plus one message plus the rows.
+
+    An element is accepted only once a non-whitespace character follows it or
+    the stream has ended, so `[12` + `3]` is never read as 12. Anything but a
+    well-formed array raises ElectricUnavailable."""
+    bad = ElectricUnavailable("unexpected shape response shape")
+    dec = codecs.getincrementaldecoder("utf-8")()
+    parser = json.JSONDecoder()
+    buf = ""
+    idx = 0
+    ended = False
+    state = "start"   # start -> first (after [) -> sep (after element) -> done
+
+    def fill() -> bool:
+        nonlocal buf, idx, ended
+        chunk = resp.read(STREAM_CHUNK)
+        if chunk:
+            try:
+                text = dec.decode(chunk)
+            except UnicodeDecodeError as exc:
+                raise bad from exc
+        else:
+            try:
+                text = dec.decode(b"", final=True)
+            except UnicodeDecodeError as exc:
+                raise bad from exc
+            ended = True
+        buf = buf[idx:] + text
+        idx = 0
+        return not ended
+
+    def skip_ws() -> bool:
+        """Advance idx past whitespace; True when a character is available."""
+        nonlocal idx
+        while True:
+            while idx < len(buf) and buf[idx] in _JSON_WS:
+                idx += 1
+            if idx < len(buf):
+                return True
+            if ended or not fill():
+                return False
+
+    while True:
+        if not skip_ws():
+            if state == "done":
+                return
+            raise bad
+        ch = buf[idx]
+        if state == "start":
+            if ch != "[":
+                raise bad
+            idx += 1
+            state = "first"
+        elif state == "done":
+            raise bad
+        elif state == "first" and ch == "]":
+            idx += 1
+            state = "done"
+        elif state == "sep":
+            if ch == "]":
+                idx += 1
+                state = "done"
+            elif ch == ",":
+                idx += 1
+                state = "elem"
+            else:
+                raise bad
+        else:   # first or elem: one element
+            while True:
+                try:
+                    value, end = parser.raw_decode(buf, idx)
+                except ValueError as exc:
+                    if ended:
+                        raise bad from exc
+                    fill()
+                    continue
+                # Truncation guard: a number may continue in the next chunk.
+                if end >= len(buf) and not ended:
+                    fill()
+                    continue
+                break
+            idx = end
+            state = "sep"
+            yield value
+
+
 def _follow_shape(table: str, where: str, columns: list[str] | None,
                   default_key: str) -> list[dict]:
     """The shape-following loop described in read_visible_row's docstring,
@@ -1563,19 +1967,55 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
         else:
             params["handle"] = handle
             params["offset"] = offset
-        url = f"{ELECTRIC}/v1/shape?" + urllib.parse.urlencode(params)
+        url = _electric_url("/v1/shape", params)
+        up_to_date = False
+        must_refetch = False
+        status = 0
+        resp_headers = None
         try:
             with urllib.request.urlopen(url, timeout=min(10, remaining)) as resp:
                 status = resp.status
                 resp_headers = resp.headers
-                body = resp.read()
+                if status == 200:
+                    # Parsed as it arrives, not held whole: see
+                    # _iter_shape_messages.
+                    for msg in _iter_shape_messages(resp):
+                        if not isinstance(msg, dict):
+                            continue
+                        msg_headers = msg.get("headers")
+                        control = (msg_headers.get("control")
+                                   if isinstance(msg_headers, dict) else None)
+                        if control == "up-to-date":
+                            up_to_date = True
+                            continue
+                        if control == "must-refetch":
+                            must_refetch = True
+                            break
+                        key = msg.get("key") or default_key
+                        operation = (msg_headers.get("operation")
+                                     if isinstance(msg_headers, dict) else None)
+                        # A delete is honoured whether or not it carries a
+                        # value: skipping it would leave a row visible that
+                        # the shape has dropped.
+                        if operation == "delete":
+                            rows.pop(key, None)
+                            continue
+                        value = msg.get("value")
+                        if not isinstance(value, dict):
+                            continue
+                        if operation == "update" and key in rows:
+                            rows[key] = {**rows[key], **value}
+                        else:
+                            rows[key] = dict(value)
+        except ElectricUnavailable:
+            raise
         except urllib.error.HTTPError as exc:
             if exc.code == 409:
-                status, resp_headers, body = 409, exc.headers, b""
+                status, resp_headers = 409, exc.headers
             else:
                 raise ElectricUnavailable(f"electric returned HTTP {exc.code}") from exc
         except Exception as exc:  # noqa: BLE001 -- a transport fault, not a deny
-            raise ElectricUnavailable(f"electric unreachable: {exc}") from exc
+            raise ElectricUnavailable(f"electric unreachable: {_scrub(exc)}") from None
 
         if status == 409:
             if restarted:
@@ -1585,41 +2025,6 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
             continue
         if status != 200:
             raise ElectricUnavailable(f"electric returned HTTP {status}")
-
-        try:
-            messages = json.loads(body)
-        except Exception as exc:  # noqa: BLE001
-            raise ElectricUnavailable("unexpected shape response shape") from exc
-        if not isinstance(messages, list):
-            raise ElectricUnavailable("unexpected shape response shape")
-
-        up_to_date = False
-        must_refetch = False
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            msg_headers = msg.get("headers")
-            control = msg_headers.get("control") if isinstance(msg_headers, dict) else None
-            if control == "up-to-date":
-                up_to_date = True
-                continue
-            if control == "must-refetch":
-                must_refetch = True
-                break
-            key = msg.get("key") or default_key
-            operation = msg_headers.get("operation") if isinstance(msg_headers, dict) else None
-            # A delete is honoured whether or not it carries a value: skipping
-            # it would leave a row visible that the shape has dropped.
-            if operation == "delete":
-                rows.pop(key, None)
-                continue
-            value = msg.get("value")
-            if not isinstance(value, dict):
-                continue
-            if operation == "update" and key in rows:
-                rows[key] = {**rows[key], **value}
-            else:
-                rows[key] = dict(value)
 
         if must_refetch:
             if restarted:
@@ -3792,6 +4197,11 @@ class Pep(BaseHTTPRequestHandler):
                 "labeled_tables": sorted(
                     LABELED_TABLES | ROLE_SERVED_TABLES | set(SUBJECT_SCOPED_TABLES)
                 ),
+                # An affordance only: the browser offers Resolve from this,
+                # and POST /cm/discrepancy/resolve re-checks everything.
+                "may_resolve_discrepancy": bool(
+                    CM_RESOLVE_ROLES and decision["role"] in CM_RESOLVE_ROLES
+                    and FAULT_CATALOG is not None and CM_INTAKE_URL),
             }).encode()
             self._send(200, body, [("Content-Type", "application/json"),
                                    ("Cache-Control", "no-store")])
@@ -4042,6 +4452,34 @@ class Pep(BaseHTTPRequestHandler):
         self._send(status, body, [("Content-Type", "application/json"),
                                   ("Cache-Control", "no-store")])
 
+    def _handle_electric_health(self) -> None:
+        """Pass Electric's /v1/health through. No session, no client query and
+        no secret: Electric does not check it there and it carries no data."""
+        try:
+            try:
+                resp = urllib.request.urlopen(ELECTRIC + "/v1/health", timeout=10)
+            except urllib.error.HTTPError as herr:
+                resp = herr
+            with resp:
+                status = resp.status if hasattr(resp, "status") else resp.code
+                body = resp.read(65536)
+                ctype = resp.headers.get("content-type")
+        except Exception:  # noqa: BLE001
+            log.error("electric health upstream error path=/v1/health")
+            body = b"electric unreachable"
+            self.send_response(502)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_response(status)
+        if ctype:
+            self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/healthz":
@@ -4049,6 +4487,9 @@ class Pep(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"ok")
+            return
+        if parsed.path == "/v1/health":
+            self._handle_electric_health()
             return
         # Machine-to-machine: never consults the session cookie or the
         # header-mode subject, so it is dispatched before either is read.
@@ -4162,6 +4603,8 @@ class Pep(BaseHTTPRequestHandler):
             self._deny("shape handle was not minted for this session and view",
                        subject=subject, resource=table)
             return
+        if handle:
+            shape_age_check(table, handle)
 
         # Electric's narrowing parameters, validated by name and type. See
         # narrowing_params. Refused BEFORE anything is forwarded.
@@ -4198,7 +4641,7 @@ class Pep(BaseHTTPRequestHandler):
             upstream_params = [(k, v) for k, v in upstream_params if k != "replica"]
             upstream_params.append(("replica", "default"))
             screen = (params.get("live") or [""])[0].strip().lower() == "true"
-        url = f"{ELECTRIC}{parsed.path}?" + urllib.parse.urlencode(upstream_params)
+        url = _electric_url(parsed.path, upstream_params)
 
         # The body is STREAMED, not buffered: `resp` stays open across the
         # write below and bytes leave as they arrive. The semaphore is held
@@ -4282,7 +4725,7 @@ class Pep(BaseHTTPRequestHandler):
             # be recorded as a deny — that would poison the audit trail with
             # events authorization never caused.
             log.error("electric upstream error user=%s resource=%s: %s",
-                      subject, table, exc)
+                      subject, table, _scrub(exc))
             if acquired == "new":
                 element_release(principal, view)
             record_decision(decision_id=new_decision_id(), outcome="allow",
@@ -4290,7 +4733,7 @@ class Pep(BaseHTTPRequestHandler):
                             policy_version=decision["policy_version"],
                             corpus_version=decision["corpus_version"],
                             allowed_nations=decision["allowed_nations"],
-                            upstream_error=str(exc))
+                            upstream_error=_scrub(exc))
             self.send_response(502)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -4298,6 +4741,7 @@ class Pep(BaseHTTPRequestHandler):
 
         if refetch is None or new_handle:
             bind_handle(principal, view, new_handle)
+            note_handle_born(table, new_handle)
         if acquired is not None:
             element_note_handle(view, new_handle)
         record_decision(decision_id=new_decision_id(), outcome="allow",
@@ -4401,7 +4845,8 @@ class Pep(BaseHTTPRequestHandler):
 
 def main() -> None:
     log.info("read-path PEP listening on :%s", LISTEN_PORT)
-    log.info("  electric:  %s", ELECTRIC)
+    log.info("  electric:  %s secret=%s", ELECTRIC,
+             "configured" if ELECTRIC_SECRET else "none")
     log.info("  egress pane: %s", EGRESS_PANE or "(none)")
     log.info("  picture: %s (%d mapped clients)", PICTURE_URL or "(none)",
              len(PICTURE_CLIENTS))
@@ -4438,6 +4883,10 @@ def main() -> None:
                     "is unreachable except from inside the cluster.",
                     SUBJECT_HEADER)
     threading.Thread(target=_el_sweeper, daemon=True).start()
+    if SHAPE_IDLE_S > 0:
+        threading.Thread(target=_shape_sweeper, daemon=True).start()
+    log.info("  shape idle sweep: idle %ss, every %ss (0 = off)",
+             SHAPE_IDLE_S, SHAPE_SWEEP_EVERY_S)
     start_metrics_server()
     log.info("  metrics:   :%s/metrics (tier %s)", METRICS_PORT, PEP_TIER)
     ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Pep).serve_forever()

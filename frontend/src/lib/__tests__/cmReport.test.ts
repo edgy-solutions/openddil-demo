@@ -9,12 +9,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   bitOnlyDiscrepancy,
   buildReportBody,
+  buildResolveBody,
   codeOptionsFor,
   componentOptions,
   describeBitDiscrepancy,
   loadFaultCatalog,
   noFaultIsolationMessage,
   submitReport,
+  submitResolve,
   type CatalogCode,
   type ManualDiscrepancy,
   type ReportInput,
@@ -100,6 +102,61 @@ describe('submitReport', () => {
     if (!result.ok) {
       expect(result.status).toBe(403);
     }
+  });
+});
+
+const RESOLVE_INPUT = {
+  assetId: 'a1', component: 'slot-a', faultCode: 'FC-1', resolution: 'replaced the seal',
+};
+
+describe('buildResolveBody', () => {
+  it('emits exactly the four keys and drops extra input fields', () => {
+    const tainted = { ...RESOLVE_INPUT, recordedBy: 'x', reported_by: 'y' } as typeof RESOLVE_INPUT;
+    const body = JSON.parse(buildResolveBody({ ...tainted, resolution: '  replaced the seal ' }));
+    expect(body).toEqual({
+      asset_id: 'a1', component: 'slot-a', fault_code: 'FC-1', resolution: 'replaced the seal',
+    });
+    expect(Object.keys(body).sort()).toEqual(['asset_id', 'component', 'fault_code', 'resolution']);
+  });
+
+  it('throws on an empty, whitespace or 501-char resolution; accepts 500', () => {
+    expect(() => buildResolveBody({ ...RESOLVE_INPUT, resolution: '' })).toThrow();
+    expect(() => buildResolveBody({ ...RESOLVE_INPUT, resolution: '   ' })).toThrow();
+    expect(() => buildResolveBody({ ...RESOLVE_INPUT, resolution: 'x'.repeat(501) })).toThrow();
+    expect(() => buildResolveBody({ ...RESOLVE_INPUT, resolution: 'x'.repeat(500) })).not.toThrow();
+  });
+});
+
+describe('submitResolve', () => {
+  it('POSTs the URL, method, credentials, header and body; 202 maps to ok with the eventId', async () => {
+    const fetchFn = vi.fn().mockResolvedValue(fakeResponse(202, { event_id: 'evt-7' }));
+    const result = await submitResolve(fetchFn, RESOLVE_INPUT);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchFn.mock.calls[0];
+    expect(url).toBe('/cm/discrepancy/resolve');
+    expect(init.method).toBe('POST');
+    expect(init.credentials).toBe('same-origin');
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json' });
+    expect(init.body).toBe(buildResolveBody(RESOLVE_INPUT));
+    expect(result).toEqual({ ok: true, eventId: 'evt-7' });
+  });
+
+  it('maps 403 and 404 to the fixed messages', async () => {
+    const r403 = await submitResolve(vi.fn().mockResolvedValue(fakeResponse(403, { error: 'nope' })), RESOLVE_INPUT);
+    expect(r403).toEqual({ ok: false, status: 403, message: 'Your role may not resolve a fault at this tier.' });
+    const r404 = await submitResolve(vi.fn().mockResolvedValue(fakeResponse(404, { error: 'nope' })), RESOLVE_INPUT);
+    expect(r404).toEqual({ ok: false, status: 404, message: 'Asset not visible at this tier.' });
+  });
+
+  it("uses the server's error field for any other status", async () => {
+    const r = await submitResolve(vi.fn().mockResolvedValue(fakeResponse(400, { error: 'no such code' })), RESOLVE_INPUT);
+    expect(r).toEqual({ ok: false, status: 400, message: 'no such code' });
+  });
+
+  it('an empty resolution throws and fetch is not called', async () => {
+    const fetchFn = vi.fn();
+    await expect(submitResolve(fetchFn, { ...RESOLVE_INPUT, resolution: ' ' })).rejects.toThrow();
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 });
 
