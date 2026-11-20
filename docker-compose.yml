@@ -912,6 +912,12 @@ services:
       KAFKA_BROKERS:      redpanda-edge-01:9092
       OPENDDIL_EDGE_ID:   edge-01
       OPENDDIL_REGION_ID: region-east
+      # Declared analytic units (the runner refuses without ALGORITHMS_ENABLED).
+      ALGORITHMS_DIR:     /opt/openddil/algorithms
+      ALGORITHMS_ENABLED: wear
+      ALGORITHM_PARAMS_JSON: '{}'
+    volumes:
+      - ../openddil-tactical-agents/algorithms:/opt/openddil/algorithms:ro
     depends_on:
       - redpanda-edge-01
 
@@ -927,6 +933,12 @@ services:
       KAFKA_BROKERS:      redpanda-edge-02:9092
       OPENDDIL_EDGE_ID:   edge-02
       OPENDDIL_REGION_ID: region-east
+      # Declared analytic units (the runner refuses without ALGORITHMS_ENABLED).
+      ALGORITHMS_DIR:     /opt/openddil/algorithms
+      ALGORITHMS_ENABLED: wear
+      ALGORITHM_PARAMS_JSON: '{}'
+    volumes:
+      - ../openddil-tactical-agents/algorithms:/opt/openddil/algorithms:ro
     depends_on:
       - redpanda-edge-02
 
@@ -942,6 +954,12 @@ services:
       KAFKA_BROKERS:      redpanda-edge-03:9092
       OPENDDIL_EDGE_ID:   edge-03
       OPENDDIL_REGION_ID: region-west
+      # Declared analytic units (the runner refuses without ALGORITHMS_ENABLED).
+      ALGORITHMS_DIR:     /opt/openddil/algorithms
+      ALGORITHMS_ENABLED: wear
+      ALGORITHM_PARAMS_JSON: '{}'
+    volumes:
+      - ../openddil-tactical-agents/algorithms:/opt/openddil/algorithms:ro
     depends_on:
       - redpanda-edge-03
 

@@ -1101,7 +1101,9 @@ class IntakeStore:
         rows that answer it. An intake row stores the ACTION's key as its
         key; the link to the case is `decision.answered_id`, the value the
         action's `answers.ref_pointer` read, so that is matched against the
-        ledger row's case_id, episode_id and event_id."""
+        ledger row's case_id and event_id. Not episode_id: an episode id now
+        spans occurrences, so matching it would attach an old case's
+        decisions to a newer occurrence of the same fault."""
         import asyncpg  # noqa: PLC0415
         conn = await asyncpg.connect(self._dsn)
         try:
@@ -1111,7 +1113,7 @@ class IntakeStore:
                        COALESCE(
                            (SELECT jsonb_agg(r."decision") FROM intake_records r
                             WHERE r."kind" = $2
-                              AND r."decision"->>'answered_id' IN (d."case_id", d."episode_id", d."event_id")),
+                              AND r."decision"->>'answered_id' IN (d."case_id", d."event_id")),
                            '[]'::jsonb) AS decisions
                 FROM "egress_delivered_events" d
                 WHERE d."route" = $1 AND d."outcome" = 'delivered'

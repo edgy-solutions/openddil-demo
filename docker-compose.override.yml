@@ -62,13 +62,14 @@ services:
     volumes:
       - ../openddil-tactical-agents/edge/faust_edge.py:/app/faust_edge.py
       - ../openddil-tactical-agents/edge/detection:/app/detection
-      - ../openddil-tactical-agents/edge/prognostics:/app/prognostics
+      - ../openddil-tactical-agents/edge/algorithm_runtime:/app/algorithm_runtime
+      - ../openddil-tactical-agents/algorithms:/opt/openddil/algorithms:ro
       - ../openddil-contracts/gen/python/openddil:/app/openddil
       - ../openddil-contracts/gen/python/google:/app/google
       - ../openddil-tactical-agents/edge/rules.yaml:/app/rules.yaml
     environment:
       # Phase 5 demo visibility-tuning. The honest-authored defaults live
-      # in openddil-tactical-agents/edge/prognostics/coefficients.py
+      # in openddil-tactical-agents/algorithms/wear/unit.yaml
       # (5000 km / 5000 h / 1000 rounds / 100000 deg·km) — order-of-magnitude
       # reasonable for real tracked vehicles. The values below override them
       # so a few-km / few-minute scripted scenario actually crosses fusion's
@@ -79,10 +80,9 @@ services:
       # are compressed in the demo deployment for visibility." Different
       # artifacts for different purposes: the contract stays honest, the
       # demo stays visible.
-      PROGNOSTICS_TRACK_LIFE_TOTAL_KM:     "10"
-      PROGNOSTICS_ENGINE_LIFE_TOTAL_HOURS: "1"
-      PROGNOSTICS_TERRAIN_TOTAL_DEG_KM:    "50"
-      PROGNOSTICS_BARREL_LIFE_TOTAL_ROUNDS: "100"
+      ALGORITHMS_DIR: /opt/openddil/algorithms
+      ALGORITHMS_ENABLED: wear
+      ALGORITHM_PARAMS_JSON: '{"wear":{"track_life_total_km":10,"engine_life_total_hours":1,"terrain_total_deg_km":50,"barrel_life_total_rounds":100}}'
 
   faust-edge-02:
     <<: *faust_edge_dev
