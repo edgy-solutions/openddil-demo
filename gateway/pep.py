@@ -63,7 +63,9 @@ import json
 import logging
 import os
 import re
+import hashlib
 import secrets
+import signal
 import sys
 import threading
 import time
@@ -545,9 +547,13 @@ if SHAPE_ROTATE_S > 0 and SHAPE_ROTATE_S >= SHAPE_CEILING_S:
 # upstream any handle this PEP bound that has not been read for longer than this
 # many seconds. 0 is off. Rotation bounds the shapes still in use; the sweeper
 # removes the ones no longer in use.
-# Scope: only handles THIS process has seen. A handle bound by an earlier PEP
-# process and never presented since is not swept, nor is a shape created by any
-# client other than the PEP. The state is per process, so it is correct only
+# Scope: handles THIS process has seen, whether bound for a client through the
+# proxy or by one of the PEP's own bounded reads (_follow_shape), which are
+# tracked, rotated and swept like the rest, plus the handles an earlier process
+# saved to OPENDDIL_PEP_HANDLE_STATE_FILE when that is set (see
+# adopt_handle_state). Without the file, a handle bound by an earlier PEP
+# process and never presented since is not swept. A shape created by any
+# client other than the PEP never is. The state is per process, so it is correct only
 # because each PEP runs one replica: with two, one would sweep a handle the
 # other is serving.
 # It must exceed the time after which a session with no requests has ended (the
@@ -570,8 +576,18 @@ if SHAPE_IDLE_S > 0 and SHAPE_IDLE_S <= _SESSION_INACTIVE_S:
         f"inactivity end ({_SESSION_INACTIVE_S}s, from {_SESSION_INACTIVE_VAR})")
 SHAPE_SWEEP_EVERY_S = 60.0  # how often the sweeper runs
 _now = time.monotonic  # the only clock the handle-age code reads; tests replace it
+_wall = time.time      # wall clock, used only to carry ages across a restart
+# Handle state file: the per-tier record of the handles this process tracks, so
+# the next process adopts them with their true age. "" is off.
+HANDLE_STATE_FILE = os.getenv("OPENDDIL_PEP_HANDLE_STATE_FILE", "")
+HANDLE_STATE_EVERY_S = float(os.getenv("OPENDDIL_PEP_HANDLE_STATE_EVERY_S", "30"))
+if HANDLE_STATE_EVERY_S < 1:
+    raise ValueError(
+        f"OPENDDIL_PEP_HANDLE_STATE_EVERY_S must be >= 1, got {HANDLE_STATE_EVERY_S}")
+HANDLE_STATE_MAX = 10000
 _born_lock = threading.Lock()
-_handle_born: dict[str, list] = {}   # handle -> [table, born, last_seen]
+_handle_born: dict[str, list] = {}   # handle -> [table, born, last_seen, source]
+# source is "proxy" (bound for a client) or "bounded" (a _follow_shape read); first wins
 _over_ceiling: dict[str, int] = {}   # table -> reads on a handle past the ceiling
 _over_logged: set[str] = set()       # handles already logged once
 _rotated: set[str] = set()           # handles already deleted upstream once
@@ -585,25 +601,47 @@ def _shape_delete_url(handle: str) -> str:
     return _electric_url("/v1/shape", [("handle", handle)])
 
 
-def _log_handle_bound(table: str, handle: str) -> None:
+def _log_handle_bound(table: str, handle: str, source: str = "proxy") -> None:
     # Table and handle only: the URL and the where clause carry the secret.
-    log.info("SHAPE HANDLE BOUND table=%s handle=%s", table, handle)
+    if source == "bounded":
+        log.info("SHAPE HANDLE BOUND table=%s handle=%s source=bounded", table, handle)
+    else:
+        log.info("SHAPE HANDLE BOUND table=%s handle=%s", table, handle)
 
 
-def note_handle_born(table: str, handle: str) -> None:
-    """Record a handle the upstream just answered with. Born never moves."""
+def _src_suffix(source: str) -> str:
+    return " source=bounded" if source == "bounded" else ""
+
+
+def note_handle_born(table: str, handle: str,
+                     source: str = "proxy") -> tuple[bool, bool, float]:
+    """Record a handle the upstream just answered with. Born never moves, and
+    the first source to see a handle keeps it.
+
+    Returns (new, rotate, age). rotate is True only for a bounded read of a
+    bounded handle past SHAPE_ROTATE_S that was not rotated before; the handle
+    is then already in _rotated and the caller deletes it once its rows are
+    complete. Proxy callers ignore the result."""
     if not handle:
-        return
+        return False, False, 0.0
     now = _now()
+    rotate = False
+    age = 0.0
     with _born_lock:
         ent = _handle_born.get(handle)
         new = ent is None
         if new:
-            _handle_born[handle] = [table, now, now]
+            _handle_born[handle] = [table, now, now, source]
         else:
             ent[2] = now
+            age = now - ent[1]
+            if (source == "bounded" and ent[3] == "bounded" and SHAPE_ROTATE_S > 0
+                    and age > SHAPE_ROTATE_S and handle not in _rotated):
+                rotate = True
+                _rotated.add(handle)
     if new:
-        _log_handle_bound(table, handle)
+        _log_handle_bound(table, handle, source)
+    return new, rotate, age
 
 
 def shape_age_check(table: str, handle: str) -> float:
@@ -618,7 +656,7 @@ def shape_age_check(table: str, handle: str) -> float:
         ent = _handle_born.get(handle)
         bound = ent is None
         if bound:
-            _handle_born[handle] = [table, now, now]
+            _handle_born[handle] = [table, now, now, "proxy"]
             age = 0.0
             rotate = first = False
         else:
@@ -658,7 +696,7 @@ def _delete_handle_upstream(handle: str) -> str:
         return "upstream_error"
 
 
-def _rotate_handle(table: str, handle: str, age: float) -> None:
+def _rotate_handle(table: str, handle: str, age: float, source: str = "proxy") -> None:
     """Delete the handle upstream, once. The request that follows is forwarded
     after this returns; Electric answers it 409 and the 409 path binds the new one.
 
@@ -668,9 +706,13 @@ def _rotate_handle(table: str, handle: str, age: float) -> None:
     outcome = _delete_handle_upstream(handle)
     with _born_lock:
         _rotations[outcome] += 1
+        if source == "bounded":
+            # A bounded read always starts at offset=-1 and never presents a
+            # handle again, so nothing is left to track.
+            _forget_handle_locked(handle)
     # Never the URL: _shape_delete_url may carry a secret later.
     (log.info if outcome in ("deleted", "not_found") else log.warning)(
-        "SHAPE ROTATED table=%s handle=%s age_s=%d outcome=%s",
+        "SHAPE ROTATED table=%s handle=%s age_s=%d outcome=%s" + _src_suffix(source),
         table, handle, age, outcome)
 
 
@@ -692,7 +734,7 @@ def shape_idle_sweep() -> int:
     if SHAPE_IDLE_S <= 0:
         return 0
     now = _now()
-    todo: list[tuple[str, str]] = []
+    todo: list[tuple[str, str, str]] = []
     with _born_lock:
         for h, ent in list(_handle_born.items()):
             if now - ent[2] <= SHAPE_IDLE_S:
@@ -701,9 +743,9 @@ def shape_idle_sweep() -> int:
                 _forget_handle_locked(h)  # rotation already deleted it upstream
                 _idle_warned.discard(h)
             else:
-                todo.append((h, ent[0]))
+                todo.append((h, ent[0], ent[3]))
     sent = 0
-    for handle, table in todo:
+    for handle, table, source in todo:
         with _born_lock:
             ent = _handle_born.get(handle)
             if ent is None or handle in _rotated:
@@ -725,11 +767,11 @@ def shape_idle_sweep() -> int:
                 _idle_warned.add(handle)
         # Never the URL: it carries the secret.
         if ok:
-            log.info("SHAPE IDLE DELETED table=%s handle=%s idle_s=%d outcome=%s",
-                     table, handle, idle, outcome)
+            log.info("SHAPE IDLE DELETED table=%s handle=%s idle_s=%d outcome=%s"
+                     + _src_suffix(source), table, handle, idle, outcome)
         elif warn:
-            log.warning("SHAPE IDLE DELETED table=%s handle=%s idle_s=%d outcome=%s",
-                        table, handle, idle, outcome)
+            log.warning("SHAPE IDLE DELETED table=%s handle=%s idle_s=%d outcome=%s"
+                        + _src_suffix(source), table, handle, idle, outcome)
     return sent
 
 
@@ -740,6 +782,144 @@ def _shape_sweeper() -> None:
             shape_idle_sweep()
         except Exception:  # noqa: BLE001
             log.exception("shape idle sweep failed")
+
+
+_state_writes: dict[str, int] = {"ok": 0, "error": 0}
+_state_adopted: dict[str, int] = {"proxy": 0, "bounded": 0}
+_state_last: bytes | None = None    # the bytes last written
+_state_warned: set[str] = set()     # error kinds already logged
+
+
+def _electric_id() -> str:
+    # A hash, so the file never holds the URL or its secret.
+    base = ELECTRIC.split("?", 1)[0]
+    return hashlib.sha256(base.encode()).hexdigest()[:16]
+
+
+def save_handle_state() -> str:
+    """Write the tracked handles to HANDLE_STATE_FILE: "ok", "unchanged" or
+    "error". The file is replaced whole, so a reader sees the old or the new."""
+    global _state_last
+    path = HANDLE_STATE_FILE
+    if not path:
+        return "unchanged"
+    mono, wall = _now(), _wall()
+    with _born_lock:
+        snap = [(h, e[0], e[3], e[1], e[2], h in _rotated)
+                for h, e in _handle_born.items()]
+    snap.sort(key=lambda r: r[4], reverse=True)     # most recently seen first
+    snap = sorted(snap[:HANDLE_STATE_MAX], key=lambda r: r[0])
+    doc = {
+        "version": 1, "tier": PEP_TIER, "electric_id": _electric_id(),
+        "written_at": int(wall),
+        "handles": [{"handle": h, "table": t, "source": src,
+                     "born_wall": int(wall - (mono - born)),
+                     "last_seen_wall": int(wall - (mono - seen)),
+                     "rotated": rot} for h, t, src, born, seen, rot in snap],
+    }
+    data = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if data == _state_last:
+        return "unchanged"
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        kind = type(exc).__name__
+        with _born_lock:
+            _state_writes["error"] += 1
+            first = kind not in _state_warned
+            _state_warned.add(kind)
+        if first:
+            log.warning("SHAPE HANDLE STATE WRITE FAILED error=%s", kind)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return "error"
+    _state_last = data
+    with _born_lock:
+        _state_writes["ok"] += 1
+    return "ok"
+
+
+def adopt_handle_state() -> int:
+    """Load the handles an earlier process saved; the number adopted. Called
+    once, before any thread starts. A file that does not fit this process is
+    left alone (the first save replaces it) and nothing is adopted."""
+    path = HANDLE_STATE_FILE
+    if not path:
+        return 0
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        log.info("SHAPE HANDLES ADOPTED count=0 reason=no_file")
+        return 0
+    except OSError:
+        log.warning("SHAPE HANDLES NOT ADOPTED reason=unreadable")
+        return 0
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+        if not isinstance(doc, dict) or not isinstance(doc.get("handles"), list):
+            raise ValueError("shape")
+    except (ValueError, UnicodeDecodeError):
+        log.warning("SHAPE HANDLES NOT ADOPTED reason=unreadable")
+        return 0
+    if doc.get("version") != 1:
+        log.warning("SHAPE HANDLES NOT ADOPTED reason=version")
+        return 0
+    if doc.get("tier") != PEP_TIER:
+        log.warning("SHAPE HANDLES NOT ADOPTED reason=tier_changed")
+        return 0
+    if doc.get("electric_id") != _electric_id():
+        log.warning("SHAPE HANDLES NOT ADOPTED reason=electric_changed")
+        return 0
+    mono, wall = _now(), _wall()
+    counts = {"proxy": 0, "bounded": 0}
+    n_rot = 0
+    lines = []
+    with _born_lock:
+        for ent in doc["handles"]:
+            try:
+                h, tbl, src = ent["handle"], ent["table"], ent["source"]
+                born = mono - max(0.0, wall - float(ent["born_wall"]))
+                seen = mono - max(0.0, wall - float(ent["last_seen_wall"]))
+                if (not isinstance(h, str) or not h or not isinstance(tbl, str)
+                        or src not in counts or h in _handle_born):
+                    continue
+            except (KeyError, TypeError, ValueError):
+                continue
+            _handle_born[h] = [tbl, born, seen, src]
+            counts[src] += 1
+            if ent.get("rotated") is True:
+                _rotated.add(h)
+                n_rot += 1
+            lines.append((tbl, h, src, mono - born, mono - seen))
+        _state_adopted.update(counts)
+    for tbl, h, src, age, idle in lines:
+        log.info("SHAPE HANDLE ADOPTED table=%s handle=%s source=%s age_s=%d idle_s=%d",
+                 tbl, h, src, age, idle)
+    try:
+        file_age = wall - float(doc.get("written_at", wall))
+    except (TypeError, ValueError):
+        file_age = 0.0
+    log.info("SHAPE HANDLES ADOPTED count=%d proxy=%d bounded=%d rotated=%d "
+             "file_age_s=%d", len(lines), counts["proxy"], counts["bounded"],
+             n_rot, file_age)
+    return len(lines)
+
+
+def _handle_state_writer() -> None:
+    while True:
+        time.sleep(HANDLE_STATE_EVERY_S)
+        try:
+            save_handle_state()
+        except Exception:  # noqa: BLE001
+            log.exception("handle state save failed")
 
 
 def _born_prune_locked(now: float) -> None:
@@ -887,17 +1067,28 @@ def element_metrics_text() -> str:
         _born_prune_locked(now)
         ages: dict[str, int] = {}
         live: dict[str, int] = {}
-        for tbl, born, _seen in _handle_born.values():
-            ages[tbl] = max(ages.get(tbl, 0), int(now - born))
-            live[tbl] = live.get(tbl, 0) + 1
+        b_ages: dict[str, int] = {}
+        b_live: dict[str, int] = {}
+        for tbl, born, _seen, source in _handle_born.values():
+            if source == "bounded":
+                b_ages[tbl] = max(b_ages.get(tbl, 0), int(now - born))
+                b_live[tbl] = b_live.get(tbl, 0) + 1
+            else:
+                ages[tbl] = max(ages.get(tbl, 0), int(now - born))
+                live[tbl] = live.get(tbl, 0) + 1
         over = dict(_over_ceiling)
         rots = dict(_rotations)
         idles = dict(_idle_deletes)
+        adopted = dict(_state_adopted)
+        writes = dict(_state_writes)
         overdue = 0
         if SHAPE_IDLE_S > 0:
             limit = SHAPE_IDLE_S + 2 * SHAPE_SWEEP_EVERY_S
+            # Both sources: an overdue handle is overdue whoever bound it.
             overdue = sum(1 for h, e in _handle_born.items()
                           if h not in _rotated and now - e[2] > limit)
+    with _client_lock:
+        drops = dict(_client_disconnects)
     with _el_lock:
         _el_sweep_locked(time.monotonic())
         counts = dict(_el_counts)
@@ -940,6 +1131,13 @@ def element_metrics_text() -> str:
     out.append("# TYPE openddil_pep_shape_handles gauge")
     for tbl, v in sorted(live.items()):
         out.append(f'openddil_pep_shape_handles{{{t},table="{tbl}"}} {v}')
+    # The two series above count proxy handles only; bounded reads have their own.
+    out.append("# TYPE openddil_pep_bounded_shape_handle_age_seconds gauge")
+    for tbl, v in sorted(b_ages.items()):
+        out.append(f'openddil_pep_bounded_shape_handle_age_seconds{{{t},table="{tbl}"}} {v}')
+    out.append("# TYPE openddil_pep_bounded_shape_handles gauge")
+    for tbl, v in sorted(b_live.items()):
+        out.append(f'openddil_pep_bounded_shape_handles{{{t},table="{tbl}"}} {v}')
     out.append("# TYPE openddil_pep_shape_over_ceiling_total counter")
     for tbl, v in sorted(over.items()) or [("", 0)]:
         out.append(f'openddil_pep_shape_over_ceiling_total{{{t},table="{tbl}"}} {v}')
@@ -961,8 +1159,46 @@ def element_metrics_text() -> str:
     out += [
         "# TYPE openddil_pep_shape_idle_overdue gauge",
         f"openddil_pep_shape_idle_overdue{{{t}}} {overdue}",
+        "# TYPE openddil_pep_shape_handles_adopted gauge",
     ]
+    for src in ("proxy", "bounded"):
+        out.append(f'openddil_pep_shape_handles_adopted{{{t},source="{src}"}} {adopted[src]}')
+    out.append("# TYPE openddil_pep_handle_state_writes_total counter")
+    for o in ("ok", "error"):
+        out.append(f'openddil_pep_handle_state_writes_total{{{t},outcome="{o}"}} {writes[o]}')
+    out.append("# TYPE openddil_pep_client_disconnects_total counter")
+    for srv in ("pep", "metrics"):
+        out.append(
+            f'openddil_pep_client_disconnects_total{{{t},server="{srv}"}} {drops[srv]}')
     return "\n".join(out) + "\n"
+
+
+_client_lock = threading.Lock()
+_client_disconnects: dict[str, int] = {"pep": 0, "metrics": 0}
+_DROPPED = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)
+
+
+class _PepHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that counts a dropped client instead of printing the
+    socketserver traceback for it. Any other error keeps the full traceback."""
+
+    server_label = "pep"
+
+    def handle_error(self, request, client_address):  # noqa: D401
+        exc = sys.exc_info()[1]
+        if isinstance(exc, _DROPPED):
+            with _client_lock:
+                _client_disconnects[self.server_label] = (
+                    _client_disconnects.get(self.server_label, 0) + 1)
+            # No client address: it identifies a person's machine.
+            log.debug("client disconnected server=%s error=%s",
+                      self.server_label, type(exc).__name__)
+            return
+        super().handle_error(request, client_address)
+
+
+class _MetricsHTTPServer(_PepHTTPServer):
+    server_label = "metrics"
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -991,7 +1227,7 @@ def _el_sweeper() -> None:
 
 
 def start_metrics_server(port: int = METRICS_PORT) -> ThreadingHTTPServer:
-    srv = ThreadingHTTPServer(("0.0.0.0", port), MetricsHandler)
+    srv = _MetricsHTTPServer(("0.0.0.0", port), MetricsHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
@@ -1956,6 +2192,7 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
     offset: str | None = None
     restarted = False
     rows: dict[str, dict] = {}
+    last: tuple[str, bool, float] | None = None  # (handle, rotate, age) last seen
 
     for _attempt in range(20):
         remaining = deadline - time.monotonic()
@@ -2033,10 +2270,19 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
             handle, offset, rows = None, None, {}
             continue
 
+        new_handle = resp_headers.get("electric-handle") or resp_headers.get("electric-shape-id")
+        if new_handle:
+            _new, rot, age = note_handle_born(table, new_handle, source="bounded")
+            if last is not None and last[0] == new_handle and last[1]:
+                rot, age = True, last[2]  # flagged on an earlier response
+            last = (new_handle, rot, age)
+
         if up_to_date:
+            if last is not None and last[1]:
+                # The rows are complete; the delete does not touch the read.
+                _rotate_handle(table, last[0], last[2], source="bounded")
             return list(rows.values())
 
-        new_handle = resp_headers.get("electric-handle") or resp_headers.get("electric-shape-id")
         new_offset = resp_headers.get("electric-offset")
         if not new_handle or new_offset is None:
             raise ElectricUnavailable("electric response missing handle/offset header")
@@ -4882,14 +5128,31 @@ def main() -> None:
                     "NOT authenticated. This is correct only where the PEP "
                     "is unreachable except from inside the cluster.",
                     SUBJECT_HEADER)
+    # Adopt before any thread or server starts, so nothing reads the table half-filled.
+    if HANDLE_STATE_FILE:
+        adopt_handle_state()
     threading.Thread(target=_el_sweeper, daemon=True).start()
     if SHAPE_IDLE_S > 0:
         threading.Thread(target=_shape_sweeper, daemon=True).start()
     log.info("  shape idle sweep: idle %ss, every %ss (0 = off)",
              SHAPE_IDLE_S, SHAPE_SWEEP_EVERY_S)
+    if HANDLE_STATE_FILE:
+        log.info("  handle state: %s every %gs", HANDLE_STATE_FILE, HANDLE_STATE_EVERY_S)
+        threading.Thread(target=_handle_state_writer, daemon=True).start()
+
+        def _on_sigterm(_signum, _frame) -> None:
+            try:
+                save_handle_state()
+            except Exception:  # noqa: BLE001 -- a failed save must not block the exit
+                log.exception("handle state save on SIGTERM failed")
+            raise SystemExit(0)
+
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    else:
+        log.info("  handle state: off")
     start_metrics_server()
     log.info("  metrics:   :%s/metrics (tier %s)", METRICS_PORT, PEP_TIER)
-    ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), Pep).serve_forever()
+    _PepHTTPServer(("0.0.0.0", LISTEN_PORT), Pep).serve_forever()
 
 
 if __name__ == "__main__":
