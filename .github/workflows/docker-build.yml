@@ -214,11 +214,33 @@ jobs:
           python3 openddil-demo/policy/check_corpus_version.py \
             openddil-demo/policy/users-promoted.yaml openddil-demo/policy/users-promoted.versions
 
+      # The generated stubs must not depend on what openddil-contracts' default
+      # branch happens to be when this runs: an unchanged commit built twice
+      # would ship different code. egress/contracts.lock names the commit; a
+      # missing, malformed or ambiguous file fails the job here rather than
+      # building from an unknown ref.
+      - name: Read the pinned openddil-contracts commit
+        id: contracts_lock
+        run: |
+          lock=openddil-demo/egress/contracts.lock
+          if [ ! -f "$lock" ]; then
+            echo "::error::$lock is missing; it names the openddil-contracts commit to build from"
+            exit 1
+          fi
+          lines=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$lock" || true)
+          if [ "$(printf '%s\n' "$lines" | grep -c .)" -ne 1 ] \
+             || ! printf '%s\n' "$lines" | grep -Eq '^contracts [0-9a-f]{40}$'; then
+            echo "::error::$lock must hold exactly one line of the form 'contracts <40 lowercase hex commit>'"
+            exit 1
+          fi
+          echo "commit=${lines#contracts }" >> "$GITHUB_OUTPUT"
+
       - name: Checkout openddil-contracts
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/openddil-contracts
           path: openddil-contracts
+          ref: ${{ steps.contracts_lock.outputs.commit }}
 
       # gen/ is gitignored in openddil-contracts. Without this the proto COPY
       # fails with "path not found in build context" -- which is the intended

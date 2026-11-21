@@ -1,0 +1,6 @@
+# The openddil-contracts commit the egress image's generated stubs are built
+# from. This file is the only place it is chosen: the docker-build workflow
+# reads it and checks out exactly this commit, so a rebuild of an unchanged
+# demo commit generates the same stubs. Moving it is a reviewed edit.
+# Format: `contracts <40 lowercase hex commit>`, one line.
+contracts 3194a6181c301250fa3d5c9dc61f87259b43e682
