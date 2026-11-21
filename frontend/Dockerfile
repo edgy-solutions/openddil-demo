@@ -29,7 +29,10 @@ COPY . .
 RUN npm run build && npm run build:sources
 
 # Stage 2: Serve the application with Nginx
-FROM nginx:alpine AS production
+# The base is pinned by digest so a rebuild of an unchanged commit serves the
+# same nginx. Moving it is a reviewed edit. This digest carries nginx 1.31.9
+# on alpine 3.24.4.
+FROM nginx:alpine@sha256:fb4658584bd9a916ffb6f6e365f97c25cfdb2923801f551ea08356e695f14ff7 AS production
 
 # Copy custom nginx config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
