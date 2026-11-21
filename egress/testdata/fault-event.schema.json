@@ -13,9 +13,9 @@
       "items": {
         "type": "object",
         "properties": {
-          "event_id": {"type": "string"},
-          "observed_at": {"type": "string"},
-          "row_ref": {"type": "string"}
+          "event_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+          "observed_at": {"type": "string", "format": "date-time"},
+          "row_ref": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
         }
       }
     },
@@ -35,7 +35,7 @@
               "on_hand": {"type": "integer"},
               "lead_time_days": {"type": "integer"},
               "lead_time_source": {"type": "string", "enum": ["stand-in", "supply-system"]},
-              "as_of": {"type": "string"}
+              "as_of": {"type": "string", "format": "date-time"}
             }
           }
         },
@@ -46,7 +46,7 @@
             "on_hand": {"type": "integer"},
             "lead_time_days": {"type": "integer"},
             "lead_time_source": {"type": "string", "enum": ["stand-in", "supply-system"]},
-            "as_of": {"type": "string"}
+            "as_of": {"type": "string", "format": "date-time"}
           }
         }
       }
