@@ -67,12 +67,16 @@ ENV PATH="/opt/venv/bin:$PATH"
 #                 as well as JSON (ADR-0046 v2 §5-6); gate.py's own
 #                 stdlib-only rule above does not apply to it, since intake's
 #                 config loading is nowhere near the decision path.
-RUN uv pip install --no-cache \
-        "confluent-kafka>=2.0.0,<3.0.0" \
-        "asyncpg>=0.29.0,<1.0.0" \
-        "protobuf>=6.30.0,<7.0.0" \
-        "jsonschema>=4.18,<5" \
-        "PyYAML>=6.0,<7"
+#
+# VERSIONS ARE EXACT, AND HASHED. requirements.lock names every package this
+# image installs, the five above and what they pull in, at one version each,
+# so a rebuild of an unchanged commit installs the same code. It matters most
+# for confluent-kafka, which bundles its own librdkafka: a patch release moved
+# the Kafka client underneath an image whose source had not changed. Changing
+# a version is a reviewed edit to the lock file, never a side effect of a
+# rebuild. --no-deps because the lock is already the full closure.
+COPY openddil-demo/egress/requirements.lock /tmp/requirements.lock
+RUN uv pip install --no-cache --no-deps --require-hashes -r /tmp/requirements.lock
 
 # ---------- Stage 2: Tests ----------
 # ALL test_*.py in this directory — the gate's 43 (test_gate.py), the kind
