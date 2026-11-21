@@ -25,7 +25,8 @@ RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
 # Copy source code and build
 COPY . .
-RUN npm run build
+# The sources pane is a second, standalone build (vite.sources.config.ts), served at /sources/.
+RUN npm run build && npm run build:sources
 
 # Stage 2: Serve the application with Nginx
 FROM nginx:alpine AS production
@@ -40,6 +41,7 @@ RUN chmod +x /docker-entrypoint.d/40-resolver.sh
 
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /app/dist-sources /usr/share/nginx/html/sources
 
 # Expose port 80
 EXPOSE 80
