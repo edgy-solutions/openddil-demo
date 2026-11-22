@@ -142,7 +142,11 @@ REPORT_ROWS = {
 
 def _fake_shape(table, where, columns, default_key):
     state["shape_reads"].append({"table": table, "where": where, "columns": columns})
-    rows = REPORT_ROWS.get(table)
+    if table == "label_registry":
+        if state.get("registry_error"):
+            raise sys.modules["pep"].ElectricUnavailable("registry down")
+        return [dict(r) for r in state["registry"]]
+    rows = (state.get("report_rows") or REPORT_ROWS).get(table)
     if rows is not None:
         return [dict(r) for r in rows]
     if table == "telemetry_latest_state":
@@ -155,7 +159,10 @@ def _fake_shape(table, where, columns, default_key):
 @pytest.fixture
 def pep_url(rig, monkeypatch, tmp_path):
     pep, base = rig
-    state.update(shape_reads=[], electric_seen=[], released=[])
+    state.update(shape_reads=[], electric_seen=[], released=[], registry=[],
+                 registry_error=False, report_rows=None, base=base)
+    monkeypatch.setattr(pep, "_label_registry_cache", None)
+    monkeypatch.setattr(pep, "LABEL_REGISTRY_CACHE_S", 0.0)
     rel = tmp_path / "releasability.yaml"
     rel.write_text("# c\nnations:\n  ATL:\n    name: Atlantia\n  BDR:\n    name: Borduria\n"
                    "default_originator_nation: null\nassets: {}\n")
@@ -288,3 +295,229 @@ def test_check3_switch_off_where_clauses_match_the_golden(pep_url, rig):
     finally:
         pep.PEP_TIER = saved
     assert got.encode() == GOLDEN.read_bytes()
+
+
+# ---- the switch ON ---------------------------------------------------------
+VECTORS_FILE = HERE / "testdata" / "lk1.json"
+
+
+def _vectors() -> list[dict]:
+    return json.loads(VECTORS_FILE.read_text())
+
+
+def _registry_rows(as_string=True) -> list[dict]:
+    rows, seen = [], set()
+    for v in _vectors():
+        if v["label_key"] is None or v["label_key"] in seen:
+            continue
+        seen.add(v["label_key"])
+        rows.append({"label_key": v["label_key"],
+                     "label": json.dumps(v["label"]) if as_string else v["label"]})
+    return rows
+
+
+@pytest.fixture
+def on(pep_url, rig, monkeypatch):
+    pep, _ = rig
+    monkeypatch.setattr(pep, "LABEL_KEY_FILTER", True)
+    state["registry"] = _registry_rows()
+    return pep
+
+
+def _predicate_admits(originator, releasable, nations) -> bool:
+    """policy_predicate's rule, evaluated in Python."""
+    return ((originator is not None and originator in nations)
+            or (releasable is not None and bool(set(releasable) & set(nations))))
+
+
+def test_vectors_file_is_the_one_the_design_names():
+    import hashlib  # noqa: PLC0415
+
+    assert hashlib.sha256(VECTORS_FILE.read_bytes()).hexdigest().startswith("f7d8075fb8fd674b")
+
+
+# ---- check 4 ---------------------------------------------------------------
+def test_check4_zero_registry_rows_is_false(on):
+    state["registry"] = []
+    assert on.row_filter(["ATL"]) == "false"
+
+
+def test_check4_registry_never_read_is_false(on):
+    state["registry_error"] = True
+    assert on.row_filter(["ATL"]) == "false"
+    state["registry_error"] = False
+    assert on.row_filter(["ATL"]).startswith("label_key IN (")   # a later read heals it
+
+
+def test_check4_failing_refresh_keeps_the_earlier_keys(on, caplog):
+    first = on.row_filter(["ATL"])
+    assert first.startswith("label_key IN (")
+    state["registry_error"] = True
+    with caplog.at_level("WARNING", logger="pep"):
+        assert on.row_filter(["ATL"]) == first
+    assert any("keeping the last copy" in r.getMessage() for r in caplog.records)
+
+
+def test_check4_ttl_serves_the_cache(on, monkeypatch):
+    monkeypatch.setattr(on, "LABEL_REGISTRY_CACHE_S", 600.0)
+    on.row_filter(["ATL"])
+    on.row_filter(["ATL", "BDR"])
+    assert [r["table"] for r in state["shape_reads"]].count("label_registry") == 1
+    read = next(r for r in state["shape_reads"] if r["table"] == "label_registry")
+    assert read["where"] == "true" and read["columns"] == ["label_key", "label"]
+
+
+def test_check4_nation_order_does_not_change_the_text(on):
+    a, b = on.row_filter(["ATL", "BDR"]), on.row_filter(["BDR", "ATL"])
+    assert a == b
+    keys = [k.strip("'") for k in a[len("label_key IN ("):-1].split(", ")]
+    assert keys == sorted(set(keys)) and len(keys) >= 3
+
+
+def test_check4_empty_nations_and_no_admitted_keys_are_false(on):
+    assert on.row_filter([]) == "false"
+    assert on.row_filter(["CYR"]) == "false"
+    assert on.admitted_key_count(["CYR"]) == 0
+
+
+def test_check4_body_may_arrive_as_a_string_or_a_dict(on):
+    state["registry"] = _registry_rows(as_string=False)
+    as_dict = on.row_filter(["ATL"])
+    on._label_registry_cache = None
+    state["registry"] = _registry_rows(as_string=True)
+    assert on.row_filter(["ATL"]) == as_dict
+
+
+def _body(author, release):
+    return json.dumps({"dims": {"nation": {"author": author, "release": release}}})
+
+
+def test_check4_a_body_of_the_wrong_shape_is_not_admitted(on):
+    state["registry"] = [
+        {"label_key": "k-1", "label": "not json"},
+        {"label_key": "k-2", "label": json.dumps({"dims": {}})},
+        {"label_key": "k-3", "label": _body(7, None)},
+        {"label_key": "k-4", "label": _body("ATL", "ATL")},
+        {"label_key": "k-5", "label": _body("ATL", [1])},
+        {"label_key": "k-6", "label": json.dumps([1])},
+        {"label_key": None, "label": _body("ATL", None)}]
+    assert on.row_filter(["ATL"]) == "false"
+
+
+def test_check4_empty_author_admits_nothing_by_itself(on):
+    state["registry"] = [{"label_key": "k-e", "label": _body("", None)}]
+    assert on.row_filter([""]) == "false"
+    assert on.row_filter(["ATL"]) == "false"
+
+
+NATION_SETS = [[], ["ATL"], ["BDR"], ["ATL", "BDR"], ["CYR"]]
+
+# Vectors that carry no key, on which the NULL-safe predicate nevertheless
+# admits the row through releasable_to while the key rule admits nothing. The
+# first is Finding 5's class (no usable originator). The others are not: see
+# the reason against each.
+NO_KEY_ADMITTED_BY_PREDICATE = {
+    "empty_originator_bdr": "finding 5: empty originator, admitted through releasable_to",
+    "no_policy": "no policy id: no key, yet the predicate admits ATL and BDR",
+    # Not Finding 5's class either: a release list with a malformed member
+    # (null, lower case, empty string) gets no key, while the row's ATL
+    # originator still passes the predicate for an ATL viewer.
+    "release_has_none": "malformed release member: no key, admitted by originator",
+    "release_lowercase": "malformed release member: no key, admitted by originator",
+    "release_empty_string": "malformed release member: no key, admitted by originator",
+}
+
+
+def test_check4_truth_table_against_the_vectors(on):
+    differ = set()
+    for v in _vectors():
+        for nations in NATION_SETS:
+            by_predicate = _predicate_admits(v["originator_nation"], v["releasable_to"],
+                                             nations)
+            if v["label_key"] is None:
+                if by_predicate:   # no key, so the key rule admits nothing here
+                    differ.add(v["name"])
+                continue
+            by_key = v["label_key"] in on._admitted_keys(nations)
+            assert by_key == by_predicate, (v["name"], nations)
+    assert differ == set(NO_KEY_ADMITTED_BY_PREDICATE), differ
+
+
+# ---- check 5 ---------------------------------------------------------------
+def test_check5_policy_predicate_has_one_caller_row_filter():
+    src = (HERE / "pep.py").read_text()
+    lines = [ln for ln in src.splitlines() if "policy_predicate(" in ln]
+    assert len(lines) == 2, lines
+    assert lines[0].startswith("def policy_predicate(")
+    body = src[src.index("def row_filter("):]
+    body = body[:body.index("\n\n\n")]
+    assert lines[1] in body
+
+
+# ---- the decision line -----------------------------------------------------
+def _proxy_decision_lines(caplog, subject="s-atl_bdr"):
+    with caplog.at_level("INFO", logger="pep.decision"):
+        url = f"{state['base']}/v1/shape?table=telemetry_latest_state&offset=-1"
+        assert _call(url, subject) == 200
+    raw = [r.getMessage() for r in caplog.records]
+    out = [json.loads(m.split("DECISION ", 1)[1]) for m in raw if "DECISION " in m]
+    return [d for d in out if d.get("resource") == "telemetry_latest_state"
+            and d.get("outcome") == "allow"], raw
+
+
+def test_decision_line_switch_off(pep_url, caplog):
+    lines, _raw = _proxy_decision_lines(caplog)
+    assert lines and all(d["filter"] == "predicate" and "admitted_keys" not in d
+                         for d in lines)
+
+
+def test_decision_line_switch_on(on, caplog):
+    lines, raw = _proxy_decision_lines(caplog)
+    assert lines
+    d = lines[-1]
+    assert d["filter"] == "key" and isinstance(d["admitted_keys"], int)
+    assert d["admitted_keys"] == on.admitted_key_count(["ATL", "BDR"]) > 0
+    assert not any("lk1:" in m for m in raw)
+    assert "label_key IN (<admitted keys>)" in d["predicate"]
+    # and the upstream request did carry the real filter
+    sent = state["electric_seen"][-1]["where"][0]
+    assert sent.startswith("label_key IN ('lk1:")
+
+
+# ---- the reports routes, switch on -----------------------------------------
+def _key(name):
+    return next(v["label_key"] for v in _vectors() if v["name"] == name)
+
+
+def _report_rows_with_keys():
+    rows = json.loads(json.dumps(REPORT_ROWS))
+    rows["asset_cm_state"][0]["label_key"] = _key("atl_absent")
+    keys = {"E-ATL": _key("atl_absent"), "E-BDR": _key("bdr_atl"), "E-NULL": None}
+    for r in rows["failure_episodes"]:
+        r["label_key"] = keys[r["episode_id"]]
+    rows["failure_episodes"].append(dict(
+        rows["failure_episodes"][0], episode_id="E-UNKNOWN-KEY", label_key="lk1:" + "0" * 64))
+    return rows
+
+
+def test_reports_tier_lists_only_admitted_keys(on, monkeypatch):
+    state["report_rows"] = _report_rows_with_keys()
+    monkeypatch.setattr(on, "PEP_TIER", "hub")
+    status, raw = _call(f"{state['base']}/reports/tier", "s-atl", want_body=True)
+    assert status == 200
+    listed = sorted(r["episode_id"] for r in json.loads(raw)["reports"])
+    # Admitted: atl_absent, and bdr_atl (released to ATL). Not listed: a NULL
+    # key, and a key the registry does not hold.
+    assert listed == ["E-ATL", "E-BDR", "E-OPEN"]
+    cols = {r["table"]: r["columns"] for r in state["shape_reads"]
+            if r["table"] != "label_registry"}
+    assert cols and all(c[-1] == "label_key" for c in cols.values())
+    assert on._REPORT_COLUMNS["failure_episodes"][-1] != "label_key"   # base lists unmoved
+
+
+def test_reports_tier_with_no_registry_lists_nothing(on, monkeypatch):
+    state["report_rows"] = _report_rows_with_keys()
+    state["registry_error"] = True
+    monkeypatch.setattr(on, "PEP_TIER", "hub")
+    status, raw = _call(f"{state['base']}/reports/tier", "s-atl", want_body=True)
+    assert status == 200 and json.loads(raw)["reports"] == []
