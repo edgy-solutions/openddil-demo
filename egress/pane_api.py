@@ -90,7 +90,7 @@ import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import asyncpg
 
@@ -223,6 +223,292 @@ async def _fetch_cases(asset_id: str) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+# --- ADR-0058 slice 3a: the disposition on /cases, and /reports/states ------
+#
+# READ ONLY. Everything below issues SELECTs and nothing else; the pane holds
+# no workflow state (ADR-0046 decision 1). The joins are the spec's 3.2:
+#   ledger -> case   by `case_id`
+#   case -> action   by the action kind's declared `case_ref` pointer, NEVER
+#                    by the intake key's prefix (the key's format is the
+#                    consumer's, not ours)
+#   action -> completion by the completion kind's declared `completes_ref`
+# A kind that declares no pointer is not joined, and the response names it.
+
+KINDS_DIR = Path(os.getenv(
+    "OPENDDIL_EGRESS_KINDS_DIR", str(Path(__file__).parent / "kind-schemas")))
+STATES_EPISODE_LIMIT = 200
+
+# PROVISIONAL completion-body fields: both wait on iagent's completion
+# contract (the same status as `completes_ref`'s name). `outcome` is one of
+# done / cancelled / deferred; `episode_id` is the episode id OpenDDIL sent,
+# carried back beside iagent's case id (a check, never the join).
+COMPLETION_OUTCOME_POINTER = "/outcome"
+COMPLETION_EPISODE_POINTER = "/episode_id"
+COMPLETION_OUTCOMES = ("done", "cancelled", "deferred")
+
+# The action body's own fields, as the intake fixtures shape it (an action
+# record's `work_order.task` and its `approval_chain`). These are read by
+# fixed name, not by declared pointer, because no declaration names them yet;
+# a body without them yields None for that field, never an error.
+ACTION_OPTION_POINTER = "/work_order/task"
+ACTION_CHAIN_POINTER = "/approval_chain"
+
+
+def _kind_context() -> tuple[dict[str, Any], set[str]]:
+    """(declarations, action kind names). Action kinds are the intake
+    config's entry kinds when that config loads, plus every kind declaring a
+    `case_ref`. A missing directory or config gives what could be read: the
+    disposition then reads "none", never an error on the cases route."""
+    declarations: dict[str, Any] = {}
+    try:
+        from kinds import load_declarations  # noqa: PLC0415
+        if KINDS_DIR.is_dir():
+            declarations = load_declarations(KINDS_DIR)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("kind declarations not loaded; dispositions read none: %s", exc)
+    action_kinds = {k for k, d in declarations.items() if d.case_ref}
+    config_path = os.getenv("OPENDDIL_EGRESS_INTAKE_CONFIG")
+    if config_path:
+        try:
+            from intake import load_intake_config  # noqa: PLC0415
+            action_kinds |= {e.kind for e in load_intake_config(config_path, declarations)}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("intake config not loaded for dispositions: %s", exc)
+    return declarations, action_kinds
+
+
+def _pointer_path(pointer: str) -> list[str]:
+    """An RFC 6901 pointer as a Postgres text[] path (`body #>> path`)."""
+    if pointer == "":
+        return []
+    return [seg.replace("~1", "/").replace("~0", "~") for seg in pointer.split("/")[1:]]
+
+
+def _resolve(body: Any, pointer: str) -> Any:
+    """The value at `pointer` in `body`, or None when any step is absent."""
+    cur = body
+    for seg in _pointer_path(pointer):
+        if isinstance(cur, dict) and seg in cur:
+            cur = cur[seg]
+        elif isinstance(cur, list) and seg.isdigit() and int(seg) < len(cur):
+            cur = cur[int(seg)]
+        else:
+            return None
+    return cur
+
+
+def _json_value(raw: Any) -> Any:
+    return json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+
+
+def _decision_of(raw: Any) -> dict[str, Any]:
+    stored = _json_value(raw)
+    if not isinstance(stored, dict):
+        stored = {}
+    allowed = bool(stored.get("allowed"))
+    return {"allowed": allowed, "reason": None if allowed else (stored.get("reason") or "unknown")}
+
+
+def _intake_row(row: Any) -> dict[str, Any]:
+    return {
+        "kind": row["kind"],
+        "key": row["key"],
+        "body": _json_value(row["body"]),
+        "decision": _decision_of(row["decision"]),
+        "decided_at": row["decided_at"],
+    }
+
+
+async def _fetch_rows_by_pointer(
+    kind: str, pointer: str, values: list[str], *, extra_pointer: str | None = None,
+    extra_values: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Rows of one kind whose body, at `pointer`, holds one of `values`
+    (or, when given, whose body at `extra_pointer` holds one of
+    `extra_values`). The SELECT is the join; nothing is matched on the key."""
+    if not values and not extra_values:
+        return []
+    conn = await asyncpg.connect(store_dsn_from_env())
+    try:
+        if extra_pointer is None:
+            rows = await conn.fetch(
+                "SELECT kind, key, body, decision, decided_at FROM intake_records "
+                "WHERE kind = $1 AND (body #>> $2::text[]) = ANY($3::text[])",
+                kind, _pointer_path(pointer), values,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT kind, key, body, decision, decided_at FROM intake_records "
+                "WHERE kind = $1 AND ((body #>> $2::text[]) = ANY($3::text[]) "
+                "OR (body #>> $4::text[]) = ANY($5::text[]))",
+                kind, _pointer_path(pointer), values,
+                _pointer_path(extra_pointer), extra_values or [],
+            )
+    finally:
+        await conn.close()
+    return [_intake_row(r) for r in rows]
+
+
+async def _fetch_actions_for_cases(
+    declarations: Mapping[str, Any], action_kinds: set[str], case_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Every intake row, of a kind declaring `case_ref`, whose body names one
+    of `case_ids`. Each row is re-checked in Python against the same
+    pointer, so a row the store returned that does not name a case is never
+    joined."""
+    out: list[dict[str, Any]] = []
+    for kind in sorted(action_kinds):
+        decl = declarations.get(kind)
+        if decl is None or not decl.case_ref:
+            continue  # not joinable: named by the caller, never matched on key
+        for row in await _fetch_rows_by_pointer(kind, decl.case_ref, case_ids):
+            case_id = _resolve(row["body"], decl.case_ref)
+            if isinstance(case_id, str) and case_id in case_ids:
+                row["case_id"] = case_id
+                out.append(row)
+    return out
+
+
+def _disposition_of(row: dict[str, Any]) -> dict[str, Any]:
+    """The work-order option and stage of an action row. No declaration
+    names these fields yet, so they are read by fixed name (see
+    ACTION_OPTION_POINTER) and are None when the body lacks them."""
+    option = _resolve(row["body"], ACTION_OPTION_POINTER)
+    chain = _resolve(row["body"], ACTION_CHAIN_POINTER)
+    stage = None
+    if isinstance(chain, list) and chain and isinstance(chain[-1], dict):
+        stage = chain[-1].get("role")
+    return {"option": option, "stage": stage, "kind": row["kind"], "key": row["key"]}
+
+
+def attach_dispositions(
+    cases: list[dict[str, Any]], actions: list[dict[str, Any]],
+    unjoinable_kinds: list[str],
+) -> list[dict[str, Any]]:
+    """Add `disposition`, `decided_at`, `decision` and `disposition_state` to
+    each case, leaving every existing key alone. The latest action for a case
+    is its max `decided_at`. A refusal is `refused` with its reason; a case
+    with no joined action is `none` (the absence named), or `unjoinable` when
+    an action kind exists that declares no `case_ref`."""
+    by_case: dict[str, dict[str, Any]] = {}
+    for row in actions:
+        cur = by_case.get(row["case_id"])
+        if cur is None or row["decided_at"] > cur["decided_at"]:
+            by_case[row["case_id"]] = row
+    for case in cases:
+        row = by_case.get(case["case_id"])
+        if row is None:
+            case["disposition"] = None
+            case["decided_at"] = None
+            case["decision"] = {"allowed": False, "reason": None}
+            case["disposition_state"] = "unjoinable" if unjoinable_kinds else "none"
+            continue
+        decision = row["decision"]
+        case["disposition"] = _disposition_of(row)
+        case["decided_at"] = row["decided_at"].isoformat()
+        case["decision"] = dict(decision)
+        case["disposition_state"] = "admitted" if decision["allowed"] else "refused"
+    return cases
+
+
+async def _cases_with_dispositions(asset_id: str) -> list[dict[str, Any]]:
+    cases = await _fetch_cases(asset_id)
+    declarations, action_kinds = _kind_context()
+    case_ids = sorted({c["case_id"] for c in cases})
+    actions = (await _fetch_actions_for_cases(declarations, action_kinds, case_ids)
+               if case_ids else [])
+    unjoinable = sorted(k for k in action_kinds
+                        if declarations.get(k) is None or not declarations[k].case_ref)
+    return attach_dispositions(cases, actions, unjoinable)
+
+
+async def _fetch_ledger_by_episode(episode_ids: list[str]) -> list[dict[str, Any]]:
+    """Ledger rows (held and delivered) for these episodes. SELECT only."""
+    conn = await asyncpg.connect(store_dsn_from_env())
+    try:
+        rows = await conn.fetch(
+            'SELECT "route", "event_id", "outcome", "http_status", "case_id", '
+            '"episode_id", "first_recorded_at", "recorded_at" '
+            'FROM "egress_delivered_events" WHERE "episode_id" = ANY($1::text[]) '
+            'ORDER BY "first_recorded_at"',
+            episode_ids,
+        )
+    finally:
+        await conn.close()
+    return [dict(r) for r in rows]
+
+
+def _iso(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _completion_record(row: dict[str, Any]) -> dict[str, Any]:
+    outcome = _resolve(row["body"], COMPLETION_OUTCOME_POINTER)
+    carried = _resolve(row["body"], COMPLETION_EPISODE_POINTER)
+    return {
+        "kind": row["kind"], "key": row["key"], "completes": row["completes"],
+        "decided_at": _iso(row["decided_at"]),
+        "allowed": row["decision"]["allowed"], "reason": row["decision"]["reason"],
+        "outcome": outcome if outcome in COMPLETION_OUTCOMES else None,
+        "episode_id_carried": carried if isinstance(carried, str) else None,
+    }
+
+
+async def build_states(episode_ids: list[str]) -> dict[str, Any]:
+    """What this tier's hub owns, per episode id (spec 3.1: queued for send,
+    sent, case opened, released, work recorded). One read per table, not per
+    episode. An unmatched completion (one naming a release key this tier does
+    not hold) is listed against the episode whose id it carries, as a listing
+    only; it is never matched by asset or time."""
+    declarations, action_kinds = _kind_context()
+    ledger = await _fetch_ledger_by_episode(episode_ids) if episode_ids else []
+    case_ids = sorted({r["case_id"] for r in ledger if r["case_id"]})
+    actions = (await _fetch_actions_for_cases(declarations, action_kinds, case_ids)
+               if case_ids else [])
+    released_keys = {a["key"] for a in actions}
+
+    completion_kinds = sorted(k for k, d in declarations.items() if d.completes_ref)
+    completions: list[dict[str, Any]] = []
+    for kind in completion_kinds:
+        rows = await _fetch_rows_by_pointer(
+            kind, declarations[kind].completes_ref, sorted(released_keys),
+            extra_pointer=COMPLETION_EPISODE_POINTER, extra_values=episode_ids)
+        for row in rows:
+            row["completes"] = _resolve(row["body"], declarations[kind].completes_ref)
+            completions.append(row)
+
+    episodes: dict[str, Any] = {}
+    for eid in episode_ids:
+        rows = [r for r in ledger if r["episode_id"] == eid]
+        eps_cases = {r["case_id"] for r in rows if r["case_id"]}
+        released = [a for a in actions if a["case_id"] in eps_cases]
+        held_keys = {a["key"] for a in released}
+        matched = [_completion_record(c) for c in completions if c["completes"] in held_keys]
+        unmatched = [_completion_record(c) for c in completions
+                     if c["completes"] not in released_keys
+                     and _resolve(c["body"], COMPLETION_EPISODE_POINTER) == eid]
+        episodes[eid] = {
+            "ledger": [{
+                "route": r["route"], "event_id": r["event_id"], "outcome": r["outcome"],
+                "http_status": r["http_status"], "case_id": r["case_id"],
+                "recorded_at": _iso(r["recorded_at"]),
+                "first_recorded_at": _iso(r["first_recorded_at"]),
+                # Not stored: the forwarder only logs a case_id mismatch
+                # (forwarder.py, the `case_id_mismatch` warning); the ledger
+                # has no column for it and none is added. Always false here.
+                "case_id_mismatch": False,
+            } for r in rows],
+            "released": [{
+                "kind": a["kind"], "key": a["key"], "case_id": a["case_id"],
+                "decided_at": _iso(a["decided_at"]),
+                "allowed": a["decision"]["allowed"], "reason": a["decision"]["reason"],
+            } for a in released],
+            "completion": {"declared": bool(completion_kinds), "records": matched},
+            "unmatched_completions": unmatched,
+        }
+    return {"episodes": episodes}
 
 
 def build_decisions(destination: str, kind: str | None = None) -> dict[str, Any]:
@@ -358,12 +644,29 @@ class PaneApi(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "asset_id required"})
             return
         try:
-            cases = asyncio.run(_fetch_cases(asset_id))
+            cases = asyncio.run(_cases_with_dispositions(asset_id))
         except Exception as exc:  # noqa: BLE001 — a 500 with a body beats a hang
             log.exception("unhandled error building /cases asset_id=%s", asset_id)
             self._send_json(500, {"error": "internal_error", "detail": str(exc)})
             return
         self._send_json(200, {"cases": cases})
+
+    def _get_report_states(self, parsed) -> None:
+        params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        ids = [i for i in params.get("episode_id", []) if i]
+        if not ids:
+            self._send_json(400, {"error": "episode_id required"})
+            return
+        if len(set(ids)) > STATES_EPISODE_LIMIT:
+            self._send_json(400, {"error": f"at most {STATES_EPISODE_LIMIT} episode_id"})
+            return
+        try:
+            payload = asyncio.run(build_states(sorted(set(ids))))
+        except Exception as exc:  # noqa: BLE001 - a 500 with a body beats a hang
+            log.exception("unhandled error building /reports/states")
+            self._send_json(500, {"error": "internal_error", "detail": str(exc)})
+            return
+        self._send_json(200, payload)
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
@@ -372,6 +675,9 @@ class PaneApi(BaseHTTPRequestHandler):
             return
         if parsed.path == "/cases":
             self._get_cases(parsed)
+            return
+        if parsed.path == "/reports/states":
+            self._get_report_states(parsed)
             return
         if parsed.path != "/decisions":
             self._send_json(404, {"error": "unknown path"})
