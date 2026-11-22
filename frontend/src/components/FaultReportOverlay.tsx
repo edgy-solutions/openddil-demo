@@ -13,6 +13,7 @@ import { Wrench } from 'lucide-react';
 import BitDiscrepancyCard from './BitDiscrepancyCard';
 import FaultReportForm from './FaultReportForm';
 import CortexApprovalLink from './CortexApprovalLink';
+import CaseDisposition from './CaseDisposition';
 import { useCortexCases } from '../hooks/useCortexCases';
 import { submitResolve } from '../lib/cmReport';
 
@@ -152,6 +153,7 @@ export default function FaultReportOverlay({ assetId, components, bit, faults = 
               <ResolveAction assetId={assetId} component={f.component} faultCode={f.faultCode} />
             )}
           </div>
+          <CaseDisposition cases={cortexCases} faultCode={f.faultCode} component={f.component} />
         </div>
       ))}
       {bit && (

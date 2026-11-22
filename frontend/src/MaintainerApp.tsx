@@ -12,6 +12,7 @@
 // the link toggle now cuts/restores this tier's own uplink (one proxy per
 // link), and the edge-buffer counter (in Header) reads real bridge-group lag via
 // useEdgeBuffer — no more client-side simulation.
+import ReportsPane from './components/ReportsPane';
 import { useState, useEffect, useMemo } from 'react';
 import Header from './components/Header';
 import EdgePulldown from './components/EdgePulldown';
@@ -635,6 +636,8 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
           />
           <SourcesPane assetId={selectedAssetId} />
           <CmStateCard cm={cmState} isLoading={cm.isLoading} />
+          {/* ADR-0058 3a: the viewer's filed reports as state timelines (no combined status). */}
+          <ReportsPane role={session.role} />
           {/* Phase 5: ADR-0026 operational_state surfaced per-asset.
               Sits after CmStateCard (config-management compliance) and
               LogisticsStatusCard (rolled-up severity from fusion) — the
