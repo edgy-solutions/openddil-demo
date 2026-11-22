@@ -324,3 +324,19 @@ def test_pane_issues_selects_only(server_for):
     states(server, "ep-1")
     cases(server)
     assert conn.sql and all(s.lstrip().upper().startswith("SELECT") for s in conn.sql)
+
+
+def test_intake_config_kinds_read_without_importing_intake(tmp_path, monkeypatch):
+    """The pane reads the intake config's kind names itself, so it never
+    imports intake and its producer (produces.yaml lists no topic for it)."""
+    cfg = tmp_path / "intake.json"
+    cfg.write_text(json.dumps([{"name": "a", "kind": "ActionRecord"},
+                               {"name": "b", "kind": "CompletionRecord"},
+                               {"name": "c"}, "not an entry"]), encoding="utf-8")
+    monkeypatch.setattr(pane_api, "KINDS_DIR", tmp_path / "absent")
+    monkeypatch.setenv("OPENDDIL_EGRESS_INTAKE_CONFIG", str(cfg))
+    _, kinds = pane_api._kind_context()
+    assert kinds == {"ActionRecord", "CompletionRecord"}
+    assert "intake" not in pane_api.__dict__
+    cfg.write_text("{}", encoding="utf-8")
+    assert pane_api._kind_context()[1] == set()

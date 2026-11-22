@@ -272,11 +272,30 @@ def _kind_context() -> tuple[dict[str, Any], set[str]]:
     config_path = os.getenv("OPENDDIL_EGRESS_INTAKE_CONFIG")
     if config_path:
         try:
-            from intake import load_intake_config  # noqa: PLC0415
-            action_kinds |= {e.kind for e in load_intake_config(config_path, declarations)}
+            action_kinds |= _intake_config_kinds(config_path)
         except Exception as exc:  # noqa: BLE001
             log.warning("intake config not loaded for dispositions: %s", exc)
     return declarations, action_kinds
+
+
+def _intake_config_kinds(path: str) -> set[str]:
+    """The `kind` of each entry in the intake config, and nothing else.
+
+    Read here rather than through `intake.load_intake_config`: importing
+    intake would ship its producer into this role, and this role writes no
+    topic (produces.yaml, `egress-pane-api: topics: []`). Intake validates
+    the file itself and refuses to start on a bad one; this only needs the
+    names."""
+    text = Path(path).read_text(encoding="utf-8")
+    if Path(path).suffix.lower() in (".yaml", ".yml"):
+        import yaml  # noqa: PLC0415
+        raw = yaml.safe_load(text)
+    else:
+        raw = json.loads(text)
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}: must be a list of entries")
+    return {e["kind"] for e in raw
+            if isinstance(e, Mapping) and isinstance(e.get("kind"), str) and e["kind"]}
 
 
 def _pointer_path(pointer: str) -> list[str]:
