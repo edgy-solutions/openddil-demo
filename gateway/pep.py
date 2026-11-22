@@ -78,6 +78,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import egress_view
 import manual_qa
 import oidc
+import reports_view
 
 # --- configuration ----------------------------------------------------------
 ELECTRIC = os.environ["OPENDDIL_ELECTRIC_URL"].rstrip("/")
@@ -2291,6 +2292,146 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
     raise ElectricUnavailable("electric shape did not reach up-to-date within 20 requests")
 
 
+# ---------------------------------------------------------------------------
+# REPORTS (ADR-0058 slice 3a): /reports/mine and /reports/tier
+# ---------------------------------------------------------------------------
+# READ ONLY. Two shapes per PEP process feed both routes: one on
+# `failure_episodes` (closed episodes) and one on `asset_cm_state` (open ones
+# are its `manual_discrepancies`). The rows are cached in the process and the
+# routes filter them in memory, so the number of shapes opened does not grow
+# with viewers. Nothing here writes to Electric, the store or the pane.
+#
+# THE TIER. The hub's PEP_TIER is "hub" (the chart gives the hub PEP that tier
+# id). At any other tier the shape is scoped to rows whose edge_id or
+# region_id is this tier's id; at the hub the store holds the whole system and
+# is not narrowed. An episode of another tier is never listed.
+HUB_TIER = "hub"
+REPORTS_CACHE_S = float(os.environ.get("OPENDDIL_REPORTS_CACHE_S", "5"))
+REPORTS_LIMIT = 200   # distinct episode ids per request (the pane's cap)
+REPORTS_SUPERVISOR_ROLE = "supervisor"
+REPORTS_NOT_SUPERVISOR_STATE = "reports at this tier are for a supervisor"
+_REPORT_COLUMNS = {
+    "failure_episodes": [
+        "episode_id", "detected_at", "asset_id", "component", "fault_code",
+        "cleared_at", "cleared_by", "resolution", "sources",
+        "originator_nation", "releasable_to", "edge_id", "region_id"],
+    "asset_cm_state": [
+        "asset_id", "edge_id", "region_id", "originator_nation", "releasable_to",
+        "manual_discrepancies"],
+}
+_reports_lock = threading.Lock()
+_reports_cache: dict[str, tuple[float, list[dict]]] = {}
+
+# The failure_episodes table carries the ADR-0029 labels, so it is
+# nation-filtered like every other labelled table. Added only when the check
+# is configured: an empty set means the check is off (see above), and adding
+# one entry would switch it on for every other table.
+if LABELED_TABLES:
+    LABELED_TABLES.add("failure_episodes")
+
+
+def _reports_tier_where() -> str:
+    if PEP_TIER == HUB_TIER:
+        return "true"
+    t = _sql_str(PEP_TIER)
+    return f"(edge_id = {t} OR region_id = {t})"
+
+
+def _reports_rows(table: str) -> list[dict]:
+    """The cached rows of one report table, refreshed at most once per
+    REPORTS_CACHE_S through the same bounded shape read the rest of the PEP
+    uses. The lock makes a refresh single-flight: twenty requests arriving
+    together wait for one read and share it."""
+    with _reports_lock:
+        hit = _reports_cache.get(table)
+        if hit is not None and time.monotonic() - hit[0] < REPORTS_CACHE_S:
+            return hit[1]
+        rows = _follow_shape(table, _reports_tier_where(), _REPORT_COLUMNS[table], "")
+        _reports_cache[table] = (time.monotonic(), rows)
+        return rows
+
+
+def _ns_to_dt(value) -> datetime.datetime | None:
+    try:
+        return datetime.datetime.fromtimestamp(int(value) / 1e9, datetime.timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _report_sources(raw) -> list[dict]:
+    out = []
+    for s in _json_field(raw, list) or []:
+        if not isinstance(s, dict):
+            continue
+        at = _ns_to_dt(s.get("reported_at_ns")) if s.get("reported_at_ns") else _parse_dt(
+            s.get("reported_at") if isinstance(s.get("reported_at"), str) else None)
+        out.append({"reported_by": s.get("reported_by") or None,
+                    "source": s.get("source"), "reported_at": at.isoformat() if at else None})
+    return out
+
+
+def report_episodes() -> list[dict]:
+    """Every episode this tier holds, open and closed, as one list. An open
+    episode is an element of `asset_cm_state.manual_discrepancies`; a closed
+    one is a `failure_episodes` row. Keyed on (episode_id, detected_at), a
+    closed row wins over an open element of the same key. Each carries its
+    row's labels for the supervisor's label rule."""
+    out: dict[tuple, dict] = {}
+    for row in _reports_rows("asset_cm_state"):
+        labels = {"originator_nation": row.get("originator_nation"),
+                  "releasable_to": _pg_array(row.get("releasable_to"))}
+        for d in _json_field(row.get("manual_discrepancies"), list) or []:
+            if not isinstance(d, dict) or not d.get("discrepancy_id"):
+                continue
+            detected = (_ns_to_dt(d.get("detected_at_ns")) if d.get("detected_at_ns")
+                        else _parse_dt(d.get("detected_at")))
+            if detected is None:
+                log.warning("open episode %s has no readable detected_at; not listed",
+                            d.get("discrepancy_id"))
+                continue
+            out[(d["discrepancy_id"], detected)] = {
+                "episode_id": d["discrepancy_id"], "detected_at": detected,
+                "asset_id": row.get("asset_id"), "component": d.get("component") or "",
+                "fault_code": d.get("fault_code") or "", "open": True,
+                "cleared_at": None, "cleared_by": None, "resolution": None,
+                "sources": _report_sources(d.get("sources")), "labels": labels}
+    for row in _reports_rows("failure_episodes"):
+        detected, cleared = _parse_dt(row.get("detected_at")), _parse_dt(row.get("cleared_at"))
+        if not row.get("episode_id") or detected is None:
+            continue
+        out[(row["episode_id"], detected)] = {
+            "episode_id": row["episode_id"], "detected_at": detected,
+            "asset_id": row.get("asset_id"), "component": row.get("component") or "",
+            "fault_code": row.get("fault_code") or "", "open": False,
+            "cleared_at": cleared, "cleared_by": row.get("cleared_by") or "",
+            "resolution": row.get("resolution") or "",
+            "sources": _report_sources(row.get("sources")),
+            "labels": {"originator_nation": row.get("originator_nation"),
+                       "releasable_to": _pg_array(row.get("releasable_to"))}}
+    return list(out.values())
+
+
+def _reports_pane(episode_ids: list[str]) -> tuple[str, dict | None]:
+    """One call to the hub's pane for all episode ids. The door is
+    `unreachable` for a connection error, a timeout, a non-200 or a body
+    that is not the shape; `not_configured` when no pane URL is set."""
+    if not EGRESS_PANE:
+        return reports_view.DOOR_NOT_CONFIGURED, None
+    url = f"{EGRESS_PANE}/reports/states?" + urllib.parse.urlencode(
+        [("episode_id", i) for i in episode_ids])
+    try:
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            if resp.status != 200:
+                return reports_view.DOOR_UNREACHABLE, None
+            payload = json.loads(resp.read())
+        if not isinstance(payload, dict) or not isinstance(payload.get("episodes"), dict):
+            return reports_view.DOOR_UNREACHABLE, None
+        return reports_view.DOOR_OK, payload
+    except Exception as exc:  # noqa: BLE001 -- a transport fault, said as such
+        log.warning("egress pane reports upstream error: %s", _scrub(exc))
+        return reports_view.DOOR_UNREACHABLE, None
+
+
 def read_cm_visibility_row(asset_id: str, nations: list[str]) -> dict | None:
     """Thin wrapper kept for existing tests/stubs: the asset_cm_state read,
     exactly as before `read_visible_row` grew a `table` argument so the
@@ -4456,6 +4597,97 @@ class Pep(BaseHTTPRequestHandler):
         self._deny("unknown auth route", subject="", resource=path, status=404)
         return True
 
+    # --- reports routes (ADR-0058 slice 3a) -----------------------------------
+    def _handle_reports(self, parsed) -> None:
+        """Serve GET /reports/mine and GET /reports/tier. Read only: the
+        episodes come from the cached shapes and the hub's states from one
+        pane GET. `mine` filters on the viewer's own subject alone; `tier`
+        is for a supervisor and applies the PEP's label rule (the same
+        visibility rule as `policy_predicate`, as `egress_view` restates it)
+        to every episode at the tier."""
+        path = parsed.path
+        try:
+            subject, _principal, _session = self._resolve_principal()
+        except oidc.AuthError as exc:
+            self._deny(str(exc), subject="", resource=path, status=401)
+            return
+        try:
+            decision = ask_topaz(subject)
+        except AuthzUnavailable as exc:
+            self._deny(f"PDP unavailable: {exc}", subject=subject,
+                       resource=path, status=503)
+            return
+        if not decision["allow"]:
+            cause = ("subject not in the entitlements corpus"
+                     if not decision["subject_known"]
+                     else "subject holds no nation entitlements")
+            self._deny(cause, subject=subject, resource=path)
+            return
+
+        tier_route = path == "/reports/tier"
+        if tier_route and decision["role"] != REPORTS_SUPERVISOR_ROLE:
+            record_decision(decision_id=new_decision_id(), outcome="deny",
+                            cause="reports at this tier are for a supervisor",
+                            subject=subject, resource=path,
+                            policy_version=decision["policy_version"],
+                            corpus_version=decision["corpus_version"])
+            self._send(403, json.dumps({
+                "error": "forbidden", "state": REPORTS_NOT_SUPERVISOR_STATE}).encode(),
+                [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
+            return
+
+        try:
+            episodes = report_episodes()
+        except ElectricUnavailable as exc:
+            log.error("reports shape read failed user=%s resource=%s: %s",
+                      subject, path, _scrub(exc))
+            record_decision(decision_id=new_decision_id(), outcome="allow",
+                            subject=subject, resource=path,
+                            policy_version=decision["policy_version"],
+                            corpus_version=decision["corpus_version"],
+                            upstream_error="electric")
+            self._send(502, json.dumps({"error": "reports unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+
+        if tier_route:
+            records = [{**e["labels"], "_i": i} for i, e in enumerate(episodes)]
+            kept = egress_view.filter_decisions(
+                {"records": records}, decision["allowed_nations"])["records"]
+            listed = [episodes[r["_i"]] for r in kept]
+            empty_state = "no reports at this tier"
+            viewer = None
+        else:
+            listed = [e for e in episodes
+                      if any(s.get("reported_by") == subject for s in e["sources"])]
+            empty_state = "no reports filed by you"
+            viewer = subject
+
+        ids = sorted({e["episode_id"] for e in listed})
+        truncated = len(ids) > REPORTS_LIMIT
+        if truncated:
+            order = list(dict.fromkeys(
+                e["episode_id"] for e in sorted(
+                    listed, key=lambda e: e["detected_at"], reverse=True)))
+            ids = sorted(order[:REPORTS_LIMIT])
+            keep = set(ids)
+            listed = [e for e in listed if e["episode_id"] in keep]
+        door, pane = _reports_pane(ids) if ids else (reports_view.DOOR_OK, None)
+        body = reports_view.build_reports(
+            listed, episodes, door=door, pane=pane, viewer=viewer)
+        if truncated:
+            body["truncated"] = True
+        if not body["reports"]:
+            body["state"] = empty_state
+        record_decision(decision_id=new_decision_id(), outcome="allow",
+                        subject=subject, resource=path,
+                        policy_version=decision["policy_version"],
+                        corpus_version=decision["corpus_version"],
+                        allowed_nations=decision["allowed_nations"],
+                        shown=len(body["reports"]))
+        self._send(200, json.dumps(body).encode(),
+                   [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
+
     # --- egress pane route ---------------------------------------------------
     def _handle_egress(self, parsed) -> None:
         """Serve /egress/decisions: the pane's answer, narrowed to what this
@@ -4619,7 +4851,7 @@ class Pep(BaseHTTPRequestHandler):
             with urllib.request.urlopen(url, timeout=15) as resp:
                 status = resp.status
                 raw = resp.read()
-            json.loads(raw)
+            cases_payload = json.loads(raw)
         except Exception as exc:  # noqa: BLE001 -- a transport or shape fault, not a deny
             log.error("egress pane cases upstream error user=%s asset=%s: %s",
                       subject, asset_id, exc)
@@ -4630,6 +4862,17 @@ class Pep(BaseHTTPRequestHandler):
             self._send(502, json.dumps({"error": "egress pane unavailable"}).encode(),
                        [("Content-Type", "application/json")])
             return
+        if PEP_TIER != HUB_TIER and isinstance(cases_payload, dict):
+            # The action is admitted at the hub only until the route change
+            # (3c): a tier that is not the hub says where the disposition is,
+            # and does not draw the pane's reading of it.
+            for case in cases_payload.get("cases") or []:
+                if isinstance(case, dict):
+                    case["disposition"] = None
+                    case["decided_at"] = None
+                    case["decision"] = {"allowed": None, "reason": None}
+                    case["disposition_state"] = "held at the hub"
+            raw = json.dumps(cases_payload).encode()
         record_decision(decision_id=new_decision_id(), outcome="allow",
                         subject=subject, resource=f"egress:cases:{asset_id}",
                         policy_version=decision["policy_version"],
@@ -4743,6 +4986,9 @@ class Pep(BaseHTTPRequestHandler):
             self._handle_picture(parsed)
             return
         if self._handle_auth(parsed):
+            return
+        if parsed.path in ("/reports/mine", "/reports/tier"):
+            self._handle_reports(parsed)
             return
         if parsed.path.startswith("/egress/"):
             self._handle_egress(parsed)
