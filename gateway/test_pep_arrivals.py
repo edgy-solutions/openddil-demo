@@ -289,6 +289,32 @@ def test_allow_uses_session_subject_and_posts_once(pep_url):
     assert _intake_calls("/cm-events") == []
 
 
+def test_uii_is_carried_unchanged(pep_url):
+    status, _b = _declare(pep_url, serial="SN-1", uii="UII-TEST-0001")
+    assert status == 201
+    (rec,) = _intake_calls("/asset-declarations")
+    assert rec["uii"] == "UII-TEST-0001" and rec["serial"] == "SN-1"
+
+
+def test_absent_uii_posts_null(pep_url):
+    assert _declare(pep_url)[0] == 201
+    (rec,) = _intake_calls("/asset-declarations")
+    assert "uii" in rec and rec["uii"] is None
+
+
+@pytest.mark.parametrize("bad", ["", "   ", 7, ["UII-TEST-0001"]])
+def test_bad_uii_is_refused(pep_url, bad):
+    status, body = _declare(pep_url, uii=bad)
+    assert status == 400 and "uii must be a non-empty string" in json.dumps(body)
+    assert state["calls"] == []
+
+
+def test_unknown_field_still_refused_beside_uii(pep_url):
+    status, body = _declare(pep_url, uii="UII-TEST-0001", other="x")
+    assert status == 400 and "unknown field: other" in json.dumps(body)
+    assert state["calls"] == []
+
+
 def test_baseline_assigned_event(pep_url):
     status, body = _declare(pep_url, baseline_id="SENTRY-B1")
     assert status == 201 and body["baseline_assigned"] is True

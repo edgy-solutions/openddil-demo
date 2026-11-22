@@ -41,6 +41,8 @@ pipeline:
             throw("releasable_to must not include originator_nation")
           } else if this.serial != null && this.serial.type() != "string" {
             throw("serial must be a string or null")
+          } else if this.uii != null && this.uii.type() != "string" {
+            throw("uii must be a string or null")
           } else if this.baseline_id != null && this.baseline_id.type() != "string" {
             throw("baseline_id must be a string or null")
           } else {

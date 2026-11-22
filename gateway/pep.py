@@ -2417,7 +2417,7 @@ def _cm_record(*, allowed: bool, subject: str, asset_id: str | None,
 
 
 _DECLARE_KEYS = {"asset_id", "edge_id", "serial", "unit", "originator_nation",
-                 "releasable_to", "baseline_id", "source", "confirm_serial"}
+                 "releasable_to", "baseline_id", "source", "confirm_serial", "uii"}
 
 
 def _parse_declare_body(payload) -> dict:
@@ -2440,6 +2440,7 @@ def _parse_declare_body(payload) -> dict:
 
     out = {k: text(k) for k in ("asset_id", "edge_id", "unit", "originator_nation")}
     out["serial"] = text("serial", optional=True)
+    out["uii"] = text("uii", optional=True)
     out["baseline_id"] = text("baseline_id", optional=True)
     rel = payload.get("releasable_to")
     if (not isinstance(rel, list)
@@ -3593,7 +3594,7 @@ class Pep(BaseHTTPRequestHandler):
                 return
 
         declared_rec = {
-            "asset_id": asset_id, "serial": serial, "unit": f["unit"],
+            "asset_id": asset_id, "serial": serial, "uii": f["uii"], "unit": f["unit"],
             "originator_nation": nation, "releasable_to": releasable,
             "baseline_id": f["baseline_id"], "declared_by": subject,
             "declared_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
