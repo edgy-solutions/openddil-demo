@@ -13,7 +13,7 @@ function fmt(iso: string | null | undefined): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-US', { hour12: false });
 }
 
-export function dispositionLine(c: CortexCase): string | null {
+function dispositionLine(c: CortexCase): string | null {
   switch (c.disposition_state) {
     case 'admitted': {
       const d = c.disposition ?? {};
