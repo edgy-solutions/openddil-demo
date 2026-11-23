@@ -443,6 +443,7 @@ def record_decision(**fields) -> None:
     # stamping it in one place covers every decision path.
     fields.setdefault("issuer", oidc.ISSUER if oidc.enabled() else "")
     fields.setdefault("realm_version", REALM_VERSION)
+    fields.setdefault("filter", "key" if LABEL_KEY_FILTER else "predicate")
     decisions.info("DECISION %s", json.dumps(fields, sort_keys=True))
 
 
@@ -2045,6 +2046,143 @@ def compose(client_where: str | None, policy_where: str) -> str:
     return "(" + client_where + ") AND (" + policy_where + ")"
 
 
+# --- the label-key row filter (ADR-0055 compatibility slice, design s2) -------
+# Off (the default): every labelled read is filtered by `policy_predicate`,
+# exactly as before. On: rows are filtered by `label_key IN (...)`, the keys
+# of the registry labels the viewer's nations admit.
+LABEL_KEY_FILTER = os.getenv("OPENDDIL_LABEL_KEY_FILTER", "false").strip().lower() == "true"
+# Refresh interval: the registry copy is fresh below this age, and a refresh is
+# tried from this age on. Maximum staleness: the last good copy may be served
+# below this age and never at or past it.
+LABEL_REGISTRY_REFRESH_S = float(os.getenv("OPENDDIL_LABEL_REGISTRY_REFRESH_S", "2.5"))
+LABEL_REGISTRY_MAX_STALE_S = float(os.getenv("OPENDDIL_LABEL_REGISTRY_MAX_STALE_S", "5"))
+_LABEL_REG_NAMES = ("OPENDDIL_LABEL_REGISTRY_REFRESH_S / "
+                    "OPENDDIL_LABEL_REGISTRY_MAX_STALE_S")
+if not LABEL_REGISTRY_REFRESH_S > 0:
+    raise ValueError(f"{_LABEL_REG_NAMES}: refresh must be > 0, got "
+                     f"{LABEL_REGISTRY_REFRESH_S} (max staleness {LABEL_REGISTRY_MAX_STALE_S})")
+if not LABEL_REGISTRY_MAX_STALE_S > LABEL_REGISTRY_REFRESH_S:
+    raise ValueError(f"{_LABEL_REG_NAMES}: max staleness ({LABEL_REGISTRY_MAX_STALE_S}) "
+                     f"must be above refresh ({LABEL_REGISTRY_REFRESH_S})")
+_LABEL_REGISTRY_COLUMNS = ["label_key", "label"]
+_label_registry_lock = threading.Lock()
+# (monotonic time of the last SUCCESSFUL read, [(key, author, release set | None)]),
+# or None until a read has succeeded once. A failed read never moves the
+# stamp, so the last good copy is never served past LABEL_REGISTRY_MAX_STALE_S.
+_label_registry_cache: tuple[float, list[tuple]] | None = None
+# Consecutive failed reads, and the monotonic time before which no read is
+# tried again (exponential backoff, BASE * 2 ** (failures - 1), capped at MAX).
+_LABEL_REGISTRY_BACKOFF_BASE_S = 0.5
+_LABEL_REGISTRY_BACKOFF_MAX_S = 30.0
+_label_registry_failures: int = 0
+_label_registry_next_try: float = 0.0
+
+
+def _label_entry(row: dict) -> tuple | None:
+    """(key, author, release) of one registry row, or None when the row does
+    not have the shape of a label body: dims.nation = {author: str|null,
+    release: [str]|null}. Such a row is not admitted for anybody."""
+    key = row.get("label_key")
+    if not isinstance(key, str) or not key:
+        return None
+    body = _json_field(row.get("label"), dict)
+    dims = body.get("dims") if body else None
+    nation = dims.get("nation") if isinstance(dims, dict) else None
+    if not isinstance(nation, dict):
+        return None
+    author, release = nation.get("author"), nation.get("release")
+    if author is not None and not isinstance(author, str):
+        return None
+    if release is not None and not (
+            isinstance(release, list) and all(isinstance(r, str) for r in release)):
+        return None
+    return key, author, (None if release is None else set(release))
+
+
+def _label_registry() -> list[tuple] | None:
+    """The registry rows, from one cached unfiltered read of `label_registry`
+    through the same bounded shape read as the reports routes: single-flight
+    under a lock.
+
+    The copy is fresh for LABEL_REGISTRY_REFRESH_S; from that age on a
+    refresh is tried. A failed refresh retries with exponential backoff
+    (0.5 s doubling to 30 s) and, meanwhile, the last good copy may be served
+    until it is LABEL_REGISTRY_MAX_STALE_S old. It is never served past that: the
+    function then returns None and the filter denies (`false`) until a read
+    succeeds. A key that arrives in the meantime stays invisible until a read
+    succeeds, which is the declared behaviour (invisible until decided).
+
+    FAIL CLOSED. Before the first successful read this returns None and the
+    filter is `false`; retries are backed off rather than made on every
+    request."""
+    global _label_registry_cache, _label_registry_failures, _label_registry_next_try
+    with _label_registry_lock:
+        now = time.monotonic()
+        hit = _label_registry_cache
+        age = float("inf") if hit is None else now - hit[0]
+        expiry = LABEL_REGISTRY_MAX_STALE_S
+        if age < LABEL_REGISTRY_REFRESH_S:
+            return hit[1]
+        if now < _label_registry_next_try:
+            return hit[1] if age < expiry else None
+        try:
+            rows = _follow_shape("label_registry", "true", _LABEL_REGISTRY_COLUMNS, "")
+        except Exception as exc:  # noqa: BLE001 -- any failure is "not up to date"
+            _label_registry_failures += 1
+            delay = min(_LABEL_REGISTRY_BACKOFF_BASE_S * 2 ** (_label_registry_failures - 1),
+                        _LABEL_REGISTRY_BACKOFF_MAX_S)
+            _label_registry_next_try = now + delay
+            if age < expiry:
+                log.warning("label registry refresh failed (attempt %d), serving the last "
+                            "copy until it expires in %.1f s; next try in %.1f s: %s",
+                            _label_registry_failures, expiry - age, delay, _scrub(exc))
+                return hit[1]
+            log.error("label registry read failed (attempt %d), denying labelled reads "
+                      "until a read succeeds; next try in %.1f s: %s",
+                      _label_registry_failures, delay, _scrub(exc))
+            return None
+        entries = [e for e in (_label_entry(r) for r in rows) if e is not None]
+        if _label_registry_failures > 0:
+            log.info("label registry read succeeded after %d failed attempts",
+                     _label_registry_failures)
+        _label_registry_cache = (now, entries)
+        _label_registry_failures = 0
+        _label_registry_next_try = 0.0
+        return entries
+
+
+def _admitted_keys(nations: list[str]) -> list[str]:
+    """The distinct label keys these nations admit, in code-point order (the
+    same as "C" order for UTF-8). `policy_predicate`'s test, per label."""
+    entries = _label_registry()
+    if not entries or not nations:
+        return []
+    n = set(nations)
+    return sorted({k for k, author, release in entries
+                   if (author and author in n) or (release is not None and release & n)})
+
+
+def admitted_key_count(nations: list[str]) -> int:
+    """How many keys these nations admit; for the decision line."""
+    return len(_admitted_keys(nations))
+
+
+def row_filter(nations: list[str]) -> str:
+    """The one place a labelled read's row filter is built."""
+    if not LABEL_KEY_FILTER:
+        return policy_predicate(nations)
+    keys = _admitted_keys(nations)
+    if not keys:
+        return "false"
+    return "label_key IN (" + ", ".join(_sql_str(k) for k in keys) + ")"
+
+
+def _key_fields(nations: list[str]) -> dict:
+    """The decision line's extra field for a filtered read: how many keys the
+    viewer was admitted, never which."""
+    return {"admitted_keys": admitted_key_count(nations)} if LABEL_KEY_FILTER else {}
+
+
 # --- the CM write path's own visibility check --------------------------------
 class ElectricUnavailable(Exception):
     """The one bounded Electric shape read behind the CM visibility check
@@ -2055,7 +2193,7 @@ class ElectricUnavailable(Exception):
 
 def read_visible_row(table: str, asset_id: str, nations: list[str]) -> dict | None:
     """One bounded, non-streaming read of `table`, filtered through the SAME
-    machinery the read path uses -- `compose`, `policy_predicate`,
+    machinery the read path uses -- `compose`, `row_filter`,
     `_sql_str` -- not a second decision about who may see what. Zero rows
     means "not visible here", and the caller must read it that way rather
     than as "does not exist": this write path never confirms or denies that
@@ -2075,7 +2213,7 @@ def read_visible_row(table: str, asset_id: str, nations: list[str]) -> dict | No
     delete in order, so the row returned reflects what Electric has actually
     replicated rather than a point-in-time snapshot that may be hours stale.
     """
-    where = compose(f"asset_id = {_sql_str(asset_id)}", policy_predicate(nations))
+    where = compose(f"asset_id = {_sql_str(asset_id)}", row_filter(nations))
     rows = _follow_shape(table, where, None, asset_id)
     return rows[0] if rows else None
 
@@ -2330,6 +2468,15 @@ _REPORT_COLUMNS = {
         "asset_id", "edge_id", "region_id", "originator_nation", "releasable_to",
         "manual_discrepancies"],
 }
+
+
+def _report_columns(table: str) -> list[str]:
+    """`_REPORT_COLUMNS` as is; with the key filter on, plus `label_key`,
+    which the tier route's admitted-set test reads."""
+    cols = _REPORT_COLUMNS[table]
+    return cols + ["label_key"] if LABEL_KEY_FILTER else cols
+
+
 _reports_lock = threading.Lock()
 _reports_cache: dict[str, tuple[float, list[dict]]] = {}
 
@@ -2371,7 +2518,7 @@ def _reports_rows(table: str) -> list[dict]:
         hit = _reports_cache.get(table)
         if hit is not None and time.monotonic() - hit[0] < REPORTS_CACHE_S:
             return hit[1]
-        rows = _follow_shape(table, _reports_tier_where(), _REPORT_COLUMNS[table], "")
+        rows = _follow_shape(table, _reports_tier_where(), _report_columns(table), "")
         _reports_cache[table] = (time.monotonic(), rows)
         return rows
 
@@ -2410,6 +2557,8 @@ def report_episodes() -> list[dict]:
         owning = _owning_tier(row.get("edge_id"), row.get("region_id"))
         labels = {"originator_nation": row.get("originator_nation"),
                   "releasable_to": _pg_array(row.get("releasable_to"))}
+        if LABEL_KEY_FILTER:
+            labels["label_key"] = row.get("label_key")
         for d in _json_field(row.get("manual_discrepancies"), list) or []:
             if not isinstance(d, dict) or not d.get("discrepancy_id"):
                 continue
@@ -2440,7 +2589,8 @@ def report_episodes() -> list[dict]:
             "resolution": row.get("resolution") or "",
             "sources": _report_sources(row.get("sources")),
             "labels": {"originator_nation": row.get("originator_nation"),
-                       "releasable_to": _pg_array(row.get("releasable_to"))},
+                       "releasable_to": _pg_array(row.get("releasable_to")),
+                       **({"label_key": row.get("label_key")} if LABEL_KEY_FILTER else {})},
             "owning_tier": _owning_tier(row.get("edge_id"), row.get("region_id"))}
     return list(out.values())
 
@@ -3516,7 +3666,7 @@ class Pep(BaseHTTPRequestHandler):
             decl = _follow_shape("asset_declaration", f"edge_id = {e}", ["asset_id"], "")
             fielding = _follow_shape(
                 "asset_fielding",
-                compose(f"fielded_to = {e}", policy_predicate(allowed)),
+                compose(f"fielded_to = {e}", row_filter(allowed)),
                 ["serial", "platform_variant", "unit", "originator_nation",
                  "releasable_to", "due_by"], "")
             corr = _follow_shape("asset_correlation", f"edge_id = {e}", ["serial"], "")
@@ -3589,7 +3739,7 @@ class Pep(BaseHTTPRequestHandler):
                                 ["asset_id", "edge_id"], "")
             decl = _follow_shape("asset_declaration", "true", ["asset_id", "edge_id"], "")
             fielding = _follow_shape(
-                "asset_fielding", compose(None, policy_predicate(allowed)),
+                "asset_fielding", compose(None, row_filter(allowed)),
                 ["serial", "fielded_to", "due_by"], "")
             corr = _follow_shape("asset_correlation", "true", ["serial"], "")
         except ElectricUnavailable as exc:
@@ -3737,7 +3887,7 @@ class Pep(BaseHTTPRequestHandler):
                 fielding = _follow_shape(
                     "asset_fielding",
                     compose(f"serial = {_sql_str(serial)} AND fielded_to = {e}",
-                            policy_predicate(allowed)),
+                            row_filter(allowed)),
                     ["serial", "platform_variant", "unit", "originator_nation",
                      "releasable_to"], serial)
             except ElectricUnavailable as exc:
@@ -4365,7 +4515,7 @@ class Pep(BaseHTTPRequestHandler):
                        marker="GATEWAY REFUSED (MALFORMED PARAMETER)")
             return
         where = compose((params.get("where") or [None])[0],
-                        policy_predicate(decision["allowed_nations"]))
+                        row_filter(decision["allowed_nations"]))
         element_release(principal, (table, where or "", (params.get("columns") or [""])[0]))
         self.send_response(204)
         self.send_header("Content-Length", "0")
@@ -4685,10 +4835,16 @@ class Pep(BaseHTTPRequestHandler):
             return
 
         if tier_route:
-            records = [{**e["labels"], "_i": i} for i, e in enumerate(episodes)]
-            kept = egress_view.filter_decisions(
-                {"records": records}, decision["allowed_nations"])["records"]
-            listed = [episodes[r["_i"]] for r in kept]
+            if LABEL_KEY_FILTER:
+                # The same rule as every other labelled read: listed iff the
+                # row's key is admitted for the viewer. NULL is never admitted.
+                admitted = set(_admitted_keys(decision["allowed_nations"]))
+                listed = [e for e in episodes if e["labels"].get("label_key") in admitted]
+            else:
+                records = [{**e["labels"], "_i": i} for i, e in enumerate(episodes)]
+                kept = egress_view.filter_decisions(
+                    {"records": records}, decision["allowed_nations"])["records"]
+                listed = [episodes[r["_i"]] for r in kept]
             empty_state = "no reports at this tier"
             viewer = None
         else:
@@ -4718,6 +4874,7 @@ class Pep(BaseHTTPRequestHandler):
                         policy_version=decision["policy_version"],
                         corpus_version=decision["corpus_version"],
                         allowed_nations=decision["allowed_nations"],
+                        **(_key_fields(decision["allowed_nations"]) if tier_route else {}),
                         shown=len(body["reports"]))
         self._send(200, json.dumps(body).encode(),
                    [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
@@ -5115,10 +5272,16 @@ class Pep(BaseHTTPRequestHandler):
             else:
                 policy_clause = f"{col} = {_sql_str(subject)}"
         else:
-            policy_clause = policy_predicate(decision["allowed_nations"])
+            policy_clause = row_filter(decision["allowed_nations"])
 
         client_where = (params.get("where") or [None])[0]
         where = compose(client_where, policy_clause) if policy_clause else client_where
+        # The decision line records the predicate. With the key filter on, the
+        # policy clause is a list of label keys, and the line never carries
+        # keys, so the clause is named, not printed.
+        logged_where = where
+        if LABEL_KEY_FILTER and cls == "nation" and policy_clause:
+            logged_where = compose(client_where, "label_key IN (<admitted keys>)")
 
         # Handle binding, checked BEFORE the request is forwarded, and only
         # now that `where` -- and so the view -- is known.
@@ -5259,6 +5422,8 @@ class Pep(BaseHTTPRequestHandler):
                             policy_version=decision["policy_version"],
                             corpus_version=decision["corpus_version"],
                             allowed_nations=decision["allowed_nations"],
+                            **(_key_fields(decision["allowed_nations"])
+                               if cls == "nation" else {}),
                             upstream_error=_scrub(exc))
             self.send_response(502)
             self.send_header("Content-Length", "0")
@@ -5276,7 +5441,9 @@ class Pep(BaseHTTPRequestHandler):
                         corpus_version=decision["corpus_version"],
                         role=decision["role"],
                         allowed_nations=decision["allowed_nations"],
-                        predicate=where, shape_handle=new_handle or None)
+                        **(_key_fields(decision["allowed_nations"])
+                           if cls == "nation" else {}),
+                        predicate=logged_where, shape_handle=new_handle or None)
 
         if refetch is not None:
             log.info("electric must-refetch resource=%s new_handle=%s",

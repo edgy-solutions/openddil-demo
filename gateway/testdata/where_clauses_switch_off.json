@@ -1,0 +1,907 @@
+{
+  "_REPORT_COLUMNS": {
+    "asset_cm_state": [
+      "asset_id",
+      "edge_id",
+      "region_id",
+      "originator_nation",
+      "releasable_to",
+      "manual_discrepancies"
+    ],
+    "failure_episodes": [
+      "episode_id",
+      "detected_at",
+      "asset_id",
+      "component",
+      "fault_code",
+      "cleared_at",
+      "cleared_by",
+      "resolution",
+      "sources",
+      "originator_nation",
+      "releasable_to",
+      "edge_id",
+      "region_id"
+    ]
+  },
+  "arrivals_declare_expect_confirm": {
+    "atl": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "platform_variant",
+            "unit",
+            "originator_nation",
+            "releasable_to"
+          ],
+          "table": "asset_fielding",
+          "where": "(serial = 'SN-1' AND fielded_to = 'edge-a') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL']::text[]))"
+        }
+      ],
+      "status": 502
+    },
+    "atl_bdr": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "platform_variant",
+            "unit",
+            "originator_nation",
+            "releasable_to"
+          ],
+          "table": "asset_fielding",
+          "where": "(serial = 'SN-1' AND fielded_to = 'edge-a') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+        }
+      ],
+      "status": 502
+    },
+    "bdr_atl": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "platform_variant",
+            "unit",
+            "originator_nation",
+            "releasable_to"
+          ],
+          "table": "asset_fielding",
+          "where": "(serial = 'SN-1' AND fielded_to = 'edge-a') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+        }
+      ],
+      "status": 502
+    },
+    "empty": {
+      "reads": [],
+      "status": 403
+    }
+  },
+  "arrivals_get": {
+    "atl": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "platform_variant",
+            "unit",
+            "originator_nation",
+            "releasable_to",
+            "due_by"
+          ],
+          "table": "asset_fielding",
+          "where": "(fielded_to = 'edge-a') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "atl_bdr": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "platform_variant",
+            "unit",
+            "originator_nation",
+            "releasable_to",
+            "due_by"
+          ],
+          "table": "asset_fielding",
+          "where": "(fielded_to = 'edge-a') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "bdr_atl": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "platform_variant",
+            "unit",
+            "originator_nation",
+            "releasable_to",
+            "due_by"
+          ],
+          "table": "asset_fielding",
+          "where": "(fielded_to = 'edge-a') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "empty": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "platform_variant",
+            "unit",
+            "originator_nation",
+            "releasable_to",
+            "due_by"
+          ],
+          "table": "asset_fielding",
+          "where": "(fielded_to = 'edge-a') AND (false)"
+        }
+      ],
+      "status": 200
+    }
+  },
+  "arrivals_summary": {
+    "atl": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "fielded_to",
+            "due_by"
+          ],
+          "table": "asset_fielding",
+          "where": "(originator_nation IS NOT NULL AND originator_nation IN ('ATL')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL']::text[])"
+        }
+      ],
+      "status": 200
+    },
+    "atl_bdr": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "fielded_to",
+            "due_by"
+          ],
+          "table": "asset_fielding",
+          "where": "(originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[])"
+        }
+      ],
+      "status": 200
+    },
+    "bdr_atl": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "fielded_to",
+            "due_by"
+          ],
+          "table": "asset_fielding",
+          "where": "(originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[])"
+        }
+      ],
+      "status": 200
+    },
+    "empty": {
+      "reads": [
+        {
+          "columns": [
+            "serial",
+            "fielded_to",
+            "due_by"
+          ],
+          "table": "asset_fielding",
+          "where": "false"
+        }
+      ],
+      "status": 200
+    }
+  },
+  "element_delete": {
+    "atl": {
+      "status": 204,
+      "views": [
+        [
+          "asset_element_state",
+          "(asset_id = 'dis:1:1:7' AND depth <= 1) AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL']::text[]))",
+          "asset_id"
+        ]
+      ]
+    },
+    "atl_bdr": {
+      "status": 204,
+      "views": [
+        [
+          "asset_element_state",
+          "(asset_id = 'dis:1:1:7' AND depth <= 1) AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))",
+          "asset_id"
+        ]
+      ]
+    },
+    "bdr_atl": {
+      "status": 204,
+      "views": [
+        [
+          "asset_element_state",
+          "(asset_id = 'dis:1:1:7' AND depth <= 1) AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))",
+          "asset_id"
+        ]
+      ]
+    },
+    "empty": {
+      "status": 403,
+      "views": []
+    }
+  },
+  "read_visible_row[asset=a'b]": {
+    "atl": {
+      "reads": [
+        {
+          "columns": null,
+          "table": "telemetry_latest_state",
+          "where": "(asset_id = 'a''b') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "atl_bdr": {
+      "reads": [
+        {
+          "columns": null,
+          "table": "telemetry_latest_state",
+          "where": "(asset_id = 'a''b') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "bdr_atl": {
+      "reads": [
+        {
+          "columns": null,
+          "table": "telemetry_latest_state",
+          "where": "(asset_id = 'a''b') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "empty": {
+      "reads": [],
+      "status": 403
+    }
+  },
+  "read_visible_row[asset=dis:1:1:7]": {
+    "atl": {
+      "reads": [
+        {
+          "columns": null,
+          "table": "telemetry_latest_state",
+          "where": "(asset_id = 'dis:1:1:7') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "atl_bdr": {
+      "reads": [
+        {
+          "columns": null,
+          "table": "telemetry_latest_state",
+          "where": "(asset_id = 'dis:1:1:7') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "bdr_atl": {
+      "reads": [
+        {
+          "columns": null,
+          "table": "telemetry_latest_state",
+          "where": "(asset_id = 'dis:1:1:7') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+        }
+      ],
+      "status": 200
+    },
+    "empty": {
+      "reads": [],
+      "status": 403
+    }
+  },
+  "reports[edge-t][/reports/mine]": {
+    "atl": {
+      "listed": [],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        }
+      ],
+      "status": 200
+    },
+    "atl_bdr": {
+      "listed": [],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        }
+      ],
+      "status": 200
+    },
+    "bdr_atl": {
+      "listed": [],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        }
+      ],
+      "status": 200
+    },
+    "empty": {
+      "listed": null,
+      "reads": [],
+      "status": 403
+    }
+  },
+  "reports[edge-t][/reports/tier]": {
+    "atl": {
+      "listed": [
+        "E-ATL",
+        "E-BDR",
+        "E-OPEN"
+      ],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        }
+      ],
+      "status": 200
+    },
+    "atl_bdr": {
+      "listed": [
+        "E-ATL",
+        "E-BDR",
+        "E-NULL",
+        "E-OPEN"
+      ],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        }
+      ],
+      "status": 200
+    },
+    "bdr_atl": {
+      "listed": [
+        "E-ATL",
+        "E-BDR",
+        "E-NULL",
+        "E-OPEN"
+      ],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "(edge_id = 'edge-t' OR region_id = 'edge-t')"
+        }
+      ],
+      "status": 200
+    },
+    "empty": {
+      "listed": null,
+      "reads": [],
+      "status": 403
+    }
+  },
+  "reports[hub][/reports/mine]": {
+    "atl": {
+      "listed": [],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "true"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "true"
+        }
+      ],
+      "status": 200
+    },
+    "atl_bdr": {
+      "listed": [],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "true"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "true"
+        }
+      ],
+      "status": 200
+    },
+    "bdr_atl": {
+      "listed": [],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "true"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "true"
+        }
+      ],
+      "status": 200
+    },
+    "empty": {
+      "listed": null,
+      "reads": [],
+      "status": 403
+    }
+  },
+  "reports[hub][/reports/tier]": {
+    "atl": {
+      "listed": [
+        "E-ATL",
+        "E-BDR",
+        "E-OPEN"
+      ],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "true"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "true"
+        }
+      ],
+      "status": 200
+    },
+    "atl_bdr": {
+      "listed": [
+        "E-ATL",
+        "E-BDR",
+        "E-NULL",
+        "E-OPEN"
+      ],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "true"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "true"
+        }
+      ],
+      "status": 200
+    },
+    "bdr_atl": {
+      "listed": [
+        "E-ATL",
+        "E-BDR",
+        "E-NULL",
+        "E-OPEN"
+      ],
+      "reads": [
+        {
+          "columns": [
+            "asset_id",
+            "edge_id",
+            "region_id",
+            "originator_nation",
+            "releasable_to",
+            "manual_discrepancies"
+          ],
+          "table": "asset_cm_state",
+          "where": "true"
+        },
+        {
+          "columns": [
+            "episode_id",
+            "detected_at",
+            "asset_id",
+            "component",
+            "fault_code",
+            "cleared_at",
+            "cleared_by",
+            "resolution",
+            "sources",
+            "originator_nation",
+            "releasable_to",
+            "edge_id",
+            "region_id"
+          ],
+          "table": "failure_episodes",
+          "where": "true"
+        }
+      ],
+      "status": 200
+    },
+    "empty": {
+      "listed": null,
+      "reads": [],
+      "status": 403
+    }
+  },
+  "shape_proxy[client_where_or]": {
+    "atl": {
+      "status": 200,
+      "upstream": [
+        {
+          "table": [
+            "telemetry_latest_state"
+          ],
+          "where": [
+            "(asset_id = 'x' OR asset_id = 'y') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL']::text[]))"
+          ]
+        }
+      ]
+    },
+    "atl_bdr": {
+      "status": 200,
+      "upstream": [
+        {
+          "table": [
+            "telemetry_latest_state"
+          ],
+          "where": [
+            "(asset_id = 'x' OR asset_id = 'y') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+          ]
+        }
+      ]
+    },
+    "bdr_atl": {
+      "status": 200,
+      "upstream": [
+        {
+          "table": [
+            "telemetry_latest_state"
+          ],
+          "where": [
+            "(asset_id = 'x' OR asset_id = 'y') AND ((originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[]))"
+          ]
+        }
+      ]
+    },
+    "empty": {
+      "status": 403,
+      "upstream": []
+    }
+  },
+  "shape_proxy[no_client_where]": {
+    "atl": {
+      "status": 200,
+      "upstream": [
+        {
+          "table": [
+            "telemetry_latest_state"
+          ],
+          "where": [
+            "(originator_nation IS NOT NULL AND originator_nation IN ('ATL')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL']::text[])"
+          ]
+        }
+      ]
+    },
+    "atl_bdr": {
+      "status": 200,
+      "upstream": [
+        {
+          "table": [
+            "telemetry_latest_state"
+          ],
+          "where": [
+            "(originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[])"
+          ]
+        }
+      ]
+    },
+    "bdr_atl": {
+      "status": 200,
+      "upstream": [
+        {
+          "table": [
+            "telemetry_latest_state"
+          ],
+          "where": [
+            "(originator_nation IS NOT NULL AND originator_nation IN ('ATL', 'BDR')) OR (releasable_to IS NOT NULL AND releasable_to && ARRAY['ATL', 'BDR']::text[])"
+          ]
+        }
+      ]
+    },
+    "empty": {
+      "status": 403,
+      "upstream": []
+    }
+  }
+}
