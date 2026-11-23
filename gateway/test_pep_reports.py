@@ -53,8 +53,8 @@ def source(who, minute):
     return {"source": "manual", "reported_by": who, "reported_at_ns": ns(t(minute))}
 
 
-def cm_row(asset, edge, episodes, nation="ATL", releasable="{}"):
-    return {"asset_id": asset, "edge_id": edge, "region_id": None,
+def cm_row(asset, edge, episodes, nation="ATL", releasable="{}", region=None):
+    return {"asset_id": asset, "edge_id": edge, "region_id": region,
             "originator_nation": nation, "releasable_to": releasable,
             "manual_discrepancies": json.dumps(episodes)}
 
@@ -65,12 +65,35 @@ def open_ep(eid, minute, sources, component="comp-1", fault="F-1"):
 
 
 def closed_row(eid, start, end, sources, *, edge=TIER, nation="ATL", releasable="{}",
-               cleared_by="supervisor-b", resolution="repaired", asset="asset-a"):
+               cleared_by="supervisor-b", resolution="repaired", asset="asset-a",
+               region=None):
     return {"episode_id": eid, "detected_at": pg(t(start)), "asset_id": asset,
             "component": "comp-1", "fault_code": "F-1", "cleared_at": pg(t(end)),
             "cleared_by": cleared_by, "resolution": resolution,
             "sources": json.dumps(sources), "originator_nation": nation,
-            "releasable_to": releasable, "edge_id": edge, "region_id": None}
+            "releasable_to": releasable, "edge_id": edge, "region_id": region}
+
+
+def region_world():
+    """region-r holds edge-t and edge-u; region-s is a sibling holding edge-v.
+    An edge's row carries its edge_id and region_id; a region's row carries
+    no edge_id and its region_id."""
+    a = [source("maintainer-a", 1)]
+    return {
+        "asset_cm_state": [
+            cm_row("asset-r", None, [open_ep("E-AT-R", 60, a)], region="region-r"),
+            cm_row("asset-t", TIER, [open_ep("E-AT-T", 61, a)], region="region-r"),
+            cm_row("asset-u", "edge-u", [open_ep("E-AT-U", 62, a)], region="region-r"),
+            cm_row("asset-s", None, [open_ep("E-AT-S", 63, a)], region="region-s"),
+            cm_row("asset-v", "edge-v", [open_ep("E-AT-V", 64, a)], region="region-s"),
+        ],
+        "failure_episodes": [
+            closed_row("E-AT-U", 0, 30, a, edge="edge-u", region="region-r", asset="asset-u"),
+            closed_row("E-AT-U-BDR", 10, 20, a, edge="edge-u", region="region-r",
+                       asset="asset-u", nation="BDR", releasable="{}"),
+            closed_row("E-AT-S", 5, 25, a, edge=None, region="region-s", asset="asset-s"),
+        ],
+    }
 
 
 def default_world():
@@ -99,6 +122,7 @@ class State:
 
     def reset(self):
         self.world = default_world()
+        self.ignore_where = False
         self.shape_opens = 0
         self.electric_requests = []
         self.non_get = []
@@ -158,9 +182,11 @@ class FakeElectric(_NoWrites, BaseHTTPRequestHandler):
         table = params.get("table")
         rows = list(state.world.get(table, []))
         where = params.get("where", "")
-        if "edge_id = " in where:
-            tier = where.split("edge_id = '", 1)[1].split("'", 1)[0]
-            rows = [r for r in rows if r.get("edge_id") == tier or r.get("region_id") == tier]
+        if where and where != "true" and not state.ignore_where:
+            # Evaluate `(edge_id = 'E' OR region_id = 'R')` exactly.
+            e = where.split("edge_id = '", 1)[1].split("'", 1)[0]
+            r_ = where.split("region_id = '", 1)[1].split("'", 1)[0]
+            rows = [r for r in rows if r.get("edge_id") == e or r.get("region_id") == r_]
         if params.get("offset") == "-1":
             state.shape_opens += 1
         msgs = [{"key": f"{table}/{i}", "value": r, "headers": {"operation": "insert"}}
@@ -281,6 +307,7 @@ def state_of(report, name):
 # ---- check 2: read only ----------------------------------------------------
 def test_check2_both_routes_succeed_and_nothing_is_written(env):
     assert mine(env)["reports"]
+    assert rep(mine(env), "E-OPEN")["owning_tier"] == TIER
     code, body = get(env[1] + "/reports/tier", "supervisor-b")
     assert code == 200 and body["reports"]
     assert state.non_get == []
@@ -480,6 +507,7 @@ def test_check5_supervisor_sees_the_tier_through_the_label_rule(env):
     # A supervisor's list names every filer.
     d = state_of(rep(body, "E-CLOSED"), "filed")["detail"]
     assert d["reported_by"] == ["maintainer-a", "maintainer-b"]
+    assert body["reports"] and all(r["owning_tier"] == TIER for r in body["reports"])
 
 
 def test_check5_edge_operator_gets_403_with_the_named_state(env):
@@ -508,6 +536,7 @@ def test_check5_at_the_hub_the_store_is_not_narrowed(env):
     assert code == 200
     assert {r["where"] for r in state.electric_requests} == {"true"}
     assert "E-ELSEWHERE" in {r["episode_id"] for r in body["reports"]}
+    assert rep(body, "E-ELSEWHERE")["owning_tier"] == "edge-other"
 
 
 def test_no_session_is_401(env):
@@ -559,3 +588,72 @@ def test_the_pane_is_called_once_per_request_with_all_ids(env):
     q = urllib.parse.parse_qs(urllib.parse.urlparse(state.pane_calls[0]).query)
     assert set(q["episode_id"]) == {"E-OPEN", "E-CLOSED", "E-DUP", "E-BDR", "E-OTHER-TIER",
                                     "E-ELSEWHERE"} - {"E-OTHER-TIER", "E-ELSEWHERE"}
+
+
+# ---- check 5 (design 3.3): the tier and the tiers below it ------------------
+SHAPE = pytest.mark.parametrize("ignore_where", [False, True],
+                                ids=["shape-filters", "shape-returns-all"])
+
+
+def tier_at(env, tier, ignore_where):
+    pep, url = env
+    pep.PEP_TIER = tier
+    state.world = region_world()
+    state.ignore_where = ignore_where
+    code, body = get(url + "/reports/tier", "supervisor-b")
+    assert code == 200, body
+    return body
+
+
+@SHAPE
+def test_check5_case1_a_region_lists_its_own_and_its_edges_with_owning_tier(env, ignore_where):
+    body = tier_at(env, "region-r", ignore_where)
+    assert rep(body, "E-AT-U", open_=True)["owning_tier"] == "edge-u"
+    assert rep(body, "E-AT-U", open_=False)["owning_tier"] == "edge-u"
+    assert rep(body, "E-AT-R")["owning_tier"] == "region-r"
+    assert rep(body, "E-AT-T")["owning_tier"] == "edge-t"
+
+
+@SHAPE
+def test_check5_case2_the_label_rule_applies_to_a_row_below(env, ignore_where):
+    body = tier_at(env, "region-r", ignore_where)
+    assert "E-AT-U-BDR" not in {r["episode_id"] for r in body["reports"]}
+
+
+@SHAPE
+def test_check5_case3_a_region_does_not_see_a_sibling_region(env, ignore_where):
+    body = tier_at(env, "region-r", ignore_where)
+    ids = {r["episode_id"] for r in body["reports"]}
+    assert "E-AT-S" not in ids and "E-AT-V" not in ids
+
+
+@SHAPE
+def test_check5_case4_an_edge_does_not_see_its_region_or_a_sibling_edge(env, ignore_where):
+    body = tier_at(env, TIER, ignore_where)
+    ids = {r["episode_id"] for r in body["reports"]}
+    assert "E-AT-R" not in ids and "E-AT-U" not in ids
+    assert rep(body, "E-AT-T")["owning_tier"] == TIER
+
+
+def test_owning_tier_unit(env):
+    pep, _ = env
+    assert pep._owning_tier("edge-u", "region-r") == "edge-u"
+    assert pep._owning_tier(None, "region-r") == "region-r"
+    assert pep._owning_tier("", "region-r") == "region-r"
+    assert pep._owning_tier(None, None) == "hub"
+    assert pep._owning_tier("", "") == "hub"
+
+
+def test_reports_in_scope_unit(env):
+    pep, _ = env
+    pep.PEP_TIER = "region-r"
+    assert pep._reports_in_scope("edge-u", "region-r")
+    assert pep._reports_in_scope(None, "region-r") and pep._reports_in_scope("", "region-r")
+    assert not pep._reports_in_scope("edge-v", "region-s")
+    assert not pep._reports_in_scope(None, None)
+    pep.PEP_TIER = TIER
+    assert pep._reports_in_scope(TIER, "region-r")
+    assert not pep._reports_in_scope("edge-u", "region-r")
+    assert not pep._reports_in_scope(None, "region-r")
+    pep.PEP_TIER = pep.HUB_TIER
+    assert pep._reports_in_scope("edge-v", "region-s") and pep._reports_in_scope(None, None)
