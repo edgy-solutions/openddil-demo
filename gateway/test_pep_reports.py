@@ -617,7 +617,13 @@ def test_check5_case1_a_region_lists_its_own_and_its_edges_with_owning_tier(env,
 @SHAPE
 def test_check5_case2_the_label_rule_applies_to_a_row_below(env, ignore_where):
     body = tier_at(env, "region-r", ignore_where)
-    assert "E-AT-U-BDR" not in {r["episode_id"] for r in body["reports"]}
+    ids = {r["episode_id"] for r in body["reports"]}
+    # The same edge's other closed episode is listed, so the row is in scope
+    # and only the label rule removes it.
+    assert "E-AT-U" in ids
+    assert "E-AT-U-BDR" not in ids
+    pep, _ = env
+    assert any(e["episode_id"] == "E-AT-U-BDR" for e in pep.report_episodes())
 
 
 @SHAPE
