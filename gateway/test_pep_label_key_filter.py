@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -165,7 +166,8 @@ def pep_url(rig, monkeypatch, tmp_path):
     monkeypatch.setattr(pep, "_label_registry_cache", None)
     monkeypatch.setattr(pep, "_label_registry_failures", 0)
     monkeypatch.setattr(pep, "_label_registry_next_try", 0.0)
-    monkeypatch.setattr(pep, "LABEL_REGISTRY_CACHE_S", 0.0)
+    monkeypatch.setattr(pep, "LABEL_REGISTRY_REFRESH_S", 0.0)
+    monkeypatch.setattr(pep, "LABEL_REGISTRY_MAX_STALE_S", 0.0)
     rel = tmp_path / "releasability.yaml"
     rel.write_text("# c\nnations:\n  ATL:\n    name: Atlantia\n  BDR:\n    name: Borduria\n"
                    "default_originator_nation: null\nassets: {}\n")
@@ -362,7 +364,8 @@ class _Clock:
 def clock(on, monkeypatch):
     c = _Clock()
     monkeypatch.setattr(on, "time", c)
-    monkeypatch.setattr(on, "LABEL_REGISTRY_CACHE_S", 10.0)
+    monkeypatch.setattr(on, "LABEL_REGISTRY_REFRESH_S", 1.0)
+    monkeypatch.setattr(on, "LABEL_REGISTRY_MAX_STALE_S", 10.0)
     return c
 
 
@@ -378,17 +381,17 @@ def test_check4_registry_never_read_is_false(on, clock):
     assert on.row_filter(["ATL"]).startswith("label_key IN (")   # a later read heals it
 
 
-def test_refresh_below_half_the_ttl_makes_no_read(on, clock):
+def test_below_the_refresh_interval_makes_no_read(on, clock):
     on.row_filter(["ATL"])
-    clock.now += 4.9
+    clock.now += 0.9
     on.row_filter(["ATL"])
     assert _registry_reads() == 1
 
 
-def test_refresh_at_half_the_ttl_reads_and_serves_the_new_rows(on, clock):
+def test_at_the_refresh_interval_reads_and_serves_the_new_rows(on, clock):
     assert on.row_filter(["ATL"]).startswith("label_key IN (")
     state["registry"] = []
-    clock.now += 5.0
+    clock.now += 1.0
     assert on.row_filter(["ATL"]) == "false"          # the new (empty) rows are served
     assert _registry_reads() == 2
 
@@ -467,7 +470,8 @@ def test_never_read_failure_is_false_and_the_backoff_holds(on, clock):
 
 
 def test_check4_ttl_serves_the_cache(on, monkeypatch):
-    monkeypatch.setattr(on, "LABEL_REGISTRY_CACHE_S", 600.0)
+    monkeypatch.setattr(on, "LABEL_REGISTRY_REFRESH_S", 300.0)
+    monkeypatch.setattr(on, "LABEL_REGISTRY_MAX_STALE_S", 600.0)
     on.row_filter(["ATL"])
     on.row_filter(["ATL", "BDR"])
     assert [r["table"] for r in state["shape_reads"]].count("label_registry") == 1
@@ -641,3 +645,42 @@ def test_reports_tier_past_expiry_with_a_failing_refresh_lists_nothing(on, clock
     monkeypatch.setattr(on, "PEP_TIER", "hub")
     status, raw = _call(f"{state['base']}/reports/tier", "s-atl", want_body=True)
     assert status == 200 and json.loads(raw)["reports"] == []
+
+
+def _import_pep(**env_vars):
+    here = Path(__file__).resolve().parent
+    env = {k: v for k, v in os.environ.items() if not k.startswith("OPENDDIL_LABEL_REGISTRY_")}
+    env.update(env_vars)
+    return subprocess.run([sys.executable, "-c",
+                           "import pep; print(pep.LABEL_REGISTRY_REFRESH_S, "
+                           "pep.LABEL_REGISTRY_MAX_STALE_S)"],
+                          cwd=here, env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_registry_defaults_are_2_5_and_5():
+    r = _import_pep()
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split() == ["2.5", "5.0"]
+
+
+@pytest.mark.parametrize("refresh,max_stale", [("0", "5"), ("-1", "5"), ("5", "5"), ("6", "5")])
+def test_registry_settings_refused_at_import(refresh, max_stale):
+    r = _import_pep(OPENDDIL_LABEL_REGISTRY_REFRESH_S=refresh,
+                    OPENDDIL_LABEL_REGISTRY_MAX_STALE_S=max_stale)
+    assert r.returncode != 0
+    assert "ValueError" in r.stderr
+    assert "OPENDDIL_LABEL_REGISTRY_REFRESH_S" in r.stderr
+    assert "OPENDDIL_LABEL_REGISTRY_MAX_STALE_S" in r.stderr
+    assert f"({refresh})" in r.stderr or f"{refresh}" in r.stderr
+
+
+def test_refresh_and_max_stale_are_independent(on, clock):
+    on.row_filter(["ATL"])
+    state["registry_error"] = True
+    clock.now += 1.0                                  # at refresh: a read, which fails
+    assert on.row_filter(["ATL"]).startswith("label_key IN (")   # copy served, below max
+    assert _registry_reads() == 2
+    clock.now += 8.9                                  # age 9.9, still below max
+    assert on.row_filter(["ATL"]).startswith("label_key IN (")
+    clock.now += 0.1                                  # age 10.0, at max
+    assert on.row_filter(["ATL"]) == "false"

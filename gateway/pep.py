@@ -2051,12 +2051,24 @@ def compose(client_where: str | None, policy_where: str) -> str:
 # exactly as before. On: rows are filtered by `label_key IN (...)`, the keys
 # of the registry labels the viewer's nations admit.
 LABEL_KEY_FILTER = os.getenv("OPENDDIL_LABEL_KEY_FILTER", "false").strip().lower() == "true"
-LABEL_REGISTRY_CACHE_S = float(os.environ.get("OPENDDIL_LABEL_REGISTRY_CACHE_S", "5"))
+# Refresh interval: the registry copy is fresh below this age, and a refresh is
+# tried from this age on. Maximum staleness: the last good copy may be served
+# below this age and never at or past it.
+LABEL_REGISTRY_REFRESH_S = float(os.getenv("OPENDDIL_LABEL_REGISTRY_REFRESH_S", "2.5"))
+LABEL_REGISTRY_MAX_STALE_S = float(os.getenv("OPENDDIL_LABEL_REGISTRY_MAX_STALE_S", "5"))
+_LABEL_REG_NAMES = ("OPENDDIL_LABEL_REGISTRY_REFRESH_S / "
+                    "OPENDDIL_LABEL_REGISTRY_MAX_STALE_S")
+if not LABEL_REGISTRY_REFRESH_S > 0:
+    raise ValueError(f"{_LABEL_REG_NAMES}: refresh must be > 0, got "
+                     f"{LABEL_REGISTRY_REFRESH_S} (max staleness {LABEL_REGISTRY_MAX_STALE_S})")
+if not LABEL_REGISTRY_MAX_STALE_S > LABEL_REGISTRY_REFRESH_S:
+    raise ValueError(f"{_LABEL_REG_NAMES}: max staleness ({LABEL_REGISTRY_MAX_STALE_S}) "
+                     f"must be above refresh ({LABEL_REGISTRY_REFRESH_S})")
 _LABEL_REGISTRY_COLUMNS = ["label_key", "label"]
 _label_registry_lock = threading.Lock()
 # (monotonic time of the last SUCCESSFUL read, [(key, author, release set | None)]),
 # or None until a read has succeeded once. A failed read never moves the
-# stamp, so the last good copy is never served past LABEL_REGISTRY_CACHE_S.
+# stamp, so the last good copy is never served past LABEL_REGISTRY_MAX_STALE_S.
 _label_registry_cache: tuple[float, list[tuple]] | None = None
 # Consecutive failed reads, and the monotonic time before which no read is
 # tried again (exponential backoff, BASE * 2 ** (failures - 1), capped at MAX).
@@ -2092,10 +2104,10 @@ def _label_registry() -> list[tuple] | None:
     through the same bounded shape read as the reports routes: single-flight
     under a lock.
 
-    The copy is fresh for half of LABEL_REGISTRY_CACHE_S; after that a
+    The copy is fresh for LABEL_REGISTRY_REFRESH_S; from that age on a
     refresh is tried. A failed refresh retries with exponential backoff
     (0.5 s doubling to 30 s) and, meanwhile, the last good copy may be served
-    until it is LABEL_REGISTRY_CACHE_S old. It is never served past that: the
+    until it is LABEL_REGISTRY_MAX_STALE_S old. It is never served past that: the
     function then returns None and the filter denies (`false`) until a read
     succeeds. A key that arrives in the meantime stays invisible until a read
     succeeds, which is the declared behaviour (invisible until decided).
@@ -2108,8 +2120,8 @@ def _label_registry() -> list[tuple] | None:
         now = time.monotonic()
         hit = _label_registry_cache
         age = float("inf") if hit is None else now - hit[0]
-        expiry = LABEL_REGISTRY_CACHE_S
-        if age < expiry / 2:
+        expiry = LABEL_REGISTRY_MAX_STALE_S
+        if age < LABEL_REGISTRY_REFRESH_S:
             return hit[1]
         if now < _label_registry_next_try:
             return hit[1] if age < expiry else None
