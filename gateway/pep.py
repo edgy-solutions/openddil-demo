@@ -2054,9 +2054,16 @@ LABEL_KEY_FILTER = os.getenv("OPENDDIL_LABEL_KEY_FILTER", "false").strip().lower
 LABEL_REGISTRY_CACHE_S = float(os.environ.get("OPENDDIL_LABEL_REGISTRY_CACHE_S", "5"))
 _LABEL_REGISTRY_COLUMNS = ["label_key", "label"]
 _label_registry_lock = threading.Lock()
-# (monotonic time of the last attempt, [(key, author, release set | None)]),
-# or None until a read has succeeded once.
+# (monotonic time of the last SUCCESSFUL read, [(key, author, release set | None)]),
+# or None until a read has succeeded once. A failed read never moves the
+# stamp, so the last good copy is never served past LABEL_REGISTRY_CACHE_S.
 _label_registry_cache: tuple[float, list[tuple]] | None = None
+# Consecutive failed reads, and the monotonic time before which no read is
+# tried again (exponential backoff, BASE * 2 ** (failures - 1), capped at MAX).
+_LABEL_REGISTRY_BACKOFF_BASE_S = 0.5
+_LABEL_REGISTRY_BACKOFF_MAX_S = 30.0
+_label_registry_failures: int = 0
+_label_registry_next_try: float = 0.0
 
 
 def _label_entry(row: dict) -> tuple | None:
@@ -2083,31 +2090,52 @@ def _label_entry(row: dict) -> tuple | None:
 def _label_registry() -> list[tuple] | None:
     """The registry rows, from one cached unfiltered read of `label_registry`
     through the same bounded shape read as the reports routes: single-flight
-    under a lock, refreshed at most once per LABEL_REGISTRY_CACHE_S.
+    under a lock.
+
+    The copy is fresh for half of LABEL_REGISTRY_CACHE_S; after that a
+    refresh is tried. A failed refresh retries with exponential backoff
+    (0.5 s doubling to 30 s) and, meanwhile, the last good copy may be served
+    until it is LABEL_REGISTRY_CACHE_S old. It is never served past that: the
+    function then returns None and the filter denies (`false`) until a read
+    succeeds. A key that arrives in the meantime stays invisible until a read
+    succeeds, which is the declared behaviour (invisible until decided).
 
     FAIL CLOSED. Before the first successful read this returns None and the
-    filter is `false`. A refresh that fails after an earlier success keeps
-    the last good copy and logs a warning: a key that arrives in the
-    meantime stays invisible until a read succeeds, which is the declared
-    behaviour (invisible until decided), where dropping to `false` would
-    blank every screen over a blip."""
-    global _label_registry_cache
+    filter is `false`; retries are backed off rather than made on every
+    request."""
+    global _label_registry_cache, _label_registry_failures, _label_registry_next_try
     with _label_registry_lock:
+        now = time.monotonic()
         hit = _label_registry_cache
-        if hit is not None and time.monotonic() - hit[0] < LABEL_REGISTRY_CACHE_S:
+        age = float("inf") if hit is None else now - hit[0]
+        expiry = LABEL_REGISTRY_CACHE_S
+        if age < expiry / 2:
             return hit[1]
+        if now < _label_registry_next_try:
+            return hit[1] if age < expiry else None
         try:
             rows = _follow_shape("label_registry", "true", _LABEL_REGISTRY_COLUMNS, "")
         except Exception as exc:  # noqa: BLE001 -- any failure is "not up to date"
-            if hit is None:
-                log.error("label registry read failed, filtering to nothing: %s", _scrub(exc))
-                return None
-            log.warning("label registry refresh failed, keeping the last copy: %s",
-                        _scrub(exc))
-            _label_registry_cache = (time.monotonic(), hit[1])
-            return hit[1]
+            _label_registry_failures += 1
+            delay = min(_LABEL_REGISTRY_BACKOFF_BASE_S * 2 ** (_label_registry_failures - 1),
+                        _LABEL_REGISTRY_BACKOFF_MAX_S)
+            _label_registry_next_try = now + delay
+            if age < expiry:
+                log.warning("label registry refresh failed (attempt %d), serving the last "
+                            "copy until it expires in %.1f s; next try in %.1f s: %s",
+                            _label_registry_failures, expiry - age, delay, _scrub(exc))
+                return hit[1]
+            log.error("label registry read failed (attempt %d), denying labelled reads "
+                      "until a read succeeds; next try in %.1f s: %s",
+                      _label_registry_failures, delay, _scrub(exc))
+            return None
         entries = [e for e in (_label_entry(r) for r in rows) if e is not None]
-        _label_registry_cache = (time.monotonic(), entries)
+        if _label_registry_failures > 0:
+            log.info("label registry read succeeded after %d failed attempts",
+                     _label_registry_failures)
+        _label_registry_cache = (now, entries)
+        _label_registry_failures = 0
+        _label_registry_next_try = 0.0
         return entries
 
 

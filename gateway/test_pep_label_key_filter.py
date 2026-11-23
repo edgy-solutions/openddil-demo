@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -162,6 +163,8 @@ def pep_url(rig, monkeypatch, tmp_path):
     state.update(shape_reads=[], electric_seen=[], released=[], registry=[],
                  registry_error=False, report_rows=None, base=base)
     monkeypatch.setattr(pep, "_label_registry_cache", None)
+    monkeypatch.setattr(pep, "_label_registry_failures", 0)
+    monkeypatch.setattr(pep, "_label_registry_next_try", 0.0)
     monkeypatch.setattr(pep, "LABEL_REGISTRY_CACHE_S", 0.0)
     rel = tmp_path / "releasability.yaml"
     rel.write_text("# c\nnations:\n  ATL:\n    name: Atlantia\n  BDR:\n    name: Borduria\n"
@@ -342,20 +345,125 @@ def test_check4_zero_registry_rows_is_false(on):
     assert on.row_filter(["ATL"]) == "false"
 
 
-def test_check4_registry_never_read_is_false(on):
+class _Clock:
+    """A fake `time.monotonic` as pep sees it; every other `time` name passes through."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+@pytest.fixture
+def clock(on, monkeypatch):
+    c = _Clock()
+    monkeypatch.setattr(on, "time", c)
+    monkeypatch.setattr(on, "LABEL_REGISTRY_CACHE_S", 10.0)
+    return c
+
+
+def _registry_reads():
+    return [r["table"] for r in state["shape_reads"]].count("label_registry")
+
+
+def test_check4_registry_never_read_is_false(on, clock):
     state["registry_error"] = True
     assert on.row_filter(["ATL"]) == "false"
     state["registry_error"] = False
+    clock.now += 1.0                                  # past the 0.5 s backoff
     assert on.row_filter(["ATL"]).startswith("label_key IN (")   # a later read heals it
 
 
-def test_check4_failing_refresh_keeps_the_earlier_keys(on, caplog):
+def test_refresh_below_half_the_ttl_makes_no_read(on, clock):
+    on.row_filter(["ATL"])
+    clock.now += 4.9
+    on.row_filter(["ATL"])
+    assert _registry_reads() == 1
+
+
+def test_refresh_at_half_the_ttl_reads_and_serves_the_new_rows(on, clock):
+    assert on.row_filter(["ATL"]).startswith("label_key IN (")
+    state["registry"] = []
+    clock.now += 5.0
+    assert on.row_filter(["ATL"]) == "false"          # the new (empty) rows are served
+    assert _registry_reads() == 2
+
+
+def test_failed_refresh_below_the_ttl_serves_the_earlier_keys_and_backs_off(on, clock, caplog):
     first = on.row_filter(["ATL"])
-    assert first.startswith("label_key IN (")
     state["registry_error"] = True
+    clock.now += 6.0
     with caplog.at_level("WARNING", logger="pep"):
         assert on.row_filter(["ATL"]) == first
-    assert any("keeping the last copy" in r.getMessage() for r in caplog.records)
+    assert any("refresh failed (attempt 1), serving the last copy until it expires in 4.0 s"
+               in r.getMessage() for r in caplog.records)
+    reads = _registry_reads()
+    clock.now += 0.4                                  # inside the 0.5 s backoff
+    assert on.row_filter(["ATL"]) == first
+    assert _registry_reads() == reads
+
+
+def test_failed_refresh_at_the_ttl_denies(on, clock, caplog):
+    on.row_filter(["ATL"])
+    state["registry_error"] = True
+    clock.now += 10.0
+    with caplog.at_level("ERROR", logger="pep"):
+        assert on.row_filter(["ATL"]) == "false"
+        assert on.admitted_key_count(["ATL"]) == 0
+    assert any("read failed (attempt 1), denying labelled reads" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_past_the_ttl_inside_a_backoff_makes_no_read_and_denies(on, clock):
+    on.row_filter(["ATL"])
+    state["registry_error"] = True
+    clock.now += 10.0
+    assert on.row_filter(["ATL"]) == "false"
+    reads = _registry_reads()
+    clock.now += 0.4
+    assert on.row_filter(["ATL"]) == "false"
+    assert _registry_reads() == reads
+
+
+def test_backoff_delays_double_and_cap_at_30(on, clock):
+    state["registry_error"] = True
+    delays = []
+    for _ in range(9):
+        on.row_filter(["ATL"])
+        delays.append(on._label_registry_next_try - clock.now)
+        clock.now = on._label_registry_next_try
+    assert delays == [0.5, 1, 2, 4, 8, 16, 30, 30, 30]
+
+
+def test_success_after_failures_resets_the_backoff_and_logs(on, clock, caplog):
+    on.row_filter(["ATL"])
+    state["registry_error"] = True
+    clock.now += 6.0
+    on.row_filter(["ATL"])
+    clock.now = on._label_registry_next_try
+    on.row_filter(["ATL"])
+    assert on._label_registry_failures == 2
+    state["registry_error"] = False
+    state["registry"] = []
+    clock.now = on._label_registry_next_try
+    with caplog.at_level("INFO", logger="pep"):
+        assert on.row_filter(["ATL"]) == "false"      # the new rows are served
+    assert on._label_registry_failures == 0 and on._label_registry_next_try == 0.0
+    assert any("label registry read succeeded after 2 failed attempts" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_never_read_failure_is_false_and_the_backoff_holds(on, clock):
+    state["registry_error"] = True
+    assert on.row_filter(["ATL"]) == "false"
+    reads = _registry_reads()
+    clock.now += 0.4
+    assert on.row_filter(["ATL"]) == "false"
+    assert _registry_reads() == reads
 
 
 def test_check4_ttl_serves_the_cache(on, monkeypatch):
@@ -384,6 +492,8 @@ def test_check4_body_may_arrive_as_a_string_or_a_dict(on):
     state["registry"] = _registry_rows(as_string=False)
     as_dict = on.row_filter(["ATL"])
     on._label_registry_cache = None
+    on._label_registry_failures = 0
+    on._label_registry_next_try = 0.0
     state["registry"] = _registry_rows(as_string=True)
     assert on.row_filter(["ATL"]) == as_dict
 
@@ -518,6 +628,16 @@ def test_reports_tier_lists_only_admitted_keys(on, monkeypatch):
 def test_reports_tier_with_no_registry_lists_nothing(on, monkeypatch):
     state["report_rows"] = _report_rows_with_keys()
     state["registry_error"] = True
+    monkeypatch.setattr(on, "PEP_TIER", "hub")
+    status, raw = _call(f"{state['base']}/reports/tier", "s-atl", want_body=True)
+    assert status == 200 and json.loads(raw)["reports"] == []
+
+
+def test_reports_tier_past_expiry_with_a_failing_refresh_lists_nothing(on, clock, monkeypatch):
+    state["report_rows"] = _report_rows_with_keys()
+    on.row_filter(["ATL"])                            # cache filled
+    state["registry_error"] = True
+    clock.now += 10.0
     monkeypatch.setattr(on, "PEP_TIER", "hub")
     status, raw = _call(f"{state['base']}/reports/tier", "s-atl", want_body=True)
     assert status == 200 and json.loads(raw)["reports"] == []
