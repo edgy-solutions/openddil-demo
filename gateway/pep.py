@@ -2440,9 +2440,20 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
 # with viewers. Nothing here writes to Electric, the store or the pane.
 #
 # THE TIER. The hub's PEP_TIER is "hub" (the chart gives the hub PEP that tier
-# id). At any other tier the shape is scoped to rows whose edge_id or
-# region_id is this tier's id; at the hub the store holds the whole system and
-# is not narrowed. An episode of another tier is never listed.
+# id). A tier lists its own episodes and those of the tiers below it: a
+# region lists its own and its edges'; an edge lists its own; the hub lists
+# the whole system. The row rule: at any other tier a row is in scope when its
+# edge_id or region_id is this tier's id. The projector writes an edge's row
+# with its edge_id and its region_id, a region's row with an empty edge_id and
+# its region_id, a hub row with neither. So a region does not see another
+# region's edges, and an edge does not see its region. An episode of a
+# sibling tier, or of a tier above, is never listed. The shape's where clause
+# is the first filter; `_reports_in_scope` is the second, in memory, so a
+# shape that returns more than its clause never widens the list. Each episode
+# names its owning tier (`_owning_tier`), from its row.
+# The chart today has hub, regions and edges, so "their children" adds nothing
+# below an edge. If a deeper tier ever exists, its rows must carry the
+# region_id of the region above it for this rule to hold.
 HUB_TIER = "hub"
 REPORTS_CACHE_S = float(os.environ.get("OPENDDIL_REPORTS_CACHE_S", "5"))
 REPORTS_LIMIT = 200   # distinct episode ids per request (the pane's cap)
@@ -2484,6 +2495,20 @@ def _reports_tier_where() -> str:
     return f"(edge_id = {t} OR region_id = {t})"
 
 
+def _reports_in_scope(edge_id, region_id) -> bool:
+    """True at the hub; elsewhere when the row's edge_id or region_id is this
+    tier's id. An empty string or None counts as unset."""
+    if PEP_TIER == HUB_TIER:
+        return True
+    return (edge_id or None) == PEP_TIER or (region_id or None) == PEP_TIER
+
+
+def _owning_tier(edge_id, region_id) -> str:
+    """The tier that owns a row: its edge_id if set, else its region_id if
+    set, else the hub."""
+    return edge_id or region_id or HUB_TIER
+
+
 def _reports_rows(table: str) -> list[dict]:
     """The cached rows of one report table, refreshed at most once per
     REPORTS_CACHE_S through the same bounded shape read the rest of the PEP
@@ -2518,13 +2543,18 @@ def _report_sources(raw) -> list[dict]:
 
 
 def report_episodes() -> list[dict]:
-    """Every episode this tier holds, open and closed, as one list. An open
+    """Every episode at this tier and below, open and closed, as one list.
+    A row outside the tier's scope (`_reports_in_scope`) is skipped, whatever
+    the shape returned. Each episode names its owning tier, from its row. An open
     episode is an element of `asset_cm_state.manual_discrepancies`; a closed
     one is a `failure_episodes` row. Keyed on (episode_id, detected_at), a
     closed row wins over an open element of the same key. Each carries its
     row's labels for the supervisor's label rule."""
     out: dict[tuple, dict] = {}
     for row in _reports_rows("asset_cm_state"):
+        if not _reports_in_scope(row.get("edge_id"), row.get("region_id")):
+            continue
+        owning = _owning_tier(row.get("edge_id"), row.get("region_id"))
         labels = {"originator_nation": row.get("originator_nation"),
                   "releasable_to": _pg_array(row.get("releasable_to"))}
         if LABEL_KEY_FILTER:
@@ -2543,10 +2573,13 @@ def report_episodes() -> list[dict]:
                 "asset_id": row.get("asset_id"), "component": d.get("component") or "",
                 "fault_code": d.get("fault_code") or "", "open": True,
                 "cleared_at": None, "cleared_by": None, "resolution": None,
-                "sources": _report_sources(d.get("sources")), "labels": labels}
+                "sources": _report_sources(d.get("sources")), "labels": labels,
+                "owning_tier": owning}
     for row in _reports_rows("failure_episodes"):
         detected, cleared = _parse_dt(row.get("detected_at")), _parse_dt(row.get("cleared_at"))
         if not row.get("episode_id") or detected is None:
+            continue
+        if not _reports_in_scope(row.get("edge_id"), row.get("region_id")):
             continue
         out[(row["episode_id"], detected)] = {
             "episode_id": row["episode_id"], "detected_at": detected,
@@ -2557,7 +2590,8 @@ def report_episodes() -> list[dict]:
             "sources": _report_sources(row.get("sources")),
             "labels": {"originator_nation": row.get("originator_nation"),
                        "releasable_to": _pg_array(row.get("releasable_to")),
-                       **({"label_key": row.get("label_key")} if LABEL_KEY_FILTER else {})}}
+                       **({"label_key": row.get("label_key")} if LABEL_KEY_FILTER else {})},
+            "owning_tier": _owning_tier(row.get("edge_id"), row.get("region_id"))}
     return list(out.values())
 
 
@@ -4754,7 +4788,7 @@ class Pep(BaseHTTPRequestHandler):
         pane GET. `mine` filters on the viewer's own subject alone; `tier`
         is for a supervisor and applies the PEP's label rule (the same
         visibility rule as `policy_predicate`, as `egress_view` restates it)
-        to every episode at the tier."""
+        to every episode at the tier and below."""
         path = parsed.path
         try:
             subject, _principal, _session = self._resolve_principal()

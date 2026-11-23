@@ -209,7 +209,8 @@ def build_reports(
                 unmatched = list(block.get("unmatched_completions") or [])
         reports.append({
             "episode_id": eid, "detected_at": _iso(ep["detected_at"]),
-            "asset_id": ep["asset_id"], "component": ep["component"],
+            "asset_id": ep["asset_id"], "owning_tier": ep["owning_tier"],
+            "component": ep["component"],
             "fault_code": ep["fault_code"], "open": ep["open"],
             "cleared_at": _iso(ep["cleared_at"]), "cleared_by": ep["cleared_by"],
             "resolution": ep["resolution"], "states": states, "unmatched": unmatched,
