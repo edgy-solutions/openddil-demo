@@ -6,7 +6,16 @@
 // badge, no overall colour, no role="status" per report (design section 8).
 // Rows are drawn in the order the server sent them. "unmatched" items are
 // always listed.
+//
+// Region note: at an intermediate tier (a region) the pane carries one plain
+// note, because closed episodes are not yet carried up from the edge, so the
+// region's list holds only its own (contracts DESIGN-2026-11-10 section 10).
+// It is a note, not a status: no role, no badge, no colour. The chart sets
+// deployment `reports.closesCarriedUp: true` when the path lands, and that
+// removes the note. Not shown at a leaf or at the root.
 import { useMyReports, useTierReports, type Report, type ReportState, type ReportsResult } from '../hooks/useReports';
+import { deployment } from '../deployment';
+import type { TierInstance } from '../lib/tierShape';
 
 function fmt(iso: string | null | undefined): string {
   if (!iso) return 'no time';
@@ -102,10 +111,17 @@ export function TierReportsPane() {
 }
 
 /** My reports always; the tier's reports too when the session's role is
- *  supervisor. The role only offers the panel; the PEP's 403 still answers. */
-export default function ReportsPane({ role }: { role?: string | null }) {
+ *  supervisor. The role only offers the panel; the PEP's 403 still answers.
+ *  `tierInstance` absent means a leaf. */
+export default function ReportsPane({ role, tierInstance = 'leaf' }: { role?: string | null; tierInstance?: TierInstance }) {
+  const showNote = tierInstance === 'intermediate' && deployment().reports?.closesCarriedUp !== true;
   return (
     <>
+      {showNote && (
+        <p className="font-mono text-[11px] text-slate-400" data-testid="reports-region-note">
+          Until closed episodes are carried up, this region's reports show only its own.
+        </p>
+      )}
       <MyReportsPane />
       {role === 'supervisor' && <TierReportsPane />}
     </>

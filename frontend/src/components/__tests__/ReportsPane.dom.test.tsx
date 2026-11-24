@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import ReportsPane from '../ReportsPane';
 import FaultReportOverlay from '../FaultReportOverlay';
-import { __setCortexForTest } from '../../deployment';
+import { __setCortexForTest, __setReportsForTest } from '../../deployment';
 
 const STATE_NAMES = [
   'filed', 'queued for send', 'sent', 'case opened', 'proposed', 'approved', 'released',
@@ -40,6 +40,7 @@ beforeEach(() => { vi.spyOn(console, 'warn').mockImplementation(() => {}); });
 afterEach(() => {
   cleanup();
   __setCortexForTest(undefined);
+  __setReportsForTest(undefined);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -214,5 +215,50 @@ describe('disposition on the asset card', () => {
     await draw(caseRow());
     expect(screen.queryByTestId('case-disposition')).toBeNull();
     expect(screen.getByText('Open maintenance case')).toBeTruthy();
+  });
+});
+
+describe('region note', () => {
+  const NOTE = "Until closed episodes are carried up, this region's reports show only its own.";
+  function routes() {
+    stubRoutes({
+      '/reports/mine': () => json({ reports: [report()] }),
+      '/reports/tier': () => json({ reports: [report({ episode_id: 'ep-2' })] }),
+    });
+  }
+
+  it('shows once at an intermediate tier, flag absent, supervisor', async () => {
+    routes();
+    render(<ReportsPane role="supervisor" tierInstance="intermediate" />);
+    await waitFor(() => expect(screen.getAllByTestId('reports-pane')).toHaveLength(2));
+    const notes = screen.getAllByTestId('reports-region-note');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].textContent).toBe(NOTE);
+    expect(notes[0].getAttribute('role')).toBeNull();
+  });
+
+  it('shows once for a non-supervisor (one list)', async () => {
+    routes();
+    const { container } = render(<ReportsPane role="maintainer" tierInstance="intermediate" />);
+    await waitFor(() => expect(screen.getAllByTestId('reports-pane')).toHaveLength(1));
+    expect(screen.getAllByTestId('reports-region-note')).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('is absent when closed episodes are carried up', async () => {
+    routes();
+    __setReportsForTest({ closesCarriedUp: true });
+    render(<ReportsPane role="supervisor" tierInstance="intermediate" />);
+    await waitFor(() => expect(screen.getAllByTestId('reports-pane')).toHaveLength(2));
+    expect(screen.queryByTestId('reports-region-note')).toBeNull();
+  });
+
+  it('is absent at a leaf (prop absent) and at the root', async () => {
+    routes();
+    const { rerender } = render(<ReportsPane role="supervisor" />);
+    await waitFor(() => expect(screen.getAllByTestId('reports-pane')).toHaveLength(2));
+    expect(screen.queryByTestId('reports-region-note')).toBeNull();
+    rerender(<ReportsPane role="supervisor" tierInstance="root" />);
+    expect(screen.queryByTestId('reports-region-note')).toBeNull();
   });
 });

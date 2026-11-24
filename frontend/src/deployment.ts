@@ -206,6 +206,13 @@ export interface EgressPaneConfig {
   destination: string;
 }
 
+/** Where closed episodes are carried. `closesCarriedUp` is set by the chart
+ *  once closed episodes reach the region; until then the key is absent, and
+ *  absent means "not carried up". Parsed by `parseReports`. */
+export interface ReportsConfig {
+  closesCarriedUp: boolean;
+}
+
 /** The manual-question panel's own config. `stub` says whether the
  *  upstream manual question service answering this deployment is a
  *  stand-in rather than the real thing -- defaults to true (unconfigured
@@ -301,6 +308,8 @@ export interface Deployment {
    *  hub with no egress answers /egress with a 404, and a pane that can only
    *  say "could not load" is noise. Parsed by `parseEgressPane`. */
   egressPane?: EgressPaneConfig;
+  /** Reports config. Absent means closed episodes are not carried up. */
+  reports?: ReportsConfig;
   /** The manual-question panel's config. ABSENT is a normal, supported
    *  state (treated the same as `{}`/`{stub: true}` by every reader of
    *  this field) -- it is not the "is this feature on at this tier"
@@ -442,6 +451,7 @@ const DEFAULT: Deployment = {
   liveness: DEFAULT_LIVENESS,
   tier: IMPLICIT_ROOT,
   releasedRecordsPanes: [],
+  reports: { closesCarriedUp: false },
 };
 
 let active: Deployment = DEFAULT;
@@ -456,6 +466,11 @@ let active: Deployment = DEFAULT;
  *  drifts from the real default. `undefined` restores the module default. */
 export function __setDeploymentForTest(tier: TierConfig | null | undefined): void {
   active = { ...active, tier: tier === undefined ? IMPLICIT_ROOT : (tier ?? undefined) };
+}
+
+/** TEST SEAM. Sets the reports config; `undefined` restores the default. */
+export function __setReportsForTest(reports: ReportsConfig | undefined): void {
+  active = { ...active, reports: reports === undefined ? { closesCarriedUp: false } : reports };
 }
 
 export function deployment(): Deployment {
@@ -622,6 +637,16 @@ export function parseEgressPane(raw: unknown): EgressPaneConfig | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const d = (raw as Record<string, unknown>).destination;
   return typeof d === 'string' && d.trim().length > 0 ? { destination: d.trim() } : undefined;
+}
+
+/** `{closesCarriedUp: true}` only when `raw` is an object whose
+ *  `closesCarriedUp` is exactly `true`; anything else (absent, not an object,
+ *  `"true"`, `1`) is `{closesCarriedUp: false}`. The chart sets it once closed
+ *  episodes reach the region; until then it is absent. EXPORTED FOR TESTS. */
+export function parseReports(raw: unknown): ReportsConfig {
+  const on = !!raw && typeof raw === 'object' && !Array.isArray(raw)
+    && (raw as Record<string, unknown>).closesCarriedUp === true;
+  return { closesCarriedUp: on };
 }
 
 /** `{stub?: boolean}` -> that config, dropping any non-boolean `stub`
@@ -1174,6 +1199,7 @@ export async function loadDeployment(): Promise<void> {
           (j as { releasedRecordsPanes?: unknown }).releasedRecordsPanes,
         ),
         egressPane: parseEgressPane((j as { egressPane?: unknown }).egressPane),
+        reports: parseReports((j as { reports?: unknown }).reports),
         manualQa: parseManualQa((j as { manualQa?: unknown }).manualQa),
         cortex: parseCortex((j as { cortex?: unknown }).cortex),
         edges: parseEdgeAttachments((j as { edges?: unknown }).edges),
