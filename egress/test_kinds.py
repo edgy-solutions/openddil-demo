@@ -213,3 +213,184 @@ def test_a_non_string_episode_id_is_refused(tmp_path):
     with pytest.raises(Exception) as exc:
         load_declarations(tmp_path)
     assert "KindA.schema.json" in str(exc.value)
+
+
+# --- declared time formats (report mode by default) -------------------------
+
+import logging  # noqa: E402
+
+import jsonschema  # noqa: E402
+
+from kinds import FORMAT_MODES, validator_for  # noqa: E402
+
+TS_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["ts"],
+    "properties": {"ts": {"type": "string", "format": "date-time"}},
+}
+SENTINEL = "SENTINEL-live-value"
+BAD_TIMES = [
+    "yesterday",
+    "2026-02-30T00:00:00Z",
+    "2026-11-24T25:00:00Z",
+    "2026-11-24 10:00:00Z",
+    "2026-11-24T10:00:00",
+    "2026-11-24T10:00:00+24:00",
+]
+
+
+def _v(schema, mode=None, kind="KindT"):
+    return validator_for(schema, kind=kind, format_mode=mode)
+
+
+@pytest.mark.parametrize("ts", [
+    "2026-11-24T10:00:00Z", "2026-11-24T10:00:00+02:30",
+    "2026-11-24T10:00:00.123456Z", "2026-12-31T23:59:60Z",
+])
+def test_valid_date_time_passes_with_no_count(ts):
+    v = _v(TS_SCHEMA, "report")
+    assert v({"ts": ts}) is None
+    assert v.format_failures == {}
+
+
+@pytest.mark.parametrize("ts", BAD_TIMES)
+def test_report_mode_leaves_result_counts_and_logs_without_value(ts, caplog):
+    v = _v(TS_SCHEMA, "report")
+    with caplog.at_level(logging.WARNING, logger="egress.kinds"):
+        assert v({"ts": ts}) is None
+    assert v.format_failures == {"date-time": 1}
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "kind=KindT path=$.ts format=date-time count=1" in caplog.text
+    assert ts not in caplog.text
+
+
+def test_sentinel_value_never_logged(caplog):
+    v = _v(TS_SCHEMA, "report")
+    with caplog.at_level(logging.DEBUG, logger="egress.kinds"):
+        v({"ts": SENTINEL})
+    assert v.format_failures == {"date-time": 1}
+    assert SENTINEL not in caplog.text
+
+
+def test_non_string_gets_no_format_count_and_structural_message_unchanged():
+    v = _v(TS_SCHEMA, "report")
+    plain = jsonschema.Draft202012Validator(TS_SCHEMA)
+    rec = {"ts": 5}
+    expect = next(iter(sorted(plain.iter_errors(rec), key=str))).message
+    assert v(rec) == expect
+    assert v.format_failures == {}
+    loose = {"type": "object", "properties": {"ts": {"format": "date-time"}}}
+    v2 = _v(loose, "report")
+    assert v2({"ts": 5}) is None
+    assert v2.format_failures == {}
+
+
+def test_enforce_refuses_bad_and_passes_good():
+    v = _v(TS_SCHEMA, "enforce")
+    msg = v({"ts": "yesterday"})
+    assert isinstance(msg, str) and msg
+    assert v({"ts": "2026-11-24T10:00:00Z"}) is None
+
+
+def test_off_mode_has_no_count():
+    v = _v(TS_SCHEMA, "off")
+    assert v({"ts": "yesterday"}) is None
+    assert v.format_failures == {}
+
+
+def test_unknown_mode_raises():
+    assert FORMAT_MODES == ("off", "report", "enforce")
+    with pytest.raises(ValueError) as exc:
+        _v(TS_SCHEMA, "strict")
+    assert "OPENDDIL_EGRESS_FORMAT_MODE" in str(exc.value)
+
+
+def test_unknown_env_value_raises(monkeypatch):
+    monkeypatch.setenv("OPENDDIL_EGRESS_FORMAT_MODE", "loud")
+    with pytest.raises(ValueError) as exc:
+        _v(TS_SCHEMA)
+    assert "OPENDDIL_EGRESS_FORMAT_MODE" in str(exc.value)
+
+
+def test_default_with_no_env_is_report(monkeypatch):
+    monkeypatch.delenv("OPENDDIL_EGRESS_FORMAT_MODE", raising=False)
+    v = _v(TS_SCHEMA)
+    assert v({"ts": "yesterday"}) is None
+    assert v.format_failures == {"date-time": 1}
+
+
+def test_env_selects_enforce(monkeypatch):
+    monkeypatch.setenv("OPENDDIL_EGRESS_FORMAT_MODE", "enforce")
+    assert _v(TS_SCHEMA)({"ts": "yesterday"}) is not None
+
+
+def test_nested_formats_are_checked():
+    schema = {
+        "type": "object",
+        "properties": {
+            "a": {"type": "array", "items": {"type": "string", "format": "date-time"}},
+            "b": {"$ref": "#/$defs/T"},
+        },
+        "$defs": {"T": {"type": "string", "format": "date-time"}},
+    }
+    v = _v(schema, "report")
+    assert v.checks_formats is True
+    assert v({"a": ["2026-11-24T10:00:00Z", "nope"], "b": "bad"}) is None
+    assert v.format_failures == {"date-time": 2}
+
+
+def test_combinator_format_is_found():
+    schema = {"anyOf": [{"type": "string", "format": "date"}, {"type": "null"}]}
+    assert _v(schema, "report").checks_formats is True
+
+
+@pytest.mark.parametrize("fmt,good,bad", [
+    ("date", "2026-11-24", "2026-02-30"),
+    ("time", "10:00:00Z", "10:00:00"),
+])
+def test_date_and_time_formats(fmt, good, bad):
+    schema = {"type": "string", "format": fmt}
+    v = _v(schema, "enforce")
+    assert v(good) is None
+    assert v(bad) is not None
+
+
+def test_schema_without_time_format_builds_no_second_validator():
+    v = _v({"type": "string", "format": "email"}, "report")
+    assert v.checks_formats is False
+    assert v("not-an-email") is None
+    assert v.format_failures == {}
+
+
+def test_warning_cadence_is_1_10_100(caplog):
+    v = _v(TS_SCHEMA, "report")
+    with caplog.at_level(logging.WARNING, logger="egress.kinds"):
+        for _ in range(12):
+            v({"ts": "yesterday"})
+    assert v.format_failures == {"date-time": 12}
+    counts = [r.getMessage().rsplit("count=", 1)[1] for r in caplog.records]
+    assert counts == ["1", "10"]
+
+
+def test_structural_message_byte_identical_to_plain_validator():
+    schema = {
+        "type": "object", "required": ["ts", "n"],
+        "properties": {"ts": {"type": "string", "format": "date-time"},
+                       "n": {"type": "integer"}},
+    }
+    plain = jsonschema.Draft202012Validator(schema)
+    for mode in ("off", "report"):
+        v = _v(schema, mode)
+        for rec in ({}, {"ts": 1, "n": "x"}, {"ts": "yesterday", "n": "x"},
+                    {"ts": "yesterday", "n": 1}):
+            err = next(iter(sorted(plain.iter_errors(rec), key=str)), None)
+            assert v(rec) == (None if err is None else err.message)
+
+
+def test_load_kinds_passes_kind_name_and_testdata_loads(tmp_path):
+    (tmp_path / "KindT.schema.json").write_text(json.dumps(TS_SCHEMA))
+    v = load_kinds(tmp_path, format_mode="report")["KindT"]
+    assert v.kind == "KindT"
+    assert load_kinds(Path(__file__).parent / "testdata")
