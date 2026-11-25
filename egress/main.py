@@ -315,8 +315,11 @@ def main() -> int:
         consumer.close()
         for route in routes:
             gate = gates[route]
-            log.info("gate closed: route=%s; %d records polled total; %s",
-                      route.name, seen, json.dumps(gate.counts, sort_keys=True))
+            format_failures = getattr(gate.kind_validator, "format_failures", None)
+            log.info("gate closed: route=%s; %d records polled total; %s%s",
+                      route.name, seen, json.dumps(gate.counts, sort_keys=True),
+                      "" if format_failures is None else
+                      "; format_failures=" + json.dumps(format_failures, sort_keys=True))
     return 0
 
 

@@ -12,40 +12,173 @@ so the fix is immediate rather than a search.
 """
 from __future__ import annotations
 
+import datetime
 import json
+import logging
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any, Callable, Mapping
 
 import jsonschema
 
 SCHEMA_SUFFIX = ".schema.json"
 
+log = logging.getLogger("egress.kinds")
 
-def validator_for(schema: Mapping) -> Callable[[Mapping], str | None]:
+# --- declared time formats ----------------------------------------------------
+# jsonschema's own `date-time` / `time` checkers need `rfc3339-validator`, which
+# the image does not carry, so they would pass everything. These three are
+# stdlib-only; every other format stays an annotation, as before.
+
+FORMAT_MODES = ("off", "report", "enforce")
+FORMAT_MODE_ENV = "OPENDDIL_EGRESS_FORMAT_MODE"
+TIME_FORMAT_NAMES = frozenset({"date-time", "date", "time"})
+
+_TIME_PART = (r"(\d{2}):(\d{2}):(\d{2})(\.\d+)?"
+              r"([Zz]|[+-](\d{2}):(\d{2}))")
+# Used with fullmatch (a `$` anchor would accept a trailing newline) and
+# re.ASCII (RFC 3339 digits are ASCII; `\d` alone accepts any Unicode digit).
+_DATE_TIME_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})[Tt]" + _TIME_PART, re.ASCII)
+_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})", re.ASCII)
+_TIME_RE = re.compile(_TIME_PART, re.ASCII)
+
+
+def _real_date(y: str, m: str, d: str) -> bool:
+    try:
+        datetime.date(int(y), int(m), int(d))
+    except ValueError:
+        return False
+    return True
+
+
+def _time_ok(groups: tuple) -> bool:
+    hh, mm, ss, _frac, _off, oh, om = groups
+    if not (int(hh) <= 23 and int(mm) <= 59 and int(ss) <= 60):
+        return False
+    if oh is not None and not (int(oh) <= 23 and int(om) <= 59):
+        return False
+    return True
+
+
+def _check_date_time(instance: Any) -> bool:
+    if not isinstance(instance, str):
+        return True
+    m = _DATE_TIME_RE.fullmatch(instance)
+    return bool(m) and _real_date(*m.group(1, 2, 3)) and _time_ok(m.groups()[3:])
+
+
+def _check_date(instance: Any) -> bool:
+    if not isinstance(instance, str):
+        return True
+    m = _DATE_RE.fullmatch(instance)
+    return bool(m) and _real_date(*m.groups())
+
+
+def _check_time(instance: Any) -> bool:
+    if not isinstance(instance, str):
+        return True
+    m = _TIME_RE.fullmatch(instance)
+    return bool(m) and _time_ok(m.groups())
+
+
+TIME_FORMATS = jsonschema.FormatChecker(formats=())
+TIME_FORMATS.checks("date-time")(_check_date_time)
+TIME_FORMATS.checks("date")(_check_date)
+TIME_FORMATS.checks("time")(_check_time)
+
+
+def _resolve_mode(format_mode: str | None) -> str:
+    if format_mode is None:
+        format_mode = os.environ.get(FORMAT_MODE_ENV, "report")
+    if format_mode not in FORMAT_MODES:
+        raise ValueError(
+            f"{FORMAT_MODE_ENV}: {format_mode!r} is not one of {list(FORMAT_MODES)}")
+    return format_mode
+
+
+def _declares_time_format(node: Any) -> bool:
+    """True when `"format"` names one of the three checked formats anywhere."""
+    if isinstance(node, Mapping):
+        if node.get("format") in TIME_FORMAT_NAMES:
+            return True
+        return any(_declares_time_format(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_declares_time_format(v) for v in node)
+    return False
+
+
+def _first(errors) -> Any:
+    return next(iter(sorted(errors, key=str)), None)
+
+
+class KindValidator:
+    """Callable `record -> str | None`: None when valid, else the first
+    structural error's message. The structural check carries no format
+    checker, so its result is the same in every mode. When the schema
+    declares a checked time format, a second pass counts (report) or refuses
+    (enforce) bad values; it never logs the value or the error message."""
+
+    def __init__(self, schema: Mapping, *, kind: str | None, mode: str) -> None:
+        self.kind = kind
+        self.mode = mode
+        self.format_failures: dict[str, int] = {}
+        self._counts: dict[tuple, int] = {}
+        self._structural = jsonschema.Draft202012Validator(schema)
+        self.checks_formats = mode != "off" and _declares_time_format(schema)
+        self._formats = (
+            jsonschema.Draft202012Validator(schema, format_checker=TIME_FORMATS)
+            if self.checks_formats else None)
+
+    def __call__(self, record: Mapping) -> str | None:
+        error = _first(self._structural.iter_errors(record))
+        result = None if error is None else error.message
+        if self._formats is None:
+            return result
+        format_errors = [e for e in self._formats.iter_errors(record)
+                         if e.validator == "format"]
+        for e in format_errors:
+            fmt = e.validator_value
+            self.format_failures[fmt] = self.format_failures.get(fmt, 0) + 1
+            key = (self.kind, e.json_path, fmt)
+            n = self._counts[key] = self._counts.get(key, 0) + 1
+            if _is_power_of_ten(n):
+                log.warning("format check (%s): kind=%s path=%s format=%s count=%d",
+                            self.mode, self.kind, e.json_path, fmt, n)
+        if self.mode == "enforce" and result is None and format_errors:
+            return _first(format_errors).message
+        return result
+
+
+def _is_power_of_ten(n: int) -> bool:
+    while n >= 10 and n % 10 == 0:
+        n //= 10
+    return n == 1
+
+
+def validator_for(schema: Mapping, *, kind: str | None = None,
+                  format_mode: str | None = None) -> KindValidator:
     """A callable that checks a record against `schema`.
 
     Returns `None` when the record is valid, or the first validation
     error's message otherwise. `x-openddil` (or any other key the schema
     carries outside the JSON Schema vocabulary) is simply never consulted by
-    `iter_errors` — left alone, not stripped.
+    `iter_errors` — left alone, not stripped. Time formats: see
+    `KindValidator` and `OPENDDIL_EGRESS_FORMAT_MODE`.
     """
-    validator = jsonschema.Draft202012Validator(schema)
-
-    def validate(record: Mapping) -> str | None:
-        error = next(iter(sorted(validator.iter_errors(record), key=str)), None)
-        return None if error is None else error.message
-
-    return validate
+    return KindValidator(schema, kind=kind, mode=_resolve_mode(format_mode))
 
 
-def load_kinds(directory: str | Path) -> dict[str, Callable[[Mapping], str | None]]:
+def load_kinds(directory: str | Path, *, format_mode: str | None = None
+               ) -> dict[str, Callable[[Mapping], str | None]]:
     """Load every `<Kind>.schema.json` file in `directory`.
 
     Returns a dict of kind name -> validator. A file that is not a valid
     Draft 2020-12 schema raises, naming the file — this is a startup check,
     not a per-record one.
     """
+    mode = _resolve_mode(format_mode)
     directory = Path(directory)
     validators: dict[str, Callable[[Mapping], str | None]] = {}
     for path in sorted(directory.glob(f"*{SCHEMA_SUFFIX}")):
@@ -55,7 +188,7 @@ def load_kinds(directory: str | Path) -> dict[str, Callable[[Mapping], str | Non
             jsonschema.Draft202012Validator.check_schema(schema)
         except Exception as exc:  # noqa: BLE001 — re-raised naming the file
             raise ValueError(f"{path}: not a valid Draft 2020-12 schema: {exc}") from exc
-        validators[kind] = validator_for(schema)
+        validators[kind] = validator_for(schema, kind=kind, format_mode=mode)
     return validators
 
 
