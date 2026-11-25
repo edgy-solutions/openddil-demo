@@ -285,6 +285,9 @@ export interface CortexConfig {
   caseLinkLabel?: string;
   /** Display name of the destination, shown only in the link's tooltip. */
   displayName?: string;
+  /** Draws the maintainer header's "Ask the manual" action. Absent, or any
+   *  value but `true`, is off. */
+  askManual?: true;
 }
 
 export interface Deployment {
@@ -971,6 +974,9 @@ export function parseCortex(raw: unknown): CortexConfig | undefined {
     if (/^[^\x00-\x1f\x7f]{1,64}$/.test(t)) out.displayName = t;
     else console.warn('[deployment] cortex displayName dropped: must be 1-64 characters, no control characters');
   }
+  const am = (raw as { askManual?: unknown }).askManual;
+  if (am === true) out.askManual = true;
+  else if (am !== undefined && am !== null) console.warn('[deployment] cortex askManual dropped: must be true');
   return out;
 }
 
@@ -995,11 +1001,16 @@ export function cortexDisplayName(): string | undefined {
   return active.cortex?.displayName;
 }
 
+/** True only when the cortex block sets `askManual: true`. */
+export function cortexAskManual(): boolean {
+  return active.cortex?.askManual === true;
+}
+
 /** TEST SEAM. Sets or clears the cortex config. */
 export function __setCortexForTest(
   baseUrl: string | undefined,
   idp?: string,
-  extra?: { caseLinkLabel?: string; displayName?: string },
+  extra?: { caseLinkLabel?: string; displayName?: string; askManual?: true },
 ): void {
   active = {
     ...active,

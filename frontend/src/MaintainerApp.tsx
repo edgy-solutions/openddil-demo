@@ -19,6 +19,7 @@ import NationLegend from './components/releasability/NationLegend';
 import { useSession } from './hooks/useSession';
 import DiagnosticCanvas from './components/DiagnosticCanvas';
 import AssetSwitcher from './components/AssetSwitcher';
+import AskTheManualLink from './components/AskTheManualLink';
 import LocalFleetRadar from './components/LocalFleetRadar';
 import LostContactBanner from './components/LostContactBanner';
 import TelemetryCharts from './components/TelemetryCharts';
@@ -526,11 +527,16 @@ function MaintainerApp({ tierScopeValue = null }: TierScopedProps) {
                 onSelect={onSelectEdge}
               />
               <div className="min-w-0">
-                <h2 className="text-sm text-slate-200 tracking-wider uppercase mb-1">
-                  {selectedAsset
-                    ? selectedAsset.callsign || selectedAsset.asset_id
-                    : 'No asset selected'}
-                </h2>
+                <div className="flex items-center gap-3 mb-1">
+                  <h2 className="text-sm text-slate-200 tracking-wider uppercase">
+                    {selectedAsset
+                      ? selectedAsset.callsign || selectedAsset.asset_id
+                      : 'No asset selected'}
+                  </h2>
+                  {selectedAsset && (
+                    <AskTheManualLink assetId={selectedAsset.asset_id} callsign={selectedAsset.callsign} />
+                  )}
+                </div>
                 <div className="flex gap-4 text-[11px] text-slate-500">
                   <span>variant: <span className="text-slate-300">{variant ?? 'unknown'}</span></span>
                   <span>id: <span className="text-slate-300">{selectedAsset?.asset_id ?? '—'}</span></span>
