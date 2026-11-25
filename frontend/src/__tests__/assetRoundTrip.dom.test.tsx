@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import Root from '../Root';
+import { __setCortexForTest } from '../deployment';
 import { installAuthMeFetch } from '../test-support/fetchAuthMe';
 import {
   goToDemoLeafPath,
@@ -34,6 +35,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  __setCortexForTest(undefined);
   resetSessionDomState();
 });
 
@@ -69,5 +71,43 @@ describe('?asset= round-trip', () => {
     });
     const url = new URL(window.location.href);
     expect(url.searchParams.get('role')).toBe('maintainer');
+  });
+});
+
+describe('Ask the manual placement', () => {
+  async function selectedHeader(container: HTMLElement) {
+    return waitFor(() => {
+      const ident = container.querySelector('[data-testid="asset-identity"]');
+      if (!ident?.textContent?.includes(ASSET_B)) throw new Error('asset not yet selected');
+      const h2 = Array.from(container.querySelectorAll('h2')).find((h) => h.textContent === 'SENTINEL-FLEET-7732');
+      if (!h2) throw new Error('header h2 not drawn');
+      return h2.parentElement as HTMLElement;
+    });
+  }
+
+  it('flag on: one link in the selected asset header naming callsign and id', async () => {
+    __setCortexForTest('https://cortex.example.test', 'example-idp', { askManual: true });
+    goToDemoLeafPath(`?role=maintainer&asset=${ASSET_B}`);
+    installAuthMeFetch({ mode: 'ok', deltaSeconds: 3600 });
+    primeSentinelFleet(sentinelFleetRow(), secondFleetRow());
+    const { container } = render(<Root />);
+    const header = await selectedHeader(container);
+    const links = header.querySelectorAll('a');
+    expect(links).toHaveLength(1);
+    expect(links[0].textContent).toContain('Ask the manual');
+    expect(container.querySelectorAll('a[href*="/ask?"]')).toHaveLength(1);
+    const q = new URL(links[0].getAttribute('href')!).searchParams.get('q');
+    expect(q).toBe(`Asset SENTINEL-FLEET-7732 (${ASSET_B}):`);
+  });
+
+  it('flag absent: no link', async () => {
+    __setCortexForTest('https://cortex.example.test', 'example-idp');
+    goToDemoLeafPath(`?role=maintainer&asset=${ASSET_B}`);
+    installAuthMeFetch({ mode: 'ok', deltaSeconds: 3600 });
+    primeSentinelFleet(sentinelFleetRow(), secondFleetRow());
+    const { container } = render(<Root />);
+    const header = await selectedHeader(container);
+    expect(header.querySelectorAll('a')).toHaveLength(0);
+    expect(container.textContent).not.toContain('Ask the manual');
   });
 });
