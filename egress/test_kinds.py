@@ -294,6 +294,24 @@ def test_enforce_refuses_bad_and_passes_good():
     assert v({"ts": "2026-11-24T10:00:00Z"}) is None
 
 
+@pytest.mark.parametrize("value", [
+    "2026-11-24T10:00:00Z\n",                       # a `$` anchor would pass this
+    "٢٠٢٦-11-24T10:00:00Z",      # non-ASCII digits in the year
+    " 2026-11-24T10:00:00Z",
+])
+def test_trailing_newline_and_non_ascii_digits_are_bad(value):
+    v = _v(TS_SCHEMA, "enforce")
+    assert isinstance(v({"ts": value}), str)
+    assert v.format_failures == {"date-time": 1}
+
+
+def test_enforce_log_names_its_mode(caplog):
+    v = _v(TS_SCHEMA, "enforce")
+    with caplog.at_level("WARNING", logger="egress.kinds"):
+        v({"ts": "yesterday"})
+    assert "format check (enforce):" in caplog.text
+
+
 def test_off_mode_has_no_count():
     v = _v(TS_SCHEMA, "off")
     assert v({"ts": "yesterday"}) is None

@@ -38,9 +38,11 @@ TIME_FORMAT_NAMES = frozenset({"date-time", "date", "time"})
 
 _TIME_PART = (r"(\d{2}):(\d{2}):(\d{2})(\.\d+)?"
               r"([Zz]|[+-](\d{2}):(\d{2}))")
-_DATE_TIME_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[Tt]" + _TIME_PART + r"$")
-_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
-_TIME_RE = re.compile(r"^" + _TIME_PART + r"$")
+# Used with fullmatch (a `$` anchor would accept a trailing newline) and
+# re.ASCII (RFC 3339 digits are ASCII; `\d` alone accepts any Unicode digit).
+_DATE_TIME_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})[Tt]" + _TIME_PART, re.ASCII)
+_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})", re.ASCII)
+_TIME_RE = re.compile(_TIME_PART, re.ASCII)
 
 
 def _real_date(y: str, m: str, d: str) -> bool:
@@ -63,21 +65,21 @@ def _time_ok(groups: tuple) -> bool:
 def _check_date_time(instance: Any) -> bool:
     if not isinstance(instance, str):
         return True
-    m = _DATE_TIME_RE.match(instance)
+    m = _DATE_TIME_RE.fullmatch(instance)
     return bool(m) and _real_date(*m.group(1, 2, 3)) and _time_ok(m.groups()[3:])
 
 
 def _check_date(instance: Any) -> bool:
     if not isinstance(instance, str):
         return True
-    m = _DATE_RE.match(instance)
+    m = _DATE_RE.fullmatch(instance)
     return bool(m) and _real_date(*m.groups())
 
 
 def _check_time(instance: Any) -> bool:
     if not isinstance(instance, str):
         return True
-    m = _TIME_RE.match(instance)
+    m = _TIME_RE.fullmatch(instance)
     return bool(m) and _time_ok(m.groups())
 
 
@@ -142,8 +144,8 @@ class KindValidator:
             key = (self.kind, e.json_path, fmt)
             n = self._counts[key] = self._counts.get(key, 0) + 1
             if _is_power_of_ten(n):
-                log.warning("format check (report): kind=%s path=%s format=%s count=%d",
-                            self.kind, e.json_path, fmt, n)
+                log.warning("format check (%s): kind=%s path=%s format=%s count=%d",
+                            self.mode, self.kind, e.json_path, fmt, n)
         if self.mode == "enforce" and result is None and format_errors:
             return _first(format_errors).message
         return result
