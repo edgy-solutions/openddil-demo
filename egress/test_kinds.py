@@ -244,6 +244,8 @@ def test_a_schema_without_versions_is_unchanged(tmp_path):
     ["1"],
     {"accepts": ["1"]},
     {"pointer": 5, "accepts": ["1"]},
+    {"pointer": "v", "accepts": ["1"]},
+    {"pointer": "", "accepts": ["1"]},
     {"pointer": "/v"},
     {"pointer": "/v", "accepts": []},
     {"pointer": "/v", "accepts": "1"},

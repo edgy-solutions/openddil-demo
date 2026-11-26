@@ -141,6 +141,11 @@ def _parse_versions(block: Mapping) -> VersionsDecl | None:
     if not isinstance(versions_block, Mapping):
         raise TypeError("'x-openddil.versions' must be a JSON object")
     ptr = _require_pointer(versions_block, "pointer")
+    if not ptr.startswith("/"):
+        # Checked here, not on the first record: a pointer `pointer.get`
+        # cannot parse would raise on every record of the kind.
+        raise ValueError(
+            f"'x-openddil.versions.pointer' must be an RFC 6901 pointer into the record, got {ptr!r}")
     if "accepts" not in versions_block:
         raise KeyError("'x-openddil.versions' is missing 'accepts'")
     accepts = versions_block["accepts"]
