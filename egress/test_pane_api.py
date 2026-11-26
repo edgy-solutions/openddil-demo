@@ -346,11 +346,17 @@ def test_cases_query_parameters_and_shape(monkeypatch):
     finally:
         server.shutdown()
     assert status == 200
-    assert body == {"cases": [{
+    # ADR-0058 3a adds disposition keys; every pre-existing key is unchanged
+    # (no kinds are declared here, so the disposition reads "none").
+    [case] = body["cases"]
+    assert {k: case[k] for k in (
+        "route", "case_id", "episode_id", "event_id", "asset_id", "component",
+        "fault_code", "delivered_at")} == {
         "route": "route-x", "case_id": "case-1", "episode_id": "ep-1", "event_id": "ev-1",
         "asset_id": "asset-a", "component": "comp-1", "fault_code": "F-1",
         "delivered_at": "2026-10-17T01:02:03+00:00",
-    }]}
+    }
+    assert case["disposition_state"] == "none" and case["disposition"] is None
     [(sql, args)] = conn.calls
     assert args == ("asset-a", 50)
     assert "'delivered'" in sql and '"case_id" IS NOT NULL' in sql and '"asset_id" = $1' in sql
