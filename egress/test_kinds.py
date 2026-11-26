@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from kinds import load_declarations, load_kinds  # noqa: E402
+from kinds import VersionsDecl, load_declarations, load_kinds  # noqa: E402
 
 # Neutral fixture name per the rule: `KindA`, not a real registry's kind.
 KIND_A_SCHEMA = {
@@ -211,5 +211,51 @@ def test_a_non_string_episode_id_is_refused(tmp_path):
     (tmp_path / "KindA.schema.json").write_text(json.dumps(declared))
 
     with pytest.raises(Exception) as exc:
+        load_declarations(tmp_path)
+    assert "KindA.schema.json" in str(exc.value)
+
+
+# --- versions (contract version pointer + accepted values) ------------------
+
+def _write_with_versions(tmp_path, **block):
+    declared = dict(KIND_A_DECLARED)
+    declared["x-openddil"] = dict(KIND_A_DECLARED["x-openddil"], **block)
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(declared))
+
+
+def test_a_block_with_versions_loads(tmp_path):
+    _write_with_versions(
+        tmp_path, versions={"pointer": "/contract_version", "accepts": ["1", 2]})
+
+    decl = load_declarations(tmp_path)["KindA"]
+
+    assert decl.versions == VersionsDecl(pointer="/contract_version", accepts=("1", 2))
+    assert isinstance(decl.versions.accepts, tuple)
+
+
+def test_a_schema_without_versions_is_unchanged(tmp_path):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(KIND_A_DECLARED))
+
+    assert load_declarations(tmp_path)["KindA"].versions is None
+
+
+@pytest.mark.parametrize("versions", [
+    "1",
+    ["1"],
+    {"accepts": ["1"]},
+    {"pointer": 5, "accepts": ["1"]},
+    {"pointer": "/v"},
+    {"pointer": "/v", "accepts": []},
+    {"pointer": "/v", "accepts": "1"},
+    {"pointer": "/v", "accepts": ["1", True]},
+    {"pointer": "/v", "accepts": [1.5]},
+    {"pointer": "/v", "accepts": [{"v": 1}]},
+    {"pointer": "/v", "accepts": ["1", "1"]},
+    {"pointer": "/v", "accepts": [2, 2]},
+])
+def test_a_malformed_versions_block_is_refused(tmp_path, versions):
+    _write_with_versions(tmp_path, versions=versions)
+
+    with pytest.raises(ValueError) as exc:
         load_declarations(tmp_path)
     assert "KindA.schema.json" in str(exc.value)
