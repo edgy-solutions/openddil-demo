@@ -16,6 +16,12 @@ export interface CortexCase {
   component?: string | null;
   fault_code?: string | null;
   delivered_at?: string | null;
+  // ADR-0058 3a: the disposition of the case's latest action. All optional;
+  // an older server omits them and the card draws nothing new.
+  disposition?: { option?: string | null; stage?: string | null } | null;
+  decided_at?: string | null;
+  decision?: { allowed?: boolean | null; reason?: string | null } | null;
+  disposition_state?: string | null;
 }
 
 export const CORTEX_CASES_POLL_MS = 15_000;

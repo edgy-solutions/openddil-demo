@@ -25,6 +25,8 @@
 // scope.
 import { useState, useEffect, useMemo } from 'react';
 import { useLinkControl } from './hooks/useLinkControl';
+import { useSession } from './hooks/useSession';
+import ReportsPane from './components/ReportsPane';
 import RegionalHeader from './components/regional/RegionalHeader';
 import RegionalSustainmentPosture from './components/regional/RegionalSustainmentPosture';
 import WorkOrders from './components/regional/WorkOrders';
@@ -306,6 +308,7 @@ function WearTrends({ row }: { row: RegionWearTrends | undefined }) {
 interface TierScopedProps { tierScopeValue?: string | null; onOpenHq?: () => void }
 
 export default function RegionalApp({ tierScopeValue = null, onOpenHq }: TierScopedProps) {
+  const session = useSession();
   // Sourced from the proxy's own state (hooks/useLinkControl), not
   // invented client-side -- see MaintainerApp for the same change. One
   // listing covers this hub's own uplink and its direct children's.
@@ -517,6 +520,8 @@ export default function RegionalApp({ tierScopeValue = null, onOpenHq }: TierSco
                 selectedId={selectedAssetId}
                 onSelect={setSelectedAssetId}
               />
+              {/* ADR-0058 3a's reports pane, with the region note. */}
+              <ReportsPane role={session.role} tierInstance="intermediate" />
               <UnitMovePanels tierKind="region" />
               {/* Region-scoped munitions rollup by type. Same component
                   as the HQ panel; regionId restricts the effector ledger
