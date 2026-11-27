@@ -45,16 +45,19 @@ class FakeConn:
         self.ledger = list(ledger)
         self.intake = list(intake)
         self.sql: list[str] = []
+        self.intake_args: list[tuple] = []
 
     async def fetch(self, sql, *args):
         self.sql.append(sql)
         if "egress_delivered_events" in sql:
             if "ANY($1::text[])" in sql:
-                return [r for r in self.ledger if r["episode_id"] in args[0]]
+                assert '"asset_id" = ANY($1::text[])' in sql
+                return [r for r in self.ledger if r["asset_id"] in args[0]]
             asset = args[0]
             return [r for r in self.ledger if r.get("asset_id") == asset
                     and r["outcome"] == "delivered" and r["case_id"]]
         if "intake_records" in sql:
+            self.intake_args.append(args)
             return [r for r in self.intake if r["kind"] == args[0]]
         raise AssertionError(f"unexpected query: {sql}")
 
@@ -74,7 +77,7 @@ def ledger_row(episode="ep-1", case="case-1", outcome="delivered", first=0, **ov
 
 
 def action_row(key, case, *, kind="ActionRecord", allowed=True, reason=None, minute=10,
-               task="replace comp-1", role="releaser"):
+               task="replace comp-1", role="releaser", nation="ATL", releasable=()):
     return {
         "kind": kind, "key": key,
         "body": json.dumps({"action_id": key, "case": {"id": case},
@@ -82,17 +85,19 @@ def action_row(key, case, *, kind="ActionRecord", allowed=True, reason=None, min
                             "approval_chain": [{"role": "chooser"}, {"role": role}]}),
         "decision": json.dumps({"allowed": allowed, "reason": reason}),
         "decided_at": at(minute),
+        "originator_nation": nation, "releasable_to": releasable,
     }
 
 
 def completion_row(key, completes, *, outcome="done", episode="ep-1", minute=20,
-                   allowed=True, reason=None):
+                   allowed=True, reason=None, nation="ATL", releasable=()):
     body = {"record_id": key, "completes": completes, "outcome": outcome}
     if episode is not None:
         body["episode_id"] = episode
     return {"kind": "Completion", "key": key, "body": json.dumps(body),
             "decision": json.dumps({"allowed": allowed, "reason": reason}),
-            "decided_at": at(minute)}
+            "decided_at": at(minute),
+            "originator_nation": nation, "releasable_to": releasable}
 
 
 def serve(monkeypatch, conn, declarations, action_kinds):
@@ -205,74 +210,171 @@ def test_existing_case_keys_are_present_and_unchanged(server_for):
         "delivered_at": at(0).isoformat(),
     }
     assert set(case) - OLD_CASE_KEYS == {
-        "disposition", "decided_at", "decision", "disposition_state"}
+        "disposition", "decided_at", "decision", "disposition_state", "action_labels"}
+
+
+def test_action_labels_are_the_joined_action_rows_labels(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-1", "case-1", nation="BDR", releasable=["ATL", "CHA"])])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] == {"originator_nation": "BDR",
+                                     "releasable_to": ["ATL", "CHA"]}
+
+
+def test_action_labels_null_array_reads_empty_and_null_originator_stays_null(server_for):
+    row = action_row("act-1", "case-1")
+    row["originator_nation"], row["releasable_to"] = None, None
+    conn = FakeConn([ledger_row()], [row])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] == {"originator_nation": None, "releasable_to": []}
+
+
+def test_action_labels_are_the_latest_actions(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-new", "case-1", minute=30, nation="BDR"),
+        action_row("act-old", "case-1", minute=10, nation="ATL")])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"]["originator_nation"] == "BDR"
+
+
+def test_action_labels_null_when_no_action_joined(server_for):
+    conn = FakeConn([ledger_row()], [])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] is None
+
+
+def test_the_action_select_names_the_label_columns(server_for):
+    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")])
+    cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    sql = [q for q in conn.sql if "intake_records" in q]
+    assert sql and all("originator_nation" in q and "releasable_to" in q for q in sql)
 
 
 # --- GET /reports/states ----------------------------------------------------
 
-def states(server, *ids):
-    q = "&".join(f"episode_id={i}" for i in ids)
+def states(server, *assets):
+    q = "&".join(f"asset_id={a}" for a in assets)
     status, body = get(server, f"/reports/states?{q}")
     assert status == 200
-    return body["episodes"]
+    return body
+
+
+def fault(body, component="comp-1", fault_code="F-1", asset="asset-a"):
+    [block] = [b for b in body["faults"] if (b["asset_id"], b["component"], b["fault_code"])
+               == (asset, component, fault_code)]
+    return block
 
 
 DECLS_WITH_COMPLETION = {"ActionRecord": ACTION, "Completion": COMPLETION}
 
 
-def test_states_requires_an_episode_id(server_for):
+def test_states_requires_an_asset_id(server_for):
     server = server_for(FakeConn(), {}, set())
-    assert get(server, "/reports/states")[0] == 400
+    status, body = get(server, "/reports/states")
+    assert (status, body) == (400, {"error": "asset_id required"})
+    # episode_id is no longer read
+    assert get(server, "/reports/states?episode_id=ep-1")[0] == 400
 
 
-def test_states_ledger_and_released_rows(server_for):
-    conn = FakeConn(
-        [ledger_row("ep-1", "case-1"), ledger_row("ep-2", None, outcome="held", first=5)],
-        [action_row("act-1", "case-1"),
-         action_row("act-9", "case-9", allowed=False, reason="schema_invalid")])
-    eps = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "ep-1", "ep-2")
-    [row] = eps["ep-1"]["ledger"]
-    assert row["outcome"] == "delivered" and row["http_status"] == 200
-    assert row["case_id"] == "case-1" and row["case_id_mismatch"] is False
-    assert eps["ep-1"]["released"] == [{
+def test_states_caps_the_asset_ids(server_for):
+    server = server_for(FakeConn(), {}, set())
+    n = pane_api.STATES_ASSET_LIMIT
+    ok = "&".join(f"asset_id=a{i}" for i in range(n))
+    assert get(server, f"/reports/states?{ok}")[0] == 200
+    status, body = get(server, f"/reports/states?{ok}&asset_id=extra")
+    assert (status, body) == (400, {"error": f"at most {n} asset_id"})
+
+
+def test_states_groups_by_the_fault_triple_sorted(server_for):
+    conn = FakeConn([
+        ledger_row("ep-b", "case-2", component="comp-2", first=5),
+        ledger_row("ep-a", "case-1", first=0),
+        ledger_row("ep-c", None, outcome="held", first=8, asset_id="asset-b"),
+        ledger_row("ep-a2", None, first=9),
+    ], [action_row("act-1", "case-1"),
+        action_row("act-9", "case-9", allowed=False, reason="schema_invalid")])
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}),
+                  "asset-a", "asset-b")
+    assert [(b["asset_id"], b["component"], b["fault_code"]) for b in body["faults"]] == [
+        ("asset-a", "comp-1", "F-1"), ("asset-a", "comp-2", "F-1"),
+        ("asset-b", "comp-1", "F-1")]
+    one = fault(body)
+    assert [r["episode_id"] for r in one["ledger"]] == ["ep-a", "ep-a2"]
+    assert one["ledger"][0]["outcome"] == "delivered" and one["ledger"][0]["http_status"] == 200
+    assert one["ledger"][0]["case_id"] == "case-1"
+    assert one["ledger"][0]["case_id_mismatch"] is False
+    assert one["released"] == [{
         "kind": "ActionRecord", "key": "act-1", "case_id": "case-1",
-        "decided_at": at(10).isoformat(), "allowed": True, "reason": None}]
-    assert eps["ep-2"]["ledger"][0]["outcome"] == "held"
-    assert eps["ep-2"]["released"] == []
+        "decided_at": at(10).isoformat(), "allowed": True, "reason": None,
+        "labels": {"originator_nation": "ATL", "releasable_to": []}}]
+    assert fault(body, "comp-2")["released"] == []
+    assert fault(body, asset="asset-b")["ledger"][0]["outcome"] == "held"
+    assert body["unkeyed_ledger"] == 0
+
+
+def test_states_unkeyed_ledger_counts_rows_missing_component_or_fault_code(server_for):
+    conn = FakeConn([
+        ledger_row("ep-1"),
+        ledger_row("ep-2", component=None), ledger_row("ep-3", fault_code=None),
+        ledger_row("ep-4", component=""), ledger_row("ep-5", fault_code=""),
+    ])
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    assert body["unkeyed_ledger"] == 4
+    assert [b["component"] for b in body["faults"]] == ["comp-1"]
+    assert "ep-2" not in json.dumps(body)
+
+
+def test_states_asset_with_no_ledger_row_has_no_blocks(server_for):
+    body = states(server_for(FakeConn(), {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-x")
+    assert body == {"faults": [], "unkeyed_ledger": 0}
 
 
 def test_states_a_refused_release_carries_its_reason(server_for):
     conn = FakeConn([ledger_row()], [
         action_row("act-1", "case-1", allowed=False, reason="schema_invalid")])
-    eps = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "ep-1")
-    assert eps["ep-1"]["released"][0]["allowed"] is False
-    assert eps["ep-1"]["released"][0]["reason"] == "schema_invalid"
-
-
-def test_states_episode_with_no_ledger_row_is_empty(server_for):
-    eps = states(server_for(FakeConn(), {"ActionRecord": ACTION}, {"ActionRecord"}), "ep-x")
-    assert eps["ep-x"]["ledger"] == [] and eps["ep-x"]["released"] == []
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    assert fault(body)["released"][0]["allowed"] is False
+    assert fault(body)["released"][0]["reason"] == "schema_invalid"
 
 
 def test_states_key_prefix_without_case_ref_is_not_released(server_for):
     conn = FakeConn([ledger_row()], [action_row("case-1-act", "case-1")])
-    eps = states(server_for(conn, {"ActionRecord": ACTION_NO_REF}, {"ActionRecord"}), "ep-1")
-    assert eps["ep-1"]["released"] == []
+    body = states(server_for(conn, {"ActionRecord": ACTION_NO_REF}, {"ActionRecord"}),
+                  "asset-a")
+    assert fault(body)["released"] == []
+
+
+def test_states_released_and_completion_records_carry_the_intake_labels(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-1", "case-1", nation="BDR", releasable=["CHA"]),
+        completion_row("c-1", "act-1", nation="CHA", releasable=["ATL"]),
+        completion_row("c-2", "act-elsewhere", nation="BDR", releasable=None)])
+    body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), "asset-a")
+    block = fault(body)
+    assert block["released"][0]["labels"] == {
+        "originator_nation": "BDR", "releasable_to": ["CHA"]}
+    assert block["completion"]["records"][0]["labels"] == {
+        "originator_nation": "CHA", "releasable_to": ["ATL"]}
+    # A null releasable_to reads [].
+    assert block["unmatched_completions"][0]["labels"] == {
+        "originator_nation": "BDR", "releasable_to": []}
 
 
 def test_completion_undeclared(server_for):
     conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")])
-    eps = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "ep-1")
-    assert eps["ep-1"]["completion"] == {"declared": False, "records": []}
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    assert fault(body)["completion"] == {"declared": False, "records": []}
 
 
-def run_completion(server_for, comp_rows):
-    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")] + comp_rows)
-    return states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), "ep-1")["ep-1"]
+def run_completion(server_for, comp_rows, ledger_rows=None):
+    conn = FakeConn(ledger_rows or [ledger_row()],
+                    [action_row("act-1", "case-1")] + comp_rows)
+    server = server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"})
+    return fault(states(server, "asset-a")), conn
 
 
 def test_completion_matched_through_the_release_key(server_for):
-    ep = run_completion(server_for, [completion_row("done-1", "act-1")])
+    ep, _ = run_completion(server_for, [completion_row("done-1", "act-1")])
     assert ep["completion"]["declared"] is True
     [rec] = ep["completion"]["records"]
     assert rec["completes"] == "act-1" and rec["outcome"] == "done"
@@ -281,39 +383,58 @@ def test_completion_matched_through_the_release_key(server_for):
     assert ep["unmatched_completions"] == []
 
 
+def test_completions_are_fetched_by_the_ledgers_egress_side_ids(server_for):
+    _, conn = run_completion(server_for, [completion_row("done-1", "act-1")], ledger_rows=[
+        ledger_row("ep-z", "case-1"), ledger_row("ep-b", None, first=3),
+        ledger_row("ep-b", None, first=4), ledger_row("ep-q", None, component=None)])
+    completion_calls = [a for a in conn.intake_args if a[0] == "Completion"]
+    assert completion_calls
+    # (kind, completes path, release keys, episode path, episode ids)
+    assert all(a[4] == ["ep-b", "ep-z"] for a in completion_calls)
+
+
 def test_completion_naming_a_release_this_tier_does_not_hold_is_unmatched(server_for):
-    ep = run_completion(server_for, [completion_row("done-2", "act-elsewhere")])
+    ep, _ = run_completion(server_for, [completion_row("done-2", "act-elsewhere")])
     assert ep["completion"]["records"] == []
     [rec] = ep["unmatched_completions"]
     assert rec["key"] == "done-2" and rec["completes"] == "act-elsewhere"
 
 
+def test_an_unmatched_completion_is_listed_on_the_block_holding_its_episode_id(server_for):
+    conn = FakeConn(
+        [ledger_row("ep-1", "case-1"), ledger_row("ep-2", None, component="comp-2")],
+        [action_row("act-1", "case-1"), completion_row("done-2", "act-elsewhere", episode="ep-2")])
+    body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), "asset-a")
+    assert fault(body)["unmatched_completions"] == []
+    assert [r["key"] for r in fault(body, "comp-2")["unmatched_completions"]] == ["done-2"]
+
+
 def test_completion_is_never_matched_by_asset_or_time(server_for):
     # Names no release key at all; same episode and time window.
-    ep = run_completion(server_for, [completion_row("done-3", None)])
+    ep, _ = run_completion(server_for, [completion_row("done-3", None)])
     assert ep["completion"]["records"] == []
 
 
 def test_completion_cancelled(server_for):
-    ep = run_completion(server_for, [completion_row("c-1", "act-1", outcome="cancelled")])
+    ep, _ = run_completion(server_for, [completion_row("c-1", "act-1", outcome="cancelled")])
     assert ep["completion"]["records"][0]["outcome"] == "cancelled"
 
 
 def test_completion_refused_is_a_state_with_its_reason(server_for):
-    ep = run_completion(server_for, [
+    ep, _ = run_completion(server_for, [
         completion_row("c-1", "act-1", allowed=False, reason="schema_invalid")])
     rec = ep["completion"]["records"][0]
     assert rec["allowed"] is False and rec["reason"] == "schema_invalid"
 
 
 def test_completion_carrying_another_episode_id_is_shown_and_stays_joined(server_for):
-    ep = run_completion(server_for, [completion_row("c-1", "act-1", episode="ep-other")])
+    ep, _ = run_completion(server_for, [completion_row("c-1", "act-1", episode="ep-other")])
     [rec] = ep["completion"]["records"]
     assert rec["episode_id_carried"] == "ep-other"
 
 
 def test_unknown_outcome_reads_null(server_for):
-    ep = run_completion(server_for, [completion_row("c-1", "act-1", outcome="weird")])
+    ep, _ = run_completion(server_for, [completion_row("c-1", "act-1", outcome="weird")])
     assert ep["completion"]["records"][0]["outcome"] is None
 
 
@@ -321,7 +442,7 @@ def test_pane_issues_selects_only(server_for):
     conn = FakeConn([ledger_row()], [action_row("act-1", "case-1"),
                                      completion_row("c-1", "act-1")])
     server = server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"})
-    states(server, "ep-1")
+    states(server, "asset-a")
     cases(server)
     assert conn.sql and all(s.lstrip().upper().startswith("SELECT") for s in conn.sql)
 

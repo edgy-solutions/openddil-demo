@@ -4,7 +4,7 @@
 // ADR-0058 slice 3a, design section 4. A judgment drawn with its producer (the
 // case id) and its time. A refusal reads as a refusal with its reason; an
 // absence is named, never left blank. A case from an older server (no
-// `disposition_state`) draws nothing here.
+// `disposition_state`) draws nothing here. `withheld`: outside the viewer's labels.
 import { matchCase, type CortexCase } from '../hooks/useCortexCases';
 
 function fmt(iso: string | null | undefined): string {
@@ -28,6 +28,8 @@ function dispositionLine(c: CortexCase): string | null {
       return 'action kind declares no case reference';
     case 'held at the hub':
       return 'disposition held at the hub';
+    case 'withheld':
+      return 'disposition withheld';
     default:
       return null;
   }

@@ -2445,20 +2445,21 @@ def report_episodes() -> list[dict]:
     return list(out.values())
 
 
-def _reports_pane(episode_ids: list[str]) -> tuple[str, dict | None]:
-    """One call to the hub's pane for all episode ids. The door is
+def _reports_pane(asset_ids: list[str]) -> tuple[str, dict | None]:
+    """One call to the hub's pane for all asset ids; the pane answers per
+    fault (asset_id, component, fault_code). The door is
     `unreachable` for a connection error, a timeout, a non-200 or a body
     that is not the shape; `not_configured` when no pane URL is set."""
     if not EGRESS_PANE:
         return reports_view.DOOR_NOT_CONFIGURED, None
     url = f"{EGRESS_PANE}/reports/states?" + urllib.parse.urlencode(
-        [("episode_id", i) for i in episode_ids])
+        [("asset_id", i) for i in asset_ids])
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
             if resp.status != 200:
                 return reports_view.DOOR_UNREACHABLE, None
             payload = json.loads(resp.read())
-        if not isinstance(payload, dict) or not isinstance(payload.get("episodes"), dict):
+        if not isinstance(payload, dict) or not isinstance(payload.get("faults"), list):
             return reports_view.DOOR_UNREACHABLE, None
         return reports_view.DOOR_OK, payload
     except Exception as exc:  # noqa: BLE001 -- a transport fault, said as such
@@ -4706,9 +4707,16 @@ class Pep(BaseHTTPRequestHandler):
             ids = sorted(order[:REPORTS_LIMIT])
             keep = set(ids)
             listed = [e for e in listed if e["episode_id"] in keep]
-        door, pane = _reports_pane(ids) if ids else (reports_view.DOOR_OK, None)
+        asset_ids = sorted({e["asset_id"] for e in listed if e.get("asset_id")})
+        door, pane = _reports_pane(asset_ids) if asset_ids else (reports_view.DOOR_OK, None)
         body = reports_view.build_reports(
-            listed, episodes, door=door, pane=pane, viewer=viewer)
+            listed, episodes, door=door, pane=pane, viewer=viewer,
+            nations=decision["allowed_nations"])
+        withheld = body.pop("withheld")
+        unkeyed = body.get("unkeyed_ledger")
+        if unkeyed:
+            log.warning("reports: %d ledger row(s) carry no component or fault_code "
+                        "and cannot be joined", unkeyed)
         if truncated:
             body["truncated"] = True
         if not body["reports"]:
@@ -4718,7 +4726,9 @@ class Pep(BaseHTTPRequestHandler):
                         policy_version=decision["policy_version"],
                         corpus_version=decision["corpus_version"],
                         allowed_nations=decision["allowed_nations"],
-                        shown=len(body["reports"]))
+                        shown=len(body["reports"]), withheld=withheld,
+                        unkeyed_ledger=unkeyed,
+                        unmatched_ledger=len(body["unmatched_ledger"]))
         self._send(200, json.dumps(body).encode(),
                    [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
 
@@ -4847,11 +4857,19 @@ class Pep(BaseHTTPRequestHandler):
     def _handle_egress_cases(self, parsed) -> None:
         """Serve /egress/cases?asset_id=: the cortex cases our forwarder
         opened for one asset. Same gate as /egress/decisions: a resolved
-        principal, a Topaz answer, and an entitled subject. The rows are ids
-        and fault codes the forwarder itself recorded, not releasability-
-        labelled records, so there is nothing for the nation filter to act
-        on; the entitlement check is the whole rule. Only a validated
-        asset_id is forwarded."""
+        principal, a Topaz answer, and an entitled subject; then the label
+        rule, in two places:
+
+        - the case list is scoped by the asset's labels, read from
+          asset_cm_state at this tier (the cached shape `/reports` reads);
+        - each disposition is scoped by its action record's labels.
+
+        A hidden asset reads as no cases: 200 `{"cases": []}`, the same
+        body as an asset that has none, and the pane is not asked. A hidden
+        action reads "withheld": the disposition is nulled and its state
+        says so. Unlabelled is hidden from everyone. Labels are stripped:
+        no label field leaves this route, and the withheld count goes in
+        the decision log only. Only a validated asset_id is forwarded."""
         path = parsed.path
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
         asset_id = (params.get("asset_id") or [""])[0]
@@ -4880,6 +4898,38 @@ class Pep(BaseHTTPRequestHandler):
             self._deny(cause, subject=subject, resource=f"egress:cases:{asset_id}")
             return
 
+        resource = f"egress:cases:{asset_id}"
+        nations = decision["allowed_nations"]
+        try:
+            asset_rows = _reports_rows("asset_cm_state")
+        except ElectricUnavailable as exc:
+            log.error("egress cases shape read failed user=%s asset=%s: %s",
+                      subject, asset_id, _scrub(exc))
+            record_decision(decision_id=new_decision_id(), outcome="allow",
+                            subject=subject, resource=resource,
+                            policy_version=decision["policy_version"],
+                            corpus_version=decision["corpus_version"],
+                            upstream_error="electric")
+            self._send(502, json.dumps({"error": "cases unavailable"}).encode(),
+                       [("Content-Type", "application/json")])
+            return
+        asset_visible = any(
+            row.get("asset_id") == asset_id
+            and _reports_in_scope(row.get("edge_id"), row.get("region_id"))
+            and egress_view.is_visible(
+                {"originator_nation": row.get("originator_nation"),
+                 "releasable_to": _pg_array(row.get("releasable_to"))}, nations)
+            for row in asset_rows)
+        headers = [("Content-Type", "application/json"), ("Cache-Control", "no-store")]
+        if not asset_visible:
+            record_decision(decision_id=new_decision_id(), outcome="allow",
+                            subject=subject, resource=resource,
+                            policy_version=decision["policy_version"],
+                            corpus_version=decision["corpus_version"],
+                            allowed_nations=nations, shown=0)
+            self._send(200, json.dumps({"cases": []}).encode(), headers)
+            return
+
         url = f"{EGRESS_PANE}/cases?" + urllib.parse.urlencode({"asset_id": asset_id})
         try:
             with urllib.request.urlopen(url, timeout=15) as resp:
@@ -4892,28 +4942,38 @@ class Pep(BaseHTTPRequestHandler):
             self._send(502, json.dumps({"error": "egress pane unavailable"}).encode(),
                        [("Content-Type", "application/json")])
             return
-        if status != 200:
+        cases = cases_payload.get("cases") if isinstance(cases_payload, dict) else None
+        if (status != 200 or not isinstance(cases, list)
+                or not all(isinstance(c, dict) for c in cases)):
             self._send(502, json.dumps({"error": "egress pane unavailable"}).encode(),
                        [("Content-Type", "application/json")])
             return
-        if PEP_TIER != HUB_TIER and isinstance(cases_payload, dict):
-            # The action is admitted at the hub only until the route change
-            # (3c): a tier that is not the hub says where the disposition is,
-            # and does not draw the pane's reading of it.
-            for case in cases_payload.get("cases") or []:
-                if isinstance(case, dict):
-                    case["disposition"] = None
-                    case["decided_at"] = None
-                    case["decision"] = {"allowed": None, "reason": None}
-                    case["disposition_state"] = "held at the hub"
-            raw = json.dumps(cases_payload).encode()
+        withheld = 0
+        for case in cases:
+            labels = case.pop("action_labels", None)
+            if labels is not None and not (
+                    isinstance(labels, dict) and egress_view.is_visible(labels, nations)):
+                case["disposition"] = None
+                case["decided_at"] = None
+                case["decision"] = {"allowed": None, "reason": None}
+                case["disposition_state"] = "withheld"
+                withheld += 1
+            if PEP_TIER != HUB_TIER:
+                # The action is admitted at the hub only until the route change
+                # (3c): a tier that is not the hub says where the disposition is,
+                # and does not draw the pane's reading of it.
+                case["disposition"] = None
+                case["decided_at"] = None
+                case["decision"] = {"allowed": None, "reason": None}
+                case["disposition_state"] = "held at the hub"
         record_decision(decision_id=new_decision_id(), outcome="allow",
-                        subject=subject, resource=f"egress:cases:{asset_id}",
+                        subject=subject, resource=resource,
                         policy_version=decision["policy_version"],
                         corpus_version=decision["corpus_version"],
-                        allowed_nations=decision["allowed_nations"])
-        self._send(200, raw,
-                   [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
+                        allowed_nations=nations, shown=len(cases), withheld=withheld)
+        # Built from a whitelist, as egress_view builds its answer: no other
+        # key of the pane's body leaves this route.
+        self._send(200, json.dumps({"cases": cases}).encode(), headers)
 
     def _picture_reply(self, status: int, detail: str,
                        headers: list | None = None) -> None:

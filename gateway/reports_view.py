@@ -16,6 +16,8 @@ from __future__ import annotations
 import datetime
 from typing import Any, Mapping
 
+import egress_view
+
 DOOR_OK = "ok"
 DOOR_UNREACHABLE = "unreachable"
 DOOR_NOT_CONFIGURED = "not_configured"
@@ -48,28 +50,41 @@ def interval_holds(episode: Mapping[str, Any], when: datetime.datetime | None) -
     return start <= when and (end is None or when < end)
 
 
+def _triple(item: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    return (item.get("asset_id"), item.get("component"), item.get("fault_code"))
+
+
+def _pane_blocks(pane_faults: list[Any]) -> dict[tuple, Mapping[str, Any]]:
+    """The pane's fault blocks, by their (asset_id, component, fault_code)."""
+    return {_triple(b): b for b in pane_faults if isinstance(b, Mapping)}
+
+
 def join_ledger(
-    episodes: list[dict[str, Any]], pane_episodes: Mapping[str, Any],
-    listed_ids: set[str],
+    episodes: list[dict[str, Any]], pane_faults: list[Any],
+    listed_triples: set[tuple],
 ) -> tuple[dict[tuple[str, str], list[dict[str, Any]]], list[dict[str, Any]]]:
     """Ledger rows per episode, and the rows that fit none.
 
-    `episodes` is EVERY episode this tier holds (not only the listed ones),
-    so a row that belongs to another filer's episode with the same id is
-    left to it and not reported as unmatched here. An id held by one episode
-    joins directly: a held row delivered after the close still belongs to
-    it. Where two episodes share an id, a row joins the one whose interval
-    holds its `first_recorded_at`; a row that fits none is returned in the
-    second value, never dropped."""
-    by_id: dict[str, list[dict[str, Any]]] = {}
+    The join key is the fault identity both sides carry, (asset_id,
+    component, fault_code): the ledger's own `episode_id` is the egress
+    side's id and is never compared with cm-service's. `episodes` is EVERY
+    episode this tier holds (not only the listed ones), so a row that
+    belongs to another filer's episode of the same fault is left to it and
+    not reported as unmatched here. A triple held by one episode joins
+    directly: a held row delivered after the close still belongs to it.
+    Where several episodes hold it, a row joins the one whose interval holds
+    its `first_recorded_at`; a row that fits none is returned in the second
+    value, never dropped. A block whose triple no LISTED episode holds is
+    skipped."""
+    by_triple: dict[tuple, list[dict[str, Any]]] = {}
     for ep in episodes:
-        by_id.setdefault(ep["episode_id"], []).append(ep)
+        by_triple.setdefault(_triple(ep), []).append(ep)
     joined: dict[tuple[str, str], list[dict[str, Any]]] = {}
     unmatched: list[dict[str, Any]] = []
-    for eid, block in pane_episodes.items():
-        if eid not in listed_ids or not isinstance(block, Mapping):
+    for triple, block in _pane_blocks(pane_faults).items():
+        if triple not in listed_triples:
             continue
-        holders = by_id.get(eid, [])
+        holders = by_triple.get(triple, [])
         for row in block.get("ledger") or []:
             if len(holders) == 1:
                 target = holders[0]
@@ -77,9 +92,10 @@ def join_ledger(
                 when = _parse(row.get("first_recorded_at"))
                 target = next((e for e in holders if interval_holds(e, when)), None)
             if target is None:
-                unmatched.append({"episode_id": eid, **row})
+                unmatched.append(dict(row))
             else:
-                joined.setdefault((eid, _iso(target["detected_at"])), []).append(row)
+                joined.setdefault(
+                    (target["episode_id"], _iso(target["detected_at"])), []).append(row)
     return joined, unmatched
 
 
@@ -127,9 +143,29 @@ def _ledger_states(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _released_states(released: list[dict[str, Any]]) -> list[dict[str, Any]]:
+UNMATCHED_KEYS = ("kind", "key", "completes", "decided_at", "allowed",
+                  "reason", "outcome", "episode_id_carried")
+
+
+def _hidden(rec: Mapping[str, Any], nations: list[str]) -> bool:
+    """True when the record's labels are missing, unlabelled, or not visible
+    to a viewer holding `nations` (egress_view.is_visible)."""
+    labels = rec.get("labels")
+    if not isinstance(labels, Mapping):
+        return True
+    return not egress_view.is_visible(dict(labels), nations)
+
+
+def _released_states(released: list[dict[str, Any]],
+                     nations: list[str]) -> tuple[list[dict[str, Any]], int]:
     out = []
+    withheld = 0
     for rec in released:
+        if _hidden(rec, nations):
+            withheld += 1
+            out.append({"state": "disposition withheld", "source": "intake",
+                        "at": None, "detail": {}})
+            continue
         detail: dict[str, Any] = {"kind": rec.get("kind"), "key": rec.get("key"),
                                   "case_id": rec.get("case_id"),
                                   "allowed": bool(rec.get("allowed"))}
@@ -137,15 +173,22 @@ def _released_states(released: list[dict[str, Any]]) -> list[dict[str, Any]]:
             detail["reason"] = rec.get("reason")
         out.append({"state": "released", "source": "intake",
                     "at": rec.get("decided_at"), "detail": detail})
-    return out
+    return out, withheld
 
 
-def _work_states(completion: Mapping[str, Any], episode_id: str) -> list[dict[str, Any]]:
+def _work_states(completion: Mapping[str, Any], egress_ids: set[str],
+                 nations: list[str]) -> tuple[list[dict[str, Any]], int]:
     if not completion.get("declared"):
         return [{"state": "work recorded", "source": "none", "at": None,
-                 "detail": {"read": "no source"}}]
+                 "detail": {"read": "no source"}}], 0
     out = []
+    withheld = 0
     for rec in completion.get("records") or []:
+        if _hidden(rec, nations):
+            withheld += 1
+            out.append({"state": "work record withheld", "source": "intake",
+                        "at": None, "detail": {}})
+            continue
         outcome = rec.get("outcome")
         state = ("work recorded" if outcome in (None, "done")
                  else f"work recorded: {outcome}")
@@ -155,16 +198,30 @@ def _work_states(completion: Mapping[str, Any], episode_id: str) -> list[dict[st
         if not rec.get("allowed"):
             detail["reason"] = rec.get("reason")
         carried = rec.get("episode_id_carried")
-        if carried is not None and carried != episode_id:
+        if carried is not None and carried not in egress_ids:
             detail["episode_mismatch"] = True
         out.append({"state": state, "source": "intake",
                     "at": rec.get("decided_at"), "detail": detail})
-    return out
+    return out, withheld
+
+
+def _unmatched_view(items: list[Any],
+                    nations: list[str]) -> tuple[list[dict[str, Any]], int]:
+    out: list[dict[str, Any]] = []
+    withheld = 0
+    for rec in items:
+        if not isinstance(rec, Mapping) or _hidden(rec, nations):
+            withheld += 1
+            out.append({"withheld": True})
+        else:
+            out.append({k: rec.get(k) for k in UNMATCHED_KEYS})
+    return out, withheld
 
 
 def build_reports(
     listed: list[dict[str, Any]], all_episodes: list[dict[str, Any]], *,
     door: str, pane: Mapping[str, Any] | None, viewer: str | None,
+    nations: list[str],
 ) -> dict[str, Any]:
     """The timeline of every listed episode, newest first.
 
@@ -172,16 +229,19 @@ def build_reports(
     body), `unreachable` or `not_configured`. When it is not `ok` the
     hub-owned states are not drawn as queued; one state names the door."""
     listed = sorted(listed, key=lambda e: e["detected_at"], reverse=True)
-    pane_eps = (pane or {}).get("episodes") or {}
+    pane_faults = (pane or {}).get("faults") or []
+    blocks = _pane_blocks(pane_faults)
     joined, unmatched_ledger = (
-        join_ledger(all_episodes, pane_eps, {e["episode_id"] for e in listed})
+        join_ledger(all_episodes, pane_faults, {_triple(e) for e in listed})
         if door == DOOR_OK else ({}, []))
-    unmatched_given: set[str] = set()
+    unmatched_given: set[tuple] = set()
+    withheld = 0
     reports = []
     for ep in listed:
         eid = ep["episode_id"]
         states = [_filed(ep, viewer)]
-        block = pane_eps.get(eid) or {}
+        triple = _triple(ep)
+        block = blocks.get(triple) or {}
         unmatched: list[dict[str, Any]] = []
         if door == DOOR_UNREACHABLE:
             states.append({"state": "door at the hub, unreachable", "source": "hub",
@@ -197,16 +257,25 @@ def build_reports(
         states.append({"state": "approved", "source": "iagent", "at": None,
                        "detail": dict(READ_IN_3B)})
         if door == DOOR_OK:
-            held_case_ids = {r.get("case_id") for r in joined.get(
-                (eid, _iso(ep["detected_at"])), []) if r.get("case_id")}
-            states += _released_states(
-                [r for r in block.get("released") or [] if r.get("case_id") in held_case_ids])
-            states += _work_states(block.get("completion") or {"declared": False}, eid)
-            if eid not in unmatched_given:
-                # An unmatched completion is listed once per episode id, on
-                # the newest episode that holds it.
-                unmatched_given.add(eid)
-                unmatched = list(block.get("unmatched_completions") or [])
+            own_rows = joined.get((eid, _iso(ep["detected_at"])), [])
+            held_case_ids = {r.get("case_id") for r in own_rows if r.get("case_id")}
+            egress_ids = {r.get("episode_id") for r in own_rows if r.get("episode_id")}
+            rel, n = _released_states(
+                [r for r in block.get("released") or [] if r.get("case_id") in held_case_ids],
+                nations)
+            states += rel
+            withheld += n
+            work, n = _work_states(
+                block.get("completion") or {"declared": False}, egress_ids, nations)
+            states += work
+            withheld += n
+            if triple not in unmatched_given:
+                # An unmatched completion is listed once per fault, on the
+                # newest listed episode that holds it.
+                unmatched_given.add(triple)
+                unmatched, n = _unmatched_view(
+                    list(block.get("unmatched_completions") or []), nations)
+                withheld += n
         reports.append({
             "episode_id": eid, "detected_at": _iso(ep["detected_at"]),
             "asset_id": ep["asset_id"], "owning_tier": ep["owning_tier"],
@@ -215,4 +284,8 @@ def build_reports(
             "cleared_at": _iso(ep["cleared_at"]), "cleared_by": ep["cleared_by"],
             "resolution": ep["resolution"], "states": states, "unmatched": unmatched,
         })
-    return {"reports": reports, "unmatched_ledger": unmatched_ledger}
+    unkeyed = (pane or {}).get("unkeyed_ledger") if door == DOOR_OK else None
+    if isinstance(unkeyed, bool) or not isinstance(unkeyed, int):
+        unkeyed = None
+    return {"reports": reports, "unmatched_ledger": unmatched_ledger,
+            "unkeyed_ledger": unkeyed, "withheld": withheld}
