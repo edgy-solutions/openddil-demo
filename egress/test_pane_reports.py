@@ -14,6 +14,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -29,6 +30,40 @@ UTC = datetime.timezone.utc
 
 def at(minute: int) -> datetime.datetime:
     return datetime.datetime(2026, 11, 1, 10, minute, 0, tzinfo=UTC)
+
+
+# The ids a fault carries. KIND is invented: the real kind name is deployment
+# config. cm-service names an episode by "episode|asset|component|fault_code";
+# the egress assembler names the egress episode by
+# "kind|tier|asset|component|fault_code" and each occurrence (the ledger's
+# event_id) by the same seed plus the detected time in ns. All are uuid v5 and
+# differ on real rows, so no fixture here may use one literal for two of them.
+KIND = "FaultEvent"
+TIER = "edge-01"   # the tier whose assembler wrote the ledger rows
+
+
+def cm_id(asset, component, fault):
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"episode|{asset}|{component}|{fault}"))
+
+
+def egress_episode_id(asset, component, fault, tier):
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"{KIND}|{tier}|{asset}|{component}|{fault}"))
+
+
+def egress_event_id(asset, component, fault, tier, detected_at_ns):
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"{KIND}|{tier}|{asset}|{component}|{fault}|{detected_at_ns}"))
+
+
+# Asset ids have the real shape dis:N:N:N.
+ASSET_A, ASSET_B, ASSET_X = "dis:9:1:2001", "dis:9:1:2002", "dis:9:1:2099"
+
+
+def ep_of(component="comp-1", fault="F-1", asset=ASSET_A):
+    """The egress episode id of a fault."""
+    return egress_episode_id(asset, component, fault, TIER)
 
 
 ACTION = Declarations(key="/action_id", label="/label", case_ref="/case/id")
@@ -53,9 +88,12 @@ class FakeConn:
             if "ANY($1::text[])" in sql:
                 assert '"asset_id" = ANY($1::text[])' in sql
                 return [r for r in self.ledger if r["asset_id"] in args[0]]
+            # The /cases read keeps delivered rows that carry a case id: the real
+            # SQL says so, and the fake honours exactly what the SQL says.
+            assert '"case_id" IS NOT NULL' in sql
             asset = args[0]
             return [r for r in self.ledger if r.get("asset_id") == asset
-                    and r["outcome"] == "delivered" and r["case_id"]]
+                    and r["outcome"] == "delivered" and r["case_id"] is not None]
         if "intake_records" in sql:
             self.intake_args.append(args)
             return [r for r in self.intake if r["kind"] == args[0]]
@@ -65,14 +103,23 @@ class FakeConn:
         pass
 
 
-def ledger_row(episode="ep-1", case="case-1", outcome="delivered", first=0, **over):
+def ledger_row(case="case-1", outcome="delivered", first=0, **over):
+    """One egress_delivered_events row. case is an invented opaque string, or
+    None, which is what a real delivered row carries (the receiver answered
+    with no case id). The writer sets first_recorded_at and recorded_at to
+    now() on first insert, so they are equal. The demo's stub sink answers 202.
+    The episode and event ids are uuid v5, computed from the fault's triple and
+    the first-recorded minute, so they differ from each other."""
     row = {
-        "route": "route-x", "event_id": f"ev-{episode}", "outcome": outcome,
-        "http_status": 200 if outcome == "delivered" else None, "case_id": case,
-        "episode_id": episode, "asset_id": "asset-a", "component": "comp-1",
-        "fault_code": "F-1", "first_recorded_at": at(first), "recorded_at": at(first + 1),
+        "route": "to-case-desk", "outcome": outcome,
+        "http_status": 202 if outcome == "delivered" else None, "case_id": case,
+        "asset_id": ASSET_A, "component": "comp-1", "fault_code": "F-1",
+        "first_recorded_at": at(first), "recorded_at": at(first),
     }
     row.update(over)
+    triple = (row["asset_id"], row["component"], row["fault_code"])
+    row.setdefault("episode_id", egress_episode_id(*triple, TIER))
+    row.setdefault("event_id", egress_event_id(*triple, TIER, first * 60 * 10**9))
     return row
 
 
@@ -89,7 +136,7 @@ def action_row(key, case, *, kind="ActionRecord", allowed=True, reason=None, min
     }
 
 
-def completion_row(key, completes, *, outcome="done", episode="ep-1", minute=20,
+def completion_row(key, completes, *, outcome="done", episode=ep_of(), minute=20,
                    allowed=True, reason=None, nation="ATL", releasable=()):
     body = {"record_id": key, "completes": completes, "outcome": outcome}
     if episode is not None:
@@ -139,7 +186,7 @@ OLD_CASE_KEYS = {"route", "case_id", "episode_id", "event_id", "asset_id",
                  "component", "fault_code", "delivered_at"}
 
 
-def cases(server, asset="asset-a"):
+def cases(server, asset=ASSET_A):
     status, body = get(server, f"/cases?asset_id={asset}")
     assert status == 200
     return body["cases"]
@@ -205,8 +252,9 @@ def test_existing_case_keys_are_present_and_unchanged(server_for):
     [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
     assert OLD_CASE_KEYS <= set(case)
     assert {k: case[k] for k in OLD_CASE_KEYS} == {
-        "route": "route-x", "case_id": "case-1", "episode_id": "ep-1", "event_id": "ev-ep-1",
-        "asset_id": "asset-a", "component": "comp-1", "fault_code": "F-1",
+        "route": "to-case-desk", "case_id": "case-1", "episode_id": ep_of(),
+        "event_id": egress_event_id(ASSET_A, "comp-1", "F-1", TIER, 0),
+        "asset_id": ASSET_A, "component": "comp-1", "fault_code": "F-1",
         "delivered_at": at(0).isoformat(),
     }
     assert set(case) - OLD_CASE_KEYS == {
@@ -259,7 +307,7 @@ def states(server, *assets):
     return body
 
 
-def fault(body, component="comp-1", fault_code="F-1", asset="asset-a"):
+def fault(body, component="comp-1", fault_code="F-1", asset=ASSET_A):
     [block] = [b for b in body["faults"] if (b["asset_id"], b["component"], b["fault_code"])
                == (asset, component, fault_code)]
     return block
@@ -287,20 +335,23 @@ def test_states_caps_the_asset_ids(server_for):
 
 def test_states_groups_by_the_fault_triple_sorted(server_for):
     conn = FakeConn([
-        ledger_row("ep-b", "case-2", component="comp-2", first=5),
-        ledger_row("ep-a", "case-1", first=0),
-        ledger_row("ep-c", None, outcome="held", first=8, asset_id="asset-b"),
-        ledger_row("ep-a2", None, first=9),
+        ledger_row("case-2", component="comp-2", first=5),
+        ledger_row("case-1", first=0),
+        ledger_row(None, outcome="held", first=8, asset_id=ASSET_B),
+        ledger_row(None, first=9),
     ], [action_row("act-1", "case-1"),
         action_row("act-9", "case-9", allowed=False, reason="schema_invalid")])
     body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}),
-                  "asset-a", "asset-b")
+                  ASSET_A, ASSET_B)
     assert [(b["asset_id"], b["component"], b["fault_code"]) for b in body["faults"]] == [
-        ("asset-a", "comp-1", "F-1"), ("asset-a", "comp-2", "F-1"),
-        ("asset-b", "comp-1", "F-1")]
+        (ASSET_A, "comp-1", "F-1"), (ASSET_A, "comp-2", "F-1"),
+        (ASSET_B, "comp-1", "F-1")]
     one = fault(body)
-    assert [r["episode_id"] for r in one["ledger"]] == ["ep-a", "ep-a2"]
-    assert one["ledger"][0]["outcome"] == "delivered" and one["ledger"][0]["http_status"] == 200
+    # One fault, one egress episode id; the two occurrences have their own event ids.
+    assert [r["episode_id"] for r in one["ledger"]] == [ep_of(), ep_of()]
+    assert [r["event_id"] for r in one["ledger"]] == [
+        egress_event_id(ASSET_A, "comp-1", "F-1", TIER, n * 60 * 10**9) for n in (0, 9)]
+    assert one["ledger"][0]["outcome"] == "delivered" and one["ledger"][0]["http_status"] == 202
     assert one["ledger"][0]["case_id"] == "case-1"
     assert one["ledger"][0]["case_id_mismatch"] is False
     assert one["released"] == [{
@@ -308,31 +359,31 @@ def test_states_groups_by_the_fault_triple_sorted(server_for):
         "decided_at": at(10).isoformat(), "allowed": True, "reason": None,
         "labels": {"originator_nation": "ATL", "releasable_to": []}}]
     assert fault(body, "comp-2")["released"] == []
-    assert fault(body, asset="asset-b")["ledger"][0]["outcome"] == "held"
+    assert fault(body, asset=ASSET_B)["ledger"][0]["outcome"] == "held"
     assert body["unkeyed_ledger"] == 0
 
 
 def test_states_unkeyed_ledger_counts_rows_missing_component_or_fault_code(server_for):
     conn = FakeConn([
-        ledger_row("ep-1"),
-        ledger_row("ep-2", component=None), ledger_row("ep-3", fault_code=None),
-        ledger_row("ep-4", component=""), ledger_row("ep-5", fault_code=""),
+        ledger_row(),
+        ledger_row(component=None), ledger_row(fault_code=None),
+        ledger_row(component=""), ledger_row(fault_code=""),
     ])
-    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), ASSET_A)
     assert body["unkeyed_ledger"] == 4
     assert [b["component"] for b in body["faults"]] == ["comp-1"]
-    assert "ep-2" not in json.dumps(body)
+    assert ledger_row(component=None)["event_id"] not in json.dumps(body)
 
 
 def test_states_asset_with_no_ledger_row_has_no_blocks(server_for):
-    body = states(server_for(FakeConn(), {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-x")
+    body = states(server_for(FakeConn(), {"ActionRecord": ACTION}, {"ActionRecord"}), ASSET_X)
     assert body == {"faults": [], "unkeyed_ledger": 0}
 
 
 def test_states_a_refused_release_carries_its_reason(server_for):
     conn = FakeConn([ledger_row()], [
         action_row("act-1", "case-1", allowed=False, reason="schema_invalid")])
-    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), ASSET_A)
     assert fault(body)["released"][0]["allowed"] is False
     assert fault(body)["released"][0]["reason"] == "schema_invalid"
 
@@ -340,7 +391,7 @@ def test_states_a_refused_release_carries_its_reason(server_for):
 def test_states_key_prefix_without_case_ref_is_not_released(server_for):
     conn = FakeConn([ledger_row()], [action_row("case-1-act", "case-1")])
     body = states(server_for(conn, {"ActionRecord": ACTION_NO_REF}, {"ActionRecord"}),
-                  "asset-a")
+                  ASSET_A)
     assert fault(body)["released"] == []
 
 
@@ -349,7 +400,7 @@ def test_states_released_and_completion_records_carry_the_intake_labels(server_f
         action_row("act-1", "case-1", nation="BDR", releasable=["CHA"]),
         completion_row("c-1", "act-1", nation="CHA", releasable=["ATL"]),
         completion_row("c-2", "act-elsewhere", nation="BDR", releasable=None)])
-    body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), "asset-a")
+    body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), ASSET_A)
     block = fault(body)
     assert block["released"][0]["labels"] == {
         "originator_nation": "BDR", "releasable_to": ["CHA"]}
@@ -362,7 +413,7 @@ def test_states_released_and_completion_records_carry_the_intake_labels(server_f
 
 def test_completion_undeclared(server_for):
     conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")])
-    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), ASSET_A)
     assert fault(body)["completion"] == {"declared": False, "records": []}
 
 
@@ -370,7 +421,7 @@ def run_completion(server_for, comp_rows, ledger_rows=None):
     conn = FakeConn(ledger_rows or [ledger_row()],
                     [action_row("act-1", "case-1")] + comp_rows)
     server = server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"})
-    return fault(states(server, "asset-a")), conn
+    return fault(states(server, ASSET_A)), conn
 
 
 def test_completion_matched_through_the_release_key(server_for):
@@ -379,18 +430,21 @@ def test_completion_matched_through_the_release_key(server_for):
     [rec] = ep["completion"]["records"]
     assert rec["completes"] == "act-1" and rec["outcome"] == "done"
     assert rec["decided_at"] == at(20).isoformat() and rec["allowed"] is True
-    assert rec["episode_id_carried"] == "ep-1"
+    assert rec["episode_id_carried"] == ep_of()
     assert ep["unmatched_completions"] == []
 
 
 def test_completions_are_fetched_by_the_ledgers_egress_side_ids(server_for):
-    _, conn = run_completion(server_for, [completion_row("done-1", "act-1")], ledger_rows=[
-        ledger_row("ep-z", "case-1"), ledger_row("ep-b", None, first=3),
-        ledger_row("ep-b", None, first=4), ledger_row("ep-q", None, component=None)])
+    conn = FakeConn([
+        ledger_row("case-1", component="comp-z"),
+        ledger_row(None, first=3, component="comp-b"),
+        ledger_row(None, first=4, component="comp-b"), ledger_row(None, component=None)],
+        [action_row("act-1", "case-1"), completion_row("done-1", "act-1")])
+    states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), ASSET_A)
     completion_calls = [a for a in conn.intake_args if a[0] == "Completion"]
     assert completion_calls
     # (kind, completes path, release keys, episode path, episode ids)
-    assert all(a[4] == ["ep-b", "ep-z"] for a in completion_calls)
+    assert all(a[4] == sorted([ep_of("comp-b"), ep_of("comp-z")]) for a in completion_calls)
 
 
 def test_completion_naming_a_release_this_tier_does_not_hold_is_unmatched(server_for):
@@ -402,9 +456,10 @@ def test_completion_naming_a_release_this_tier_does_not_hold_is_unmatched(server
 
 def test_an_unmatched_completion_is_listed_on_the_block_holding_its_episode_id(server_for):
     conn = FakeConn(
-        [ledger_row("ep-1", "case-1"), ledger_row("ep-2", None, component="comp-2")],
-        [action_row("act-1", "case-1"), completion_row("done-2", "act-elsewhere", episode="ep-2")])
-    body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), "asset-a")
+        [ledger_row("case-1"), ledger_row(None, component="comp-2")],
+        [action_row("act-1", "case-1"),
+         completion_row("done-2", "act-elsewhere", episode=ep_of("comp-2"))])
+    body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), ASSET_A)
     assert fault(body)["unmatched_completions"] == []
     assert [r["key"] for r in fault(body, "comp-2")["unmatched_completions"]] == ["done-2"]
 
@@ -428,9 +483,9 @@ def test_completion_refused_is_a_state_with_its_reason(server_for):
 
 
 def test_completion_carrying_another_episode_id_is_shown_and_stays_joined(server_for):
-    ep, _ = run_completion(server_for, [completion_row("c-1", "act-1", episode="ep-other")])
+    ep, _ = run_completion(server_for, [completion_row("c-1", "act-1", episode=ep_of("comp-other", "F-9"))])
     [rec] = ep["completion"]["records"]
-    assert rec["episode_id_carried"] == "ep-other"
+    assert rec["episode_id_carried"] == ep_of("comp-other", "F-9")
 
 
 def test_unknown_outcome_reads_null(server_for):
@@ -442,7 +497,7 @@ def test_pane_issues_selects_only(server_for):
     conn = FakeConn([ledger_row()], [action_row("act-1", "case-1"),
                                      completion_row("c-1", "act-1")])
     server = server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"})
-    states(server, "asset-a")
+    states(server, ASSET_A)
     cases(server)
     assert conn.sql and all(s.lstrip().upper().startswith("SELECT") for s in conn.sql)
 
@@ -461,3 +516,37 @@ def test_intake_config_kinds_read_without_importing_intake(tmp_path, monkeypatch
     assert "intake" not in pane_api.__dict__
     cfg.write_text("{}", encoding="utf-8")
     assert pane_api._kind_context()[1] == set()
+
+
+# --- a delivered row with no case id (the real default) ------------------------
+
+def test_a_delivered_row_with_no_case_id_is_in_the_ledger_and_absent_from_cases(
+        server_for):
+    # The receiver answered with no case id, so the row is delivered, case_id NULL.
+    conn = FakeConn([ledger_row(None)], [])
+    server = server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"})
+    assert cases(server) == []
+    cases_sql = [q for q in conn.sql if "egress_delivered_events" in q
+                 and "ANY($1::text[])" not in q]
+    assert cases_sql and all('"case_id" IS NOT NULL' in q for q in cases_sql)
+    block = fault(states(server, ASSET_A))
+    assert [(r["outcome"], r["case_id"], r["http_status"]) for r in block["ledger"]] == [
+        ("delivered", None, 202)]
+
+
+# --- the two id formulas never collapse into one -------------------------------
+
+def test_fixture_ids_follow_both_formulas():
+    asset, comp, fault_code = ASSET_A, "comp-1", "F-1"
+    cm = cm_id(asset, comp, fault_code)
+    ep = egress_episode_id(asset, comp, fault_code, TIER)
+    ev = egress_event_id(asset, comp, fault_code, TIER, 0)
+    assert cm != ep and ep != ev and cm != ev
+    for one in (cm, ep, ev):
+        assert uuid.UUID(one).version == 5
+    for row in (ledger_row(), ledger_row(None, first=3), ledger_row(outcome="held", first=4)):
+        assert row["event_id"] != row["episode_id"]
+        assert uuid.UUID(row["event_id"]).version == 5
+        assert uuid.UUID(row["episode_id"]).version == 5
+        assert row["episode_id"] != cm
+        assert row["first_recorded_at"] == row["recorded_at"]
