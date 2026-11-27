@@ -1,0 +1,28 @@
+name: Tests (gateway)
+
+# The PEP's tests (gateway/test_*.py), including the route audit that probes every label-filtered route with canary
+# strings. The PEP itself is stdlib-only; the tests mint tokens with `cryptography`. No secrets, no services.
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - "gateway/**"
+      - ".github/workflows/tests-gateway.yml"
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - "gateway/**"
+      - ".github/workflows/tests-gateway.yml"
+
+jobs:
+  gateway-pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: pip install pytest cryptography
+      - name: Run the gateway tests
+        run: python -m pytest -q -p no:cacheprovider gateway

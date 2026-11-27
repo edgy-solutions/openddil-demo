@@ -171,8 +171,9 @@ ROUTES = {
     ("GET", "/auth/logout"): _r(NRD, "clears the session (pep.py:4549)"),
     ("GET", "/auth/me"): _r(NRD, "the caller's own subject and expiry, not a record (pep.py:4565)"),
     ("GET", "/reports/mine"): _r(
-        LF, "ledger rows filtered by egress_view.is_visible in _reports_rows consumers; episode headers filtered "
-            "only by reported_by (pep.py:4696-4698)",
+        LF, "ledger rows filtered by egress_view.is_visible in _reports_rows consumers; episodes the viewer filed "
+            "are split by reports_view.episode_hidden, a hidden one is listed only as a 'report withheld' entry "
+            "(_handle_reports)",
         ["test_probe_03_reports_mine"]),
     ("GET", "/reports/tier"): _r(
         LF, "egress_view.filter_decisions over episodes (pep.py:4690)",
@@ -181,8 +182,8 @@ ROUTES = {
         LF, "dispatch prefix for the two egress routes below (pep.py:5087)",
         ["test_probe_01_egress_decisions", "test_probe_02_egress_cases"]),
     ("GET", "/egress/cases"): _r(
-        LF, "asset is_visible (pep.py:4916-4919) then per-action labels (pep.py:4953); per-case dict forwarded "
-            "minus action_labels (pep.py:4976)",
+        LF, "asset is_visible then per-action labels; each case is rebuilt from the CASE_KEYS whitelist, with "
+            "nested whitelists for disposition and decision (_case_view)",
         ["test_probe_02_egress_cases", "test_probe_02_egress_cases_per_case_whitelist"]),
     ("GET", "/egress/decisions"): _r(
         LF, "egress_view.filter_decisions (pep.py:4843)",
@@ -604,7 +605,18 @@ def test_probe_02_egress_cases_per_case_whitelist(rig, viewer):
     status, raw = call(viewer, "GET", "/egress/cases?asset_id=ast-atl")
     assert status == 200, raw
     assert_positive(raw, "/egress/cases whitelist")
-    assert_no_leak(raw, viewer, "/egress/cases per-case whitelist (pep.py:4976)")
+    assert_no_leak(raw, viewer, "/egress/cases per-case whitelist")
+    # Extra keys nested inside disposition and decision are dropped too.
+    S.pane_cases["ast-atl"] = [_case(
+        "ATL", disposition={"option": "o", "stage": "s", "kind": "k", "key": "x",
+                            "note": CANARY_BDR},
+        decision={"allowed": True, "reason": "r", "trace": CANARY_UNLABELLED})]
+    status, raw = call(viewer, "GET", "/egress/cases?asset_id=ast-atl")
+    assert status == 200, raw
+    assert CANARY_BDR.encode() not in raw and CANARY_UNLABELLED.encode() not in raw, raw
+    got = json.loads(raw)["cases"][0]
+    assert got["disposition"] == {"option": "o", "stage": "s", "kind": "k", "key": "x"}
+    assert got["decision"] == {"allowed": True, "reason": "r"}
 
 
 # --- 3. /reports/tier and /reports/mine -------------------------------------
@@ -658,7 +670,22 @@ def test_probe_03_reports_mine(rig, viewer):
     status, raw = call(viewer, "GET", "/reports/mine")
     assert status == 200, raw
     assert_positive(raw, "/reports/mine")
-    assert_no_leak(raw, viewer, "/reports/mine episode headers (pep.py:4696-4698)")
+    assert_no_leak(raw, viewer, "/reports/mine episode headers")
+    reports = json.loads(raw)["reports"]
+    listed = [r for r in reports if r["asset_id"] is not None]
+    withheld = [r for r in reports if r["asset_id"] is None]
+    expect_listed = ["ep-atl"] if viewer == "atl" else ["ep-atl", "ep-bdr"]
+    assert sorted(r["episode_id"] for r in listed) == expect_listed
+    assert all(r["fault_code"] and r["component"] for r in listed)
+    # Everything else is a withheld entry: one state, no episode field.
+    assert len(withheld) == 3 - len(expect_listed)
+    for r in withheld:
+        assert r["episode_id"].startswith("withheld-")
+        assert [s["state"] for s in r["states"]] == ["report withheld"]
+        for f in ("detected_at", "asset_id", "owning_tier", "component", "fault_code",
+                  "open", "cleared_at", "cleared_by", "resolution"):
+            assert r[f] is None, (f, r)
+        assert r["unmatched"] == []
 
 
 # --- 4. /cm/fault-codes and /cm/sources -------------------------------------
