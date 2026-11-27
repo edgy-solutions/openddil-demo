@@ -2445,20 +2445,21 @@ def report_episodes() -> list[dict]:
     return list(out.values())
 
 
-def _reports_pane(episode_ids: list[str]) -> tuple[str, dict | None]:
-    """One call to the hub's pane for all episode ids. The door is
+def _reports_pane(asset_ids: list[str]) -> tuple[str, dict | None]:
+    """One call to the hub's pane for all asset ids; the pane answers per
+    fault (asset_id, component, fault_code). The door is
     `unreachable` for a connection error, a timeout, a non-200 or a body
     that is not the shape; `not_configured` when no pane URL is set."""
     if not EGRESS_PANE:
         return reports_view.DOOR_NOT_CONFIGURED, None
     url = f"{EGRESS_PANE}/reports/states?" + urllib.parse.urlencode(
-        [("episode_id", i) for i in episode_ids])
+        [("asset_id", i) for i in asset_ids])
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
             if resp.status != 200:
                 return reports_view.DOOR_UNREACHABLE, None
             payload = json.loads(resp.read())
-        if not isinstance(payload, dict) or not isinstance(payload.get("episodes"), dict):
+        if not isinstance(payload, dict) or not isinstance(payload.get("faults"), list):
             return reports_view.DOOR_UNREACHABLE, None
         return reports_view.DOOR_OK, payload
     except Exception as exc:  # noqa: BLE001 -- a transport fault, said as such
@@ -4706,7 +4707,8 @@ class Pep(BaseHTTPRequestHandler):
             ids = sorted(order[:REPORTS_LIMIT])
             keep = set(ids)
             listed = [e for e in listed if e["episode_id"] in keep]
-        door, pane = _reports_pane(ids) if ids else (reports_view.DOOR_OK, None)
+        asset_ids = sorted({e["asset_id"] for e in listed if e.get("asset_id")})
+        door, pane = _reports_pane(asset_ids) if asset_ids else (reports_view.DOOR_OK, None)
         body = reports_view.build_reports(
             listed, episodes, door=door, pane=pane, viewer=viewer)
         if truncated:

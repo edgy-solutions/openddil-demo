@@ -238,7 +238,7 @@ async def _fetch_cases(asset_id: str) -> list[dict[str, Any]]:
 
 KINDS_DIR = Path(os.getenv(
     "OPENDDIL_EGRESS_KINDS_DIR", str(Path(__file__).parent / "kind-schemas")))
-STATES_EPISODE_LIMIT = 200
+STATES_ASSET_LIMIT = 200
 
 # PROVISIONAL completion-body fields: both wait on iagent's completion
 # contract (the same status as `completes_ref`'s name). `outcome` is one of
@@ -452,16 +452,17 @@ async def _cases_with_dispositions(asset_id: str) -> list[dict[str, Any]]:
     return attach_dispositions(cases, actions, unjoinable)
 
 
-async def _fetch_ledger_by_episode(episode_ids: list[str]) -> list[dict[str, Any]]:
-    """Ledger rows (held and delivered) for these episodes. SELECT only."""
+async def _fetch_ledger_by_asset(asset_ids: list[str]) -> list[dict[str, Any]]:
+    """Ledger rows (held and delivered) for these assets. SELECT only."""
     conn = await asyncpg.connect(store_dsn_from_env())
     try:
         rows = await conn.fetch(
             'SELECT "route", "event_id", "outcome", "http_status", "case_id", '
-            '"episode_id", "first_recorded_at", "recorded_at" '
-            'FROM "egress_delivered_events" WHERE "episode_id" = ANY($1::text[]) '
+            '"episode_id", "asset_id", "component", "fault_code", '
+            '"first_recorded_at", "recorded_at" '
+            'FROM "egress_delivered_events" WHERE "asset_id" = ANY($1::text[]) '
             'ORDER BY "first_recorded_at"',
-            episode_ids,
+            asset_ids,
         )
     finally:
         await conn.close()
@@ -484,43 +485,55 @@ def _completion_record(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def build_states(episode_ids: list[str]) -> dict[str, Any]:
-    """What this tier's hub owns, per episode id (spec 3.1: queued for send,
-    sent, case opened, released, work recorded). One read per table, not per
-    episode. An unmatched completion (one naming a release key this tier does
-    not hold) is listed against the episode whose id it carries, as a listing
-    only; it is never matched by asset or time."""
+async def build_states(asset_ids: list[str]) -> dict[str, Any]:
+    """What this tier's hub owns, per fault (asset_id, component, fault_code):
+    spec 3.1's queued for send, sent, case opened, released, work recorded.
+    The ledger's `episode_id` is the egress side's own id, not cm-service's,
+    so the join to a report is the fault identity both sides carry. One read
+    per table. A ledger row with no component or fault_code cannot be joined
+    and is counted in `unkeyed_ledger`. An unmatched completion (one naming a
+    release key this tier does not hold) is listed against the block whose
+    ledger rows carry the episode id it names, as a listing only; it is never
+    matched by asset or time."""
     declarations, action_kinds = _kind_context()
-    ledger = await _fetch_ledger_by_episode(episode_ids) if episode_ids else []
-    case_ids = sorted({r["case_id"] for r in ledger if r["case_id"]})
+    ledger = await _fetch_ledger_by_asset(asset_ids) if asset_ids else []
+    keyed = [r for r in ledger if r.get("component") and r.get("fault_code")]
+    unkeyed = len(ledger) - len(keyed)
+    case_ids = sorted({r["case_id"] for r in keyed if r["case_id"]})
     actions = (await _fetch_actions_for_cases(declarations, action_kinds, case_ids)
                if case_ids else [])
     released_keys = {a["key"] for a in actions}
+    egress_ids = sorted({r["episode_id"] for r in keyed if r["episode_id"]})
 
     completion_kinds = sorted(k for k, d in declarations.items() if d.completes_ref)
     completions: list[dict[str, Any]] = []
     for kind in completion_kinds:
         rows = await _fetch_rows_by_pointer(
             kind, declarations[kind].completes_ref, sorted(released_keys),
-            extra_pointer=COMPLETION_EPISODE_POINTER, extra_values=episode_ids)
+            extra_pointer=COMPLETION_EPISODE_POINTER, extra_values=egress_ids)
         for row in rows:
             row["completes"] = _resolve(row["body"], declarations[kind].completes_ref)
             completions.append(row)
 
-    episodes: dict[str, Any] = {}
-    for eid in episode_ids:
-        rows = [r for r in ledger if r["episode_id"] == eid]
+    triples = sorted({(r["asset_id"], r["component"], r["fault_code"]) for r in keyed})
+    faults: list[dict[str, Any]] = []
+    for triple in triples:
+        rows = [r for r in keyed
+                if (r["asset_id"], r["component"], r["fault_code"]) == triple]
+        block_ids = {r["episode_id"] for r in rows if r["episode_id"]}
         eps_cases = {r["case_id"] for r in rows if r["case_id"]}
         released = [a for a in actions if a["case_id"] in eps_cases]
         held_keys = {a["key"] for a in released}
         matched = [_completion_record(c) for c in completions if c["completes"] in held_keys]
         unmatched = [_completion_record(c) for c in completions
                      if c["completes"] not in released_keys
-                     and _resolve(c["body"], COMPLETION_EPISODE_POINTER) == eid]
-        episodes[eid] = {
+                     and _resolve(c["body"], COMPLETION_EPISODE_POINTER) in block_ids]
+        faults.append({
+            "asset_id": triple[0], "component": triple[1], "fault_code": triple[2],
             "ledger": [{
                 "route": r["route"], "event_id": r["event_id"], "outcome": r["outcome"],
                 "http_status": r["http_status"], "case_id": r["case_id"],
+                "episode_id": r["episode_id"],
                 "recorded_at": _iso(r["recorded_at"]),
                 "first_recorded_at": _iso(r["first_recorded_at"]),
                 # Not stored: the forwarder only logs a case_id mismatch
@@ -535,8 +548,8 @@ async def build_states(episode_ids: list[str]) -> dict[str, Any]:
             } for a in released],
             "completion": {"declared": bool(completion_kinds), "records": matched},
             "unmatched_completions": unmatched,
-        }
-    return {"episodes": episodes}
+        })
+    return {"faults": faults, "unkeyed_ledger": unkeyed}
 
 
 def build_decisions(destination: str, kind: str | None = None) -> dict[str, Any]:
@@ -681,12 +694,12 @@ class PaneApi(BaseHTTPRequestHandler):
 
     def _get_report_states(self, parsed) -> None:
         params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-        ids = [i for i in params.get("episode_id", []) if i]
+        ids = [i for i in params.get("asset_id", []) if i]
         if not ids:
-            self._send_json(400, {"error": "episode_id required"})
+            self._send_json(400, {"error": "asset_id required"})
             return
-        if len(set(ids)) > STATES_EPISODE_LIMIT:
-            self._send_json(400, {"error": f"at most {STATES_EPISODE_LIMIT} episode_id"})
+        if len(set(ids)) > STATES_ASSET_LIMIT:
+            self._send_json(400, {"error": f"at most {STATES_ASSET_LIMIT} asset_id"})
             return
         try:
             payload = asyncio.run(build_states(sorted(set(ids))))

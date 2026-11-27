@@ -17,6 +17,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -36,6 +37,25 @@ def pg(dt: datetime.datetime) -> str:
 
 def ns(dt: datetime.datetime) -> int:
     return int(dt.timestamp()) * 1_000_000_000
+
+
+# The two ids a fault has. cm-service names an episode by
+# "episode|<asset>|<component>|<fault_code>"; the egress side's ledger names the
+# same fault by "<kind>|<owning_tier>|<asset>|<component>|<fault_code>". Both are
+# computed here so they differ by construction, as they do on the real rows.
+def cm_id(asset, component, fault):
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"episode|{asset}|{component}|{fault}"))
+
+
+def egress_id(asset, component, fault, tier="edge-01"):
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"MaintenanceFaultEvent|{tier}|{asset}|{component}|{fault}"))
+
+
+OPEN_T = ("asset-a", "comp-1", "F-1")
+CLOSED_T = ("asset-a", "comp-closed", "F-3")
+DUP_T = ("asset-a", "comp-dup", "F-2")
+BDR_T = ("asset-a", "comp-bdr", "F-4")
 
 
 # subject -> (nations, role). "pdp-down" is not here: it makes Topaz answer 500.
@@ -66,9 +86,9 @@ def open_ep(eid, minute, sources, component="comp-1", fault="F-1"):
 
 def closed_row(eid, start, end, sources, *, edge=TIER, nation="ATL", releasable="{}",
                cleared_by="supervisor-b", resolution="repaired", asset="asset-a",
-               region=None):
+               region=None, component="comp-1", fault="F-1"):
     return {"episode_id": eid, "detected_at": pg(t(start)), "asset_id": asset,
-            "component": "comp-1", "fault_code": "F-1", "cleared_at": pg(t(end)),
+            "component": component, "fault_code": fault, "cleared_at": pg(t(end)),
             "cleared_by": cleared_by, "resolution": resolution,
             "sources": json.dumps(sources), "originator_nation": nation,
             "releasable_to": releasable, "edge_id": edge, "region_id": region}
@@ -101,16 +121,19 @@ def default_world():
         "asset_cm_state": [
             cm_row("asset-a", TIER, [
                 open_ep("E-OPEN", 60, [source("maintainer-a", 61)]),
-                open_ep("E-DUP", 120, [source("maintainer-a", 121)]),
+                open_ep("E-DUP", 120, [source("maintainer-a", 121)],
+                        component="comp-dup", fault="F-2"),
             ]),
             cm_row("asset-z", "edge-other", [
                 open_ep("E-OTHER-TIER", 70, [source("maintainer-a", 71)])]),
         ],
         "failure_episodes": [
-            closed_row("E-CLOSED", 0, 30, [source("maintainer-a", 1), source("maintainer-b", 2)]),
-            closed_row("E-DUP", 40, 100, [source("maintainer-a", 41)]),
+            closed_row("E-CLOSED", 0, 30, [source("maintainer-a", 1), source("maintainer-b", 2)],
+                       component="comp-closed", fault="F-3"),
+            closed_row("E-DUP", 40, 100, [source("maintainer-a", 41)],
+                       component="comp-dup", fault="F-2"),
             closed_row("E-BDR", 10, 20, [source("maintainer-a", 11)],
-                       nation="BDR", releasable="{}"),
+                       nation="BDR", releasable="{}", component="comp-bdr", fault="F-4"),
             closed_row("E-ELSEWHERE", 10, 20, [source("maintainer-a", 11)], edge="edge-other"),
         ],
     }
@@ -127,6 +150,7 @@ class State:
         self.electric_requests = []
         self.non_get = []
         self.pane_calls = []
+        self.pane_queries = []
         self.pane_mode = "ok"
         self.pane_episodes = {}
 
@@ -208,20 +232,27 @@ class FakePane(_NoWrites, BaseHTTPRequestHandler):
         if state.pane_mode == "500":
             _json(self, 500, {"error": "boom"})
             return
-        ids = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)["episode_id"]
-        _json(self, 200, {"episodes": {
-            i: state.pane_episodes.get(i, pane_block()) for i in ids}})
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        state.pane_queries.append(query)
+        assets = set(query.get("asset_id", []))
+        _json(self, 200, {"faults": [b for b in state.pane_episodes.values()
+                                     if b["asset_id"] in assets],
+                          "unkeyed_ledger": 0})
 
 
-def pane_block(ledger=(), released=(), declared=False, records=(), unmatched=()):
-    return {"ledger": list(ledger), "released": list(released),
+def pane_block(ledger=(), released=(), declared=False, records=(), unmatched=(),
+               triple=OPEN_T):
+    return {"asset_id": triple[0], "component": triple[1], "fault_code": triple[2],
+            "ledger": list(ledger), "released": list(released),
             "completion": {"declared": declared, "records": list(records)},
             "unmatched_completions": list(unmatched)}
 
 
-def ledger(outcome="delivered", case="case-1", first=5, status=200, mismatch=False):
-    return {"route": "route-x", "event_id": "ev-1", "outcome": outcome,
+def ledger(outcome="delivered", case="case-1", first=5, status=200, mismatch=False,
+           triple=OPEN_T):
+    return {"route": "to-stand-in", "event_id": "ev-1", "outcome": outcome,
             "http_status": status if outcome == "delivered" else None, "case_id": case,
+            "episode_id": egress_id(*triple),
             "recorded_at": t(first + 1).isoformat(), "first_recorded_at": t(first).isoformat(),
             "case_id_mismatch": mismatch}
 
@@ -231,10 +262,12 @@ def released(case="case-1", allowed=True, reason=None, minute=20):
             "decided_at": t(minute).isoformat(), "allowed": allowed, "reason": reason}
 
 
-def completion(outcome="done", episode="E-OPEN", minute=30, key="done-1"):
+def completion(outcome="done", episode=None, minute=30, key="done-1"):
+    # The id OpenDDIL sent is the egress-side one.
     return {"kind": "Completion", "key": key, "completes": "act-1",
             "decided_at": t(minute).isoformat(), "allowed": True, "reason": None,
-            "outcome": outcome, "episode_id_carried": episode}
+            "outcome": outcome,
+            "episode_id_carried": episode or egress_id(*OPEN_T)}
 
 
 def _serve(handler):
@@ -314,6 +347,7 @@ def test_check2_both_routes_succeed_and_nothing_is_written(env):
     assert all(r["table"] in ("failure_episodes", "asset_cm_state")
                for r in state.electric_requests)
     assert state.pane_calls and all(p.startswith("/reports/states?") for p in state.pane_calls)
+    assert all("episode_id" not in q for q in state.pane_queries)
 
 
 # ---- check 3: every state --------------------------------------------------
@@ -401,6 +435,8 @@ def declared(env, *records, unmatched=()):
 
 
 def test_check3_work_recorded_matched_with_its_time(env):
+    # The completion carries the egress-side id, which is not the report's id.
+    assert egress_id(*OPEN_T) != "E-OPEN"
     w = state_of(declared(env, completion()), "work recorded")
     assert w["at"] == t(30).isoformat() and "episode_mismatch" not in w["detail"]
 
@@ -416,7 +452,14 @@ def test_check3_work_recorded_deferred(env):
 
 
 def test_check3_work_recorded_episode_mismatch(env):
-    w = state_of(declared(env, completion(episode="E-OTHER")), "work recorded")
+    w = state_of(declared(env, completion(episode=egress_id("asset-a", "other", "F-9"))),
+                 "work recorded")
+    assert w["detail"]["episode_mismatch"] is True
+
+
+def test_check3_a_completion_carrying_the_cm_service_id_is_a_mismatch(env):
+    # The id the report is listed under is not the id OpenDDIL sent.
+    w = state_of(declared(env, completion(episode="E-OPEN")), "work recorded")
     assert w["detail"]["episode_mismatch"] is True
 
 
@@ -468,8 +511,9 @@ def test_check4_viewer_in_no_sources_gets_an_empty_list_with_the_state(env):
 
 def test_check4_shared_id_joins_ledger_rows_by_interval(env):
     # E-DUP closed [40, 100); open one detected at 120.
-    state.pane_episodes["E-DUP"] = pane_block(ledger=[
-        ledger(case="case-old", first=50), ledger(case="case-new", first=130)])
+    state.pane_episodes["E-DUP"] = pane_block(triple=DUP_T, ledger=[
+        ledger(case="case-old", first=50, triple=DUP_T),
+        ledger(case="case-new", first=130, triple=DUP_T)])
     body = mine(env)
     old = rep(body, "E-DUP", open_=False)
     new = rep(body, "E-DUP", open_=True)
@@ -480,7 +524,8 @@ def test_check4_shared_id_joins_ledger_rows_by_interval(env):
 
 def test_check4_a_row_that_fits_neither_is_listed_never_dropped(env):
     # 110 falls in the gap [100, 120).
-    state.pane_episodes["E-DUP"] = pane_block(ledger=[ledger(case="case-gap", first=110)])
+    state.pane_episodes["E-DUP"] = pane_block(
+        triple=DUP_T, ledger=[ledger(case="case-gap", first=110, triple=DUP_T)])
     body = mine(env)
     assert [u["case_id"] for u in body["unmatched_ledger"]] == ["case-gap"]
     assert all("case opened" not in names(r) for r in body["reports"] if r["episode_id"] == "E-DUP")
@@ -488,7 +533,8 @@ def test_check4_a_row_that_fits_neither_is_listed_never_dropped(env):
 
 def test_check4_a_late_row_for_a_single_episode_still_joins_it(env):
     # E-CLOSED cleared at 30; a held row delivered at 90 is still its row.
-    state.pane_episodes["E-CLOSED"] = pane_block(ledger=[ledger(first=90)])
+    state.pane_episodes["E-CLOSED"] = pane_block(
+        triple=CLOSED_T, ledger=[ledger(first=90, triple=CLOSED_T)])
     body = mine(env)
     assert "case opened" in names(rep(body, "E-CLOSED"))
     assert body["unmatched_ledger"] == []
@@ -582,12 +628,60 @@ def test_check8_cold_concurrent_viewers_share_one_refresh(env):
     assert state.shape_opens == 2
 
 
-def test_the_pane_is_called_once_per_request_with_all_ids(env):
+def test_the_pane_is_called_once_per_request_with_asset_ids_only(env):
     mine(env)
     assert len(state.pane_calls) == 1
     q = urllib.parse.parse_qs(urllib.parse.urlparse(state.pane_calls[0]).query)
-    assert set(q["episode_id"]) == {"E-OPEN", "E-CLOSED", "E-DUP", "E-BDR", "E-OTHER-TIER",
-                                    "E-ELSEWHERE"} - {"E-OTHER-TIER", "E-ELSEWHERE"}
+    assert q == {"asset_id": ["asset-a"]}
+
+
+def test_a_pane_block_for_a_fault_no_listed_episode_holds_is_skipped(env):
+    state.pane_episodes["stray"] = pane_block(
+        triple=("asset-a", "comp-x", "F-x"),
+        ledger=[ledger(case="case-stray", triple=("asset-a", "comp-x", "F-x"))])
+    body = mine(env)
+    assert body["unmatched_ledger"] == []
+    assert all("case opened" not in names(r) for r in body["reports"])
+
+
+# ---- the join: the ledger's id is not cm-service's id ------------------------
+REAL_T = ("asset-b", "radar", "F-9")
+
+
+def real_world():
+    rid, eid = cm_id(*REAL_T), egress_id(*REAL_T)
+    assert rid != eid
+    return {"asset_cm_state": [cm_row("asset-b", TIER, [
+                {"discrepancy_id": rid, "detected_at_ns": ns(t(60)), "component": "radar",
+                 "fault_code": "F-9", "sources": [source("maintainer-a", 61)]}])],
+            "failure_episodes": []}
+
+
+@pytest.mark.parametrize("case_id,reply_state", [
+    (None, "sent, awaiting reply"), ("case-9", "case opened")])
+def test_a_delivered_row_with_a_different_id_joins_by_the_fault(env, case_id, reply_state):
+    state.world = real_world()
+    state.pane_episodes["b"] = pane_block(
+        triple=REAL_T, ledger=[ledger(case=case_id, triple=REAL_T)])
+    body = mine(env)
+    r = rep(body, cm_id(*REAL_T))
+    assert egress_id(*REAL_T) != r["episode_id"]
+    assert "queued for send" not in names(r)
+    assert names(r)[names(r).index("sent"):][:2] == ["sent", reply_state]
+    assert body["unmatched_ledger"] == []
+    assert parse_pane_query(state)["asset_id"] == ["asset-b"]
+
+
+def parse_pane_query(st):
+    return st.pane_queries[-1]
+
+
+def test_a_row_of_another_fault_on_the_asset_does_not_join(env):
+    state.world = real_world()
+    other = ("asset-b", "radar", "F-10")
+    state.pane_episodes["b"] = pane_block(triple=other, ledger=[ledger(triple=other)])
+    r = rep(mine(env), cm_id(*REAL_T))
+    assert "sent" not in names(r) and "queued for send" in names(r)
 
 
 # ---- check 5 (design 3.3): the tier and the tiers below it ------------------
