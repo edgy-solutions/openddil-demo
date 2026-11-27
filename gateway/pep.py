@@ -4710,7 +4710,13 @@ class Pep(BaseHTTPRequestHandler):
         asset_ids = sorted({e["asset_id"] for e in listed if e.get("asset_id")})
         door, pane = _reports_pane(asset_ids) if asset_ids else (reports_view.DOOR_OK, None)
         body = reports_view.build_reports(
-            listed, episodes, door=door, pane=pane, viewer=viewer)
+            listed, episodes, door=door, pane=pane, viewer=viewer,
+            nations=decision["allowed_nations"])
+        withheld = body.pop("withheld")
+        unkeyed = body.get("unkeyed_ledger")
+        if unkeyed:
+            log.warning("reports: %d ledger row(s) carry no component or fault_code "
+                        "and cannot be joined", unkeyed)
         if truncated:
             body["truncated"] = True
         if not body["reports"]:
@@ -4720,7 +4726,9 @@ class Pep(BaseHTTPRequestHandler):
                         policy_version=decision["policy_version"],
                         corpus_version=decision["corpus_version"],
                         allowed_nations=decision["allowed_nations"],
-                        shown=len(body["reports"]))
+                        shown=len(body["reports"]), withheld=withheld,
+                        unkeyed_ledger=unkeyed,
+                        unmatched_ledger=len(body["unmatched_ledger"]))
         self._send(200, json.dumps(body).encode(),
                    [("Content-Type", "application/json"), ("Cache-Control", "no-store")])
 

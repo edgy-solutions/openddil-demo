@@ -473,6 +473,13 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
+def _labels_of(row: dict[str, Any]) -> dict[str, Any]:
+    """The intake row's labels; a null releasable_to reads []."""
+    labels = row.get("labels") or {}
+    return {"originator_nation": labels.get("originator_nation"),
+            "releasable_to": list(labels.get("releasable_to") or [])}
+
+
 def _completion_record(row: dict[str, Any]) -> dict[str, Any]:
     outcome = _resolve(row["body"], COMPLETION_OUTCOME_POINTER)
     carried = _resolve(row["body"], COMPLETION_EPISODE_POINTER)
@@ -482,6 +489,7 @@ def _completion_record(row: dict[str, Any]) -> dict[str, Any]:
         "allowed": row["decision"]["allowed"], "reason": row["decision"]["reason"],
         "outcome": outcome if outcome in COMPLETION_OUTCOMES else None,
         "episode_id_carried": carried if isinstance(carried, str) else None,
+        "labels": _labels_of(row),
     }
 
 
@@ -545,6 +553,7 @@ async def build_states(asset_ids: list[str]) -> dict[str, Any]:
                 "kind": a["kind"], "key": a["key"], "case_id": a["case_id"],
                 "decided_at": _iso(a["decided_at"]),
                 "allowed": a["decision"]["allowed"], "reason": a["decision"]["reason"],
+                "labels": _labels_of(a),
             } for a in released],
             "completion": {"declared": bool(completion_kinds), "records": matched},
             "unmatched_completions": unmatched,

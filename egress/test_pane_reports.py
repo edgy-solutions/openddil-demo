@@ -90,14 +90,14 @@ def action_row(key, case, *, kind="ActionRecord", allowed=True, reason=None, min
 
 
 def completion_row(key, completes, *, outcome="done", episode="ep-1", minute=20,
-                   allowed=True, reason=None):
+                   allowed=True, reason=None, nation="ATL", releasable=()):
     body = {"record_id": key, "completes": completes, "outcome": outcome}
     if episode is not None:
         body["episode_id"] = episode
     return {"kind": "Completion", "key": key, "body": json.dumps(body),
             "decision": json.dumps({"allowed": allowed, "reason": reason}),
             "decided_at": at(minute),
-            "originator_nation": "ATL", "releasable_to": []}
+            "originator_nation": nation, "releasable_to": releasable}
 
 
 def serve(monkeypatch, conn, declarations, action_kinds):
@@ -305,7 +305,8 @@ def test_states_groups_by_the_fault_triple_sorted(server_for):
     assert one["ledger"][0]["case_id_mismatch"] is False
     assert one["released"] == [{
         "kind": "ActionRecord", "key": "act-1", "case_id": "case-1",
-        "decided_at": at(10).isoformat(), "allowed": True, "reason": None}]
+        "decided_at": at(10).isoformat(), "allowed": True, "reason": None,
+        "labels": {"originator_nation": "ATL", "releasable_to": []}}]
     assert fault(body, "comp-2")["released"] == []
     assert fault(body, asset="asset-b")["ledger"][0]["outcome"] == "held"
     assert body["unkeyed_ledger"] == 0
@@ -343,13 +344,20 @@ def test_states_key_prefix_without_case_ref_is_not_released(server_for):
     assert fault(body)["released"] == []
 
 
-def test_states_no_label_fields_in_the_output(server_for):
-    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1", nation="BDR"),
-                                     completion_row("c-1", "act-1")])
+def test_states_released_and_completion_records_carry_the_intake_labels(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-1", "case-1", nation="BDR", releasable=["CHA"]),
+        completion_row("c-1", "act-1", nation="CHA", releasable=["ATL"]),
+        completion_row("c-2", "act-elsewhere", nation="BDR", releasable=None)])
     body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), "asset-a")
-    text = json.dumps(body)
-    assert "originator_nation" not in text and "releasable_to" not in text
-    assert "labels" not in text and "BDR" not in text
+    block = fault(body)
+    assert block["released"][0]["labels"] == {
+        "originator_nation": "BDR", "releasable_to": ["CHA"]}
+    assert block["completion"]["records"][0]["labels"] == {
+        "originator_nation": "CHA", "releasable_to": ["ATL"]}
+    # A null releasable_to reads [].
+    assert block["unmatched_completions"][0]["labels"] == {
+        "originator_nation": "BDR", "releasable_to": []}
 
 
 def test_completion_undeclared(server_for):

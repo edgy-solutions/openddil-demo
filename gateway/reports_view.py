@@ -16,6 +16,8 @@ from __future__ import annotations
 import datetime
 from typing import Any, Mapping
 
+import egress_view
+
 DOOR_OK = "ok"
 DOOR_UNREACHABLE = "unreachable"
 DOOR_NOT_CONFIGURED = "not_configured"
@@ -141,9 +143,29 @@ def _ledger_states(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _released_states(released: list[dict[str, Any]]) -> list[dict[str, Any]]:
+UNMATCHED_KEYS = ("kind", "key", "completes", "decided_at", "allowed",
+                  "reason", "outcome", "episode_id_carried")
+
+
+def _hidden(rec: Mapping[str, Any], nations: list[str]) -> bool:
+    """True when the record's labels are missing, unlabelled, or not visible
+    to a viewer holding `nations` (egress_view.is_visible)."""
+    labels = rec.get("labels")
+    if not isinstance(labels, Mapping):
+        return True
+    return not egress_view.is_visible(dict(labels), nations)
+
+
+def _released_states(released: list[dict[str, Any]],
+                     nations: list[str]) -> tuple[list[dict[str, Any]], int]:
     out = []
+    withheld = 0
     for rec in released:
+        if _hidden(rec, nations):
+            withheld += 1
+            out.append({"state": "disposition withheld", "source": "intake",
+                        "at": None, "detail": {}})
+            continue
         detail: dict[str, Any] = {"kind": rec.get("kind"), "key": rec.get("key"),
                                   "case_id": rec.get("case_id"),
                                   "allowed": bool(rec.get("allowed"))}
@@ -151,16 +173,22 @@ def _released_states(released: list[dict[str, Any]]) -> list[dict[str, Any]]:
             detail["reason"] = rec.get("reason")
         out.append({"state": "released", "source": "intake",
                     "at": rec.get("decided_at"), "detail": detail})
-    return out
+    return out, withheld
 
 
-def _work_states(completion: Mapping[str, Any],
-                 egress_ids: set[str]) -> list[dict[str, Any]]:
+def _work_states(completion: Mapping[str, Any], egress_ids: set[str],
+                 nations: list[str]) -> tuple[list[dict[str, Any]], int]:
     if not completion.get("declared"):
         return [{"state": "work recorded", "source": "none", "at": None,
-                 "detail": {"read": "no source"}}]
+                 "detail": {"read": "no source"}}], 0
     out = []
+    withheld = 0
     for rec in completion.get("records") or []:
+        if _hidden(rec, nations):
+            withheld += 1
+            out.append({"state": "work record withheld", "source": "intake",
+                        "at": None, "detail": {}})
+            continue
         outcome = rec.get("outcome")
         state = ("work recorded" if outcome in (None, "done")
                  else f"work recorded: {outcome}")
@@ -174,12 +202,26 @@ def _work_states(completion: Mapping[str, Any],
             detail["episode_mismatch"] = True
         out.append({"state": state, "source": "intake",
                     "at": rec.get("decided_at"), "detail": detail})
-    return out
+    return out, withheld
+
+
+def _unmatched_view(items: list[Any],
+                    nations: list[str]) -> tuple[list[dict[str, Any]], int]:
+    out: list[dict[str, Any]] = []
+    withheld = 0
+    for rec in items:
+        if not isinstance(rec, Mapping) or _hidden(rec, nations):
+            withheld += 1
+            out.append({"withheld": True})
+        else:
+            out.append({k: rec.get(k) for k in UNMATCHED_KEYS})
+    return out, withheld
 
 
 def build_reports(
     listed: list[dict[str, Any]], all_episodes: list[dict[str, Any]], *,
     door: str, pane: Mapping[str, Any] | None, viewer: str | None,
+    nations: list[str],
 ) -> dict[str, Any]:
     """The timeline of every listed episode, newest first.
 
@@ -193,6 +235,7 @@ def build_reports(
         join_ledger(all_episodes, pane_faults, {_triple(e) for e in listed})
         if door == DOOR_OK else ({}, []))
     unmatched_given: set[tuple] = set()
+    withheld = 0
     reports = []
     for ep in listed:
         eid = ep["episode_id"]
@@ -217,14 +260,22 @@ def build_reports(
             own_rows = joined.get((eid, _iso(ep["detected_at"])), [])
             held_case_ids = {r.get("case_id") for r in own_rows if r.get("case_id")}
             egress_ids = {r.get("episode_id") for r in own_rows if r.get("episode_id")}
-            states += _released_states(
-                [r for r in block.get("released") or [] if r.get("case_id") in held_case_ids])
-            states += _work_states(block.get("completion") or {"declared": False}, egress_ids)
+            rel, n = _released_states(
+                [r for r in block.get("released") or [] if r.get("case_id") in held_case_ids],
+                nations)
+            states += rel
+            withheld += n
+            work, n = _work_states(
+                block.get("completion") or {"declared": False}, egress_ids, nations)
+            states += work
+            withheld += n
             if triple not in unmatched_given:
                 # An unmatched completion is listed once per fault, on the
                 # newest listed episode that holds it.
                 unmatched_given.add(triple)
-                unmatched = list(block.get("unmatched_completions") or [])
+                unmatched, n = _unmatched_view(
+                    list(block.get("unmatched_completions") or []), nations)
+                withheld += n
         reports.append({
             "episode_id": eid, "detected_at": _iso(ep["detected_at"]),
             "asset_id": ep["asset_id"], "owning_tier": ep["owning_tier"],
@@ -233,4 +284,8 @@ def build_reports(
             "cleared_at": _iso(ep["cleared_at"]), "cleared_by": ep["cleared_by"],
             "resolution": ep["resolution"], "states": states, "unmatched": unmatched,
         })
-    return {"reports": reports, "unmatched_ledger": unmatched_ledger}
+    unkeyed = (pane or {}).get("unkeyed_ledger") if door == DOOR_OK else None
+    if isinstance(unkeyed, bool) or not isinstance(unkeyed, int):
+        unkeyed = None
+    return {"reports": reports, "unmatched_ledger": unmatched_ledger,
+            "unkeyed_ledger": unkeyed, "withheld": withheld}

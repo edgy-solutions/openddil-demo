@@ -64,6 +64,8 @@ PEOPLE = {
     "maintainer-b": (["ATL"], "edge-operator"),
     "maintainer-c": (["ATL"], "edge-operator"),
     "supervisor-b": (["ATL"], "supervisor"),
+    "filer-bdr": (["BDR"], "edge-operator"),
+    "filer-all": (["ATL", "BDR", "CHA"], "edge-operator"),
 }
 
 TIER = "edge-t"
@@ -153,6 +155,7 @@ class State:
         self.pane_queries = []
         self.pane_mode = "ok"
         self.pane_episodes = {}
+        self.pane_unkeyed = 0
 
 
 state = State()
@@ -237,7 +240,7 @@ class FakePane(_NoWrites, BaseHTTPRequestHandler):
         assets = set(query.get("asset_id", []))
         _json(self, 200, {"faults": [b for b in state.pane_episodes.values()
                                      if b["asset_id"] in assets],
-                          "unkeyed_ledger": 0})
+                          "unkeyed_ledger": state.pane_unkeyed})
 
 
 def pane_block(ledger=(), released=(), declared=False, records=(), unmatched=(),
@@ -257,17 +260,23 @@ def ledger(outcome="delivered", case="case-1", first=5, status=200, mismatch=Fal
             "case_id_mismatch": mismatch}
 
 
-def released(case="case-1", allowed=True, reason=None, minute=20):
+ATL_LABELS = {"originator_nation": "ATL", "releasable_to": []}
+BDR_LABELS = {"originator_nation": "BDR", "releasable_to": []}
+NO_LABELS = {"originator_nation": None, "releasable_to": []}
+
+
+def released(case="case-1", allowed=True, reason=None, minute=20, labels=ATL_LABELS):
     return {"kind": "ActionRecord", "key": "act-1", "case_id": case,
-            "decided_at": t(minute).isoformat(), "allowed": allowed, "reason": reason}
+            "decided_at": t(minute).isoformat(), "allowed": allowed, "reason": reason,
+            "labels": labels}
 
 
-def completion(outcome="done", episode=None, minute=30, key="done-1"):
+def completion(outcome="done", episode=None, minute=30, key="done-1", labels=ATL_LABELS):
     # The id OpenDDIL sent is the egress-side one.
     return {"kind": "Completion", "key": key, "completes": "act-1",
             "decided_at": t(minute).isoformat(), "allowed": True, "reason": None,
             "outcome": outcome,
-            "episode_id_carried": episode or egress_id(*OPEN_T)}
+            "episode_id_carried": episode or egress_id(*OPEN_T), "labels": labels}
 
 
 def _serve(handler):
@@ -757,3 +766,171 @@ def test_reports_in_scope_unit(env):
     assert not pep._reports_in_scope(None, "region-r")
     pep.PEP_TIER = pep.HUB_TIER
     assert pep._reports_in_scope("edge-v", "region-s") and pep._reports_in_scope(None, None)
+
+
+# ---- the label rule on the action states; the unjoinable-ledger count ----------
+def shared_world():
+    """E-OPEN filed by the ATL-only, BDR-only and every-nation viewers."""
+    srcs = [source(w, 61) for w in ("maintainer-a", "filer-bdr", "filer-all")]
+    state.world = {"asset_cm_state": [
+        cm_row("asset-a", TIER, [open_ep("E-OPEN", 60, srcs)])], "failure_episodes": []}
+
+
+VIEWERS = ("maintainer-a", "filer-bdr", "filer-all")
+
+
+def raw_mine(env, subject):
+    req = urllib.request.Request(env[1] + "/reports/mine")
+    req.add_header("X-OpenDDIL-Subject", subject)
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.read()
+
+
+def only_state(env, subject, name_prefix):
+    pep, _ = env
+    pep._reports_cache.clear()
+    return [s for s in rep(mine(env, subject), "E-OPEN")["states"]
+            if s["state"].startswith(name_prefix)]
+
+
+def test_a_visible_released_record_renders_as_before(env):
+    shared_world()
+    state.pane_episodes["E-OPEN"] = pane_block(ledger=[ledger()], released=[released()])
+    r = only_state(env, "maintainer-a", "released")[0]
+    assert r["detail"]["key"] == "act-1" and r["at"] == t(20).isoformat()
+
+
+def test_a_bdr_only_released_record_is_withheld_from_atl_and_shown_to_bdr(env):
+    shared_world()
+    state.pane_episodes["E-OPEN"] = pane_block(
+        ledger=[ledger()],
+        released=[released(allowed=False, reason="schema_invalid", labels=BDR_LABELS)])
+    (w,) = only_state(env, "maintainer-a", "disposition")
+    assert w == {"state": "disposition withheld", "source": "intake", "at": None, "detail": {}}
+    assert only_state(env, "maintainer-a", "released") == []
+    (r,) = only_state(env, "filer-bdr", "released")
+    assert r["detail"]["reason"] == "schema_invalid"
+
+
+def test_an_unlabelled_released_record_is_withheld_from_every_nation(env):
+    shared_world()
+    state.pane_episodes["E-OPEN"] = pane_block(
+        ledger=[ledger()], released=[released(labels=NO_LABELS)])
+    (w,) = only_state(env, "filer-all", "disposition")
+    assert w["detail"] == {} and w["at"] is None
+    assert only_state(env, "filer-all", "released") == []
+
+
+def test_a_released_record_with_no_labels_key_is_withheld(env):
+    shared_world()
+    rec = released()
+    del rec["labels"]
+    state.pane_episodes["E-OPEN"] = pane_block(ledger=[ledger()], released=[rec])
+    assert len(only_state(env, "filer-all", "disposition withheld")) == 1
+
+
+def test_a_hidden_completion_is_a_work_record_withheld_with_no_mismatch(env):
+    shared_world()
+    state.pane_episodes["E-OPEN"] = pane_block(
+        ledger=[ledger()], released=[released()], declared=True,
+        records=[completion(episode="E-OPEN", labels=BDR_LABELS)])
+    (w,) = only_state(env, "maintainer-a", "work record")
+    assert w == {"state": "work record withheld", "source": "intake", "at": None, "detail": {}}
+    assert only_state(env, "maintainer-a", "work recorded") == []
+    (v,) = only_state(env, "filer-bdr", "work recorded")
+    assert v["detail"]["episode_mismatch"] is True
+
+
+def test_unmatched_completions_are_withheld_or_whitelisted(env):
+    shared_world()
+    hidden = completion(key="stray-1", labels=BDR_LABELS)
+    shown = completion(key="stray-2")
+    shown["nation_counts"] = {"BDR": 4}
+    for u in (hidden, shown):
+        u["completes"] = "act-elsewhere"
+    state.pane_episodes["E-OPEN"] = pane_block(
+        ledger=[ledger()], released=[released()], declared=True,
+        unmatched=[hidden, shown])
+    pep, _ = env
+    got = rep(mine(env, "maintainer-a"), "E-OPEN")["unmatched"]
+    assert got[0] == {"withheld": True}
+    assert got[1]["key"] == "stray-2"
+    assert "nation_counts" not in got[1] and "labels" not in got[1]
+    pep._reports_cache.clear()
+    got = rep(mine(env, "filer-bdr"), "E-OPEN")["unmatched"]
+    assert got[0]["key"] == "stray-1" and got[1] == {"withheld": True}
+
+
+def test_no_label_field_leaves_the_route(env):
+    shared_world()
+    # Episode-level fields do not use these names, so the whole body is checked.
+    state.pane_episodes["E-OPEN"] = pane_block(
+        ledger=[ledger()], released=[released(), released(labels=BDR_LABELS)],
+        declared=True, records=[completion(), completion(labels=BDR_LABELS)],
+        unmatched=[completion(key="s", labels=BDR_LABELS)])
+    pep, _ = env
+    for who in VIEWERS:
+        pep._reports_cache.clear()
+        raw = raw_mine(env, who)
+        for word in (b"labels", b"originator_nation", b"releasable_to"):
+            assert word not in raw, (who, word)
+
+
+def decision_lines(caplog):
+    out = []
+    for r in caplog.records:
+        msg = r.getMessage()
+        if "DECISION " in msg:
+            d = json.loads(msg.split("DECISION ", 1)[1])
+            if d.get("resource") == "/reports/mine":
+                out.append(d)
+    return out
+
+
+def test_withheld_is_in_the_log_and_not_in_the_body(env, caplog):
+    import logging  # noqa: PLC0415
+    caplog.set_level(logging.INFO)
+    shared_world()
+    stray = completion(key="s", labels=BDR_LABELS)
+    stray["completes"] = "act-elsewhere"
+    state.pane_episodes["E-OPEN"] = pane_block(
+        ledger=[ledger()], released=[released(labels=BDR_LABELS)],
+        declared=True, records=[completion(labels=BDR_LABELS)], unmatched=[stray])
+    body = mine(env, "maintainer-a")
+    assert "withheld" not in body
+    assert decision_lines(caplog)[-1]["withheld"] == 3
+
+
+def test_unkeyed_ledger_count_is_returned_and_logged(env, caplog):
+    import logging  # noqa: PLC0415
+    caplog.set_level(logging.INFO)
+    shared_world()
+    state.pane_unkeyed = 3
+    state.pane_episodes["E-OPEN"] = pane_block(ledger=[ledger()])
+    body = mine(env, "maintainer-a")
+    assert body["unkeyed_ledger"] == 3
+    d = decision_lines(caplog)[-1]
+    assert d["unkeyed_ledger"] == 3 and d["unmatched_ledger"] == len(body["unmatched_ledger"])
+    warns = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING
+             and "cannot be joined" in r.getMessage()]
+    assert warns == ["reports: 3 ledger row(s) carry no component or fault_code "
+                     "and cannot be joined"]
+
+
+def test_unkeyed_ledger_zero_does_not_warn(env, caplog):
+    import logging  # noqa: PLC0415
+    caplog.set_level(logging.INFO)
+    shared_world()
+    state.pane_episodes["E-OPEN"] = pane_block(ledger=[ledger()])
+    assert mine(env, "maintainer-a")["unkeyed_ledger"] == 0
+    assert not [r for r in caplog.records if "cannot be joined" in r.getMessage()]
+
+
+def test_unkeyed_ledger_is_none_when_the_door_is_unreachable(env, caplog):
+    import logging  # noqa: PLC0415
+    caplog.set_level(logging.INFO)
+    shared_world()
+    state.pane_mode = "500"
+    body = mine(env, "maintainer-a")
+    assert body["unkeyed_ledger"] is None
+    assert decision_lines(caplog)[-1]["unkeyed_ledger"] is None
