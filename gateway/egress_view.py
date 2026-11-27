@@ -68,6 +68,24 @@ def _is_unlabelled(record: dict) -> bool:
     return not has_originator and not has_releasable_entry
 
 
+def is_visible(record: dict, nations: list[str]) -> bool:
+    """True iff a viewer holding `nations` may see `record`: it is labelled,
+    and its `originator_nation` is one of them or any `releasable_to` entry
+    is. An unlabelled record is never visible, whatever `nations` holds.
+    The single-record form of the rule `filter_decisions` applies."""
+    if _is_unlabelled(record):
+        return False
+    allowed = set(nations)
+    originator = record.get("originator_nation")
+    releasable_to = record.get("releasable_to")
+    # SAME TWO CLAUSES AS policy_predicate (pep.py).
+    return bool(
+        (isinstance(originator, str) and originator != "" and originator in allowed)
+        or (isinstance(releasable_to, list)
+            and any(isinstance(n, str) and n in allowed for n in releasable_to))
+    )
+
+
 def filter_decisions(payload: dict, nations: list[str]) -> dict:
     """Return the subset of `payload["records"]` visible to a viewer holding
     `nations`, with `admitted`/`refused` recomputed over what is actually
@@ -103,7 +121,6 @@ def filter_decisions(payload: dict, nations: list[str]) -> dict:
         if not isinstance(record, dict):
             raise ValueError("every record must be a dict")
 
-    allowed = set(nations)
     visible = []
     admitted = 0
     withheld = 0
@@ -117,15 +134,7 @@ def filter_decisions(payload: dict, nations: list[str]) -> dict:
             # textually distinct, not merged into one boolean.
             withheld += 1
             continue
-        originator = record.get("originator_nation")
-        releasable_to = record.get("releasable_to")
-        # SAME TWO CLAUSES AS policy_predicate (pep.py).
-        is_visible = (
-            (isinstance(originator, str) and originator != "" and originator in allowed)
-            or (isinstance(releasable_to, list)
-                and any(isinstance(n, str) and n in allowed for n in releasable_to))
-        )
-        if not is_visible:
+        if not is_visible(record, nations):
             # Hidden because it belongs to another nation -- NOT counted
             # anywhere in the output. See the docstring: a count of these
             # is information about another nation's record volume.
@@ -147,5 +156,5 @@ def filter_decisions(payload: dict, nations: list[str]) -> dict:
         "admitted": admitted,
         "refused": shown - admitted,
         "withheld": withheld,
-        "viewer_nations": sorted(allowed),
+        "viewer_nations": sorted(set(nations)),
     }

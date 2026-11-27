@@ -74,7 +74,7 @@ def ledger_row(episode="ep-1", case="case-1", outcome="delivered", first=0, **ov
 
 
 def action_row(key, case, *, kind="ActionRecord", allowed=True, reason=None, minute=10,
-               task="replace comp-1", role="releaser"):
+               task="replace comp-1", role="releaser", nation="ATL", releasable=()):
     return {
         "kind": kind, "key": key,
         "body": json.dumps({"action_id": key, "case": {"id": case},
@@ -82,6 +82,7 @@ def action_row(key, case, *, kind="ActionRecord", allowed=True, reason=None, min
                             "approval_chain": [{"role": "chooser"}, {"role": role}]}),
         "decision": json.dumps({"allowed": allowed, "reason": reason}),
         "decided_at": at(minute),
+        "originator_nation": nation, "releasable_to": releasable,
     }
 
 
@@ -92,7 +93,8 @@ def completion_row(key, completes, *, outcome="done", episode="ep-1", minute=20,
         body["episode_id"] = episode
     return {"kind": "Completion", "key": key, "body": json.dumps(body),
             "decision": json.dumps({"allowed": allowed, "reason": reason}),
-            "decided_at": at(minute)}
+            "decided_at": at(minute),
+            "originator_nation": "ATL", "releasable_to": []}
 
 
 def serve(monkeypatch, conn, declarations, action_kinds):
@@ -205,7 +207,44 @@ def test_existing_case_keys_are_present_and_unchanged(server_for):
         "delivered_at": at(0).isoformat(),
     }
     assert set(case) - OLD_CASE_KEYS == {
-        "disposition", "decided_at", "decision", "disposition_state"}
+        "disposition", "decided_at", "decision", "disposition_state", "action_labels"}
+
+
+def test_action_labels_are_the_joined_action_rows_labels(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-1", "case-1", nation="BDR", releasable=["ATL", "CHA"])])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] == {"originator_nation": "BDR",
+                                     "releasable_to": ["ATL", "CHA"]}
+
+
+def test_action_labels_null_array_reads_empty_and_null_originator_stays_null(server_for):
+    row = action_row("act-1", "case-1")
+    row["originator_nation"], row["releasable_to"] = None, None
+    conn = FakeConn([ledger_row()], [row])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] == {"originator_nation": None, "releasable_to": []}
+
+
+def test_action_labels_are_the_latest_actions(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-new", "case-1", minute=30, nation="BDR"),
+        action_row("act-old", "case-1", minute=10, nation="ATL")])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"]["originator_nation"] == "BDR"
+
+
+def test_action_labels_null_when_no_action_joined(server_for):
+    conn = FakeConn([ledger_row()], [])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] is None
+
+
+def test_the_action_select_names_the_label_columns(server_for):
+    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")])
+    cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    sql = [q for q in conn.sql if "intake_records" in q]
+    assert sql and all("originator_nation" in q and "releasable_to" in q for q in sql)
 
 
 # --- GET /reports/states ----------------------------------------------------

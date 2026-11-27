@@ -206,6 +206,7 @@ describe('disposition on the asset card', () => {
     ['none', 'no disposition recorded'],
     ['unjoinable', 'action kind declares no case reference'],
     ['held at the hub', 'disposition held at the hub'],
+    ['withheld', 'disposition withheld'],
   ])('%s names itself', async (state, text) => {
     await draw(caseRow({ disposition_state: state, disposition: null, decided_at: null, decision: null }));
     expect((await screen.findByTestId('case-disposition')).textContent).toBe(text);

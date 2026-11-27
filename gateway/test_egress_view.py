@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from egress_view import filter_decisions
+from egress_view import filter_decisions, is_visible
 
 
 def _record(asset_id, originator_nation, releasable_to=(), allowed=True):
@@ -261,3 +261,41 @@ def test_kind_payload_with_intake_refusals_filters_by_viewer_nation():
     assert view["records"][0]["refused_by"] == "intake"
     assert view["withheld"] == 1
     assert "rec-2" not in repr(view)
+
+
+# --- is_visible: the single-record form of the same rule ---------------------
+
+_ALL = ["ATL", "BDR", "CHA"]
+
+
+def test_is_visible_originator_in_nations():
+    assert is_visible({"originator_nation": "ATL", "releasable_to": []}, ["ATL"]) is True
+    assert is_visible({"originator_nation": "BDR", "releasable_to": []}, ["ATL"]) is False
+
+
+def test_is_visible_releasable_to_list_overlap():
+    rec = {"originator_nation": "BDR", "releasable_to": ["CHA", "ATL"]}
+    assert is_visible(rec, ["ATL"]) is True
+    assert is_visible(rec, ["DEL"]) is False
+
+
+def test_is_visible_releasable_to_alone_is_a_label():
+    assert is_visible({"originator_nation": None, "releasable_to": ["ATL"]}, ["ATL"]) is True
+
+
+@pytest.mark.parametrize("rec", [
+    {}, {"originator_nation": None, "releasable_to": []},
+    {"originator_nation": "", "releasable_to": [""]},
+    {"originator_nation": None, "releasable_to": None},
+])
+def test_is_visible_unlabelled_is_never_visible_with_every_nation_held(rec):
+    assert is_visible(rec, _ALL) is False
+
+
+def test_is_visible_agrees_with_filter_decisions():
+    recs = [_record("a", "ATL"), _record("b", "BDR", ["ATL"]), _record("c", "BDR"),
+            _record("d", None)]
+    for nations in (["ATL"], ["BDR"], _ALL, []):
+        kept = filter_decisions(_payload(recs), nations)["records"]
+        assert [r["asset_id"] for r in kept] == [
+            r["asset_id"] for r in recs if is_visible(r, nations)]

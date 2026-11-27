@@ -337,6 +337,10 @@ def _intake_row(row: Any) -> dict[str, Any]:
         "body": _json_value(row["body"]),
         "decision": _decision_of(row["decision"]),
         "decided_at": row["decided_at"],
+        "labels": {
+            "originator_nation": row["originator_nation"],
+            "releasable_to": list(row["releasable_to"] or []),
+        },
     }
 
 
@@ -353,13 +357,15 @@ async def _fetch_rows_by_pointer(
     try:
         if extra_pointer is None:
             rows = await conn.fetch(
-                "SELECT kind, key, body, decision, decided_at FROM intake_records "
+                "SELECT kind, key, body, decision, decided_at, originator_nation, "
+                "releasable_to FROM intake_records "
                 "WHERE kind = $1 AND (body #>> $2::text[]) = ANY($3::text[])",
                 kind, _pointer_path(pointer), values,
             )
         else:
             rows = await conn.fetch(
-                "SELECT kind, key, body, decision, decided_at FROM intake_records "
+                "SELECT kind, key, body, decision, decided_at, originator_nation, "
+                "releasable_to FROM intake_records "
                 "WHERE kind = $1 AND ((body #>> $2::text[]) = ANY($3::text[]) "
                 "OR (body #>> $4::text[]) = ANY($5::text[]))",
                 kind, _pointer_path(pointer), values,
@@ -408,7 +414,8 @@ def attach_dispositions(
 ) -> list[dict[str, Any]]:
     """Add `disposition`, `decided_at`, `decision` and `disposition_state` to
     each case, leaving every existing key alone. The latest action for a case
-    is its max `decided_at`. A refusal is `refused` with its reason; a case
+    is its max `decided_at`. Each case also carries `action_labels`, that
+    action row's labels, or None when no action joined. A refusal is `refused` with its reason; a case
     with no joined action is `none` (the absence named), or `unjoinable` when
     an action kind exists that declares no `case_ref`."""
     by_case: dict[str, dict[str, Any]] = {}
@@ -422,6 +429,7 @@ def attach_dispositions(
             case["disposition"] = None
             case["decided_at"] = None
             case["decision"] = {"allowed": False, "reason": None}
+            case["action_labels"] = None
             case["disposition_state"] = "unjoinable" if unjoinable_kinds else "none"
             continue
         decision = row["decision"]
@@ -429,6 +437,7 @@ def attach_dispositions(
         case["decided_at"] = row["decided_at"].isoformat()
         case["decision"] = dict(decision)
         case["disposition_state"] = "admitted" if decision["allowed"] else "refused"
+        case["action_labels"] = dict(row["labels"])
     return cases
 
 
