@@ -5,6 +5,10 @@ process polls them. Every artifact is decided against ONE rule, in this
 exact order:
 
   1. `schema_invalid` if the artifact fails its own kind's schema.
+     The record's contract version is also read, where the kind's
+     `versions` declaration points, and counted as unversioned, declared
+     or undeclared. Report mode: nothing is refused on it yet; the
+     `version_undeclared` refusal is a later change.
   2. unchanged-by-hash skip: the same (kind, key) with the same
      `body_sha256` already in `intake_records` is not re-decided and
      nothing is re-logged or re-published — only a CHANGED body is a
@@ -447,6 +451,34 @@ class Outcome:
     label: Label | None = None
     owning_tier: str | None = None
     decision: IntakeDecision | None = None
+    # (status, value) from `contract_version_status`; None when the kind
+    # declares no contract versions or the outcome is not DECIDED.
+    contract_version: tuple[str, Any] | None = None
+
+
+_ABSENT = object()
+UNVERSIONED = "unversioned"
+VERSION_DECLARED = "declared"
+VERSION_UNDECLARED = "undeclared"
+
+
+def contract_version_status(
+    decl: Declarations, artifact: Mapping[str, Any],
+) -> tuple[str, Any] | None:
+    """Classify the artifact's contract version against the kind's
+    `versions` declaration. `None` when the kind declares none. Absent is
+    `("unversioned", None)`; a present value equal to a declared one, by
+    JSON type (`2` is not `"2"`, `True` is not `1`), is `("declared", v)`;
+    anything else present, `null` included, is `("undeclared", v)`."""
+    if decl.versions is None:
+        return None
+    value = pointer.get(artifact, decl.versions.pointer, default=_ABSENT)
+    if value is _ABSENT:
+        return (UNVERSIONED, None)
+    for accepted in decl.versions.accepts:
+        if type(value) is type(accepted) and value == accepted:
+            return (VERSION_DECLARED, value)
+    return (VERSION_UNDECLARED, value)
 
 
 def decide_artifact(
@@ -489,6 +521,7 @@ def decide_artifact(
     raw_key = pointer.get(artifact, decl.key, default=None)
     key = raw_key if isinstance(raw_key, str) and raw_key else ""
     body_sha256 = canonical_sha256(artifact)
+    contract_version = contract_version_status(decl, artifact)
 
     if existing_sha256 is not None and existing_sha256 == body_sha256:
         return Outcome(status=SKIPPED_UNCHANGED, key=key, body_sha256=body_sha256)
@@ -527,6 +560,7 @@ def decide_artifact(
         return Outcome(
             status=DECIDED, key=key, body_sha256=body_sha256, label=label,
             owning_tier=owning_tier, decision=decision,
+            contract_version=contract_version,
         )
 
     # Step 1 — schema.
@@ -727,6 +761,33 @@ async def run_poll(
             startup_versions=startup_versions)
 
 
+def _count_contract_version(
+    entry: IntakeEntry, status: tuple[str, Any] | None, counters: dict[str, int],
+) -> None:
+    """Report-mode counting of a decided record's contract version. The
+    undeclared count is ONE aggregate key: a record-controlled value never
+    becomes a counters key."""
+    if status is None:
+        return
+    kind, value = status
+    if kind == UNVERSIONED:
+        counter_key = "versions:unversioned"
+    elif kind == VERSION_DECLARED:
+        counter_key = f"versions:declared:{json.dumps(value)}"
+    else:
+        counter_key = "versions:undeclared"
+    counters[counter_key] = counters.get(counter_key, 0) + 1
+    if kind == VERSION_UNDECLARED:
+        count = counters[counter_key]
+        # 1st, 10th, 100th, ...: a power of ten.
+        if count == 10 ** (len(str(count)) - 1):
+            log.warning(
+                "intake entry=%s: contract version undeclared (report mode, admitted): "
+                "version=%s count=%d",
+                entry.name, json.dumps(value)[:40], count,
+            )
+
+
 async def _process_artifact(
     entry: IntakeEntry,
     decl: Declarations,
@@ -809,6 +870,7 @@ async def _process_artifact(
 
     log.info("INTAKE_DECISION %s", json.dumps(decision.as_json(), sort_keys=True))
     counters["decided"] = counters.get("decided", 0) + 1
+    _count_contract_version(entry, outcome.contract_version, counters)
 
     if decision.allowed:
         body_bytes = json.dumps(artifact, separators=(",", ":")).encode("utf-8")
@@ -1367,6 +1429,11 @@ async def _main_async() -> int:
         decl = declarations_map[entry.kind]
         answers_decl = declarations_map[entry.answers.kind]
         validator = known[entry.kind]
+        if decl.versions is not None:
+            log.info(
+                "intake entry=%s: contract versions pointer=%s accepts=%s mode=report",
+                entry.name, decl.versions.pointer, json.dumps(list(decl.versions.accepts)),
+            )
         consumer = Consumer({
             "bootstrap.servers": BROKERS,
             "group.id": f"egress-intake-{entry.name}-{secrets.token_hex(4)}",

@@ -77,6 +77,16 @@ class EpisodeDecl:
 
 
 @dataclass(frozen=True)
+class VersionsDecl:
+    """Where a record carries its contract version, and which versions the
+    kind accepts (ADR-0046 amendment 2026-11-15). `accepts` keeps the order
+    declared; its items are strings or integers, compared by JSON type."""
+
+    pointer: str
+    accepts: tuple
+
+
+@dataclass(frozen=True)
 class Declarations:
     """One kind's `x-openddil` block, parsed. `key` and `label` are the
     only pointers every kind must declare — a kind the assembler never
@@ -103,6 +113,9 @@ class Declarations:
     # behaviour: `key` carries the episode id and every event of an episode
     # shares it.
     episode_id: str | None = None
+    # Where the record carries its contract version, and the versions this
+    # kind accepts. Absent = the kind declares none and none are counted.
+    versions: VersionsDecl | None = None
     # ADR-0058 3.2 "Case -> action": where an ARTIFACT's body carries the id
     # of its case. The pane joins an intake action to a case only by reading
     # this pointer, never by the intake key's prefix. Absent = the kind's
@@ -132,6 +145,36 @@ def _optional_pointer(block: Mapping, name: str) -> str | None:
     return _require_pointer(block, name)
 
 
+def _parse_versions(block: Mapping) -> VersionsDecl | None:
+    if "versions" not in block:
+        return None
+    versions_block = block["versions"]
+    if not isinstance(versions_block, Mapping):
+        raise TypeError("'x-openddil.versions' must be a JSON object")
+    ptr = _require_pointer(versions_block, "pointer")
+    if not ptr.startswith("/"):
+        # Checked here, not on the first record: a pointer `pointer.get`
+        # cannot parse would raise on every record of the kind.
+        raise ValueError(
+            f"'x-openddil.versions.pointer' must be an RFC 6901 pointer into the record, got {ptr!r}")
+    if "accepts" not in versions_block:
+        raise KeyError("'x-openddil.versions' is missing 'accepts'")
+    accepts = versions_block["accepts"]
+    if not isinstance(accepts, list) or not accepts:
+        raise TypeError("'x-openddil.versions.accepts' must be a non-empty list")
+    for item in accepts:
+        if isinstance(item, bool) or not isinstance(item, (str, int)):
+            raise TypeError(
+                f"'x-openddil.versions.accepts' items must be strings or integers, got {item!r}")
+    seen = set()
+    for item in accepts:
+        marker = (type(item), item)
+        if marker in seen:
+            raise ValueError(f"'x-openddil.versions.accepts' repeats {item!r}")
+        seen.add(marker)
+    return VersionsDecl(pointer=ptr, accepts=tuple(accepts))
+
+
 def load_declarations(directory: str | Path) -> dict[str, "Declarations"]:
     """Load every kind's `x-openddil` declarations block.
 
@@ -143,7 +186,10 @@ def load_declarations(directory: str | Path) -> dict[str, "Declarations"]:
     `episode` missing any of `{asset,component,fault_code}`, or a pointer
     that is not a string, raises naming the file: this is a startup check,
     and a kind the gate or assembler cannot actually use must not be
-    allowed to load silently and fail later on the first record.
+    allowed to load silently and fail later on the first record. An
+    optional `versions` block (`pointer`, plus a non-empty `accepts` list of
+    unique strings or integers) declares where the record carries its
+    contract version and which versions the kind accepts.
     """
     directory = Path(directory)
     out: dict[str, Declarations] = {}
@@ -178,6 +224,7 @@ def load_declarations(directory: str | Path) -> dict[str, "Declarations"]:
                 provenance=_optional_pointer(block, "provenance"),
                 trigger=_optional_pointer(block, "trigger"),
                 episode_id=_optional_pointer(block, "episode_id"),
+                versions=_parse_versions(block),
                 case_ref=_optional_pointer(block, "case_ref"),
                 completes_ref=_optional_pointer(block, "completes_ref"),
             )

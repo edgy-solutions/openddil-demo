@@ -16,6 +16,7 @@ callers.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,17 +46,22 @@ from intake import (  # noqa: E402
     IntakeEntry,
     PollSpec,
     canonical_sha256,
+    contract_version_status,
     decide_artifact,
     is_provisional,
     load_intake_config,
     run_poll,
 )
-from kinds import Declarations, validator_for  # noqa: E402
+from kinds import Declarations, VersionsDecl, validator_for  # noqa: E402
 
 NOW = datetime(2026, 10, 2, tzinfo=timezone.utc)
 
 QUOTE_DECL = Declarations(key="/ident", label="/audience", owning_tier="/tier")
 RECORD_DECL = Declarations(key="/ident", label="/audience")
+VERSIONED_DECL = Declarations(
+    key="/ident", label="/audience",
+    versions=VersionsDecl(pointer="/contract_version", accepts=("1", "2")),
+)
 
 QUOTE_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1233,3 +1239,185 @@ def test_run_poll_first_time_unknown_stores_provisional():
     decision = store.upserts[0]["decision"]
     assert decision["provisional"] is True
     assert counters.get("provisional:" + REASON_ANSWERED_RECORD_UNKNOWN) == 1
+
+
+# --- declared contract versions (report mode) -------------------------------
+
+def test_contract_version_status_absent_is_unversioned():
+    assert contract_version_status(VERSIONED_DECL, {"ident": "a"}) == ("unversioned", None)
+
+
+def test_contract_version_status_declared_string_and_int():
+    assert contract_version_status(
+        VERSIONED_DECL, {"contract_version": "2"}) == ("declared", "2")
+    int_decl = Declarations(
+        key="/ident", label="/audience",
+        versions=VersionsDecl(pointer="/contract_version", accepts=(1, 2)))
+    assert contract_version_status(int_decl, {"contract_version": 2}) == ("declared", 2)
+
+
+def test_contract_version_status_respects_json_type():
+    assert contract_version_status(
+        VERSIONED_DECL, {"contract_version": 2}) == ("undeclared", 2)
+    int_decl = Declarations(
+        key="/ident", label="/audience",
+        versions=VersionsDecl(pointer="/contract_version", accepts=(1,)))
+    assert contract_version_status(
+        int_decl, {"contract_version": True}) == ("undeclared", True)
+    assert contract_version_status(
+        int_decl, {"contract_version": "1"}) == ("undeclared", "1")
+
+
+def test_contract_version_status_null_and_objects_are_undeclared():
+    assert contract_version_status(
+        VERSIONED_DECL, {"contract_version": None}) == ("undeclared", None)
+    assert contract_version_status(
+        VERSIONED_DECL, {"contract_version": {"a": 1}}) == ("undeclared", {"a": 1})
+
+
+def test_contract_version_status_no_declaration_is_none():
+    assert contract_version_status(RECORD_DECL, {"contract_version": "1"}) is None
+
+
+def _decide_with(decl, art):
+    return decide_artifact(
+        make_entry(), decl, VALIDATE_QUOTE, art,
+        existing_sha256=None, answered=answered_map_with("rec-1"),
+        gate_for=lambda subject: resolved_gate(),
+    )
+
+
+def _decision_json(outcome) -> dict:
+    # decision_id is random per call; everything else must be identical.
+    data = dict(outcome.decision.as_json())
+    data.pop("decision_id")
+    return data
+
+
+@pytest.mark.parametrize("extra,expected", [
+    ({"contract_version": "1"}, ("declared", "1")),
+    ({"contract_version": "9"}, ("undeclared", "9")),
+    ({}, ("unversioned", None)),
+])
+def test_decide_with_versions_declared_decides_exactly_as_without(extra, expected):
+    art = artifact(**extra)
+    plain = _decide_with(RECORD_DECL, art)
+    versioned = _decide_with(VERSIONED_DECL, art)
+
+    assert _decision_json(versioned) == _decision_json(plain)
+    assert versioned.decision.allowed is True
+    assert versioned.contract_version == expected
+    assert plain.contract_version is None
+
+
+def test_decide_schema_invalid_still_carries_its_version_status():
+    bad = artifact(contract_version="9")
+    del bad["ident"]
+    plain = _decide_with(RECORD_DECL, bad)
+    versioned = _decide_with(VERSIONED_DECL, bad)
+
+    assert versioned.decision.reason == REASON_SCHEMA_INVALID
+    assert _decision_json(versioned) == _decision_json(plain)
+    assert versioned.contract_version == ("undeclared", "9")
+
+
+def _poll(art, decl, store, counters, answered=None, produced=None):
+    def produce(topic, value, key):
+        if produced is not None:
+            produced.append((topic, value, key))
+
+    asyncio.run(run_poll(
+        make_entry(), decl, VALIDATE_QUOTE,
+        fetch=_fetch_one(art), store=store,
+        answered=answered or answered_map_with("rec-1"),
+        gate_for=lambda subject: resolved_gate(),
+        produce=produce, counters=counters, now=NOW,
+    ))
+
+
+def test_run_poll_counts_the_three_version_statuses():
+    store = _FakeStore()
+    counters: dict[str, int] = {}
+    produced: list = []
+    _poll(artifact(ident="a", contract_version="2"), VERSIONED_DECL, store, counters, produced=produced)
+    _poll(artifact(ident="b", contract_version="9"), VERSIONED_DECL, store, counters, produced=produced)
+    _poll(artifact(ident="c"), VERSIONED_DECL, store, counters, produced=produced)
+
+    assert counters['versions:declared:"2"'] == 1
+    assert counters["versions:undeclared"] == 1
+    assert counters["versions:unversioned"] == 1
+    assert not any(k.startswith("versions:undeclared:") for k in counters)
+    assert counters["admitted"] == 3
+    assert len(produced) == 3
+    assert len(store.upserts) == 3
+
+
+def test_run_poll_integer_and_string_versions_get_different_keys():
+    decl = Declarations(
+        key="/ident", label="/audience",
+        versions=VersionsDecl(pointer="/contract_version", accepts=("2", 2)))
+    store = _FakeStore()
+    counters: dict[str, int] = {}
+    _poll(artifact(ident="a", contract_version="2"), decl, store, counters)
+    _poll(artifact(ident="b", contract_version=2), decl, store, counters)
+
+    assert counters['versions:declared:"2"'] == 1
+    assert counters["versions:declared:2"] == 1
+
+
+def test_run_poll_unchanged_body_counts_once():
+    store = _FakeStore()
+    counters: dict[str, int] = {}
+    art = artifact(contract_version="9")
+    _poll(art, VERSIONED_DECL, store, counters)
+    _poll(art, VERSIONED_DECL, store, counters)
+
+    assert counters["versions:undeclared"] == 1
+    assert counters["skipped_unchanged"] == 1
+    assert counters["decided"] == 1
+
+
+def test_run_poll_deferral_does_not_count_a_version():
+    answered = answered_map_with("rec-1", caught_up=False)
+    counters: dict[str, int] = {}
+    _poll(artifact(answers_id="rec-gone", contract_version="9"),
+          VERSIONED_DECL, _FakeStore(), counters, answered=answered)
+
+    assert counters == {"polled": 1, "deferred": 1}
+
+
+def test_run_poll_kind_without_versions_declaration_has_no_version_counters():
+    counters: dict[str, int] = {}
+    _poll(artifact(contract_version="9"), RECORD_DECL, _FakeStore(), counters)
+
+    assert counters["admitted"] == 1
+    assert not any(k.startswith("versions:") for k in counters)
+
+
+def test_undeclared_warning_cadence_and_no_record_content_leaks(caplog):
+    store = _FakeStore()
+    counters: dict[str, int] = {}
+    with caplog.at_level("WARNING", logger="egress.intake"):
+        for i in range(12):
+            _poll(artifact(ident=f"r{i}", contract_version="9", note="SENTINEL-XYZ"),
+                  VERSIONED_DECL, store, counters)
+
+    warnings = [r.getMessage() for r in caplog.records
+                if "contract version undeclared" in r.getMessage()]
+    assert len(warnings) == 2
+    assert warnings[0].endswith("count=1")
+    assert warnings[1].endswith("count=10")
+    assert 'version="9"' in warnings[0]
+    assert all("SENTINEL-XYZ" not in r.getMessage() for r in caplog.records)
+    assert counters["versions:undeclared"] == 12
+
+
+def test_undeclared_warning_truncates_a_long_version_value(caplog):
+    long_value = "v" * 200
+    with caplog.at_level("WARNING", logger="egress.intake"):
+        _poll(artifact(contract_version=long_value), VERSIONED_DECL, _FakeStore(), {})
+
+    message = next(r.getMessage() for r in caplog.records
+                   if "contract version undeclared" in r.getMessage())
+    assert json.dumps(long_value)[:40] in message
+    assert "v" * 41 not in message
