@@ -1728,18 +1728,70 @@ def _set_nation_field(entry: dict, field: str, raw: str) -> None:
 
 
 _ASSET_KEY = re.compile(r"""^(?:"([^"]+)"|'([^']+)'|(.+?))\s*:(?:\s|$)""")
+_FIELD_KEY = re.compile(r"""^(?:"([^"]+)"|'([^']+)'|([^\s:"']+))\s*:(?:\s+(.*))?$""")
 _rows_unreadable_logged = False
+_rows_undated_logged = False
+
+
+def _split_flow(inner: str) -> list[str]:
+    """`inner` of a one-line flow mapping split on top-level commas: commas
+    inside quotes or a [...] list stay with their item."""
+    parts: list[str] = []
+    cur: list[str] = []
+    quote = None
+    depth = 0
+    for ch in inner:
+        if quote:
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    parts.append("".join(cur))
+    return parts
+
+
+def _yaml_scalar_present(raw: str | None) -> bool:
+    """True iff a scalar value is non-empty: not absent, not a bare null or
+    `~`, not an empty string (bare or quoted)."""
+    val = (raw or "").strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+        return val[1:-1].strip() != ""
+    return val not in ("", "~", "null", "Null", "NULL")
+
+
+def _row_field_values(text: str) -> dict[str, str]:
+    """{field: raw value} from one `key: value` item (a flow-form entry or a
+    block-form line); {} when the item is not one."""
+    m = _FIELD_KEY.match(text.strip())
+    if not m:
+        return {}
+    return {m.group(1) or m.group(2) or m.group(3): m.group(4) or ""}
 
 
 def _file_asset_ids() -> set[str]:
-    """The ids keyed under `assets:` in the releasability file, re-read on
-    every call: the per-asset rows, and only those. `default_originator_nation`
-    labels no id for this purpose, so an asset it alone labels stays
-    undeclared and declarable (ADR-0050 s2.6). Same minimal indentation read
-    as _deployment_nation_registry(); keys may be quoted, rows may be flow
-    style on one line, and `assets: {}` is none. An unreadable file yields no
-    rows and is logged once."""
-    global _rows_unreadable_logged
+    """The ids keyed under `assets:` in the releasability file that DECLARE
+    an asset, re-read on every call. A row declares only when it carries both
+    `declared_by` and `declared_at` with a non-empty value (present, not null,
+    not `~`, not an empty string); the date is not parsed. A row missing
+    either is a default, not a declaration: its asset stays undeclared,
+    listed and declarable, as one labelled by `default_originator_nation`
+    does (ADR-0050 amendment of 2026-11-06; ADR-0055 s1a). Same test as the
+    contracts' scripts/migrate_site_declarations.py. Same minimal indentation read as
+    _deployment_nation_registry(); keys may be quoted, a row may be flow
+    style on one line (a [...] list inside the braces is fine) or block
+    style on deeper-indented lines, and `assets: {}` is none. An unreadable
+    file yields no rows and is logged once; rows without the two fields are
+    logged once per process, as a count only."""
+    global _rows_unreadable_logged, _rows_undated_logged
     try:
         with open(RELEASABILITY_FILE, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
@@ -1748,9 +1800,10 @@ def _file_asset_ids() -> set[str]:
             _rows_unreadable_logged = True
             log.warning("releasability file unreadable, treating as no asset rows: %s", exc)
         return set()
-    out: set[str] = set()
+    rows: dict[str, dict[str, str]] = {}
     in_block = False
     key_indent = None
+    current: dict[str, str] | None = None
     for line in lines:
         body = _strip_yaml_comment(line)
         if not body.strip():
@@ -1764,10 +1817,43 @@ def _file_asset_ids() -> set[str]:
         if key_indent is None:
             key_indent = indent
         if indent == key_indent:
+            current = None
             m = _ASSET_KEY.match(body.strip())
-            if m:
-                out.add(m.group(1) or m.group(2) or m.group(3))
+            if not m:
+                continue
+            current = rows.setdefault(m.group(1) or m.group(2) or m.group(3), {})
+            rest = body.strip()[m.end():].strip()
+            if rest.startswith("{") and rest.endswith("}"):
+                for item in _split_flow(rest[1:-1]):
+                    current.update(_row_field_values(item))
+        elif indent > key_indent and current is not None:
+            current.update(_row_field_values(body))
+    out = {k for k, v in rows.items()
+           if _yaml_scalar_present(v.get("declared_by"))
+           and _yaml_scalar_present(v.get("declared_at"))}
+    undated = len(rows) - len(out)
+    if undated and not _rows_undated_logged:
+        _rows_undated_logged = True
+        log.warning("%d releasability file asset rows have no declared_by/declared_at: "
+                    "defaults, not declarations (ADR-0055 1a)", undated)
     return out
+
+
+def _undeclared_row_visible(row: dict, allowed) -> bool:
+    """Whether a telemetry row that is not yet declared may be listed,
+    counted or declared by a viewer holding `allowed`. An UNLABELLED row
+    (no originator_nation and no releasable_to) is visible to every viewer:
+    the exception covers unlabelled rows only, so whoever may declare at this
+    edge can declare them (ADR-0050 s3, s5). A labelled row follows the
+    same rule as every other read (egress_view.is_visible), so a default- or
+    row-labelled asset the viewer may not see is neither listed nor counted
+    (ADR-0050 amendment of 2026-11-06)."""
+    originator = row.get("originator_nation")
+    releasable = _pg_array(row.get("releasable_to"))
+    if not originator and not releasable:
+        return True
+    return egress_view.is_visible(
+        {"originator_nation": originator, "releasable_to": releasable}, allowed)
 
 
 def _deployment_nation_registry() -> list[dict]:
@@ -3538,8 +3624,8 @@ class Pep(BaseHTTPRequestHandler):
         try:
             tel = _follow_shape(
                 "telemetry_latest_state", f"edge_id = {e}",
-                ["asset_id", "edge_id", "platform_variant", "kinematics", "last_sample_at"],
-                "")
+                ["asset_id", "edge_id", "platform_variant", "kinematics", "last_sample_at",
+                 "originator_nation", "releasable_to"], "")
             reg = _follow_shape("asset_registry", f"edge_id = {e}",
                                 ["asset_id", "assigned_at"], "")
             decl = _follow_shape("asset_declaration", f"edge_id = {e}", ["asset_id"], "")
@@ -3572,6 +3658,10 @@ class Pep(BaseHTTPRequestHandler):
         for r in sorted(tel, key=lambda r: str(r.get("asset_id"))):
             if r.get("asset_id") in declared_ids or r.get("asset_id") in file_rows:
                 continue
+            # Unlabelled rows are listed for every declarer; a labelled row
+            # only to a viewer whose nations may see it.
+            if not _undeclared_row_visible(r, allowed):
+                continue
             variant = r.get("platform_variant")
             undeclared.append({
                 "asset_id": r.get("asset_id"),
@@ -3595,7 +3685,9 @@ class Pep(BaseHTTPRequestHandler):
         """Per-edge counts for HQ: undeclared, expected, overdue. Counts only,
         never an id. Open to every signed-in, known subject at any tier: no
         role check and no arrivals-ownership check. Query parameters are
-        ignored. Definitions match _handle_arrivals_get."""
+        ignored. Definitions match _handle_arrivals_get: a labelled undeclared
+        row is counted only for a viewer whose nations may see it, an
+        unlabelled one for every viewer (ADR-0050 s5)."""
         path = parsed.path
         try:
             subject, _principal, _session = self._resolve_principal()
@@ -3615,7 +3707,8 @@ class Pep(BaseHTTPRequestHandler):
         allowed = decision["allowed_nations"]
         try:
             tel = _follow_shape("telemetry_latest_state", "true",
-                                ["asset_id", "edge_id"], "")
+                                ["asset_id", "edge_id", "originator_nation",
+                                 "releasable_to"], "")
             decl = _follow_shape("asset_declaration", "true", ["asset_id", "edge_id"], "")
             fielding = _follow_shape(
                 "asset_fielding", compose(None, policy_predicate(allowed)),
@@ -3640,7 +3733,9 @@ class Pep(BaseHTTPRequestHandler):
             if e is None:
                 continue
             row = edge(e)
-            if r.get("asset_id") not in declared_ids and r.get("asset_id") not in file_rows:
+            if (r.get("asset_id") not in declared_ids
+                    and r.get("asset_id") not in file_rows
+                    and _undeclared_row_visible(r, allowed)):
                 row["undeclared"] += 1
         for r in fielding:
             e = r.get("fielded_to")
@@ -3737,15 +3832,18 @@ class Pep(BaseHTTPRequestHandler):
             observed = _follow_shape(
                 "telemetry_latest_state",
                 f"edge_id = {e} AND asset_id = {a}",
-                ["asset_id", "edge_id", "platform_variant", "region_id"], asset_id)
+                ["asset_id", "edge_id", "platform_variant", "region_id",
+                 "originator_nation", "releasable_to"], asset_id)
             declared = _follow_shape("asset_declaration", f"asset_id = {a}",
                                      ["asset_id"], asset_id)
         except ElectricUnavailable as exc:
             record(502, f"electric unavailable: {exc}", subject)
             return
-        # One answer for unknown, already labelled, or already declared: this
-        # route never confirms that an id exists.
-        if not observed or declared or asset_id in _file_asset_ids():
+        # One answer for unknown, already declared, or labelled and not visible
+        # to this subject: this route never confirms that an id exists. Only
+        # an unlabelled row is open to every declarer (ADR-0050 s3).
+        if (not observed or declared or asset_id in _file_asset_ids()
+                or not _undeclared_row_visible(observed[0], allowed)):
             record(404, "asset is not awaiting declaration at this edge", subject)
             return
         row = observed[0]
