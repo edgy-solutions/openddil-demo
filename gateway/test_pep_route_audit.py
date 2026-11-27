@@ -195,9 +195,10 @@ ROUTES = {
         LF, "four read_visible_row reads (pep.py:3046-3054)",
         ["test_probe_04_cm_sources"]),
     ("GET", "/arrivals"): _r(
-        LF, "fielding read composes policy_predicate (pep.py:3518-3520); the undeclared list reads telemetry, "
-            "registry, declaration and correlation by edge only (pep.py:3511)",
-        ["test_probe_05_arrivals_fielding", "test_probe_05_arrivals_undeclared_list_is_unfiltered"]),
+        LF, "fielding read composes policy_predicate (pep.py:3518-3520); the undeclared list keeps a labelled "
+            "telemetry row only when the viewer's nations may see it. Declared exception: unlabelled undeclared "
+            "rows, to declare roles at the owned edge (ADR-0050 s3)",
+        ["test_probe_05_arrivals_fielding", "test_probe_05_arrivals_undeclared_list_follows_the_label_rule"]),
     ("GET", "/arrivals/summary"): _r(
         LF, "counts only; fielding uses policy_predicate (pep.py:3593), telemetry is edge-scoped (pep.py:3589)",
         ["test_probe_05_arrivals_summary_counts"]),
@@ -755,19 +756,20 @@ def test_probe_05_arrivals_fielding(rig, viewer):
     assert_no_leak(raw, viewer, "/arrivals expected (pep.py:3518-3520)")
 
 
-def test_probe_05_arrivals_undeclared_list_is_unfiltered(rig):
-    """DECLARED EXCEPTION, pinned as it is today: undeclared assets seen on telemetry (labelled BDR/unlabelled/ATL, canaries in asset_id) are listed by edge only. The exception is the `_file_asset_ids` docstring (pep.py:1734-1741, ADR-0050 s2.6) and the test comment at gateway/test_pep_arrivals.py:222-224 ("the telemetry read does not filter on the projected label")."""
+def test_probe_05_arrivals_undeclared_list_follows_the_label_rule(rig):
+    """DECLARED EXCEPTION, narrowed: undeclared assets seen on telemetry (labelled BDR/unlabelled/ATL, canaries in asset_id). A labelled row is listed only to a viewer whose nations may see it; an unlabelled one is listed to every declarer, so a declare role at the owned edge can declare it (ADR-0050 s3, ADR-0050 amendment of 2026-11-06)."""
     trio("telemetry_latest_state", lambda k, c: {
         "asset_id": "ast-" + c, "edge_id": EDGE, "platform_variant": "VAR-1",
         "last_sample_at": "2026-01-01T00:00:00Z", "kinematics": None})
     status, raw = call("atl", "GET", f"/arrivals?edge_id={EDGE}")
     assert status == 200, raw
     assert_positive(raw, "/arrivals undeclared")
-    # Pinned: the unfiltered list carries all three today. If this fails the
-    # code now filters it: move the route to label-filtered and drop this pin.
-    assert CANARY_BDR.encode() in raw and CANARY_UNLABELLED.encode() in raw, raw[:400]
-
-
+    assert CANARY_UNLABELLED.encode() in raw, raw[:400]
+    assert CANARY_BDR.encode() not in raw, raw[:400]
+    status, raw = call("all", "GET", f"/arrivals?edge_id={EDGE}")
+    assert status == 200, raw
+    for kind in ("ATL", "UNL", "BDR"):
+        assert CANARIES[kind].encode() in raw, (kind, raw[:400])
 def _summary_counts(viewer):
     status, raw = call(viewer, "GET", "/arrivals/summary")
     assert status == 200, raw
@@ -777,13 +779,14 @@ def _summary_counts(viewer):
 
 
 def test_probe_05_arrivals_summary_counts(rig):
-    """Counts with and without a BDR-only fielding row and a BDR-only undeclared asset; proves fielding counts are label-scoped and reports whether the undeclared count moves."""
+    """Counts with and without a BDR-only fielding row and undeclared assets; proves fielding counts are label-scoped, a BDR-labelled undeclared asset moves only the all-nations count, and an unlabelled one moves both."""
     S.rows["asset_fielding"] = [
         dict(LABELS["ATL"], serial="SN-" + CANARY_ATL, fielded_to=EDGE,
              due_by="2000-01-01T00:00:00Z")]
     S.rows["telemetry_latest_state"] = [
         dict(LABELS["ATL"], asset_id="ast-atl", edge_id=EDGE)]
     before = _summary_counts("atl")
+    before_all = _summary_counts("all")
     assert before["expected"] >= 1 and before["overdue"] >= 1, before  # positive control
     S.rows["asset_fielding"].append(
         dict(LABELS["BDR"], serial="SN-" + CANARY_BDR, fielded_to=EDGE,
@@ -791,10 +794,17 @@ def test_probe_05_arrivals_summary_counts(rig):
     S.rows["telemetry_latest_state"].append(
         dict(LABELS["BDR"], asset_id="ast-" + CANARY_BDR, edge_id=EDGE))
     after = _summary_counts("atl")
+    after_all = _summary_counts("all")
     assert after["expected"] == before["expected"], (before, after)
     assert after["overdue"] == before["overdue"], (before, after)
-    print(f"summary undeclared count for the ATL-only viewer: {before['undeclared']} "
-          f"-> {after['undeclared']} after a BDR-only undeclared asset (information)")
+    assert after["undeclared"] == before["undeclared"], (before, after)
+    assert after_all["undeclared"] == before_all["undeclared"] + 1, (before_all, after_all)
+    S.rows["telemetry_latest_state"].append(
+        dict(LABELS["UNL"], asset_id="ast-" + CANARY_UNLABELLED, edge_id=EDGE))
+    unl = _summary_counts("atl")
+    unl_all = _summary_counts("all")
+    assert unl["undeclared"] == after["undeclared"] + 1, (after, unl)
+    assert unl_all["undeclared"] == after_all["undeclared"] + 1, (after_all, unl_all)
 
 
 # --- 6. POST /arrivals/declare ----------------------------------------------
@@ -829,6 +839,22 @@ def test_probe_06_arrivals_declare(rig, viewer):
     assert_positive(raw, "/arrivals/declare")
     assert_no_leak(raw, viewer, "/arrivals/declare")
     assert len(S.called("arrivals-intake")) == 1
+    # A BDR-labelled undeclared asset: the ATL viewer gets the one 404 answer
+    # an unknown id gets; the all-nations viewer may declare it.
+    S.rows["telemetry_latest_state"].append(
+        dict(LABELS["BDR"], asset_id="ast-bdr-row", edge_id=EDGE,
+             platform_variant="VAR-1", region_id=None))
+    body = dict(_declare_body(None), asset_id="ast-bdr-row", source="declare")
+    status, raw = call(viewer, "POST", "/arrivals/declare", body)
+    if viewer == "atl":
+        unknown = call(viewer, "POST", "/arrivals/declare",
+                       dict(body, asset_id="ast-unknown"))
+        assert status == unknown[0] == 404, (status, raw, unknown)
+        assert json.loads(raw)["cause"] == json.loads(unknown[1])["cause"]
+        assert len(S.called("arrivals-intake")) == 1
+    else:
+        assert status == 201, (status, raw)
+        assert len(S.called("arrivals-intake")) == 2
 
 
 # --- 7. POST /cm/discrepancy and /cm/discrepancy/resolve ---------------------

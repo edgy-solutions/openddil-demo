@@ -8,6 +8,7 @@ Everything here is synthetic: invented nations ATL and BDR, invented ids.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -166,11 +167,15 @@ def _req(url, subject, body=None, method=None):
         return e.code, json.loads(e.read() or b"{}")
 
 
-def _set_rows(*ids):
-    """Give the releasability file a per-asset row for each id."""
+def _set_rows(*ids, dated=True):
+    """Give the releasability file a per-asset row for each id. By default
+    the row carries declared_by and declared_at, so it declares; `dated=False`
+    writes an undated row, which is a default (ADR-0055 1a)."""
     rel = state["rel"]
     head = rel.read_text().split("assets:")[0]
-    rows = "".join(f'  "{i}": {{ originator_nation: ATL, releasable_to: [] }}\n' for i in ids)
+    tail = ', declared_by: demo-owner, declared_at: "2026-11-27"' if dated else ""
+    rows = "".join(
+        f'  "{i}": {{ originator_nation: ATL, releasable_to: []{tail} }}\n' for i in ids)
     rel.write_text(head + ("assets:\n" + rows if ids else "assets: {}\n"))
 
 
@@ -258,14 +263,19 @@ def test_declared_default_labelled_asset_is_refused_and_not_listed(pep_url):
 
 
 def test_file_asset_ids_reader(pep_url, tmp_path, env):
+    # Meaning changed: only rows carrying declared_by and declared_at declare,
+    # so every row below that is meant to be read carries both.
     pep = env[0]
     f = tmp_path / "r.yaml"
+    dd = 'declared_by: x, declared_at: "2026-11-27"'
     f.write_text('nations:\n  ATL: {name: A}\nassets:\n'
                  '  # c\n'
-                 '  "dis:1:1:1": { originator_nation: ATL, releasable_to: [] }  # t\n'
-                 "  'dis:1:1:2': { originator_nation: ATL }\n"
-                 '  dis:1:1:3: { originator_nation: BDR }\n'
-                 '  plain:\n    originator_nation: ATL\n'
+                 f'  "dis:1:1:1": {{ originator_nation: ATL, releasable_to: [BDR, CHA], {dd} }}  # t\n'
+                 f"  'dis:1:1:2': {{ originator_nation: ATL, {dd} }}\n"
+                 f'  dis:1:1:3: {{ originator_nation: BDR, {dd} }}\n'
+                 '  plain:\n    originator_nation: ATL\n    declared_by: x\n'
+                 '    declared_at: "2026-11-27"\n'
+                 '  undated: { originator_nation: ATL }\n'
                  'default_originator_nation: BDR\n')
     pep.RELEASABILITY_FILE = str(f)
     assert pep._file_asset_ids() == {"dis:1:1:1", "dis:1:1:2", "dis:1:1:3", "plain"}
@@ -275,6 +285,133 @@ def test_file_asset_ids_reader(pep_url, tmp_path, env):
     assert pep._file_asset_ids() == set()
     pep.RELEASABILITY_FILE = str(tmp_path / "missing.yaml")
     assert pep._file_asset_ids() == set()
+
+
+def _write_assets(body):
+    rel = state["rel"]
+    rel.write_text(rel.read_text().split("assets:")[0] + "assets:\n" + body)
+
+
+def test_undated_file_row_is_a_default(pep_url):
+    state["telemetry"] = [dict(OBSERVED, originator_nation="ATL")]
+    _set_rows("dis:1:1:7", dated=False)
+    _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
+    assert [u["asset_id"] for u in body["undeclared"]] == ["dis:1:1:7"]
+    _s, summ = _req(pep_url + "/arrivals/summary", "op-atl")
+    assert summ["edges"][0]["undeclared"] == 1
+    assert _declare(pep_url)[0] == 201
+
+
+@pytest.mark.parametrize("fields", [
+    "declared_by: demo-owner",
+    'declared_at: "2026-11-27"',
+])
+def test_half_dated_row_is_a_default(pep_url, env, fields):
+    _write_assets(f'  "dis:1:1:7": {{ originator_nation: ATL, {fields} }}\n')
+    assert env[0]._file_asset_ids() == set()
+    _write_assets(f'  "dis:1:1:7":\n    originator_nation: ATL\n    {fields}\n')
+    assert env[0]._file_asset_ids() == set()
+
+
+@pytest.mark.parametrize("fields", [
+    'declared_by: null, declared_at: "2026-11-27"',
+    'declared_by: "", declared_at: "2026-11-27"',
+    "declared_by: '', declared_at: \"2026-11-27\"",
+    "declared_by: , declared_at: \"2026-11-27\"",
+    "declared_by: demo-owner, declared_at: ~",
+    'declared_by: demo-owner, declared_at: ""',
+])
+def test_empty_valued_fields_are_a_default(pep_url, env, fields):
+    _write_assets(f'  "dis:1:1:7": {{ originator_nation: ATL, {fields} }}\n')
+    assert env[0]._file_asset_ids() == set()
+    block = "\n".join("    " + x.strip() for x in fields.split(", "))
+    _write_assets(f'  "dis:1:1:7":\n    originator_nation: ATL\n{block}\n')
+    assert env[0]._file_asset_ids() == set()
+    state["telemetry"] = [dict(OBSERVED, originator_nation="ATL")]
+    assert _declare(pep_url)[0] == 201
+
+
+def test_dated_flow_and_block_rows_declare(pep_url, env):
+    state["telemetry"] = [dict(OBSERVED, originator_nation="ATL")]
+    flow = ('  "dis:1:1:7": { originator_nation: ATL, releasable_to: [BDR, CHA], '
+            'declared_by: demo-owner, declared_at: "2026-11-27" }\n')
+    block = ('  "dis:1:1:7":\n    originator_nation: ATL\n    releasable_to: [BDR]\n'
+             '    declared_by: demo-owner\n    declared_at: "2026-11-27"\n')
+    for form in (flow, block):
+        _write_assets(form)
+        assert env[0]._file_asset_ids() == {"dis:1:1:7"}
+        _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
+        assert body["undeclared"] == []
+        assert _declare(pep_url)[0] == 404
+    assert state["calls"] == []
+
+
+def test_undated_rows_warn_once_with_a_count_and_no_id(pep_url, env, monkeypatch, caplog):
+    pep = env[0]
+    monkeypatch.setattr(pep, "_rows_undated_logged", False)
+    _set_rows("dis:5:5:1", "dis:5:5:2", dated=False)
+    with caplog.at_level(logging.WARNING):
+        assert pep._file_asset_ids() == set()
+        assert pep._file_asset_ids() == set()
+    hits = [r for r in caplog.records if "declared_by/declared_at" in r.getMessage()]
+    assert len(hits) == 1
+    assert "2 releasability file asset rows" in hits[0].getMessage()
+    assert "dis:5:5" not in caplog.text
+
+
+def test_labelled_row_the_viewer_may_not_see_is_hidden_and_declare_is_uniform(pep_url):
+    state["telemetry"] = [dict(OBSERVED, originator_nation="BDR", releasable_to="{}")]
+    _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
+    assert body["undeclared"] == []
+    _s, summ = _req(pep_url + "/arrivals/summary", "op-atl")
+    assert summ["edges"][0]["undeclared"] == 0
+    hidden = _declare(pep_url)
+    unknown = _declare(pep_url, asset_id="dis:9:9:9")
+    assert hidden[0] == unknown[0] == 404
+    strip = lambda b: {k: v for k, v in b.items() if k != "reference"}  # noqa: E731
+    assert json.dumps(strip(hidden[1]), sort_keys=True) == json.dumps(
+        strip(unknown[1]), sort_keys=True)
+    assert state["calls"] == []
+
+
+def test_labelled_row_the_viewer_may_see_is_listed_counted_declarable(pep_url):
+    state["telemetry"] = [dict(OBSERVED, originator_nation="BDR", releasable_to="{ATL}")]
+    _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
+    assert [u["asset_id"] for u in body["undeclared"]] == ["dis:1:1:7"]
+    _s, summ = _req(pep_url + "/arrivals/summary", "op-atl")
+    assert summ["edges"][0]["undeclared"] == 1
+    assert _declare(pep_url)[0] == 201
+
+
+@pytest.mark.parametrize("labels", [
+    {"originator_nation": None, "releasable_to": None},
+    {"originator_nation": "", "releasable_to": "{}"},
+])
+def test_unlabelled_row_is_listed_for_every_declarer_and_counted_for_all(pep_url, labels):
+    state["telemetry"] = [dict(OBSERVED, **labels)]
+    for who in ("op-atl", "sup", "op-bdr"):
+        _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", who)
+        assert [u["asset_id"] for u in body["undeclared"]] == ["dis:1:1:7"], who
+    for who in ("op-atl", "op-bdr", "sup", "obs-atl"):
+        _s, summ = _req(pep_url + "/arrivals/summary", who)
+        assert summ["edges"][0]["undeclared"] == 1, who
+    assert _declare(pep_url)[0] == 201
+    assert _declare(pep_url, "sup")[0] == 201
+
+
+def test_no_originator_with_releasable_to_is_labelled(pep_url):
+    state["telemetry"] = [dict(OBSERVED, originator_nation=None, releasable_to="{BDR}")]
+    _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-atl")
+    assert body["undeclared"] == []
+    _s, summ = _req(pep_url + "/arrivals/summary", "op-atl")
+    assert summ["edges"][0]["undeclared"] == 0
+    assert _declare(pep_url)[0] == 404
+    assert state["calls"] == []
+    _s, body = _req(pep_url + "/arrivals?edge_id=edge-a", "op-bdr")
+    assert [u["asset_id"] for u in body["undeclared"]] == ["dis:1:1:7"]
+    _s, summ = _req(pep_url + "/arrivals/summary", "op-bdr")
+    assert summ["edges"][0]["undeclared"] == 1
+    assert _declare(pep_url, "op-bdr", originator_nation="BDR", releasable_to=[])[0] == 201
 
 
 # --- POST /arrivals/declare ---------------------------------------------------

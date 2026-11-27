@@ -95,6 +95,9 @@ default_originator_nation: null
 # would both arrive as the proto's zero value and be indistinguishable on
 # the wire; writing it makes the AUTHOR's intent legible even though the
 # consumer cannot tell the difference.
+# A row without both `declared_by` and `declared_at` is a default, not a
+# declaration (ADR-0055 1a; ADR-0050 amendment of 2026-11-06). Its asset
+# stays undeclared and declarable in Arrivals.
 assets:
   # --- Atlantia (ATL) --------------------------------------------------------
   #
@@ -113,24 +116,24 @@ assets:
   # row matches on originator_nation alone and the array-containment half of
   # the predicate is carried but never fires — present, untested, and
   # indistinguishable from broken.
-  "dis:1:1:1000": { originator_nation: ATL, releasable_to: [BDR] }
-  "dis:1:1:1001": { originator_nation: ATL, releasable_to: [] }
-  "dis:1:1:1002": { originator_nation: ATL, releasable_to: [] }
-  "dis:1:1:1003": { originator_nation: ATL, releasable_to: [] }
-  "dis:1:1:1004": { originator_nation: ATL, releasable_to: [] }
-  "dis:1:1:1005": { originator_nation: ATL, releasable_to: [] }
-  "dis:1:1:1006": { originator_nation: ATL, releasable_to: [] }
-  "dis:1:1:1007": { originator_nation: ATL, releasable_to: [] }
-  "dis:1:1:1008": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1000": { originator_nation: ATL, releasable_to: [BDR], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:1:1:1001": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:1:1:1002": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:1:1:1003": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:1:1:1004": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:1:1:1005": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:1:1:1006": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:1:1:1007": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:1:1:1008": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
   # The interceptor launcher. Its launches are labelled from this row at
   # ingress (dynamic-mappings/dis-effector.yaml, keyed by launcher_urn), so a
   # Borduria operator sees neither the launcher nor anything it fired.
-  "dis:1:1:1009": { originator_nation: ATL, releasable_to: [] }
+  "dis:1:1:1009": { originator_nation: ATL, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
 
   # --- Borduria (BDR) --------------------------------------------------------
-  "dis:2:1:1000": { originator_nation: BDR, releasable_to: [] }
-  "dis:2:1:1001": { originator_nation: BDR, releasable_to: [] }
-  "dis:2:1:1002": { originator_nation: BDR, releasable_to: [] }
-  "dis:2:1:1003": { originator_nation: BDR, releasable_to: [] }
-  "dis:2:1:1004": { originator_nation: BDR, releasable_to: [] }
-  "dis:2:1:1005": { originator_nation: BDR, releasable_to: [] }
+  "dis:2:1:1000": { originator_nation: BDR, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:2:1:1001": { originator_nation: BDR, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:2:1:1002": { originator_nation: BDR, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:2:1:1003": { originator_nation: BDR, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:2:1:1004": { originator_nation: BDR, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
+  "dis:2:1:1005": { originator_nation: BDR, releasable_to: [], declared_by: demo-bundle-owner, declared_at: "2026-11-27" }
