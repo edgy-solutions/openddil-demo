@@ -1,0 +1,463 @@
+"""Tests for the ADR-0058 slice 3a pane additions: the disposition on
+`GET /cases` and `GET /reports/states`.
+
+Run: `python -m pytest egress/test_pane_reports.py -q` from openddil-demo/.
+
+The store is a fake connection that answers by table. It records every SQL
+string it is given, so a test can assert the pane issued SELECTs only.
+"""
+from __future__ import annotations
+
+import datetime
+import json
+import sys
+import threading
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import pane_api  # noqa: E402
+from kinds import Declarations  # noqa: E402
+
+UTC = datetime.timezone.utc
+
+
+def at(minute: int) -> datetime.datetime:
+    return datetime.datetime(2026, 11, 1, 10, minute, 0, tzinfo=UTC)
+
+
+ACTION = Declarations(key="/action_id", label="/label", case_ref="/case/id")
+# An action kind that exists but declares no case_ref.
+ACTION_NO_REF = Declarations(key="/action_id", label="/label")
+COMPLETION = Declarations(key="/record_id", label="/label", completes_ref="/completes")
+
+
+class FakeConn:
+    """Answers by table; filters nothing by SQL, so the pane's own
+    re-check of each pointer is what keeps a stray row out."""
+
+    def __init__(self, ledger=(), intake=()):
+        self.ledger = list(ledger)
+        self.intake = list(intake)
+        self.sql: list[str] = []
+        self.intake_args: list[tuple] = []
+
+    async def fetch(self, sql, *args):
+        self.sql.append(sql)
+        if "egress_delivered_events" in sql:
+            if "ANY($1::text[])" in sql:
+                assert '"asset_id" = ANY($1::text[])' in sql
+                return [r for r in self.ledger if r["asset_id"] in args[0]]
+            asset = args[0]
+            return [r for r in self.ledger if r.get("asset_id") == asset
+                    and r["outcome"] == "delivered" and r["case_id"]]
+        if "intake_records" in sql:
+            self.intake_args.append(args)
+            return [r for r in self.intake if r["kind"] == args[0]]
+        raise AssertionError(f"unexpected query: {sql}")
+
+    async def close(self):
+        pass
+
+
+def ledger_row(episode="ep-1", case="case-1", outcome="delivered", first=0, **over):
+    row = {
+        "route": "route-x", "event_id": f"ev-{episode}", "outcome": outcome,
+        "http_status": 200 if outcome == "delivered" else None, "case_id": case,
+        "episode_id": episode, "asset_id": "asset-a", "component": "comp-1",
+        "fault_code": "F-1", "first_recorded_at": at(first), "recorded_at": at(first + 1),
+    }
+    row.update(over)
+    return row
+
+
+def action_row(key, case, *, kind="ActionRecord", allowed=True, reason=None, minute=10,
+               task="replace comp-1", role="releaser", nation="ATL", releasable=()):
+    return {
+        "kind": kind, "key": key,
+        "body": json.dumps({"action_id": key, "case": {"id": case},
+                            "work_order": {"task": task},
+                            "approval_chain": [{"role": "chooser"}, {"role": role}]}),
+        "decision": json.dumps({"allowed": allowed, "reason": reason}),
+        "decided_at": at(minute),
+        "originator_nation": nation, "releasable_to": releasable,
+    }
+
+
+def completion_row(key, completes, *, outcome="done", episode="ep-1", minute=20,
+                   allowed=True, reason=None, nation="ATL", releasable=()):
+    body = {"record_id": key, "completes": completes, "outcome": outcome}
+    if episode is not None:
+        body["episode_id"] = episode
+    return {"kind": "Completion", "key": key, "body": json.dumps(body),
+            "decision": json.dumps({"allowed": allowed, "reason": reason}),
+            "decided_at": at(minute),
+            "originator_nation": nation, "releasable_to": releasable}
+
+
+def serve(monkeypatch, conn, declarations, action_kinds):
+    async def fake_connect(dsn):
+        return conn
+
+    monkeypatch.setattr(pane_api.asyncpg, "connect", fake_connect)
+    monkeypatch.setattr(pane_api, "store_dsn_from_env", lambda: "postgres://unused")
+    monkeypatch.setattr(pane_api, "_kind_context", lambda: (declarations, set(action_kinds)))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), pane_api.PaneApi)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def get(server, path):
+    url = f"http://127.0.0.1:{server.server_address[1]}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+@pytest.fixture
+def server_for(monkeypatch):
+    servers = []
+
+    def make(conn, declarations, action_kinds):
+        server = serve(monkeypatch, conn, declarations, action_kinds)
+        servers.append(server)
+        return server
+
+    yield make
+    for s in servers:
+        s.shutdown()
+
+
+OLD_CASE_KEYS = {"route", "case_id", "episode_id", "event_id", "asset_id",
+                 "component", "fault_code", "delivered_at"}
+
+
+def cases(server, asset="asset-a"):
+    status, body = get(server, f"/cases?asset_id={asset}")
+    assert status == 200
+    return body["cases"]
+
+
+# --- the disposition on /cases ----------------------------------------------
+
+def test_admitted_action_draws_option_producer_and_time(server_for):
+    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["disposition_state"] == "admitted"
+    assert case["disposition"]["option"] == "replace comp-1"
+    assert case["disposition"]["stage"] == "releaser"
+    assert case["case_id"] == "case-1"  # the producer: the case, by id
+    assert case["decided_at"] == at(10).isoformat()
+    assert case["decision"] == {"allowed": True, "reason": None}
+
+
+def test_refused_action_is_refused_with_its_reason_never_none(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-1", "case-1", allowed=False, reason="schema_invalid")])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["disposition_state"] == "refused"
+    assert case["decision"] == {"allowed": False, "reason": "schema_invalid"}
+
+
+def test_case_with_no_action_names_the_absence(server_for):
+    conn = FakeConn([ledger_row()], [])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["disposition_state"] == "none"
+    assert case["disposition"] is None and case["decided_at"] is None
+
+
+def test_latest_action_by_decided_at_wins(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-new", "case-1", minute=30, task="defer"),
+        action_row("act-old", "case-1", minute=10, allowed=False, reason="schema_invalid"),
+    ])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["disposition_state"] == "admitted"
+    assert case["disposition"]["key"] == "act-new"
+
+
+def test_check6_key_prefix_never_joins_and_a_kind_without_case_ref_is_unjoinable(server_for):
+    # The key starts with the case id; the kind declares no case_ref.
+    conn = FakeConn([ledger_row()], [action_row("case-1-act", "case-1")])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION_NO_REF}, {"ActionRecord"}))
+    assert case["disposition_state"] == "unjoinable"
+    assert case["disposition"] is None
+    # No intake row was even asked for: the kind has no pointer to join on.
+    assert not any("intake_records" in s for s in conn.sql)
+
+
+def test_check6_a_row_whose_pointer_names_another_case_is_not_joined(server_for):
+    # Key prefix matches case-1, but the body names case-2.
+    conn = FakeConn([ledger_row()], [action_row("case-1-act", "case-2")])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["disposition_state"] == "none"
+
+
+def test_existing_case_keys_are_present_and_unchanged(server_for):
+    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert OLD_CASE_KEYS <= set(case)
+    assert {k: case[k] for k in OLD_CASE_KEYS} == {
+        "route": "route-x", "case_id": "case-1", "episode_id": "ep-1", "event_id": "ev-ep-1",
+        "asset_id": "asset-a", "component": "comp-1", "fault_code": "F-1",
+        "delivered_at": at(0).isoformat(),
+    }
+    assert set(case) - OLD_CASE_KEYS == {
+        "disposition", "decided_at", "decision", "disposition_state", "action_labels"}
+
+
+def test_action_labels_are_the_joined_action_rows_labels(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-1", "case-1", nation="BDR", releasable=["ATL", "CHA"])])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] == {"originator_nation": "BDR",
+                                     "releasable_to": ["ATL", "CHA"]}
+
+
+def test_action_labels_null_array_reads_empty_and_null_originator_stays_null(server_for):
+    row = action_row("act-1", "case-1")
+    row["originator_nation"], row["releasable_to"] = None, None
+    conn = FakeConn([ledger_row()], [row])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] == {"originator_nation": None, "releasable_to": []}
+
+
+def test_action_labels_are_the_latest_actions(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-new", "case-1", minute=30, nation="BDR"),
+        action_row("act-old", "case-1", minute=10, nation="ATL")])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"]["originator_nation"] == "BDR"
+
+
+def test_action_labels_null_when_no_action_joined(server_for):
+    conn = FakeConn([ledger_row()], [])
+    [case] = cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    assert case["action_labels"] is None
+
+
+def test_the_action_select_names_the_label_columns(server_for):
+    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")])
+    cases(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}))
+    sql = [q for q in conn.sql if "intake_records" in q]
+    assert sql and all("originator_nation" in q and "releasable_to" in q for q in sql)
+
+
+# --- GET /reports/states ----------------------------------------------------
+
+def states(server, *assets):
+    q = "&".join(f"asset_id={a}" for a in assets)
+    status, body = get(server, f"/reports/states?{q}")
+    assert status == 200
+    return body
+
+
+def fault(body, component="comp-1", fault_code="F-1", asset="asset-a"):
+    [block] = [b for b in body["faults"] if (b["asset_id"], b["component"], b["fault_code"])
+               == (asset, component, fault_code)]
+    return block
+
+
+DECLS_WITH_COMPLETION = {"ActionRecord": ACTION, "Completion": COMPLETION}
+
+
+def test_states_requires_an_asset_id(server_for):
+    server = server_for(FakeConn(), {}, set())
+    status, body = get(server, "/reports/states")
+    assert (status, body) == (400, {"error": "asset_id required"})
+    # episode_id is no longer read
+    assert get(server, "/reports/states?episode_id=ep-1")[0] == 400
+
+
+def test_states_caps_the_asset_ids(server_for):
+    server = server_for(FakeConn(), {}, set())
+    n = pane_api.STATES_ASSET_LIMIT
+    ok = "&".join(f"asset_id=a{i}" for i in range(n))
+    assert get(server, f"/reports/states?{ok}")[0] == 200
+    status, body = get(server, f"/reports/states?{ok}&asset_id=extra")
+    assert (status, body) == (400, {"error": f"at most {n} asset_id"})
+
+
+def test_states_groups_by_the_fault_triple_sorted(server_for):
+    conn = FakeConn([
+        ledger_row("ep-b", "case-2", component="comp-2", first=5),
+        ledger_row("ep-a", "case-1", first=0),
+        ledger_row("ep-c", None, outcome="held", first=8, asset_id="asset-b"),
+        ledger_row("ep-a2", None, first=9),
+    ], [action_row("act-1", "case-1"),
+        action_row("act-9", "case-9", allowed=False, reason="schema_invalid")])
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}),
+                  "asset-a", "asset-b")
+    assert [(b["asset_id"], b["component"], b["fault_code"]) for b in body["faults"]] == [
+        ("asset-a", "comp-1", "F-1"), ("asset-a", "comp-2", "F-1"),
+        ("asset-b", "comp-1", "F-1")]
+    one = fault(body)
+    assert [r["episode_id"] for r in one["ledger"]] == ["ep-a", "ep-a2"]
+    assert one["ledger"][0]["outcome"] == "delivered" and one["ledger"][0]["http_status"] == 200
+    assert one["ledger"][0]["case_id"] == "case-1"
+    assert one["ledger"][0]["case_id_mismatch"] is False
+    assert one["released"] == [{
+        "kind": "ActionRecord", "key": "act-1", "case_id": "case-1",
+        "decided_at": at(10).isoformat(), "allowed": True, "reason": None,
+        "labels": {"originator_nation": "ATL", "releasable_to": []}}]
+    assert fault(body, "comp-2")["released"] == []
+    assert fault(body, asset="asset-b")["ledger"][0]["outcome"] == "held"
+    assert body["unkeyed_ledger"] == 0
+
+
+def test_states_unkeyed_ledger_counts_rows_missing_component_or_fault_code(server_for):
+    conn = FakeConn([
+        ledger_row("ep-1"),
+        ledger_row("ep-2", component=None), ledger_row("ep-3", fault_code=None),
+        ledger_row("ep-4", component=""), ledger_row("ep-5", fault_code=""),
+    ])
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    assert body["unkeyed_ledger"] == 4
+    assert [b["component"] for b in body["faults"]] == ["comp-1"]
+    assert "ep-2" not in json.dumps(body)
+
+
+def test_states_asset_with_no_ledger_row_has_no_blocks(server_for):
+    body = states(server_for(FakeConn(), {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-x")
+    assert body == {"faults": [], "unkeyed_ledger": 0}
+
+
+def test_states_a_refused_release_carries_its_reason(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-1", "case-1", allowed=False, reason="schema_invalid")])
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    assert fault(body)["released"][0]["allowed"] is False
+    assert fault(body)["released"][0]["reason"] == "schema_invalid"
+
+
+def test_states_key_prefix_without_case_ref_is_not_released(server_for):
+    conn = FakeConn([ledger_row()], [action_row("case-1-act", "case-1")])
+    body = states(server_for(conn, {"ActionRecord": ACTION_NO_REF}, {"ActionRecord"}),
+                  "asset-a")
+    assert fault(body)["released"] == []
+
+
+def test_states_released_and_completion_records_carry_the_intake_labels(server_for):
+    conn = FakeConn([ledger_row()], [
+        action_row("act-1", "case-1", nation="BDR", releasable=["CHA"]),
+        completion_row("c-1", "act-1", nation="CHA", releasable=["ATL"]),
+        completion_row("c-2", "act-elsewhere", nation="BDR", releasable=None)])
+    body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), "asset-a")
+    block = fault(body)
+    assert block["released"][0]["labels"] == {
+        "originator_nation": "BDR", "releasable_to": ["CHA"]}
+    assert block["completion"]["records"][0]["labels"] == {
+        "originator_nation": "CHA", "releasable_to": ["ATL"]}
+    # A null releasable_to reads [].
+    assert block["unmatched_completions"][0]["labels"] == {
+        "originator_nation": "BDR", "releasable_to": []}
+
+
+def test_completion_undeclared(server_for):
+    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1")])
+    body = states(server_for(conn, {"ActionRecord": ACTION}, {"ActionRecord"}), "asset-a")
+    assert fault(body)["completion"] == {"declared": False, "records": []}
+
+
+def run_completion(server_for, comp_rows, ledger_rows=None):
+    conn = FakeConn(ledger_rows or [ledger_row()],
+                    [action_row("act-1", "case-1")] + comp_rows)
+    server = server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"})
+    return fault(states(server, "asset-a")), conn
+
+
+def test_completion_matched_through_the_release_key(server_for):
+    ep, _ = run_completion(server_for, [completion_row("done-1", "act-1")])
+    assert ep["completion"]["declared"] is True
+    [rec] = ep["completion"]["records"]
+    assert rec["completes"] == "act-1" and rec["outcome"] == "done"
+    assert rec["decided_at"] == at(20).isoformat() and rec["allowed"] is True
+    assert rec["episode_id_carried"] == "ep-1"
+    assert ep["unmatched_completions"] == []
+
+
+def test_completions_are_fetched_by_the_ledgers_egress_side_ids(server_for):
+    _, conn = run_completion(server_for, [completion_row("done-1", "act-1")], ledger_rows=[
+        ledger_row("ep-z", "case-1"), ledger_row("ep-b", None, first=3),
+        ledger_row("ep-b", None, first=4), ledger_row("ep-q", None, component=None)])
+    completion_calls = [a for a in conn.intake_args if a[0] == "Completion"]
+    assert completion_calls
+    # (kind, completes path, release keys, episode path, episode ids)
+    assert all(a[4] == ["ep-b", "ep-z"] for a in completion_calls)
+
+
+def test_completion_naming_a_release_this_tier_does_not_hold_is_unmatched(server_for):
+    ep, _ = run_completion(server_for, [completion_row("done-2", "act-elsewhere")])
+    assert ep["completion"]["records"] == []
+    [rec] = ep["unmatched_completions"]
+    assert rec["key"] == "done-2" and rec["completes"] == "act-elsewhere"
+
+
+def test_an_unmatched_completion_is_listed_on_the_block_holding_its_episode_id(server_for):
+    conn = FakeConn(
+        [ledger_row("ep-1", "case-1"), ledger_row("ep-2", None, component="comp-2")],
+        [action_row("act-1", "case-1"), completion_row("done-2", "act-elsewhere", episode="ep-2")])
+    body = states(server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"}), "asset-a")
+    assert fault(body)["unmatched_completions"] == []
+    assert [r["key"] for r in fault(body, "comp-2")["unmatched_completions"]] == ["done-2"]
+
+
+def test_completion_is_never_matched_by_asset_or_time(server_for):
+    # Names no release key at all; same episode and time window.
+    ep, _ = run_completion(server_for, [completion_row("done-3", None)])
+    assert ep["completion"]["records"] == []
+
+
+def test_completion_cancelled(server_for):
+    ep, _ = run_completion(server_for, [completion_row("c-1", "act-1", outcome="cancelled")])
+    assert ep["completion"]["records"][0]["outcome"] == "cancelled"
+
+
+def test_completion_refused_is_a_state_with_its_reason(server_for):
+    ep, _ = run_completion(server_for, [
+        completion_row("c-1", "act-1", allowed=False, reason="schema_invalid")])
+    rec = ep["completion"]["records"][0]
+    assert rec["allowed"] is False and rec["reason"] == "schema_invalid"
+
+
+def test_completion_carrying_another_episode_id_is_shown_and_stays_joined(server_for):
+    ep, _ = run_completion(server_for, [completion_row("c-1", "act-1", episode="ep-other")])
+    [rec] = ep["completion"]["records"]
+    assert rec["episode_id_carried"] == "ep-other"
+
+
+def test_unknown_outcome_reads_null(server_for):
+    ep, _ = run_completion(server_for, [completion_row("c-1", "act-1", outcome="weird")])
+    assert ep["completion"]["records"][0]["outcome"] is None
+
+
+def test_pane_issues_selects_only(server_for):
+    conn = FakeConn([ledger_row()], [action_row("act-1", "case-1"),
+                                     completion_row("c-1", "act-1")])
+    server = server_for(conn, DECLS_WITH_COMPLETION, {"ActionRecord"})
+    states(server, "asset-a")
+    cases(server)
+    assert conn.sql and all(s.lstrip().upper().startswith("SELECT") for s in conn.sql)
+
+
+def test_intake_config_kinds_read_without_importing_intake(tmp_path, monkeypatch):
+    """The pane reads the intake config's kind names itself, so it never
+    imports intake and its producer (produces.yaml lists no topic for it)."""
+    cfg = tmp_path / "intake.json"
+    cfg.write_text(json.dumps([{"name": "a", "kind": "ActionRecord"},
+                               {"name": "b", "kind": "CompletionRecord"},
+                               {"name": "c"}, "not an entry"]), encoding="utf-8")
+    monkeypatch.setattr(pane_api, "KINDS_DIR", tmp_path / "absent")
+    monkeypatch.setenv("OPENDDIL_EGRESS_INTAKE_CONFIG", str(cfg))
+    _, kinds = pane_api._kind_context()
+    assert kinds == {"ActionRecord", "CompletionRecord"}
+    assert "intake" not in pane_api.__dict__
+    cfg.write_text("{}", encoding="utf-8")
+    assert pane_api._kind_context()[1] == set()

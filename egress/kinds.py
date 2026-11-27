@@ -116,6 +116,17 @@ class Declarations:
     # Where the record carries its contract version, and the versions this
     # kind accepts. Absent = the kind declares none and none are counted.
     versions: VersionsDecl | None = None
+    # ADR-0058 3.2 "Case -> action": where an ARTIFACT's body carries the id
+    # of its case. The pane joins an intake action to a case only by reading
+    # this pointer, never by the intake key's prefix. Absent = the kind's
+    # records are not joinable to a case, and the pane says so.
+    case_ref: str | None = None
+    # ADR-0058 3.2 "Action -> completion" (amended 2026-11-14): where a
+    # COMPLETION record's body names the release record it completes; the
+    # value is that release record's intake `key`. PROVISIONAL NAME: this
+    # pointer's name and the completion body's fields wait on iagent's
+    # completion contract. Absent on every kind until that contract merges.
+    completes_ref: str | None = None
 
 
 def _require_pointer(block: Mapping, name: str) -> str:
@@ -214,6 +225,8 @@ def load_declarations(directory: str | Path) -> dict[str, "Declarations"]:
                 trigger=_optional_pointer(block, "trigger"),
                 episode_id=_optional_pointer(block, "episode_id"),
                 versions=_parse_versions(block),
+                case_ref=_optional_pointer(block, "case_ref"),
+                completes_ref=_optional_pointer(block, "completes_ref"),
             )
         except Exception as exc:  # noqa: BLE001 — re-raised naming the file
             raise ValueError(

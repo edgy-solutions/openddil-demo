@@ -38,7 +38,7 @@ PANE_RECORDS = [
 # Who the fake PDP knows. "pdp-down" makes Topaz answer 500.
 ENTITLEMENTS = {"op.atl": ["ATL"], "op.bdr": ["BDR"], "regional": ["ATL", "BDR"]}
 
-state = {"pane": "ok", "pane_calls": 0, "pane_query": None}
+state = {"pane": "ok", "pane_calls": 0, "pane_query": None, "cases_body": None}
 
 
 class FakeTopaz(BaseHTTPRequestHandler):
@@ -71,7 +71,9 @@ class FakePane(BaseHTTPRequestHandler):
         state["pane_calls"] += 1
         state["pane_query"] = self.path
         mode = state["pane"]
-        if mode == "ok":
+        if self.path.startswith("/cases") and state["cases_body"] is not None:
+            status, body = 200, state["cases_body"]
+        elif mode == "ok":
             status, body = 200, {"destination": "system:x", "policy_version": "p1",
                                  "corpus_version": "c1", "admitted": 2, "refused": 3,
                                  "fleet_summary": {"BDR": 2},
@@ -134,7 +136,7 @@ def _get(url: str, subject: str | None):
 @pytest.fixture
 def pep_url(pep_factory):
     start, pane = pep_factory
-    state.update(pane="ok", pane_calls=0, pane_query=None)
+    state.update(pane="ok", pane_calls=0, pane_query=None, cases_body=None)
     return start(pane)
 
 
@@ -261,7 +263,66 @@ def test_invalid_kind_is_denied_before_the_pane_is_asked(pep_url, bad_kind):
 CQ = "/egress/cases?asset_id=asset-a"
 
 
-def test_cases_entitled_viewer_reaches_the_pane_with_only_asset_id(pep_url):
+def _cm(asset_id, originator, releasable_to=None, edge_id="edge-01", region_id="region-east"):
+    """One asset_cm_state row as the cached shape returns it (arrays arrive as
+    Postgres literals)."""
+    rel = "{" + ",".join(releasable_to or []) + "}"
+    return {"asset_id": asset_id, "originator_nation": originator,
+            "releasable_to": rel, "edge_id": edge_id, "region_id": region_id}
+
+
+def _cases_env(monkeypatch, rows, tier="hub", body=None):
+    """Stub the PEP's cached asset_cm_state read and pin the tier."""
+    pep = sys.modules["pep"]
+    monkeypatch.setattr(pep, "PEP_TIER", tier)
+    if isinstance(rows, Exception):
+        def boom(table):
+            raise rows
+        monkeypatch.setattr(pep, "_reports_rows", boom)
+    else:
+        monkeypatch.setattr(pep, "_reports_rows", lambda table: rows)
+    state["cases_body"] = body
+
+
+def _case(case_id, action_labels, state_="admitted"):
+    return {"route": "to-stand-in", "case_id": case_id, "episode_id": "ep-" + case_id,
+            "event_id": "ev-" + case_id, "asset_id": "dis:9:1:2001",
+            "component": "radar", "fault_code": "F-12",
+            "delivered_at": "2026-11-20T10:00:00+00:00",
+            "disposition": {"option": "swap", "stage": "approver", "kind": "action.v1",
+                            "key": "k-" + case_id},
+            "decided_at": "2026-11-20T11:00:00+00:00",
+            "decision": {"allowed": True, "reason": None},
+            "disposition_state": state_, "action_labels": action_labels}
+
+
+ASSET = "dis:9:1:2001"
+AQ = "/egress/cases?asset_id=" + urllib.parse.quote(ASSET, safe="")
+ATL_ACTION = {"originator_nation": "ATL", "releasable_to": []}
+BDR_ACTION = {"originator_nation": "BDR", "releasable_to": []}
+NO_ACTION_LABELS = {"originator_nation": None, "releasable_to": []}
+
+
+def _raw(url, subject):
+    req = urllib.request.Request(url)
+    req.add_header("X-OpenDDIL-Subject", subject)
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.status, r.read()
+
+
+def _case_decisions(caplog):
+    out = []
+    for r in caplog.records:
+        msg = r.getMessage()
+        if "DECISION " in msg:
+            d = json.loads(msg.split("DECISION ", 1)[1])
+            if str(d.get("resource", "")).startswith("egress:cases:"):
+                out.append(d)
+    return out
+
+
+def test_cases_entitled_viewer_reaches_the_pane_with_only_asset_id(pep_url, monkeypatch):
+    _cases_env(monkeypatch, [_cm("asset-a", "ATL")], body={"cases": []})
     code, _, headers = _get(pep_url + CQ + "&where=1%3D1", "op.atl")
     assert code == 200
     assert state["pane_query"] == "/cases?asset_id=asset-a"
@@ -286,3 +347,143 @@ def test_cases_no_pane_at_this_tier_is_404(pep_factory):
     start, _ = pep_factory
     code, _, _ = _get(start("") + CQ, "op.atl")
     assert code == 404
+
+
+# --- /egress/cases: the label rule ------------------------------------------
+
+
+def test_cases_bdr_only_asset_reads_empty_and_the_pane_is_not_asked(pep_url, monkeypatch):
+    _cases_env(monkeypatch, [_cm(ASSET, "BDR")], body={"cases": [_case("c1", ATL_ACTION)]})
+    code, raw = _raw(pep_url + AQ, "op.atl")
+    assert code == 200
+    assert raw == b'{"cases": []}'
+    assert state["pane_calls"] == 0
+
+
+def test_cases_asset_released_to_the_viewer_shows_cases(pep_url, monkeypatch):
+    _cases_env(monkeypatch, [_cm(ASSET, "BDR", ["ATL"])],
+               body={"cases": [_case("c1", ATL_ACTION)]})
+    code, body, _ = _get(pep_url + AQ, "op.atl")
+    assert code == 200
+    assert [c["case_id"] for c in body["cases"]] == ["c1"]
+    assert body["cases"][0]["disposition_state"] == "admitted"
+    assert state["pane_calls"] == 1
+
+
+def test_cases_unlabelled_asset_reads_empty_even_for_every_nation(pep_url, monkeypatch):
+    _cases_env(monkeypatch, [_cm(ASSET, None)], body={"cases": [_case("c1", ATL_ACTION)]})
+    code, raw = _raw(pep_url + AQ, "regional")
+    assert (code, raw) == (200, b'{"cases": []}')
+    assert state["pane_calls"] == 0
+
+
+def test_cases_absent_asset_is_byte_identical_to_a_hidden_one(pep_url, monkeypatch):
+    _cases_env(monkeypatch, [_cm(ASSET, "BDR")])
+    _, hidden = _raw(pep_url + AQ, "op.atl")
+    _cases_env(monkeypatch, [_cm("dis:9:1:2002", "ATL")])
+    code, absent = _raw(pep_url + AQ, "op.atl")
+    assert code == 200
+    assert absent == hidden == b'{"cases": []}'
+    assert state["pane_calls"] == 0
+
+
+def test_cases_asset_row_out_of_tier_scope_is_not_visible(pep_url, monkeypatch):
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL", edge_id="edge-09", region_id="region-west")],
+               tier="region-east", body={"cases": [_case("c1", ATL_ACTION)]})
+    code, raw = _raw(pep_url + AQ, "op.atl")
+    assert (code, raw) == (200, b'{"cases": []}')
+    assert state["pane_calls"] == 0
+
+
+def test_cases_hidden_action_is_withheld_and_counted_in_the_log_only(
+        pep_url, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="pep.decision")
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL")], body={"cases": [
+        _case("c-bdr", BDR_ACTION), _case("c-atl", ATL_ACTION)]})
+    code, raw = _raw(pep_url + AQ, "op.atl")
+    assert code == 200
+    by_id = {c["case_id"]: c for c in json.loads(raw)["cases"]}
+    hidden = by_id["c-bdr"]
+    assert hidden["disposition_state"] == "withheld"
+    assert hidden["disposition"] is None and hidden["decided_at"] is None
+    assert hidden["decision"] == {"allowed": None, "reason": None}
+    assert by_id["c-atl"]["disposition_state"] == "admitted"
+    assert by_id["c-atl"]["disposition"]["option"] == "swap"
+    assert set(json.loads(raw)) == {"cases"}
+    lines = _case_decisions(caplog)
+    assert lines[-1]["withheld"] == 1 and lines[-1]["shown"] == 2
+
+
+def test_cases_unlabelled_action_is_withheld_for_everyone(pep_url, monkeypatch):
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL", ["BDR"])],
+               body={"cases": [_case("c1", NO_ACTION_LABELS)]})
+    for who in ("op.atl", "regional"):
+        _, body, _ = _get(pep_url + AQ, who)
+        assert body["cases"][0]["disposition_state"] == "withheld"
+        assert body["cases"][0]["disposition"] is None
+
+
+def test_cases_no_action_row_keeps_the_panes_reading(pep_url, monkeypatch):
+    case = _case("c1", None, state_="none")
+    case["disposition"], case["decided_at"] = None, None
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL")], body={"cases": [case]})
+    _, body, _ = _get(pep_url + AQ, "op.atl")
+    assert body["cases"][0]["disposition_state"] == "none"
+
+
+def test_cases_action_labels_never_leave_the_route(pep_url, monkeypatch):
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL", ["BDR"])], body={"cases": [
+        _case("c1", ATL_ACTION), _case("c2", BDR_ACTION), _case("c3", NO_ACTION_LABELS),
+        _case("c4", None)]})
+    for who in ("op.atl", "op.bdr", "regional"):
+        code, raw = _raw(pep_url + AQ, who)
+        assert code == 200
+        assert b"action_labels" not in raw
+        assert b"originator_nation" not in raw and b"releasable_to" not in raw
+
+
+def test_cases_answer_is_a_whitelist_no_other_pane_key_passes(pep_url, monkeypatch):
+    # A summary key the pane might add later, computed over every nation's
+    # cases, must not reach the viewer.
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL")], body={
+        "cases": [_case("c1", ATL_ACTION)], "nation_counts": {"BDR": 3}})
+    code, raw = _raw(pep_url + AQ, "op.atl")
+    assert code == 200
+    assert set(json.loads(raw)) == {"cases"}
+
+
+def test_cases_at_a_tier_every_case_is_held_at_the_hub_and_labels_are_stripped(
+        pep_url, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger="pep.decision")
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL", edge_id="edge-01", region_id="region-east")],
+               tier="edge-01", body={"cases": [
+                   _case("c-bdr", BDR_ACTION), _case("c-atl", ATL_ACTION)]})
+    code, raw = _raw(pep_url + AQ, "op.atl")
+    assert code == 200
+    cases = json.loads(raw)["cases"]
+    assert {c["disposition_state"] for c in cases} == {"held at the hub"}
+    assert all(c["disposition"] is None for c in cases)
+    assert b"action_labels" not in raw
+    assert _case_decisions(caplog)[-1]["withheld"] == 1
+
+
+@pytest.mark.parametrize("body", [
+    [], {"cases": "x"}, {"nope": 1}, {"cases": [1]},
+    {"cases": [_case("c1", ATL_ACTION), "x"]}])
+def test_cases_pane_body_not_the_shape_is_502(pep_url, monkeypatch, body):
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL")], body=body)
+    code, resp, _ = _get(pep_url + AQ, "op.atl")
+    assert code == 502
+    assert resp == {"error": "egress pane unavailable"}
+
+
+def test_cases_electric_down_is_502_and_the_pane_is_not_asked(pep_url, monkeypatch):
+    pep = sys.modules["pep"]
+    _cases_env(monkeypatch, pep.ElectricUnavailable("electric unreachable"),
+               body={"cases": [_case("c1", ATL_ACTION)]})
+    code, resp, _ = _get(pep_url + AQ, "op.atl")
+    assert code == 502
+    assert resp == {"error": "cases unavailable"}
+    assert state["pane_calls"] == 0

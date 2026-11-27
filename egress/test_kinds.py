@@ -261,3 +261,33 @@ def test_a_malformed_versions_block_is_refused(tmp_path, versions):
     with pytest.raises(ValueError) as exc:
         load_declarations(tmp_path)
     assert "KindA.schema.json" in str(exc.value)
+
+
+# --- case_ref / completes_ref (ADR-0058 slice 3a) ---------------------------
+
+def _declared_with(**extra):
+    declared = dict(KIND_A_DECLARED)
+    declared["x-openddil"] = dict(KIND_A_DECLARED["x-openddil"], **extra)
+    return declared
+
+
+def test_case_ref_and_completes_ref_load(tmp_path):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(
+        _declared_with(case_ref="/case/id", completes_ref="/completes")))
+    decl = load_declarations(tmp_path)["KindA"]
+    assert decl.case_ref == "/case/id"
+    assert decl.completes_ref == "/completes"
+
+
+def test_a_schema_without_case_ref_or_completes_ref_is_unchanged(tmp_path):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(KIND_A_DECLARED))
+    decl = load_declarations(tmp_path)["KindA"]
+    assert decl.case_ref is None and decl.completes_ref is None
+
+
+@pytest.mark.parametrize("name", ["case_ref", "completes_ref"])
+def test_a_non_string_ref_is_refused_naming_the_file(tmp_path, name):
+    (tmp_path / "KindA.schema.json").write_text(json.dumps(_declared_with(**{name: 7})))
+    with pytest.raises(Exception) as exc:
+        load_declarations(tmp_path)
+    assert "KindA.schema.json" in str(exc.value)
