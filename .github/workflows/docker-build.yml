@@ -200,10 +200,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: openddil-demo
 
-      # No workflow in this repo runs policy/ or gateway/ tests as a CI step
-      # (gateway has no build job of its own, and policy/ ships no image);
-      # this job is the closest in purpose because it is the only one that
-      # runs any Python tests at all (the egress test stage below). The
+      # gateway/ tests run in tests-gateway.yml; no workflow in this repo runs
+      # policy/ tests as a CI step (policy/ ships no image); this job is the
+      # closest in purpose for policy/ because it runs the corpus check, and
+      # for the egress tests (the stage below). The
       # entitlements corpus and its version log are read by both egress's
       # and gateway's PDP calls, so a stale version here is exactly the kind
       # of drift this build should catch before it ships.

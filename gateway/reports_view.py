@@ -156,6 +156,45 @@ def _hidden(rec: Mapping[str, Any], nations: list[str]) -> bool:
     return not egress_view.is_visible(dict(labels), nations)
 
 
+REPORT_WITHHELD_STATE = "report withheld"
+
+
+def episode_hidden(ep: Mapping[str, Any], nations: list[str]) -> bool:
+    """True when the episode's labels are missing, unlabelled, or not visible
+    to a viewer holding `nations`: the same rule as `_hidden`, applied to the
+    episode's `labels`."""
+    return _hidden(ep, nations)
+
+
+def withheld_reports(episodes: list[dict[str, Any]],
+                     viewer: str | None) -> list[dict[str, Any]]:
+    """One entry per episode the viewer filed but may not see. Nothing of the
+    episode is carried (its id, asset, component, fault, times, resolution,
+    clearer and tier are all labelled data); the id is an opaque
+    `withheld-<n>`, numbered in output order. The one field kept is `at`, the
+    viewer's own earliest report time on that episode, which is the viewer's
+    own act. Newest first, a missing time last."""
+    keyed = []
+    for ep in episodes:
+        times = [t for t in (_parse(s.get("reported_at")) for s in ep["sources"]
+                             if s.get("reported_by") == viewer) if t]
+        keyed.append(min(times) if times else None)
+    order = sorted((i for i in range(len(keyed)) if keyed[i] is not None),
+                   key=lambda i: keyed[i], reverse=True)
+    order += [i for i in range(len(keyed)) if keyed[i] is None]
+    out = []
+    for n, i in enumerate(order, 1):
+        out.append({
+            "episode_id": f"withheld-{n}",
+            "detected_at": None, "asset_id": None, "owning_tier": None,
+            "component": None, "fault_code": None, "open": None,
+            "cleared_at": None, "cleared_by": None, "resolution": None,
+            "states": [{"state": REPORT_WITHHELD_STATE, "source": "episode",
+                        "at": _iso(keyed[i]), "detail": {}}],
+            "unmatched": []})
+    return out
+
+
 def _released_states(released: list[dict[str, Any]],
                      nations: list[str]) -> tuple[list[dict[str, Any]], int]:
     out = []

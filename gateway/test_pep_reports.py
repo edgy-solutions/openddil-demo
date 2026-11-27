@@ -838,10 +838,15 @@ def test_reports_in_scope_unit(env):
 
 # ---- the label rule on the action states; the unjoinable-ledger count ----------
 def shared_world():
-    """E-OPEN filed by the ATL-only, BDR-only and every-nation viewers."""
+    """E-OPEN filed by the ATL-only, BDR-only and every-nation viewers.
+
+    The row is releasable to BDR as well: /reports/mine applies the label
+    rule, so every filer here must be able to see the episode they filed.
+    """
     srcs = [source(w, 61) for w in ("maintainer-a", "filer-bdr", "filer-all")]
     state.world = {"asset_cm_state": [
-        cm_row(ASSET_A, TIER, [open_ep(E_OPEN, 60, srcs)])], "failure_episodes": []}
+        cm_row(ASSET_A, TIER, [open_ep(E_OPEN, 60, srcs)], releasable="{BDR}")],
+        "failure_episodes": []}
 
 
 VIEWERS = ("maintainer-a", "filer-bdr", "filer-all")

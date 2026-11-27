@@ -2319,6 +2319,34 @@ def _follow_shape(table: str, where: str, columns: list[str] | None,
 HUB_TIER = "hub"
 REPORTS_CACHE_S = float(os.environ.get("OPENDDIL_REPORTS_CACHE_S", "5"))
 REPORTS_LIMIT = 200   # distinct episode ids per request (the pane's cap)
+# The keys of a /egress/cases case that may reach a viewer (egress/pane_api.py
+# builds them, and attach_dispositions adds the disposition keys). Nested:
+# `disposition` and `decision` keep only the keys below.
+CASE_KEYS = ("route", "case_id", "episode_id", "event_id", "asset_id",
+             "component", "fault_code", "delivered_at",
+             "disposition", "decided_at", "decision", "disposition_state")
+_CASE_DISPOSITION_KEYS = ("option", "stage", "kind", "key")
+_CASE_DECISION_KEYS = ("allowed", "reason")
+
+
+def _case_view(case: dict) -> dict:
+    """A new dict holding only the CASE_KEYS the pane sent; a key it did not
+    send stays absent."""
+    out = {}
+    for k in CASE_KEYS:
+        if k not in case:
+            continue
+        v = case[k]
+        if k == "disposition":
+            v = ({n: v.get(n) for n in _CASE_DISPOSITION_KEYS if n in v}
+                 if isinstance(v, dict) else None)
+        elif k == "decision":
+            v = ({n: v.get(n) for n in _CASE_DECISION_KEYS if n in v}
+                 if isinstance(v, dict) else None)
+        out[k] = v
+    return out
+
+
 REPORTS_SUPERVISOR_ROLE = "supervisor"
 REPORTS_NOT_SUPERVISOR_STATE = "reports at this tier are for a supervisor"
 _REPORT_COLUMNS = {
@@ -4636,10 +4664,12 @@ class Pep(BaseHTTPRequestHandler):
     def _handle_reports(self, parsed) -> None:
         """Serve GET /reports/mine and GET /reports/tier. Read only: the
         episodes come from the cached shapes and the hub's states from one
-        pane GET. `mine` filters on the viewer's own subject alone; `tier`
-        is for a supervisor and applies the PEP's label rule (the same
-        visibility rule as `policy_predicate`, as `egress_view` restates it)
-        to every episode at the tier and below."""
+        pane GET. Both routes apply the PEP's label rule (the same visibility
+        rule as `policy_predicate`, as `egress_view` restates it). `tier` is
+        for a supervisor and drops every episode at the tier and below that
+        the viewer may not see. `mine` lists the episodes whose sources hold
+        a report by the viewer; one the viewer filed but may not see is
+        listed as "report withheld", with nothing from the episode."""
         path = parsed.path
         try:
             subject, _principal, _session = self._resolve_principal()
@@ -4685,6 +4715,7 @@ class Pep(BaseHTTPRequestHandler):
                        [("Content-Type", "application/json")])
             return
 
+        hidden: list = []
         if tier_route:
             records = [{**e["labels"], "_i": i} for i, e in enumerate(episodes)]
             kept = egress_view.filter_decisions(
@@ -4707,12 +4738,21 @@ class Pep(BaseHTTPRequestHandler):
             ids = sorted(order[:REPORTS_LIMIT])
             keep = set(ids)
             listed = [e for e in listed if e["episode_id"] in keep]
+        if not tier_route:
+            # The label rule, as everywhere else: an episode the viewer filed
+            # but may not see goes no further than a "report withheld" entry.
+            nations_ = decision["allowed_nations"]
+            hidden = [e for e in listed if reports_view.episode_hidden(e, nations_)]
+            listed = [e for e in listed if not reports_view.episode_hidden(e, nations_)]
         asset_ids = sorted({e["asset_id"] for e in listed if e.get("asset_id")})
         door, pane = _reports_pane(asset_ids) if asset_ids else (reports_view.DOOR_OK, None)
         body = reports_view.build_reports(
             listed, episodes, door=door, pane=pane, viewer=viewer,
             nations=decision["allowed_nations"])
         withheld = body.pop("withheld")
+        if hidden:
+            body["reports"] += reports_view.withheld_reports(hidden, viewer)
+            withheld += len(hidden)
         unkeyed = body.get("unkeyed_ledger")
         if unkeyed:
             log.warning("reports: %d ledger row(s) carry no component or fault_code "
@@ -4726,7 +4766,7 @@ class Pep(BaseHTTPRequestHandler):
                         policy_version=decision["policy_version"],
                         corpus_version=decision["corpus_version"],
                         allowed_nations=decision["allowed_nations"],
-                        shown=len(body["reports"]), withheld=withheld,
+                        shown=len(body["reports"]) - len(hidden), withheld=withheld,
                         unkeyed_ledger=unkeyed,
                         unmatched_ledger=len(body["unmatched_ledger"]))
         self._send(200, json.dumps(body).encode(),
@@ -4949,6 +4989,7 @@ class Pep(BaseHTTPRequestHandler):
                        [("Content-Type", "application/json")])
             return
         withheld = 0
+        out_cases = []
         for case in cases:
             labels = case.pop("action_labels", None)
             if labels is not None and not (
@@ -4966,14 +5007,17 @@ class Pep(BaseHTTPRequestHandler):
                 case["decided_at"] = None
                 case["decision"] = {"allowed": None, "reason": None}
                 case["disposition_state"] = "held at the hub"
+            out_cases.append(_case_view(case))
         record_decision(decision_id=new_decision_id(), outcome="allow",
                         subject=subject, resource=resource,
                         policy_version=decision["policy_version"],
                         corpus_version=decision["corpus_version"],
-                        allowed_nations=nations, shown=len(cases), withheld=withheld)
-        # Built from a whitelist, as egress_view builds its answer: no other
-        # key of the pane's body leaves this route.
-        self._send(200, json.dumps({"cases": cases}).encode(), headers)
+                        allowed_nations=nations, shown=len(out_cases), withheld=withheld)
+        # Each case is a new dict built from CASE_KEYS (and, inside
+        # `disposition` and `decision`, their own nested keys): no other key of
+        # the pane's body leaves this route. A new pane key must be added to
+        # CASE_KEYS before it can reach a viewer.
+        self._send(200, json.dumps({"cases": out_cases}).encode(), headers)
 
     def _picture_reply(self, status: int, detail: str,
                        headers: list | None = None) -> None:
