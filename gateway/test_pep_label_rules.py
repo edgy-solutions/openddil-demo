@@ -108,7 +108,7 @@ def test_mine_visible_and_hidden(rig, monkeypatch):
         assert needle not in raw
     assert [q["asset_id"][0] for q in S.called("pane-states")] == ["ast-atl"]
     assert decisions[-1]["withheld"] == 1
-    assert decisions[-1]["shown"] == 2
+    assert decisions[-1]["shown"] == 1   # a withheld entry is counted once, as withheld
 
 
 def test_mine_only_hidden_is_not_empty(rig):
