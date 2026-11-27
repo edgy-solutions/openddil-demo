@@ -169,7 +169,8 @@ def _parse_picture_clients(raw: str) -> dict:
 PICTURE_CLIENTS = _parse_picture_clients(os.getenv("OPENDDIL_PICTURE_CLIENTS", ""))
 
 # --- the CM write path --------------------------------------------------------
-# ONE route, one write, one topic. Empty means "not wired at this tier", the
+# ONE route, one write, one topic. A filing for an asset owned by another tier
+# is refused with 409. Empty means "not wired at this tier", the
 # same meaning ELECTRIC/TOPAZ/EGRESS_PANE being unset already carries: a
 # deployment that has not configured a write path gets a clean 404, not a
 # half-working route.
@@ -2390,6 +2391,21 @@ def _owning_tier(edge_id, region_id) -> str:
     return edge_id or region_id or HUB_TIER
 
 
+# A CM filing is accepted only by the tier that owns the asset: this PEP posts
+# to its own tier's intake, and no tier consumes another tier's topic. A PEP
+# that cannot route a filing to the owner refuses it with a reason; it never
+# answers 202 and drops it (2026-11-27 ruling). The owner comes from the
+# visible row, by the same `_owning_tier` rule /reports uses.
+# Returns None when this PEP may file, else the refusal reason.
+def _cm_filing_refusal(row: dict) -> str | None:
+    owning = _owning_tier(row.get("edge_id"), row.get("region_id"))
+    if PEP_TIER == "unknown":
+        return "this PEP has no tier id (OPENDDIL_PEP_TIER unset); filing refused"
+    if owning != PEP_TIER:
+        return f"asset is owned by tier {owning}; file it at that tier"
+    return None
+
+
 def _reports_rows(table: str) -> list[dict]:
     """The cached rows of one report table, refreshed at most once per
     REPORTS_CACHE_S through the same bounded shape read the rest of the PEP
@@ -2957,13 +2973,17 @@ class Pep(BaseHTTPRequestHandler):
 
     def _cm_deny(self, status: int, reason: str, *, subject: str,
                  asset_id: str | None = None, fault_code: str | None = None,
-                 event_id: str | None = None, headers: list | None = None) -> None:
+                 event_id: str | None = None, headers: list | None = None,
+                 message: str | None = None) -> None:
         decision_id = _cm_record(allowed=False, subject=subject, asset_id=asset_id,
                                  fault_code=fault_code, event_id=event_id, reason=reason)
         log.warning("CM WRITE REFUSED ref=%s reason=%s subject=%s asset_id=%s",
                     decision_id, reason, subject or "<none>", asset_id or "-")
-        body = json.dumps({"error": "cm discrepancy refused", "cause": reason,
-                           "reference": decision_id}).encode()
+        payload = {"error": "cm discrepancy refused", "cause": reason,
+                   "reference": decision_id}
+        if message is not None:
+            payload["message"] = message  # the frontend shows message before error
+        body = json.dumps(payload).encode()
         self._send(status, body, [("Content-Type", "application/json")] + (headers or []))
 
     def _cm_allow(self, *, subject: str, asset_id: str, fault_code: str,
@@ -3240,8 +3260,11 @@ class Pep(BaseHTTPRequestHandler):
         fault_code = fields["fault_code"]
         description = fields["description"]
 
-        # Step 4: visibility and slot check, through the read path's own
-        # predicate -- never a second decision about who may see the asset.
+        # Step 4: visibility, then owning tier, then slot check. Visibility
+        # goes through the read path's own predicate -- never a second
+        # decision about who may see the asset -- and comes first, so an
+        # invisible id is never confirmed by an owning-tier answer. A visible
+        # asset owned by another tier is refused 409 (see _cm_filing_refusal).
         try:
             row = read_cm_visibility_row(asset_id, decision["allowed_nations"])
         except ElectricUnavailable as exc:
@@ -3251,6 +3274,11 @@ class Pep(BaseHTTPRequestHandler):
         if row is None:
             self._cm_deny(404, "asset not visible at this tier", subject=subject,
                           asset_id=asset_id, fault_code=fault_code)
+            return
+        refusal = _cm_filing_refusal(row)
+        if refusal is not None:
+            self._cm_deny(409, refusal, subject=subject, asset_id=asset_id,
+                          fault_code=fault_code, message=refusal)
             return
         if not _component_installed(row, component):
             self._cm_deny(400, "component is not an installed slot on this asset",
@@ -3411,7 +3439,7 @@ class Pep(BaseHTTPRequestHandler):
         fault_code = fields["fault_code"]
         resolution = fields["resolution"]
 
-        # 3. visibility row and installed slot.
+        # 3. visibility row, owning tier, then installed slot.
         try:
             row = read_cm_visibility_row(asset_id, decision["allowed_nations"])
         except ElectricUnavailable as exc:
@@ -3421,6 +3449,11 @@ class Pep(BaseHTTPRequestHandler):
         if row is None:
             self._cm_deny(404, "asset not visible at this tier", subject=subject,
                           asset_id=asset_id, fault_code=fault_code)
+            return
+        refusal = _cm_filing_refusal(row)
+        if refusal is not None:
+            self._cm_deny(409, refusal, subject=subject, asset_id=asset_id,
+                          fault_code=fault_code, message=refusal)
             return
         if not _component_installed(row, component):
             self._cm_deny(400, "component is not an installed slot on this asset",

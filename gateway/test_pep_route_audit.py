@@ -842,7 +842,7 @@ def _seed_cm_assets():
     for kind in ("UNL", "BDR", "ATL"):
         asset = f"ast-cm-{kind.lower()}"
         S.rows.setdefault("asset_cm_state", []).append(dict(
-            LABELS[kind], asset_id=asset, edge_id=EDGE,
+            LABELS[kind], asset_id=asset, edge_id="",  # hub-owned: this rig's PEP is the hub
             installed=[{"slot_id": CANARIES[kind]}]))
         S.rows.setdefault("telemetry_latest_state", []).append(dict(
             LABELS[kind], asset_id=asset, platform_variant=f"VAR-{kind}"))

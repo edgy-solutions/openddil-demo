@@ -173,6 +173,9 @@ def pep_factory():
     os.environ.pop("OPENDDIL_FAULT_CODES_PATH", None)
     os.environ.pop("OPENDDIL_REPORT_SOURCE", None)
     os.environ.pop("OPENDDIL_OIDC_ISSUER", None)
+    # The fixture rows carry no edge_id/region_id, so they are hub-owned and
+    # this PEP must be the hub to file for them.
+    os.environ["OPENDDIL_PEP_TIER"] = "hub"
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     sys.modules.pop("pep", None)
     import pep  # noqa: PLC0415 -- must follow the env above
@@ -192,7 +195,8 @@ def pep_factory():
     fault_catalog_path.unlink(missing_ok=True)
     # Leaving these set would point the NEXT module's fresh `import pep` at a
     # file this fixture just deleted and a port nothing listens on anymore.
-    for var in ("OPENDDIL_CM_INTAKE_URL", "OPENDDIL_FAULT_CATALOG_PATH"):
+    for var in ("OPENDDIL_CM_INTAKE_URL", "OPENDDIL_FAULT_CATALOG_PATH",
+                "OPENDDIL_PEP_TIER"):
         os.environ.pop(var, None)
 
 
@@ -578,3 +582,105 @@ def test_resolve_roles_override_refuses_edge_operator(pep_url, monkeypatch):
     code, _ = _post(pep_url + RESOLVE_URL, "op.atl", RESOLVE_BODY)
     assert code == 403
     assert state["intake_calls"] == []
+
+
+# --- a filing goes only to the tier that owns the asset -----------------------
+
+def _owned(**ids):
+    return [{"asset_id": "atl-1", "platform_variant": "MRAD_Sensor",
+             "installed": [{"slot_id": "ENG-1"}, {"slot_id": "cooling_fan"}], **ids}]
+
+
+def _file(url, which):
+    if which == "raise":
+        return _post(url + "/cm/discrepancy", "op.atl", GOOD_BODY)
+    return _post(url + RESOLVE_URL, "op.atl", RESOLVE_BODY)
+
+
+@pytest.mark.parametrize("which", ["raise", "resolve"])
+def test_hub_refuses_asset_owned_by_an_edge(pep_url, caplog, which):
+    state["visibility_rows"] = _owned(edge_id="edge-01")
+    with caplog.at_level("WARNING"):
+        code, body = _file(pep_url, which)
+    assert code == 409
+    assert "edge-01" in body["message"] and "file it at that tier" in body["message"]
+    assert body["error"] == "cm discrepancy refused"
+    assert state["intake_calls"] == []
+    assert any("CM WRITE REFUSED" in r.getMessage()
+               and "asset is owned by tier edge-01" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.parametrize("which", ["raise", "resolve"])
+def test_edge_files_for_its_own_asset(pep_url, monkeypatch, which):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "PEP_TIER", "edge-01")
+    state["visibility_rows"] = _owned(edge_id="edge-01")
+    code, _ = _file(pep_url, which)
+    assert code == 202
+    assert len(state["intake_calls"]) == 1
+
+
+@pytest.mark.parametrize("which", ["raise", "resolve"])
+def test_edge_refuses_another_edges_asset(pep_url, monkeypatch, which):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "PEP_TIER", "edge-01")
+    state["visibility_rows"] = _owned(edge_id="edge-02")
+    code, body = _file(pep_url, which)
+    assert code == 409
+    assert "edge-02" in body["message"]
+    assert state["intake_calls"] == []
+
+
+def test_region_owns_rows_with_only_a_region_id(pep_url, monkeypatch):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "PEP_TIER", "region-1")
+    state["visibility_rows"] = _owned(edge_id="", region_id="region-1")
+    code, _ = _file(pep_url, "raise")
+    assert code == 202
+    assert len(state["intake_calls"]) == 1
+    state["visibility_rows"] = _owned(edge_id="edge-01", region_id="region-1")
+    code, _ = _file(pep_url, "raise")
+    assert code == 409
+    assert len(state["intake_calls"]) == 1
+
+
+def test_edge_refuses_hub_owned_asset(pep_url, monkeypatch):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "PEP_TIER", "edge-01")
+    code, body = _file(pep_url, "raise")
+    assert code == 409
+    assert "tier hub" in body["message"]
+    assert state["intake_calls"] == []
+
+
+@pytest.mark.parametrize("which", ["raise", "resolve"])
+def test_unset_tier_id_refuses(pep_url, monkeypatch, which):
+    import pep  # noqa: PLC0415
+    monkeypatch.setattr(pep, "PEP_TIER", "unknown")
+    code, body = _file(pep_url, which)
+    assert code == 409
+    assert "no tier id" in body["message"]
+    assert state["intake_calls"] == []
+
+
+@pytest.mark.parametrize("which", ["raise", "resolve"])
+def test_invisible_asset_stays_404_without_message(pep_url, which):
+    # Visibility is checked first: an invisible id is never confirmed by an
+    # owning-tier answer.
+    state["visibility_rows"] = []
+    code, body = _file(pep_url, which)
+    assert code == 404
+    assert body["cause"] == "asset not visible at this tier"
+    assert "message" not in body
+    assert state["intake_calls"] == []
+
+
+def test_other_denies_carry_no_message(pep_url):
+    code, body = _post(pep_url + "/cm/discrepancy", "op.atl",
+                       dict(GOOD_BODY, component="NOT-A-SLOT"))
+    assert code == 400
+    assert "message" not in body
+    code, body = _post(pep_url + "/cm/discrepancy", "stranger", GOOD_BODY)
+    assert code == 403
+    assert "message" not in body
