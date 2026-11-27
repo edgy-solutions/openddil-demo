@@ -1,7 +1,8 @@
 name: Tests (gateway)
 
 # The PEP's tests (gateway/test_*.py), including the route audit that probes every label-filtered route with canary
-# strings. The PEP itself is stdlib-only; the tests mint tokens with `cryptography`. No secrets, no services.
+# strings. The PEP itself is stdlib-only; the tests mint tokens with `cryptography` and PyJWT (test-time only:
+# oidc.py verifies signatures without PyJWT). No secrets, no services.
 on:
   push:
     branches: [ "master" ]
@@ -23,6 +24,6 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install
-        run: pip install pytest cryptography
+        run: pip install pytest "cryptography>=42" "pyjwt>=2.8,<3"
       - name: Run the gateway tests
         run: python -m pytest -q -p no:cacheprovider gateway
