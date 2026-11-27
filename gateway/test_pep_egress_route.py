@@ -17,6 +17,8 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -258,9 +260,34 @@ def test_invalid_kind_is_denied_before_the_pane_is_asked(pep_url, bad_kind):
     assert state["pane_calls"] == 0
 
 
+# The ids a fault carries. KIND is invented: the real kind name is deployment
+# config. The formulas are the real ones: cm-service names an episode by
+# "episode|asset|component|fault_code"; the egress assembler names the episode by
+# "kind|tier|asset|component|fault_code" and each occurrence (the event id) by
+# the same seed plus the detected time in ns. Real ids are uuid v5 and the three
+# differ, so no fixture here may use one literal for two of them.
+KIND = "FaultEvent"
+
+
+def cm_id(asset, component, fault):
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"episode|{asset}|{component}|{fault}"))
+
+
+def egress_episode_id(asset, component, fault, tier):
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_URL, f"{KIND}|{tier}|{asset}|{component}|{fault}"))
+
+
+def egress_event_id(asset, component, fault, tier, detected_at_ns):
+    return str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"{KIND}|{tier}|{asset}|{component}|{fault}|{detected_at_ns}"))
+
+
 # --- /egress/cases: same gate as /egress/decisions ---------------------------
 
-CQ = "/egress/cases?asset_id=asset-a"
+ASSET = "dis:9:1:2001"
+CQ = "/egress/cases?asset_id=" + urllib.parse.quote(ASSET, safe="")
 
 
 def _cm(asset_id, originator, releasable_to=None, edge_id="edge-01", region_id="region-east"):
@@ -285,9 +312,15 @@ def _cases_env(monkeypatch, rows, tier="hub", body=None):
 
 
 def _case(case_id, action_labels, state_="admitted"):
-    return {"route": "to-stand-in", "case_id": case_id, "episode_id": "ep-" + case_id,
-            "event_id": "ev-" + case_id, "asset_id": "dis:9:1:2001",
-            "component": "radar", "fault_code": "F-12",
+    # case_id is an invented opaque string: no real case id exists (the receiver
+    # answered with none), so nothing here shapes it. The ids around it are real
+    # uuid v5 values; the detected time is invented, one per case.
+    asset, comp, fault = ASSET, "radar_unit", "RDR-PWR-12"
+    detected_ns = 1_793_000_000_000_000_000 + zlib.crc32(case_id.encode())
+    return {"route": "to-case-desk", "case_id": case_id,
+            "episode_id": egress_episode_id(asset, comp, fault, "hub"),
+            "event_id": egress_event_id(asset, comp, fault, "hub", detected_ns),
+            "asset_id": asset, "component": comp, "fault_code": fault,
             "delivered_at": "2026-11-20T10:00:00+00:00",
             "disposition": {"option": "swap", "stage": "approver", "kind": "action.v1",
                             "key": "k-" + case_id},
@@ -296,7 +329,6 @@ def _case(case_id, action_labels, state_="admitted"):
             "disposition_state": state_, "action_labels": action_labels}
 
 
-ASSET = "dis:9:1:2001"
 AQ = "/egress/cases?asset_id=" + urllib.parse.quote(ASSET, safe="")
 ATL_ACTION = {"originator_nation": "ATL", "releasable_to": []}
 BDR_ACTION = {"originator_nation": "BDR", "releasable_to": []}
@@ -322,10 +354,10 @@ def _case_decisions(caplog):
 
 
 def test_cases_entitled_viewer_reaches_the_pane_with_only_asset_id(pep_url, monkeypatch):
-    _cases_env(monkeypatch, [_cm("asset-a", "ATL")], body={"cases": []})
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL")], body={"cases": []})
     code, _, headers = _get(pep_url + CQ + "&where=1%3D1", "op.atl")
     assert code == 200
-    assert state["pane_query"] == "/cases?asset_id=asset-a"
+    assert state["pane_query"] == "/cases?asset_id=" + urllib.parse.quote(ASSET, safe="")
     assert headers.get("Cache-Control") == "no-store"
 
 
@@ -487,3 +519,13 @@ def test_cases_electric_down_is_502_and_the_pane_is_not_asked(pep_url, monkeypat
     assert code == 502
     assert resp == {"error": "cases unavailable"}
     assert state["pane_calls"] == 0
+
+
+def test_cases_a_delivered_row_with_no_case_id_reads_empty(pep_url, monkeypatch):
+    # The real default: the receiver answered with no case id, so the ledger row
+    # is delivered with case_id NULL. The pane's /cases SQL keeps only rows with a
+    # case id, so it answers no cases for this asset, and the route says so.
+    _cases_env(monkeypatch, [_cm(ASSET, "ATL")], body={"cases": []})
+    code, raw = _raw(pep_url + AQ, "op.atl")
+    assert (code, raw) == (200, b'{"cases": []}')
+    assert state["pane_calls"] == 1
